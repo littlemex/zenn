@@ -1,4 +1,4 @@
-title: "Model Context Protocl(MCP) のセキュリティ on AWS"
+title: "Model Context Protocol Security on AWS"
 summary: "MCP の概要から始まり、考慮すべきセキュリティ、その対策方法、実装まで踏み込んだ内容を紹介します。"
 topics: ["MCP", "AWS"]
 published: false
