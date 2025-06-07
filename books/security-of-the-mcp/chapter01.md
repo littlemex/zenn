@@ -1,8 +1,11 @@
 ---
-title: "§01 MCP セキュリティを理解するための事前知識"
+title: "§01 MCP が急速に流行しているのはなぜなのか？"
 free: true
 ---
 
+___MCP に関する理解編:___  _MCP の脆弱性と対策を理解するために必要な前提知識の解説_
+
+---
 
 [Anthropic](https://www.anthropic.com/) が発表した [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) は、AI モデルが様々なツールにアクセスするための統一的なインタフェースです。AI モデルとツールを接続する **USB-C 規格**のようである、と例えられます。
 

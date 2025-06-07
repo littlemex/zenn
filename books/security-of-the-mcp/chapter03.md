@@ -1,6 +1,10 @@
 ---
-title: "§03 Tool use と MCP の仕組みの比較"
+title: "§03 Tool use と MCP は結局何が違う？仕組みを比較"
 free: true
+---
+
+___MCP に関する理解編:___  _MCP の脆弱性と対策を理解するために必要な前提知識の解説_
+
 ---
 
 AI モデルが利用する Tool use と MCP の比較を行いましょう。
