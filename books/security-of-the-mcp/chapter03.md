@@ -1,5 +1,5 @@
 ---
-title: "§03 Tool use と MCP の比較"
+title: "§03 Tool use と MCP の仕組みの比較"
 free: true
 ---
 
