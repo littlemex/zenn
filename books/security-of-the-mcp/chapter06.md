@@ -1,5 +1,5 @@
 ---
-title: "§06 MCP ライフサイクルとは何なのか？"
+title: "§06 MCP ライフサイクルは通信フェーズ定義！ ｳｰﾝ？"
 free: true
 ---
 
@@ -8,6 +8,8 @@ ___MCP に関する発展理解編:___  _MCP の脆弱性と対策を理解す�
 ---
 
 本章の説明は、2025-03-26 の[仕様](https://modelcontextprotocol.io/specification/2025-03-26)に基づきます。
+
+MCP Specification: **Base Protocol（今ここ）**、Authorization、Client Features、Server Features
 
 本 Chapter では Base Protocol の[ライフサイクル](https://modelcontextprotocol.io/specification/2025-03-26/basic/lifecycle)について解説します。ライフサイクルと言われてもあまりピンとこないかもしれません。ライフサイクルを解説する前に Protocol についておさらいします。
 
