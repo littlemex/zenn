@@ -1,5 +1,5 @@
 ---
-title: "§07 stdio？ Transports 仕様に Dive Deep!"
+title: "§07 stdio？ Transports 仕様にプチ Dive Deep!"
 free: true
 ---
 
@@ -58,7 +58,8 @@ childProcess.stdout?.on('data', (data: Buffer) => {
 });
 ```
 
-このような仕組みを用いて Client と Server が子プロセスを介してデータのやり取りを行う方式が stdio です。実際には、出力から JSON RPC 2.0 のフォーマットのメッセージを解釈して取り扱うなどの実装も存在します。
+このような仕組みを用いて Client と Server が子プロセスを介してデータのやり取りを行う方式が stdio です。実際には、出力から JSON RPC 2.0 のフォーマットのメッセージを解釈して取り扱うなどの実装も存在します。Server 側の実装は割愛しますが、Server からのメッセージ受信はイベント駆動型のアプローチで Client にメッセージとして渡されます。
+
 
 ## まとめ
 
@@ -68,7 +69,7 @@ childProcess.stdout?.on('data', (data: Buffer) => {
 
 本書では **SaaS コラム** で本文内容を補足する SaaS に関する解説を行います。
 
-今回は SaaS に関する解説はありません。
+MCP のセキュリティについてはいくつかの視点があります。1/ MCP 利用者、2/ MCP Server 提供者、3/ MCP 管理者、などの視点があります。組織での MCP 利用については MCP 利用者、MCP 管理者、視点があります。そして、SaaS を MCP として提供することを考える場合には、SaaS プロバイダは MCP Server 提供者、視点となるでしょう。MCP Server を提供する際に提供者側が考慮すべきセキュリティと、MCP の利用者や管理者が考慮すべきセキュリティ、について今後明確に視点を提示しながら解説します。
 
 ## サンプルコード
 
