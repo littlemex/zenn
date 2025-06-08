@@ -9,7 +9,7 @@ ___MCP に関する理解編:___  _MCP の脆弱性と対策を理解するた�
 
 本章の説明は、2025-03-26 の[仕様](https://modelcontextprotocol.io/specification/2025-03-26)に基づきます。
 
-MCP を構成する登場人物(コンポーネント)は、MCP Client、MCP Server、MCP Host があります。MCP Client と MCP Server については前回概要を説明しました。本 Chapter では以降の Chapter で脆弱性やその対策を検討するために必要な仕様の全体像を俯瞰します。
+MCP を構成する登場人物(コンポーネント)は、MCP Client、MCP Server、MCP Host があります。MCP Client と MCP Server については前回概要を説明しました。本 Chapter では以降の Chapter で脆弱性やその対策を検討するために必要な MCP 仕様の全体像を俯瞰します。
 
 ![040101](/images/books/security-of-the-mcp/fig_c04_s01_01.png)
 
@@ -99,4 +99,8 @@ JSON-RPC 2.0 には定義がありませんが、SHOULD として対応が求め
 
 本書では **SaaS コラム** で本文内容を補足する SaaS に関する解説を行います。
 
-今回は SaaS に関する解説はありません。
+今回は MCP を SaaS で用いる際の後方互換性について考察します。SaaS はテナント単位でユーザーを管理します。テナント単位でサービスのどのバージョンを使うのかを決めているようなケースもあります。例えば、部門 A は Version 1、部門 B は Version 2 を用いる、などです。さらには Isolation 手法としてインフラストラクチャレベルで分離している場合は、Version ごとにインフラストラクチャを切り替えなければなりません。
+
+SaaS で AI Agent 機能を提供する際には、あえてリスクとその対策工数を受容してまでツール使用に MCP を利用すべきかについては十分な検討が必要です。この場合は、[Strands Agents](https://aws.amazon.com/jp/blogs/news/introducing-strands-agents-an-open-source-ai-agents-sdk/) などのフレームワークを用いて Tool use を利用すれば良いでしょう。そうすれば自社のアプリケーションコード同様のバージョン管理を AI Agent 機能に適用できます。
+
+一方で MCP から自社 SaaS を呼び出すケースはどうでしょうか。この場合は、MCP からツールとして呼び出す SaaS のバージョンを指定する必要があるでしょう。MCP でどのようにバージョンニングするのか、裏側のツールやパッケージのバージョンイングはセキュリティにも関わるため今後の Chapter で解説します。
