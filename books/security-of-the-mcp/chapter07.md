@@ -1,5 +1,5 @@
 ---
-title: "§07 stdio？ Transports 仕様にプチ Dive Deep!"
+title: "§07 stdio にプチ Dive Deep!"
 free: true
 ---
 
