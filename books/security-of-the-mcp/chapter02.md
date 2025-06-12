@@ -30,8 +30,32 @@ AI モデルに呼び出すことができるツールの一覧について伝�
 
 **ステップ 1：AI モデルにツールとユーザープロンプトを提供する**
 
-- AI モデルにアクセスさせたいツールのセットを定義します。これには、ツールの名前、説明、入力スキーマが含まれます。
+- **ツール指定:** AI モデルにアクセスさせたいツールのセットを定義します。これには、ツールの名前、説明、入力スキーマが含まれます。
 - ___例: 「A 倉庫には商品 B は何個残っていますか？」___ などの一つ以上のツールを使用して回答する必要があるプロンプトを提供します。
+
+以下は Amazon Bedrock の Tool use に関する[公式 Document](https://docs.aws.amazon.com/ja_jp/bedrock/latest/userguide/model-parameters-anthropic-claude-messages-tool-use.html) に記載のツール指定例です。
+
+```json
+// ツール指定
+[
+    {
+        "name": "top_song",
+        "description": "Get the most popular song played on a radio station.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "sign": {
+                    "type": "string",
+                    "description": "The call sign for the radio station for which you want the most popular song. Example calls signs are WZPZ and WKRP."
+                }
+            },
+            "required": [
+                "sign"
+            ]
+        }
+    }
+]
+```
 
 **ステップ 2：ツール使用に関する AI モデル応答**
 
@@ -53,6 +77,34 @@ _例: ツール使用リクエスト_
 }
 ```
 
+以下は Amazon Bedrock の Tool use に関する[公式 Document](https://docs.aws.amazon.com/ja_jp/bedrock/latest/userguide/model-parameters-anthropic-claude-messages-tool-use.html) に記載の出力例です。
+
+```json
+// モデル出力
+{
+    "id": "msg_bdrk_01USsY5m3XRUF4FCppHP8KBx",
+    "type": "message",
+    "role": "assistant",
+    "model": "claude-3-sonnet-20240229",
+    "stop_sequence": null,
+    "usage": {
+        "input_tokens": 375,
+        "output_tokens": 36
+    },
+    "content": [
+        {
+            "type": "tool_use",
+            "id": "toolu_bdrk_01SnXQc6YVWD8Dom5jz7KhHy",
+            "name": "top_song",
+            "input": {
+                "sign": "WZPZ"
+            }
+        }
+    ],
+    "stop_reason": "tool_use"
+}
+```
+
 > 100% 適切な _ツール使用リクエスト_ を AI モデルが出力する保証はありません。
 
 **ステップ 3：ツール入力を抽出し、コードを実行し、結果を返す**
@@ -70,7 +122,7 @@ _例: ツール使用リクエスト_
 
 ## まとめ
 
-本 Chapter では、MCP の仕組みの解説の前にその前提となるツール使用の仕組みについて簡単に触れました。
+本 Chapter では、MCP の仕組みの解説の前にその前提となる Tool use の仕組みについて簡単に触れました。このような仕組みであることが理解できるとモデルに無限にツールを持たせることが難しいことがわかるでしょう。ツールを確実に正しく利用してくれる保証はないため、モデルごとに何個までツールを使いこなせるのかの確認が必要です。ドメインに応じた現場の実験が精度向上にとって非常に重要でしょう。多数の Tool use が必要な場合には **1/** マルチエージェントコラボレーションを取り入れて、各エージェントが特定の Tool use に特化するような設計や、**2/** 多数のツール指定の情報をセマンティック検索で retrieve して、関連するツールのみをモデルに説明する、などいくつかのパターンがあります。
 
 ## SaaS コラム
 
