@@ -27,6 +27,8 @@ MCP Client は、MCP Host アプリケーションによって生成され、MCP
 
 MCP Server は Resources、Prompts、Tools を Clients に提供します。Resources は AI モデルが使用するための Context や Data を提供し、Prompts はユーザーのためのテンプレートメッセージを提供します。そして、Tools は AI モデルにツール使用に関する機能を提供します。Server はローカルプロセスまたはリモートサービスとして使用できます。
 
+MCP Server がローカルマシンにあるケースしか見たことがない、使ったことがない、という方もいるかと思います。今後詳細に解説する Streamable HTTP はリモートに MCP Server が存在することもあり得ます。
+
 ## Base Protocol
 
 MCP は [JSON-RPC 2.0](https://www.jsonrpc.org/specification) をベースプロトコルとして採用し、その上にツール利用のための拡張を行っています。詳細については JSON-RPC 2.0 仕様をご確認ください。プロトコルレベルでの JSON-RPC 2.0 との主な差分として、MCP はリクエスト ID が必須であり null が許容されない点です。メッセージ構造についてもリクエスト ID 重複が禁止されており、JSON-RPC 2.0 より多少制約が厳格になっています。
