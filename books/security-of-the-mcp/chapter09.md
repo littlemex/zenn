@@ -13,11 +13,11 @@ MCP Specification: **Base Protocol（今ここ）**、Authorization、Client Fea
 
 本 Chapter では Base Protocol の[トランスポート](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports)について解説します。トランスポートについては Chapter04 で解説しましたが、今回はより詳細にトランスポートについて解説します。
 
-JSON-RPC 2.0 はトランスポート非依存ですが、MCP の場合は [stdio](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#stdio) と [Streamable HTTP](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http) という Client ↔︎ Server 間通信のための二つのトランスポートメカニズムを仕様として定義しています。これらのトランスポートがメッセージの送受信でどのように接続を取り扱うべきであるかについて仕様で定義されています。
+JSON-RPC 2.0 はトランスポート非依存ですが、MCP の場合は [STDIO](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#stdio) と [Streamable HTTP](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http) という Client ↔︎ Server 間通信のための二つのトランスポートメカニズムを仕様として定義しています。これらのトランスポートがメッセージの送受信でどのように接続を取り扱うべきであるかについて仕様で定義されています。
 
 ## Streamable HTTP
 
-Streamable HTTP トランスポートは、HTTP と [Server-Sent Events (SSE)](https://en.wikipedia.org/wiki/Server-sent_events) を組み合わせて双方向通信を実現します。stdio トランスポートがサブプロセスを起動してイベントハンドラを介して双方向で通信するのに対し、Streamable HTTP はネットワーク経由で通信を行います。SSE は Server から Client へのリアルタイム通信を HTTP で実現するための技術です。Client から Server への HTTP リクエストと Server から Client への SSE を利用して MCP で必要な双方向通信を実現します。
+Streamable HTTP トランスポートは、HTTP と [Server-Sent Events (SSE)](https://en.wikipedia.org/wiki/Server-sent_events) を組み合わせて双方向通信を実現します。STDIO トランスポートがサブプロセスを起動してイベントハンドラを介して双方向で通信するのに対し、Streamable HTTP はネットワーク経由で通信を行います。SSE は Server から Client へのリアルタイム通信を HTTP で実現するための技術です。Client から Server への HTTP リクエストと Server から Client への SSE を利用して MCP で必要な双方向通信を実現します。
 
 Streamable HTTP について次回詳しく実装解説するとして、今回は SSE の実装例について説明したいと思います。
 
@@ -114,9 +114,9 @@ graph TB
 
 **機能比較表**
 
-stdio と Streamable HTTP の簡単な機能比較表を作成しました。ここまで読まれた読者の方は MCP がトランスポート非依存であるということの意味がよくわかったと思います。トランスポートは stdio、Streamable HTTP、WebSocket などなんらかの方法で Server と Client の間で MCP 仕様を満たす形で双方向通信ができれば良いです。
+STDIO と Streamable HTTP の簡単な機能比較表を作成しました。ここまで読まれた読者の方は MCP がトランスポート非依存であるということの意味がよくわかったと思います。トランスポートは STDIO HTTP、WebSocket などなんらかの方法で Server と Client の間で MCP 仕様を満たす形で双方向通信ができれば良いです。
 
-| 特徴 | stdio | Streamable HTTP |
+| 特徴 | STDIO | Streamable HTTP |
 |------|---------------------|---------------------------|
 | 通信方式 | 標準入出力（stdin/stdout） | HTTP + SSE |
 | プロセス | サブプロセスとして起動 | 独立したプロセス |
