@@ -13,7 +13,7 @@ MCP Specification: **Base Protocol（今ここ）**、Authorization、Client Fea
 
 本 Chapter では Streamable HTTP の typescript-sdk(tag: 1.12.1) の [Client 実装](https://github.com/modelcontextprotocol/typescript-sdk/blob/1.12.1/src/client/streamableHttp.ts) と [Server 実装](https://github.com/modelcontextprotocol/typescript-sdk/blob/1.12.1/src/server/streamableHttp.ts) について解説します。**本 Chapter では Streamable HTTP のセキュリティ関連実装、とりわけ、セッション管理、について主に解説します。**
 
-Streamable HTTP は複数 Client を Server に接続することができ、これは API 同様に MCP Server を不特定多数のユーザーに提供するような形態を想定しているはずです。そのため本 Chapter では **MCP Server を提供する際に提供者側が考慮すべきセキュリティ**、の視点で主に解説します。
+Streamable HTTP は複数 Client を Server に接続することができ、これは API 同様に MCP Server を多数のユーザーに提供するような形態を想定しているはずです。そのため本 Chapter では **MCP Server を提供する際に提供者側が考慮すべきセキュリティ**、の視点で主に解説します。
 
 **実装を解説する中で脆弱性を紹介**していきたいと思います。具体的なリスク、推奨対策例、を提示しますがあくまで推奨かつ例示であり、**これらの対策がとられれば万全であるというものでは当然ありません**。セキュリティは[スイスチーズモデル](https://en.wikipedia.org/wiki/Swiss_cheese_model)を意識しながら**多層的に防御する**必要があります。すべての対策実装をアプリケーションに入れ込まなければならないわけではなく、**クラウドのマネージドサービス等を活用して**アプリケーションとインフラストラクチャレベルでの**責務を明確に分離するようなセキュリティ対策**が重要でしょう。攻撃断面はできるだけ少ない方がよく、セキュリティ対策のために過度な複雑性をもたらすことは返ってセキュリティ脆弱性を増やすことになりかねません。既存の[ベストプラクティス](https://docs.aws.amazon.com/securityhub/latest/userguide/fsbp-standard.html)を参考に組織として継続的にセキュリティの監視や運用の体制を整える必要があります。
 
@@ -206,9 +206,9 @@ for (const message of messages) {
 
 本 Chapter Streamable HTTP の詳細実装について主に `セッション` の側面から解説しました。実装を覗くと様々な脆弱性が垣間見えてきます。まだ MCP は途上の技術であるため上述した課題は MCP Server 構築のためのフレームワークでいずれ対応されると思われます。
 
-**MCP Server 提供者の視点**では、stdio は自社パッケージをどこかに置いておく、もしくはパッケージを介して API にアクセスさせる、などの提供方法になるでしょう。この場合は [AWS MCP Servers](https://awslabs.github.io/mcp/) のように **AWS の確立された既存の認証認可の仕組みをそのまま利用する方式が良い**でしょう。例えば `aws configure sso` によって設定した `profile` に基づいて AWS MCP Server が AWS リソースに限られた権限でアクセスすることは AWS CLI や SDK をローカル PC で利用することと基本的にはセキュリティ対策としては等価です。必ずしも `OIDC + OAuth` による認証認可は必須ではなく、AWS のように `AWS IAM 認証 + IAM ロール認可` も非常にセキュアな方法です。一方で**認証認可と認証情報の利用方法が確立していない HTTP-based の MCP Server を上述した様々な脆弱性全てに対応した上で提供することは現実的ではないかも**しれません。MCP Server 提供者の視点に立つと、現状は stdio が有力な選択肢であるというのが現時点での筆者の意見です。Streamable HTTP 対応の Server が見当たらないのはこういった背景もあるでしょう。
+**MCP Server 提供者の視点**では、STDIO に関しての提供方法として、自社パッケージを Github などで公開、もしくは公開パッケージを介して API にアクセスさせる、などの提供方法になるでしょう。この場合は [AWS MCP Servers](https://awslabs.github.io/mcp/) のように **AWS の確立された既存の認証認可の仕組みをそのまま利用する方式が良い**でしょう。例えば `aws configure sso` によって設定した `profile` に基づいて AWS MCP Server が AWS リソースに限られた権限でアクセスすることは AWS CLI や SDK をローカル PC で利用することと基本的にはセキュリティ対策としては等価でしょう。必ずしも `OIDC + OAuth` による認証・認可は必須ではなく、AWS のように `AWS IAM 認証 + IAM ロール認可` も非常にセキュアな方法です。一方で**HTTP-based の MCP Server を上述した様々な脆弱性や認証・認可など全てに対応した上で提供することは現時点ではハードルが高いかも**しれません。MCP Server 提供者の視点に立つと、MCP Server を世の中に出すスピードを重視するのであれば、現状は STDIO が有力な選択肢であるというのが現時点での筆者の意見です。Streamable HTTP 対応の MCP Server が見当たらないのはこういった背景もあるでしょう。
 
-MCP 利用者の視点では、stdio 利用は慎重になるべきであると以前の Chapter で述べました。一方で、認証認可、利用コマンドやパッケージの安全性が確認されている場合は、入念なレビューのもとで利用するのが良いでしょう。**Streamable HTTP の方が安全であると盲信することは危険です。**
+MCP 利用者の視点では、STDIO 利用は慎重になるべきであると以前の Chapter で述べました。一方で、認証・認可、利用コマンドやパッケージの安全性が確認されている場合は、入念なレビューのもとで利用するのが良いでしょう。**Streamable HTTP の方が安全であると盲信することは危険です。**
 
 > 筆者の個人的な意見ですが、AWS を利用する際に [Amazon GuardDuty](https://aws.amazon.com/jp/guardduty/) と [AWS Config](https://aws.amazon.com/jp/guardduty/) を利用して脆弱性検知や確立されているベストプラクティスへの準拠確認をしないのはセキュリティを語るスタートラインに立てていません。これらを利用せずにアプリケーションの脆弱性のみに集中することは Lv.1 のスライムがダークドレア◯に挑むようなものです。そのような状態では本書を読む意味がないので、まずはツールを有効化してベストプラクティスに沿った対応と運用体制を確立し、運用仲間を引き連れ、Lv.38 でマダン◯を覚えたスライムになってから本書にお越しください。おそらく **AWS のセキュリティベストプラクティスを実践できていない段階で MCP を組織に取り入れるのは時期尚早**でしょう。
 
