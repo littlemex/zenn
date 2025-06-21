@@ -1,5 +1,5 @@
 ---
-title: "§12 MCP の Authorization 仕様の整理"
+title: "§12 MCP の認可仕様の整理"
 free: true
 ---
 
