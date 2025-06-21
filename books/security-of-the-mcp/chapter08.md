@@ -1,5 +1,5 @@
 ---
-title: "§08 STDIO SDK 実装解説!"
+title: "§08 STDIO 実装解説!"
 free: true
 ---
 

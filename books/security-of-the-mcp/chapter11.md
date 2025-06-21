@@ -1,5 +1,5 @@
 ---
-title: "§11 B: Streamable HTTP の typescript-sdk 実装解説"
+title: "§11 セッション管理: Streamable HTTP 実装解説!"
 free: true
 ---
 

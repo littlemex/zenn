@@ -1,5 +1,5 @@
 ---
-title: "§10 A: Streamable HTTP の typescript-sdk 実装解説"
+title: "§10 ID とストリーム: Streamable HTTP 実装解説!"
 free: true
 ---
 
