@@ -1,5 +1,5 @@
 ---
-title: "§07 stdio にプチ Dive Deep!"
+title: "§07 STDIO にプチ Dive Deep!"
 free: true
 ---
 
@@ -13,11 +13,11 @@ MCP Specification: **Base Protocol（今ここ）**、Authorization、Client Fea
 
 本 Chapter では Base Protocol の[トランスポート](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports)について解説します。トランスポートについては Chapter04 で解説しましたが、今回はより詳細にトランスポートについて解説します。
 
-JSON-RPC 2.0 はトランスポート非依存ですが、MCP の場合は [stdio](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#stdio) と [Streamable HTTP](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http) という Client ↔︎ Server 間通信のための二つのトランスポートメカニズムを仕様として定義しています。これらのトランスポートがメッセージの送受信でどのように接続を取り扱うべきであるかについて仕様で定義されています。
+JSON-RPC 2.0 はトランスポート非依存ですが、MCP の場合は [STDIO](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#stdio) と [Streamable HTTP](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http) という Client ↔︎ Server 間通信のための二つのトランスポートメカニズムを仕様として定義しています。これらのトランスポートがメッセージの送受信でどのように接続を取り扱うべきであるかについて仕様で定義されています。
 
-## stdio
+## STDIO
 
-stdio トランスポートの場合、Client が MCP Server をサブプロセスとして起動します。サブプロセスとはメインのプロセスから**独立して**コマンドやプログラムを提供するための仕組みです。例えば、Node であれば `child_process` モジュールを通じて実現することができます。Typescript を用いたサブプロセス生成コードを Chapter の最後に示しておきます。単に `echo -e hello\nmcp!` を別プロセスで実行するだけのサンプルです。
+STDIO トランスポートの場合、Client が MCP Server をサブプロセスとして起動します。サブプロセスとはメインのプロセスから**独立して**コマンドやプログラムを提供するための仕組みです。例えば、Node であれば `child_process` モジュールを通じて実現することができます。Typescript を用いたサブプロセス生成コードを Chapter の最後に示しておきます。単に `echo -e hello\nmcp!` を別プロセスで実行するだけのサンプルです。
 
 ```bash:実行結果
 $ ts-node sample.ts
@@ -58,12 +58,12 @@ childProcess.stdout?.on('data', (data: Buffer) => {
 });
 ```
 
-このような仕組みを用いて Client と Server が子プロセスを介してデータのやり取りを行う方式が stdio です。実際には、出力から JSON RPC 2.0 のフォーマットのメッセージを解釈して取り扱うなどの実装も存在します。Server 側の実装は割愛しますが、Server からのメッセージ受信はイベント駆動型のアプローチで Client にメッセージとして渡されます。
+このような仕組みを用いて Client と Server が子プロセスを介してデータのやり取りを行う方式が STDIO です。実際には、出力から JSON RPC 2.0 のフォーマットのメッセージを解釈して取り扱うなどの実装も存在します。Server 側の実装は割愛しますが、Server からのメッセージ受信はイベント駆動型のアプローチで Client にメッセージとして渡されます。
 
 
 ## まとめ
 
-本 Chapter では、MCP Base Protocol で定義されるトランスポートの一つである stdio について解説しました。実装の概念部分が理解できているかいないかでセキュリティ対策に関する解像度が大きく変わってくると思いますのでしっかりとコードを理解しましょう。次 Chapter では typescript-sdk の stdio 実装について解説します。
+本 Chapter では、MCP Base Protocol で定義されるトランスポートの一つである STDIO について解説しました。実装の概念部分が理解できているかいないかでセキュリティ対策に関する解像度が大きく変わってくると思いますのでしっかりとコードを理解しましょう。次 Chapter では typescript-sdk の STDIO 実装について解説します。
 
 ## SaaS コラム
 
