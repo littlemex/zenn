@@ -9,7 +9,7 @@ ___MCP に関する実装理解編:___  _MCP の脆弱性と対策を実装す�
 
 本章の説明は、2025-03-26 の[仕様](https://modelcontextprotocol.io/specification/2025-03-26)に基づきます。
 
-MCP Specification: **Base Protocol（今ここ）**、Authorization、Client Features、Server Features
+MCP Specification: **Base Protocol（今ここ）**、Authorization、Client Features、Server Features、Security Best Practices
 
 本 Chapter では STDIO の typescript-sdk(tag: 1.12.1) の [Client 実装](https://github.com/modelcontextprotocol/typescript-sdk/blob/1.12.1/src/client/stdio.ts) と [Server 実装](https://github.com/modelcontextprotocol/typescript-sdk/blob/1.12.1/src/server/stdio.ts) について解説します。Chapter07 で解説した通り実際にはサブプロセスを呼んでいるだけです。環境変数などを制御し、コマンドと引数を受け取ってサブプロセスを起動します。
 

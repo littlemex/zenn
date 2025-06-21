@@ -9,7 +9,7 @@ ___MCP に関する発展理解編:___ _MCP の脆弱性と対策を理解する
 
 本章の説明は、2025-06-18 の[仕様](https://modelcontextprotocol.io/specification/2025-06-18)に基づきます。
 
-MCP Specification: Base Protocol、**Authorization（今ここ）**、Client Features、Server Features
+MCP Specification: Base Protocol、**Authorization（今ここ）**、Client Features、Server Features、Security Best Practices
 
 **本 Chapter では Authorization の実装解説をする前に MCP 仕様の Authorization について整理します。** 本 Chapter の情報は古くなる可能性があるため常に MCP 仕様を正とします。
 

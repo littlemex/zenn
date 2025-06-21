@@ -9,7 +9,7 @@ ___MCP に関する発展理解編:___  _MCP の脆弱性と対策を理解す�
 
 本章の説明は、2025-03-26 の[仕様](https://modelcontextprotocol.io/specification/2025-03-26)に基づきます。
 
-MCP Specification: **Base Protocol（今ここ）**、Authorization、Client Features、Server Features
+MCP Specification: **Base Protocol（今ここ）**、Authorization、Client Features、Server Features、Security Best Practices
 
 本 Chapter では Base Protocol の[トランスポート](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports)について解説します。トランスポートについては Chapter04 で解説しましたが、今回はより詳細にトランスポートについて解説します。
 
