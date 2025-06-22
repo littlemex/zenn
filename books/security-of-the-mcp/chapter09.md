@@ -130,12 +130,6 @@ STDIO と Streamable HTTP の簡単な機能比較表を作成しました。こ
 
 本 Chapter では、MCP Base Protocol で定義されるトランスポートの一つである Streamable HTTP について解説しました。実装の概念部分が理解できているかいないかでセキュリティ対策に関する解像度が大きく変わってくると思いますのでしっかりとコードを理解しましょう。次 Chapter では typescript-sdk の Streamable HTTP 実装について解説します。
 
-## SaaS コラム
-
-本書では **SaaS コラム** で本文内容を補足する SaaS に関する解説を行います。
-
-今回は SaaS に関する解説はありません。
-
 ## サンプルコード
 
 ```bash

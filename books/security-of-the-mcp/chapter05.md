@@ -273,9 +273,3 @@ Copyright (C) 2007-2010 by the JSON-RPC Working Group
 ## まとめ
 
 MCP の Protocol の基盤として用いられている JSON-RPC 2.0 の仕様を日本語翻訳しました。
-
-## SaaS コラム
-
-本書では **SaaS コラム** で本文内容を補足する SaaS に関する解説を行います。
-
-今回は SaaS に関する解説はありません。
