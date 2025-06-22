@@ -57,11 +57,11 @@ sequenceDiagram
     participant Auth_Server as 認可 Server
     
     Note over MCP_Client,MCP_Server: RFC9728: Protected Resource Metadata
-    MCP_Client->>MCP_Server: リソースへのアクセス要求
+    MCP_Client->>MCP_Server: リソースへのアクセス要求 without token
     MCP_Server-->>MCP_Client: 401 Unauthorized
-    MCP_Server-->>MCP_Client: WWW-Authenticate: Bearer resource="https://mcp.example.com"<br>resource-metadata="https://mcp.example.com/.well-known/resource-metadata"
+    MCP_Server-->>MCP_Client: WWW-Authenticate: Bearer resource="https://mcp.example.com"<br>resource-metadata="https://mcp.example.com/.well-known/oauth-protected-resource"
     
-    MCP_Client->>MCP_Server: GET /.well-known/resource-metadata
+    MCP_Client->>MCP_Server: GET GET /.well-known/oauth-protected-resource
     MCP_Server-->>MCP_Client: Resource Metadata
     Note right of MCP_Client: {<br>  "resource": "https://mcp.example.com",<br>  "authorization_servers": ["https://auth.example.com"]<br>}
     
