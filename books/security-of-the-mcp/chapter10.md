@@ -408,9 +408,3 @@ Client、Server それぞれの実装を確認するだけでは両方を通じ�
 本 Chapter Streamable HTTP の詳細実装について主に `ID` と `ストリーム` の側面から解説しました。MCP の公式仕様は必要最小限の記述しかなく仕様としてはエレガントかもしれませんが、実装と紐づけるのが非常に難しいのではないかと思います。仕様、本書の説明、実装を合わせて AI コーディングエージェントなどに解説させると、不明点についてよりクリアになるのではないでしょうか。**Let's [Amazon Q Developer CLI !!!!](https://aws.amazon.com/jp/blogs/news/introducing-the-enhanced-command-line-interface-in-amazon-q-developer/)**
 
 私が気に入っているのは Amazon Q Developer CLI の `-no-interactive` 機能です。通常 CLI を実行すると対話モードが起動してしまいますが、このオプションをつけることで `q chat` にパイプを渡せ、結果も `stdout` に出せます。他にも色々な機能がすごいスピード感で追加されているため、**Amazon Q Developer CLI を実装調査のお供に活用**してみてはどうでしょうか。
-
-## SaaS コラム
-
-本書では **SaaS コラム** で本文内容を補足する SaaS に関する解説を行います。
-
-今回は SaaS に関する解説はありません。
