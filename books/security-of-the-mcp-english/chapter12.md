@@ -1,279 +1,294 @@
 ---
-title: "§12 MCP Authorization"
+title: "§12 Understanding MCP Authorization Specification"
 free: true
 ---
 
-___Understanding MCP Authorization:___ _Explanation of developer-oriented knowledge necessary to understand MCP vulnerabilities and countermeasures_
+___Advanced Understanding of MCP:___ _Explanation of developer-oriented knowledge necessary to understand MCP vulnerabilities and countermeasures_
 
 ---
 
-This chapter's explanation is based on the [specification](https://modelcontextprotocol.io/specification/2025-03-26) from 2025-03-26.
+This chapter's explanation is based on the [specification](https://modelcontextprotocol.io/specification/2025-06-18) from 2025-06-18.
 
 MCP Specification: Base Protocol, **Authorization (We are here)**, Client Features, Server Features, Security Best Practices
 
-In this Chapter, we will explain the [MCP Authorization](https://modelcontextprotocol.io/specification/2025-03-26/authorization) specification. The Authorization specification builds on the Base Protocol to provide more robust security features for MCP Servers and Clients.
+**In this Chapter, we will organize the MCP Authorization specification before explaining its implementation.** Please always refer to the MCP specification as the source of truth, as the information in this Chapter may become outdated.
 
-## Why Authorization is Needed
+## Overview of MCP Authentication and Authorization
 
-The Base Protocol does not include any authentication or authorization mechanisms. This means that any Client can connect to any Server and use any tool provided by the Server. While this simplicity is useful for development and testing, it's not suitable for production environments where:
+Let's organize MCP authentication and authorization. Consider a case where a service provider who already provides APIs wants to provide an MCP Server with their APIs registered as tools. From the MCP Server user's perspective, they only need to consider providing authentication information to the MCP Server, but from the MCP Server provider's perspective, they need to consider authentication and authorization between the MCP Server and their APIs.
 
-1. **Access Control:** Servers need to restrict access to their tools to authorized Clients only
-2. **Resource Management:** Servers need to track and limit resource usage by different Clients
-3. **Audit Trail:** Servers need to log which Clients used which tools for security and compliance purposes
-4. **User Consent:** Users need to explicitly authorize Clients to access specific Servers on their behalf
+If existing APIs are provided with ID/password or access key authentication, the MCP Server would likely want to continue using the same authentication mechanism. And they would want to restrict the available functions of existing APIs through authorization linked to authentication information. What's important in this case is that authentication and authorization actually have a multi-layered structure. There's MCP Client and MCP Server, and backend API, and **authentication and authorization are needed for both `Client ↔︎ Server` and `Server ↔︎ API` relationships**. The MCP [specification](https://modelcontextprotocol.io/specification/2025-06-18) only defines **authorization** for `Client ↔︎ Server`. In other words, **authentication for `Client ↔︎ Server` and `Server ↔︎ API` is outside the scope of the specification**.
 
-The Authorization specification addresses these needs by defining a standard way for Clients to authenticate with Servers and for Servers to authorize Client requests.
+In the MCP specification, authorization is optional, and implementations using HTTP-based transport like Streamable HTTP `SHOULD` comply with the authorization specification. For STDIO, it states that authentication information should be obtained from the environment. The purpose of this Chapter is not to enumerate specifications but to focus on why those specifications exist. We'll reorganize multi-layered authentication and authorization after explaining the sdk implementation in the specific architecture design stage.
 
-## Authorization Flow
+MCP follows the established OAuth standard rather than creating an authorization mechanism from scratch. The purpose of MCP's authorization specification can be said to be ___enabling MCP Clients and MCP Servers to connect safely and automatically without prior configuration___.
 
-The MCP Authorization specification is based on the OAuth 2.0 framework, specifically the Authorization Code Grant flow with PKCE (Proof Key for Code Exchange). This flow is designed to securely authenticate users and authorize applications without exposing sensitive credentials.
+If authentication and authorization between MCP Client and Server need to be pre-configured before each connection, it would diminish MCP's essential value of providing a **plug-and-play experience like USB-C**. Let's **break down the functionality needed to maintain this essential value into three parts**.
 
-Here's an overview of the authorization flow:
+**Function 1/ Without prior configuration:** MCP Client discovers the authorization server and autonomously initiates the authorization process without prior configuration, **Function 2/ Automatically:** MCP Client automatically registers itself with the authorization server found in Function 1, **Function 3/ Safely:** MCP Client connects safely to the MCP Server using authentication information obtained in Function 2. These are three important functions.
+
+Several RFC numbers will appear below, but they should be easier to understand by returning to the purpose of MCP's authorization specification.
+
+- OAuth 2.1 IETF draft ([draft-ietf-oauth-v2-1-12](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-12)), _OAuth 2.1 is in draft stage_
+- OAuth 2.0 Authorization Server Metadata ([RFC8414](https://datatracker.ietf.org/doc/html/rfc8414))
+- OAuth 2.0 Dynamic Client Registration Protocol ([RFC7591](https://datatracker.ietf.org/doc/html/rfc7591))
+- OAuth 2.0 Protected Resource Metadata ([RFC9728](https://datatracker.ietf.org/doc/html/rfc9728))
+
+### Function 1: Without Prior Configuration
+
+> MCP Client discovers the authorization server and autonomously initiates the authorization process without prior configuration
+
+The RFCs that mainly address the requirements for this authorization server discovery process are RFC9728 and RFC8414.
+
+**RFC9728**
+- **Role**: Defines how MCP Server publishes its authentication and authorization requirements
+- **Specific Method**: **1/** When MCP Client first accesses MCP Server, returns Resource Metadata along with 401 Unauthorized response. Resource Metadata includes information such as authorization server location and required scopes, **2/** MCP Client automatically initiates authentication and authorization process based on this information.
+
+**RFC8414**
+- **Role**: Defines how to discover authorization server capabilities and endpoints
+- **Specific Method**: **1/** Obtain authorization server Metadata from the authorization server location obtained through RFC9728. This Metadata includes information such as authorization endpoint, token endpoint, registration endpoint, **2/** MCP Client proceeds with the authorization process using these endpoint information.
+
+> Sequence Diagram
 
 ```mermaid
 sequenceDiagram
-    participant User
-    participant Client as MCP Client
-    participant Server as MCP Server
-    participant Auth as Authorization Server
+    participant MCP_Client as MCP Client
+    participant MCP_Server as MCP Server
+    participant Auth_Server as Authorization Server
     
-    User->>Client: Start using Client
-    Client->>Server: Discover authorization requirements
-    Server-->>Client: Return authorization metadata
+    Note over MCP_Client,MCP_Server: RFC9728: Protected Resource Metadata
+    MCP_Client->>MCP_Server: Resource access request without token
+    MCP_Server-->>MCP_Client: 401 Unauthorized
+    MCP_Server-->>MCP_Client: WWW-Authenticate: Bearer resource="https://mcp.example.com"<br>resource-metadata="https://mcp.example.com/.well-known/oauth-protected-resource"
     
-    Client->>Client: Generate PKCE challenge
-    Client->>Auth: Authorization request with PKCE challenge
-    Auth->>User: Prompt for consent
-    User->>Auth: Grant consent
-    Auth-->>Client: Authorization code
+    MCP_Client->>MCP_Server: GET GET /.well-known/oauth-protected-resource
+    MCP_Server-->>MCP_Client: Resource Metadata
+    Note right of MCP_Client: {<br>  "resource": "https://mcp.example.com",<br>  "authorization_servers": ["https://auth.example.com"]<br>}
     
-    Client->>Auth: Token request with code and PKCE verifier
-    Auth-->>Client: Access token and refresh token
+    Note over MCP_Client,Auth_Server: RFC8414: Authorization Server Metadata
+    MCP_Client->>Auth_Server: GET /.well-known/oauth-authorization-server
+    Auth_Server-->>MCP_Client: Server Metadata
+    Note right of MCP_Client: {<br>  "issuer": "https://auth.example.com",<br>  "authorization_endpoint": "https://auth.example.com/authorize",<br>  "token_endpoint": "https://auth.example.com/token",<br>  "registration_endpoint": "https://auth.example.com/register"<br>}
+```
+
+> Component Diagram
+
+```mermaid
+graph TD
+    subgraph "MCP Client"
+        Client[MCP Client]
+        Discovery[Discovery Module]
+        
+        Client --> Discovery
+    end
     
-    Client->>Server: Tool request with access token
-    Server->>Server: Validate token
-    Server-->>Client: Tool response
+    subgraph "MCP Server"
+        Server[MCP Server]
+        ResourceMeta[Resource Metadata Provider]
+        
+        Server --> ResourceMeta
+    end
+    
+    subgraph "Authorization Server"
+        AuthServer[Authorization Server]
+        ServerMeta[Server Metadata Provider]
+        
+        AuthServer --> ServerMeta
+    end
+    
+    subgraph "RFC"
+        RFC9728[RFC9728]
+        RFC8414[RFC8414]
+    end
+    
+    Discovery -->|1.Access Request| Server
+    Server -->|2.401 + WWW-Authenticate| Discovery
+    Discovery -->|3.Resource Metadata Request| ResourceMeta
+    ResourceMeta -->|4.Resource Metadata| Discovery
+    ResourceMeta -.->|Compliant| RFC9728
+    
+    Discovery -->|5.Server Metadata Request| ServerMeta
+    ServerMeta -->|6.Authorization Server Metadata| Discovery
+    ServerMeta -.->|Compliant| RFC8414
 ```
 
-Let's break down the key components of this flow:
+Summarizing this process, through RFC9728, MCP Client can automatically discover MCP Server's authentication requirements and associated authorization server, and through RFC8414, it can automatically discover specific endpoints and capabilities of the authorization server. MCP Client only needs to know the MCP Server URL to automatically obtain information necessary for authentication and authorization, eliminating the need for pre-configuring authorization server endpoint URLs.
 
-### 1. Authorization Metadata Discovery
+Through this process, MCP Client is prepared to discover MCP Server and initiate the authorization process.
 
-Before a Client can request authorization, it needs to know the authorization endpoints and requirements of the Server. The Server provides this information through the `authorization_metadata` method:
+### Function 2. Automatically
 
-```json
-// Client request
-{
-  "jsonrpc": "2.0",
-  "method": "authorization_metadata",
-  "id": 1
-}
+> MCP Client automatically registers itself with the authorization server found in Function 1
 
-// Server response
-{
-  "jsonrpc": "2.0",
-  "result": {
-    "authorization_endpoint": "https://auth.example.com/authorize",
-    "token_endpoint": "https://auth.example.com/token",
-    "revocation_endpoint": "https://auth.example.com/revoke",
-    "registration_endpoint": "https://auth.example.com/register",
-    "scopes_supported": ["tools:read", "tools:write"],
-    "response_types_supported": ["code"],
-    "grant_types_supported": ["authorization_code", "refresh_token"],
-    "token_endpoint_auth_methods_supported": ["client_secret_basic", "none"],
-    "code_challenge_methods_supported": ["S256"]
-  },
-  "id": 1
-}
+The RFC that mainly addresses the requirements for this automatic registration process of MCP Client to the authorization server for each MCP Server is RFC7591.
+
+**RFC7591**
+- **Role**: Defines how clients automatically register with authorization servers
+- **Specific Method**: **1/** MCP Client can automatically perform client registration with the authorization server of new MCP Servers. In the registration process, provide metadata describing Client ID, redirect URI, scope, etc., **2/** Authorization server registers MCP Client and returns Client ID and secret. This enables connection to new MCP Servers without prior configuration.
+
+> Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    participant MCP_Client as MCP Client
+    participant Auth_Server as Authorization Server
+    
+    Note over MCP_Client,Auth_Server: RFC7591: Dynamic Client Registration Protocol
+    MCP_Client->>Auth_Server: POST /register
+    Note right of MCP_Client: {<br>  "redirect_uris": ["https://client.example.com/callback"],<br>  "client_name": "MCP Client",<br>  "scope": "read write",<br>  "token_endpoint_auth_method": "client_secret_basic"<br>}
+    Auth_Server-->>MCP_Client: 201 Created
+    Note left of Auth_Server: {<br>  "client_id": "s6BhdRkqt3",<br>  "client_secret": "cf136dc3c1fc93f31185e5885805d",<br>  "client_id_issued_at": 2893256800,<br>  "client_secret_expires_at": 2893860400,<br>  "redirect_uris": ["https://client.example.com/callback"],<br>  "scope": "read write"<br>}
 ```
 
-### 2. Client Registration
+> Component Diagram
 
-If the Server requires Client registration, the Client must register with the Server's authorization system before requesting authorization. The registration process provides the Client with a client ID and optionally a client secret:
-
-```json
-// Client registration request
-{
-  "client_name": "Example MCP Client",
-  "redirect_uris": ["http://localhost:8000/callback"],
-  "client_uri": "https://example.com",
-  "logo_uri": "https://example.com/logo.png",
-  "scope": "tools:read tools:write"
-}
-
-// Server registration response
-{
-  "client_id": "s6BhdRkqt3",
-  "client_secret": "gX1fBat3bV",
-  "client_id_issued_at": 1580000000,
-  "client_secret_expires_at": 0,
-  "redirect_uris": ["http://localhost:8000/callback"],
-  "scope": "tools:read tools:write"
-}
+```mermaid
+graph TD
+    subgraph "MCP Client"
+        Client[MCP Client]
+        DynReg[Dynamic Registration Module]
+        ClientStore[Client Information Store]
+        
+        Client --> DynReg
+        DynReg --> ClientStore
+    end
+    
+    subgraph "Authorization Server"
+        AuthServer[Authorization Server]
+        Registration[Client Registration Endpoint]
+        ClientDB[Client Database]
+        
+        AuthServer --> Registration
+        Registration --> ClientDB
+    end
+    
+    subgraph "RFC"
+        RFC7591[RFC7591]
+    end
+    
+    DynReg -->|1.Registration Request| Registration
+    Registration -->|2.Client ID & Secret| DynReg
+    Registration -.->|Compliant| RFC7591
+    DynReg -.->|Compliant| RFC7591
 ```
 
-### 3. Authorization Request
+Summarizing this process, through RFC7591, MCP Client automatically registers itself with the authorization server for each MCP Server discovered in Function 1 and obtains authentication information for issuing access tokens for MCP Server access from the authorization server. This corresponds to **automatically connecting** in the USB-C analogy of plug-and-play experience.
 
-The Client redirects the user to the authorization endpoint with the appropriate parameters:
+Through this process, MCP Client is prepared with authentication information for accessing MCP Server.
 
-```
-https://auth.example.com/authorize?
-  response_type=code&
-  client_id=s6BhdRkqt3&
-  redirect_uri=http://localhost:8000/callback&
-  scope=tools:read+tools:write&
-  state=af0ifjsldkj&
-  code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&
-  code_challenge_method=S256
-```
+### Function 3. Safely
 
-### 4. User Consent
+> MCP Client connects safely to the MCP Server using authentication information obtained in Function 2
 
-The authorization server presents a consent screen to the user, asking them to approve the Client's access to the requested scopes. If the user approves, the authorization server redirects back to the Client's redirect URI with an authorization code:
+The RFCs that mainly address the requirements for secure connection to MCP Server are RFC7636, OAuth 2.1, and RFC8707.
 
-```
-http://localhost:8000/callback?
-  code=SplxlOBeZQQYbYS6WxSbIA&
-  state=af0ifjsldkj
-```
+**RFC7636**
+- **Role**: **Protection from authorization code interception attacks** using challenge-response verification
+- **Specific Method**: **1/** Create a unique random verification value (code_verifier) for each authentication process, **/2** Transform code_verifier into a safely transmittable form (code_challenge) using a hash function, **3/** Send authorization request including code_challenge and hash method to register the challenge with authorization server, **3/** Securely receive authorization code (OAuth 2.1) from authorization server, **4/** Send original code_verifier to authorization server during token exchange, authorization server compares hash value of received code_verifier with code_challenge to confirm legitimate Client
 
-### 5. Token Request
+**OAuth 2.1**
+- **Role**: Provides foundation for secure authorization framework
+- **Specific Method**: **1/** Verify Client identity using Client ID and (if needed) client secret, **2/** Establish secure authorization process using authorization code flow (combined with PKCE), **3/** Issue access tokens with short validity periods to minimize risk when tokens are leaked, **4/** Apply principle of least privilege by granting only minimum necessary permissions to tokens, **5/** Issue and manage refresh tokens for long-term access, enabling secure access token renewal, **6/** Use HTTPS and send tokens in Authorization header to prevent token interception
 
-The Client exchanges the authorization code for an access token and refresh token:
+**RFC8707**
+- **Role**: Explicitly specify target resources for tokens
+- **Specific Method**: **1/** Limit token usage by specifying MCP Server URI in resource parameter during authorization request, **2/** Enable access to multiple servers with one authorization by including multiple resource parameters to specify multiple MCP Server URIs if needed, **3/** Clarify token usage scope by embedding resource URI information in tokens by authorization server, **4/** Apply appropriate scopes related to specified resources to tokens, setting appropriate permissions per resource, **5/** Prevent token misuse by having MCP Server verify resource information in tokens matches its own URI
 
-```json
-// Client token request
-POST /token HTTP/1.1
-Host: auth.example.com
-Content-Type: application/x-www-form-urlencoded
-Authorization: Basic czZCaGRSa3F0Mzpn...
+> Sequence Diagram
 
-grant_type=authorization_code&
-code=SplxlOBeZQQYbYS6WxSbIA&
-redirect_uri=http://localhost:8000/callback&
-code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk
-
-// Server token response
-{
-  "access_token": "2YotnFZFEjr1zCsicMWpAA",
-  "token_type": "Bearer",
-  "expires_in": 3600,
-  "refresh_token": "tGzv3JOkF0XG5Qx2TlKWIA",
-  "scope": "tools:read tools:write"
-}
-```
-
-### 6. Authenticated Requests
-
-The Client includes the access token in all requests to the MCP Server:
-
-```json
-// Client request with authorization
-{
-  "jsonrpc": "2.0",
-  "method": "weather_forecast",
-  "params": {
-    "location": "Tokyo",
-    "days": 5
-  },
-  "id": 2,
-  "auth": {
-    "type": "bearer",
-    "token": "2YotnFZFEjr1zCsicMWpAA"
-  }
-}
+```mermaid
+sequenceDiagram
+    participant MCP_Client as MCP Client
+    participant Auth_Server as Authorization Server
+    participant MCP_Server as MCP Server
+    
+    Note over MCP_Client,Auth_Server: RFC7636: PKCE (Secure Authentication)
+    MCP_Client->>MCP_Client: 1. PKCE preparation (RFC7636)
+    MCP_Client->>Auth_Server: 2. Authorization request (RFC7636/OAuth 2.1)
+    Note right of MCP_Client: GET /authorize?<br>response_type=code<br>&client_id=s6BhdRkqt3<br>&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM<br>&code_challenge_method=S256<br>&resource=https://mcp.example.com
+    Auth_Server-->>MCP_Client: 3. Authorization code (OAuth 2.1)
+    Note left of Auth_Server: HTTP/1.1 302 Found<br>Location: https://client.example.com/callback?<br>code=SplxlOBeZQQYbYS6WxSbIA
+    
+    Note over MCP_Client,Auth_Server: OAuth 2.1 (Token Acquisition)
+    MCP_Client->>Auth_Server: 5. Token request (RFC7636/OAuth 2.1)
+    Note right of MCP_Client: POST /token HTTP/1.1<br>Content-Type: application/x-www-form-urlencoded<br><br>grant_type=authorization_code<br>&code=SplxlOBeZQQYbYS6WxSbIA<br>&code_verifier=dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk<br>&client_id=s6BhdRkqt3
+    Auth_Server->>Auth_Server: 4. Token generation (OAuth 2.1)
+    Auth_Server-->>MCP_Client: 7. Access token (OAuth 2.1/RFC8707)
+    Note left of Auth_Server: HTTP/1.1 200 OK<br>Content-Type: application/json<br><br>{<br>  "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...",<br>  "token_type": "bearer",<br>  "expires_in": 3600,<br>  "resource": "https://mcp.example.com"<br>}
+    
+    Note over MCP_Client,MCP_Server: RFC8707: Resource Indicators for OAuth 2.0 (Secure Access)
+    MCP_Client->>MCP_Server: 8. Request with token (OAuth 2.1)
+    Note right of MCP_Client: GET /resource HTTP/1.1<br>Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
+    MCP_Server->>MCP_Server: 6. Token validation (OAuth 2.1/RFC8707)
+    MCP_Server-->>MCP_Client: 9. Resource provision
+    Note left of MCP_Server: HTTP/1.1 200 OK<br>Content-Type: application/json<br><br>{<br>  "data": "Resource data",<br>  "status": "success"<br>}
 ```
 
-### 7. Token Refresh
+> Component Diagram
 
-When the access token expires, the Client can use the refresh token to obtain a new access token without requiring user interaction:
-
-```json
-// Client refresh token request
-POST /token HTTP/1.1
-Host: auth.example.com
-Content-Type: application/x-www-form-urlencoded
-Authorization: Basic czZCaGRSa3F0Mzpn...
-
-grant_type=refresh_token&
-refresh_token=tGzv3JOkF0XG5Qx2TlKWIA
-
-// Server refresh token response
-{
-  "access_token": "3YotnFZFEjr1zCsicMWpBB",
-  "token_type": "Bearer",
-  "expires_in": 3600,
-  "refresh_token": "uGzv3JOkF0XG5Qx2TlKWIB",
-  "scope": "tools:read tools:write"
-}
+```mermaid
+graph TD
+    subgraph "MCP Client"
+        Client[MCP Client]
+        SecureAuth[Secure Authentication Module]
+        
+        Client -->|1.PKCE Preparation| SecureAuth
+    end
+    
+    subgraph "Authorization Server"
+        AuthServer[Authorization Server]
+        TokenService[Token Service]
+        
+        AuthServer -->|4.Token Generation| TokenService
+    end
+    
+    subgraph "MCP Server"
+        Server[MCP Server]
+        AccessControl[Access Control]
+        
+        Server -->|6.Token Validation| AccessControl
+    end
+    
+    subgraph "RFC"
+        OAuth[OAuth 2.1]
+        PKCE[RFC7636]
+        ResInd[RFC8707]
+    end
+    
+    SecureAuth -.->|Compliant| PKCE
+    SecureAuth -.->|Compliant| OAuth
+    TokenService -.->|Compliant| OAuth
+    AccessControl -.->|Compliant| ResInd
+    
+    Client -->|2.Authorization Request| AuthServer
+    AuthServer -->|3.Authorization Code| Client
+    Client -->|5.Token Request| AuthServer
+    TokenService -->|7.Access Token| Client
+    Client -->|8.Request with Token| Server
+    Server -->|9.Resource Provision| Client
 ```
 
-## Implementation Considerations
+Summarizing this process, through the cooperation of RFC7636 (PKCE), OAuth 2.1, and RFC8707, MCP Client establishes secure access to MCP Server using authentication information obtained from the authorization server. First, PKCE's challenge-response method prevents authorization code interception attacks, and OAuth 2.1's token-based access control eliminates the management of plaintext authentication information. Furthermore, RFC8707 restricts obtained tokens to be usable only with specific MCP Servers. This corresponds to **safely connecting** in the USB-C analogy of plug-and-play experience.
 
-### 1. Security Considerations
+Through this process, MCP Client can access new MCP Servers without prior configuration, eliminating security risks like plaintext API key storage, with safe and appropriate permissions.
 
-When implementing MCP Authorization, consider the following security best practices:
+The specification also defines methods for safe termination and token revocation.
 
-- **HTTPS:** Always use HTTPS for all communication between Client, Server, and authorization server
-- **State Parameter:** Use the `state` parameter to prevent CSRF attacks
-- **PKCE:** Always use PKCE to prevent authorization code interception attacks
-- **Token Storage:** Store tokens securely and never expose them to the frontend or log them
-- **Scope Validation:** Validate that the token has the required scopes before allowing access to tools
-- **Token Expiration:** Respect token expiration times and implement proper token refresh logic
+## About Authorization Server
 
-### 2. User Experience
+An important point in the MCP specification is that **the implementation details of the Authorization Server are explicitly outside the scope** of the specification. Within the scope of the MCP specification, by not limiting the implementation method for the authorization server and allowing the use of existing OAuth 2.1 compliant authorization servers, it likely aims to flexibly integrate with existing ecosystems. To repeat once again, what the MCP specification defines is only the **authorization** part between `Client ↔︎ Server`, and for authentication between `Client ↔︎ Server` and authentication/authorization between `Server ↔︎ API`, each implementer needs to design and implement following appropriate security practices.
 
-Consider the following to provide a good user experience:
-
-- **Minimize Consent Prompts:** Only request the minimum scopes needed and remember user consent when possible
-- **Clear Consent Screen:** Clearly explain what the Client will be able to do with the granted permissions
-- **Error Handling:** Provide clear error messages when authorization fails
-- **Token Refresh:** Implement automatic token refresh to avoid interrupting the user experience
-
-### 3. Implementation Complexity
-
-The Authorization specification adds significant complexity to both Client and Server implementations. Consider whether this complexity is necessary for your use case:
-
-- **Development Environments:** For development and testing, the Base Protocol without authorization might be sufficient
-- **Internal Tools:** For internal tools used within a trusted network, simpler authorization mechanisms might be appropriate
-- **Public Servers:** For public Servers that provide sensitive data or functionality, full OAuth 2.0 implementation is recommended
-
-## Vulnerabilities and Countermeasures
-
-### 1. Token Leakage
-
-**Vulnerability:** Access tokens might be leaked through logs, browser history, or network interception.
-
-**Countermeasure:** Use HTTPS for all communication, avoid including tokens in URLs, and implement proper token storage.
-
-### 2. Insufficient Scope Validation
-
-**Vulnerability:** Servers might not properly validate token scopes, allowing Clients to access unauthorized tools.
-
-**Countermeasure:** Implement thorough scope validation for each tool and follow the principle of least privilege.
-
-### 3. Cross-Site Request Forgery (CSRF)
-
-**Vulnerability:** Authorization requests might be vulnerable to CSRF attacks if the `state` parameter is not used properly.
-
-**Countermeasure:** Always use the `state` parameter with a secure random value and validate it when processing the authorization response.
-
-### 4. Authorization Code Interception
-
-**Vulnerability:** Authorization codes might be intercepted if PKCE is not used.
-
-**Countermeasure:** Always use PKCE with the S256 method to prevent authorization code interception attacks.
-
-### 5. Refresh Token Compromise
-
-**Vulnerability:** Refresh tokens are long-lived and might be compromised.
-
-**Countermeasure:** Implement refresh token rotation, where each use of a refresh token invalidates it and issues a new one.
+Through this, MCP achieves a USB-C-like plug-and-play experience while meeting security requirements without specifying authentication and authorization implementation details.
 
 ## Summary
 
-In this Chapter, we explained the MCP Authorization specification, which builds on the Base Protocol to provide more robust security features. We covered the authorization flow, implementation considerations, and potential vulnerabilities and countermeasures.
+Below is an easy-to-understand summary of the comparison between implementing and not implementing each RFC, and dependencies on other RFCs, for reference. Understanding that the purpose of MCP's authorization specification is to enable ___MCP Clients and MCP Servers to connect safely and automatically without prior configuration___ should have become easier by breaking down the overall flow into three functions. I hope this Chapter has made the MCP official specification a bit easier to read.
 
-The Authorization specification adds significant security benefits but also increases implementation complexity. When implementing MCP, carefully consider whether the additional security features are necessary for your use case.
-
-In the next Chapter, we will explain the MCP Client Features specification, which defines additional features that Clients can implement to enhance the user experience.
+| RFC | When Implemented | When Not Implemented | Dependencies on Other RFCs |
+|-----|---------|---------|--------------|
+| ___MUST:___ **RFC9728** (Protected Resource Metadata) | **1/** MCP Server automatically publishes authorization requirements, **2/** MCP Client automatically discovers authorization server location, **3/** Ensures interoperability with standardized metadata format | **1/** Manual configuration of authorization server location needed, **2/** Need to handle different discovery methods per MCP Server, **3/** Configuration file complexity | **1/** Works with RFC8414 to achieve complete discovery process |
+| ___MUST:___ **RFC8414** (Authorization Server Metadata) | **1/** Automatically discover authorization server endpoints, **2/** Automatically detect authorization server capabilities, **3/** Absorb differences between different authorization servers | **1/** Manual configuration of authorization endpoint, token endpoint, etc., **2/** Need to know authorization server capabilities in advance, **3/** Configuration updates needed when authorization server changes | **1/** Receives authorization server location information from RFC9728, **2/** Provides registration endpoint information for RFC7591 |
+| ___SHOULD:___ **RFC7591** (Dynamic Client Registration) | **1/** MCP Client automatically registers with authorization server, **2/** Dynamically obtain Client ID and secret, **3/** Handle new MCP Servers without configuration changes | **1/** Manual Client registration needed for each authorization server, **2/** Store Client ID and secret in configuration file, **3/** Administrator intervention needed when adding new MCP Server | **1/** Gets registration endpoint information from RFC8414, **2/** Provides Client ID used in OAuth 2.1 / 2.0 authentication flow |
+| ___MUST:___ **OAuth 2.1** (OAuth 2.1 Authorization Framework) | **1/** Token-based secure access control, **2/** Risk reduction with short-lived access tokens, **3/** Consistent security model | **1/** Use plaintext authentication information like API keys, **2/** Leak risk from long-term use of authentication information, **3/** Lack of security model consistency | **1/** Makes RFC7636(PKCE) mandatory, **2/** Works with RFC8707 to issue resource-specific tokens, **3/** Uses Client ID obtained from RFC7591 |
+| ___MUST:___ **RFC7636** (PKCE) | **1/** Protection from authorization code interception attacks, **2/** Secure authentication possible even with public clients, **3/** Verification using challenge-response method | **1/** Vulnerable to authorization code interception attacks, **2/** Increased security risks for public clients, **3/** Particularly dangerous for mobile apps and SPAs | **1/** Used in combination with OAuth 2.1/2.0 authorization code flow, **2/** Uses Client ID registered through RFC7591 |
+| ___MUST:___ **RFC8707** (Resource Indicators) | **1/** Limit token usage to specific MCP Server, **2/** Countermeasure against confused deputy problem, **3/** Apply resource-specific scopes | **1/** Tokens usable with multiple resources, **2/** Risk of confused deputy attacks, **3/** Possibility of token misuse | **1/** Integrated with OAuth 2.1/2.0 token issuance process, **2/** Uses resource URI identified by RFC9728 |

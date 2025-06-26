@@ -1,5 +1,5 @@
 ---
-title: "§11 Streamable HTTP Security"
+title: "§11 Session Management: Streamable HTTP Implementation Explained!"
 free: true
 ---
 
@@ -11,298 +11,200 @@ This chapter's explanation is based on the [specification](https://modelcontextp
 
 MCP Specification: **Base Protocol (We are here)**, Authorization, Client Features, Server Features, Security Best Practices
 
-In this Chapter, we will explain the security-related implementation of Streamable HTTP in typescript-sdk (tag: 1.12.1). As explained in Chapter 09 and 10, Streamable HTTP uses HTTP and SSE to enable bidirectional communication.
+In this Chapter, we will explain the [Client implementation](https://github.com/modelcontextprotocol/typescript-sdk/blob/1.12.1/src/client/streamableHttp.ts) and [Server implementation](https://github.com/modelcontextprotocol/typescript-sdk/blob/1.12.1/src/server/streamableHttp.ts) of Streamable HTTP in typescript-sdk (tag: 1.12.1). **In this Chapter, we will mainly explain the security-related implementation of Streamable HTTP, particularly session management.**
 
-## Streamable HTTP Security
+Streamable HTTP can connect multiple Clients to a Server, which presumably assumes a form where an MCP Server is provided to many users, similar to an API. Therefore, in this Chapter, we will mainly explain from the perspective of **security considerations that providers should take into account when providing an MCP Server**.
 
-**1. CORS (Cross-Origin Resource Sharing)**
+**We will introduce vulnerabilities while explaining the implementation**. We will present specific risks and recommended countermeasure examples, but these are only recommendations and examples, and **of course, these countermeasures are not foolproof**. Security requires **multi-layered defense** with the [Swiss cheese model](https://en.wikipedia.org/wiki/Swiss_cheese_model) in mind. Not all countermeasure implementations need to be incorporated into the application, and it's important to **utilize cloud managed services** to **clearly separate responsibilities at the application and infrastructure levels**. The attack surface should be kept as small as possible, and excessive complexity for security measures can actually increase security vulnerabilities. Organizations need to establish continuous security monitoring and operational systems with reference to existing [best practices](https://docs.aws.amazon.com/securityhub/latest/userguide/fsbp-standard.html).
 
-CORS is a security feature implemented by browsers to restrict web pages from making requests to a different domain than the one that served the web page. In the context of MCP, CORS is important when the MCP Client is running in a browser and needs to communicate with an MCP Server on a different domain.
+## Session Management
 
-The typescript-sdk implementation includes CORS support in the `StreamableHTTPServerTransport` class. It sets the appropriate CORS headers to allow cross-origin requests:
+Sessions are familiar to all of you, and I'm sure you're well aware of their dangers. For example, in a session hijacking attack, an attacker illegitimately obtains the session ID of a logged-in user through some method and takes over the session. In a normal website, when a user A logs in with an ID/password, the application returns a session ID to user A. During the period this session ID is valid, it can be used to access the application. This means that if an attacker can obtain the session ID through some method, they can illegitimately use the application. **However, MCP sessions are defined based on the MCP specification and differ from sessions in the general HTTP world.** They don't use cookies but instead implement session management through sending and receiving a custom HTTP header called `mcp-session-id`. This ID is stored in a private variable within the `StreamableHTTPClientTransport` instance and sets the session ID in the `mcp-session-id` header for subsequent requests. This session ID is not the authentication information itself.
 
-```typescript
-private setCorsHeaders(req: IncomingMessage, res: ServerResponse): void {
-  const origin = req.headers.origin;
-  if (origin) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-    res.setHeader(
-      "Access-Control-Allow-Headers",
-      "Content-Type, Accept, mcp-session-id, last-event-id"
-    );
-    res.setHeader("Access-Control-Allow-Credentials", "true");
-    res.setHeader("Access-Control-Max-Age", "86400"); // 24 hours
-  }
-}
-```
+```typescript:Session ID storage
+export class StreamableHTTPClientTransport implements Transport {
+  private _sessionId?: string;  // Session ID is stored here
 
-This implementation allows:
-- Any origin that makes a request to access the resource (by reflecting the request origin)
-- GET, POST, DELETE, and OPTIONS HTTP methods
-- Specific headers including those used by MCP
-- Credentials to be included in cross-origin requests
-- Preflight request results to be cached for 24 hours
-
-**2. Session Management**
-
-Session management is a critical security feature in Streamable HTTP. It allows the Server to associate multiple requests from the same Client and maintain state across those requests. The typescript-sdk implementation uses a session ID to track Client sessions:
-
-```typescript
-private async handlePostRequest(req: IncomingMessage, res: ServerResponse, parsedBody?: unknown): Promise<void> {
-  try {
-    // ...
-    
-    // Check for initialization request
-    const isInitRequest = messages.some(isInitializedNotification);
-    
-    // Handle session ID
-    if (isInitRequest) {
-      if (!this.sessionId && this.sessionIdGenerator) {
-        this.sessionId = this.sessionIdGenerator();
-        this._initialized = true;
-        this._onsessioninitialized?.(this.sessionId);
-      }
+  private async _commonHeaders(): Promise<Headers> {
+    const headers = new Headers();
+    ...
+    // Add session ID to header if available
+    if (this._sessionId) {
+      headers.set("mcp-session-id", this._sessionId);
     }
+```
+
+The risks of session ID misuse are similar to those of general session IDs. If an attacker obtains a session ID, they can impersonate a legitimate user and call MCP tools with that user's permissions. This allows the attacker to launch a malicious client instance, use the stolen session ID, and access tools and data that should only be accessible to that person.
+
+**1. Session Sequence**
+
+Readers who have read the implementation explanations so far should have no particular questions about the session sequence itself.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Server
     
-    // Set session ID in response header if available
-    if (this.sessionId) {
-      res.setHeader("mcp-session-id", this.sessionId);
-    }
+    Note over Client,Server: 1. Session Initialization
+    Client->>+Server: Initialize request (POST)
+    Server-->>-Client: 200 OK + Session ID (mcp-session-id header)
     
-    // ...
-  } catch (error) {
-    // Error handling
+    Note over Client,Server: 2. SSE Stream Establishment
+    Client->>+Server: SSE stream request (GET + mcp-session-id)
+    Server-->>Client: 200 OK + SSE stream start
+    
+    Note over Client,Server: 3. Normal Request/Response
+    Client->>+Server: Tool call (POST + mcp-session-id)
+    Server-->>-Client: Response via SSE stream
+    Server->>Client: Server-initiated notification (via SSE stream)
+    
+    Note over Client,Server: 4. Disconnection and Reconnection
+    Client--xServer: Connection lost (network issues, etc.)
+    Client->>+Server: Reconnect (GET + mcp-session-id + last-event-id)
+    Server-->>-Client: 200 OK + Resend of missed events
+    
+    Note over Client,Server: 5. Session Termination
+    Client->>+Server: Session termination request (DELETE + mcp-session-id)
+    Server-->>-Client: 200 OK
+```
+
+**1. Session ID Generation and Usage in Normal Requests/Responses**
+
+| Specific Risk | Recommended Countermeasures |
+|:------------|:--------|
+| Misuse of session ID obtained before authentication | **Session ID regeneration after authentication:** 1/ Issue a new session ID after successful authentication, 2/ Invalidate the old session |
+| Unauthorized access due to predictable session IDs | **High-entropy session ID generation:** Use UUID v4 via `crypto.randomUUID()` |
+| Theft of plaintext session IDs through network interception | **Communication encryption:** Enforce the use of TLS (HTTPS) |
+| Hijacking of long-lived sessions | **Session expiration settings:** 1/ Absolute timeout, 2/ Inactivity timeout, 3/ Enhanced session state validation |
+
+**1/ Session fixation:** Let's consider session fixation attacks. This attack involves making a user use a session ID prepared by the attacker in advance, then hijacking the session after authentication. In MCP, there is no mechanism for the Client to provide a session ID, and since **the Server issues the session ID**, this is not a problem in this regard. **2/ Session ID leakage/prediction:** A new session ID is generated by the `sessionIdGenerator` method during the initialization request, but the random number generator used in this method is left to the SDK user. If sequential IDs are mistakenly issued, the session ID could be predicted, making session hijacking easy. Also, session expiration is not mentioned in the MCP specification and is not considered in the implementation. And you can see that the `mcp-session-id` is sent in plaintext in the HTTP header, which could lead to session ID leakage through network interception. There are also risks like man-in-the-middle attacks, so be sure to enforce the use of TLSv1.2 or higher protocols with strong cipher suites on all HTTP communication paths.
+
+From these considerations, many aspects of proper session ID implementation are left to the SDK user, so **when providing an MCP Server, please conduct thorough security checks without overconfidence that using the SDK ensures safety.**
+
+> Implementation related to session initialization
+
+```typescript
+// Client implementation ------------------------------------------------
+// Inside the send method of StreamableHTTPClientTransport class
+const response = await fetch(this._url, {
+  method: "POST",
+  headers,
+  body: JSON.stringify(message),
+  signal: this._abortController?.signal,
+});
+
+// Session ID reception processing
+const sessionId = response.headers.get("mcp-session-id");
+if (sessionId) {
+  this._sessionId = sessionId;
+}
+
+// Server implementation ------------------------------------------------
+// Inside the handlePostRequest method of StreamableHTTPServerTransport class
+// Initialization request processing
+if (isInitializationRequest) {
+  // Session ID generation
+  this.sessionId = this.sessionIdGenerator?.();
+  this._initialized = true;
+
+  // Session ID notification
+  if (this.sessionId !== undefined) {
+    headers["mcp-session-id"] = this.sessionId;
   }
 }
 ```
 
-The session ID is generated by the Server when it receives an initialization request from the Client. The session ID is then included in the response headers and should be included by the Client in subsequent requests.
+**2. Session ID Storage**
 
-**3. Input Validation**
+| Specific Risk | Recommended Countermeasures |
+|:-------------|:---------|
+| Memory dump attacks | **Hashing:** 1/ Store session IDs as salted hash values, 2/ Utilize session stores like Redis |
+| Leakage through debug tools or logs | **Sensitive information filtering:** Implement mechanisms to filter sensitive information |
+| Direct access from within the same process | **Declare session ID as a private variable of the class:** Prohibit direct access from outside the class |
+| Accumulation of inactive sessions | **Periodic cleanup processing:** Prevent memory leaks by automatically deleting expired or inactive sessions |
 
-Input validation is essential for preventing injection attacks and ensuring the integrity of the system. The typescript-sdk implementation includes validation for JSON-RPC messages using Zod schemas:
+Both Client and Server store session IDs as plaintext in class instances. This creates the possibility of memory dump attacks on the server process. Session IDs might also be visible through logs or debugging tools, so **storing in plaintext should be avoided**. Countermeasures should include using hash values internally and limiting the use of the original ID to reference purposes only. Basically, values exchanged through communication should not be handled in plaintext, and when storing, they should be encrypted or hashed. It's important to **eliminate direct access paths to IDs** by using these values only internally on the server. For example, stream IDs used in the implementation are handled only within the Server and have no direct relation to session IDs, so even if a session ID is stolen, it's probably not possible to obtain information from past streams. This is a good implementation that eliminates access paths to stream IDs.
 
-```typescript
-// Parse and validate the message
-let messages: JSONRPCMessage[];
-try {
-  if (Array.isArray(rawMessage)) {
-    messages = rawMessage.map(msg => JSONRPCMessageSchema.parse(msg));
-  } else {
-    messages = [JSONRPCMessageSchema.parse(rawMessage)];
-  }
-} catch (error) {
-  // Handle validation error
-  res.writeHead(400).end(JSON.stringify({
-    jsonrpc: "2.0",
-    error: {
-      code: -32700,
-      message: "Parse error"
-    },
-    id: null
-  }));
-  return;
-}
-```
+In Node.js, modules share memory space. When an instance of the `StreamableHTTPServerTransport` class is created, other modules can directly access its public property `sessionId`. In the Node.js module system, modules loaded using [`require()`](https://nodejs.org/api/modules.html#requirecache) or `import` can obtain references to exported objects. Additionally, techniques like monkey patching or prototype extension can be used to modify values or change the behavior of existing objects. Given these considerations, when providing an MCP Server, it would be safer to **change the implementation to avoid managing session IDs as public properties**.
 
-This validation ensures that all messages conform to the JSON-RPC 2.0 specification and prevents malformed or malicious messages from being processed.
-
-**4. Error Handling**
-
-Proper error handling is important for security as it prevents information leakage and ensures the system remains stable even when errors occur. The typescript-sdk implementation includes comprehensive error handling:
+> _[Node.js caching:](https://nodejs.org/api/modules.html#caching)_ Modules are cached after the first time they are loaded. This means (among other things) that every call to require('foo') will get exactly the same object returned, if it would resolve to the same file.
 
 ```typescript
-private async handlePostRequest(req: IncomingMessage, res: ServerResponse, parsedBody?: unknown): Promise<void> {
-  try {
-    // Normal processing
-  } catch (error) {
-    // Error handling
-    this.onerror?.(error as Error);
-    
-    if (!res.headersSent) {
-      res.writeHead(500).end(JSON.stringify({
-        jsonrpc: "2.0",
-        error: {
-          code: -32000,
-          message: "Internal error"
-        },
-        id: null
-      }));
-    }
-  }
-}
-```
-
-This implementation catches all exceptions that might occur during request processing and returns appropriate error responses without exposing internal details.
-
-**5. Stream Management**
-
-Proper stream management is important for preventing resource exhaustion and denial of service attacks. The typescript-sdk implementation includes mechanisms to limit the number of streams and clean up resources when they are no longer needed:
-
-```typescript
-private async handleGetRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+// src/server/streamableHttp.ts
+export class StreamableHTTPServerTransport implements Transport {
+  // Declared as a public property
+  sessionId?: string | undefined;
   // ...
-  
-  // Check for existing GET stream
-  if (this._streamMapping.get(this._standaloneSseStreamId) !== undefined) {
-    // If already exists, return 409 Conflict
-    res.writeHead(409).end(JSON.stringify({
+}
+```
+
+Finally, unless I've missed the implementation section, there doesn't seem to be explicit cleanup processing for session IDs. Since session IDs are public properties tied to the `StreamableHTTPServerTransport` class instance, they share the lifecycle with this instance and its cleanup.
+> This itself seems problematic in the implementation as it can't hold multiple session IDs... Server scale-out doesn't seem feasible.
+
+Since Node.js garbage collection occurs when references are gone, this instance will survive if references remain. This poses problems of **1/** memory leaks and **2/** security risks of session IDs persisting for long periods. As with general session management, it's important to consider ease of scale-out by using session stores like Redis. Regular ID re-validation and cleanup are also necessary.
+
+**3. Session ID Validation**
+
+| Specific Risk | Recommended Countermeasures |
+|--------------|----------|
+| Bypassing session validation | **Mandatory session validation:** Make session validation mandatory for all request paths, utilize authentication and authorization middleware |
+
+> Oh, `if (!sessionId || sessionId !== this.sessionId)` is all there is to session ID validation.
+
+The purpose of Server validation of session IDs should be to verify that a legitimate Client is using that session ID. Authentication and authorization serve as means to confirm "___legitimacy___", and this will be explained in detail in the Chapter on Authorization. While **authentication and authorization are Optional** in the specification, HTTP-based is marked as `SHOULD`, so **strongly recommend implementing proper authentication and authorization**. Even with authentication and authorization implemented, the current implementation would still need to implement verification of Client legitimacy using authentication information in session ID validation. The implementation allows an attacker to use a stolen session ID after successfully authenticating. Authentication and authorization don't necessarily need to be implemented in the MCP Server; an approach could be to insert an authentication and authorization gateway before the MCP Server.
+
+**4. Session Count Limits**
+
+| Specific Risk | Recommended Countermeasures |
+|--------------|----------|
+| Mass session creation | **Multi-layer quota system:** 1/ Set explicit limits on the number of sessions, 2/ Apply session creation rate limits per IP address, 3/ Detect abnormal session creation patterns |
+| Abuse of persistent SSE connections | **Connection lifecycle management:** 1/ Set SSE connection timeouts per session, 2/ Implement automatic disconnection of inactive connections, 3/ Limit the maximum number of simultaneous connections server-wide |
+| Unlimited increase in memory usage | **Adaptive memory management:** 1/ Set limits on the size of various mapping tables, 2/ Periodically check memory usage and clean up old entries when thresholds are exceeded |
+| Mass generation of request IDs | **Request lifecycle control:** 1/ Set limits on the number of requests held per session, 2/ Automatically timeout requests with no response for extended periods |
+| Log file bloat | **Log rotation:** 1/ Implement log rotation |
+| DDoS attacks | **Limitations and detection:** 1/ Restrict access from global sources, 2/ Implement IP-based rate limiting, 3/ Detect abnormal traffic patterns |
+
+In the current implementation, there doesn't seem to be a mechanism to automatically invalidate session IDs, so session IDs may persist for long periods. There's no specification for session count limits, so there's a possibility of DoS attacks through malicious Client attacks. **1/ Session initialization flooding attack:** An attacker can create numerous Server instances and send initialization requests to each instance, establishing a new session for each instance. **2/ Persistent SSE stream connection attack:** Establish SSE stream connections for each session created in _Step 1_, consuming server resources by maintaining connections for extended periods. **3/ Resource exhaustion attack:** The attacker sends numerous requests on each SSE stream, causing the Mapping table to bloat by not completing requests.
+
+While resource exhaustion attacks should certainly be addressed at the application level, **it's extremely important to include responses at the infrastructure level, such as container usage and WAF application**. Of course, **monitoring** resources with [Amazon CloudWatch](https://aws.amazon.com/jp/cloudwatch/) **is essential**. When scaling based on resources, consideration of state information with scaling in mind, such as delegating session management to Redis, would be necessary.
+
+```typescript:Vulnerable implementation parts
+// Server implementation ------------------------------------------------
+
+// Session initialization flooding
+if (isInitializationRequest) {
+  if (this._initialized && this.sessionId !== undefined) {
+    res.writeHead(400).end(JSON.stringify({
       jsonrpc: "2.0",
       error: {
-        code: -32000,
-        message: "Conflict: Only one SSE stream is allowed per session"
+        code: -32600,
+        message: "Invalid Request: Server already initialized"
       },
       id: null
     }));
     return;
   }
-  
-  // ...
-  
-  // Clean up when the connection is closed
-  req.on("close", () => {
-    this._streamMapping.delete(this._standaloneSseStreamId);
-  });
+  this.sessionId = this.sessionIdGenerator?.();
+  this._initialized = true;
 }
-```
 
-This implementation ensures that only one GET stream is allowed per session and cleans up resources when the connection is closed.
-
-**6. Authentication and Authorization**
-
-While the Base Protocol does not require authentication or authorization, the typescript-sdk implementation includes hooks for adding these features:
-
-```typescript
-async handleRequest(req: IncomingMessage & { auth?: AuthInfo }, res: ServerResponse, parsedBody?: unknown): Promise<void> {
-  // The auth property can be set by middleware
-  // and used for authentication and authorization
-}
-```
-
-The `auth` property can be set by middleware and used to implement authentication and authorization. This allows for extending the security features of the MCP Server.
-
-## Vulnerabilities and Countermeasures
-
-**1. CORS Misconfiguration**
-
-**Vulnerability:** The current implementation reflects the origin header, which could potentially allow any website to make requests to the MCP Server if the Client is running in a browser.
-
-**Countermeasure:** Instead of reflecting the origin header, consider using a whitelist of allowed origins:
-
-```typescript
-private setCorsHeaders(req: IncomingMessage, res: ServerResponse): void {
-  const origin = req.headers.origin;
-  const allowedOrigins = ["https://example.com", "https://api.example.com"];
-  
-  if (origin && allowedOrigins.includes(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-    // Other CORS headers
+// Resource exhaustion attack
+// Store the response for this request to send messages back through this connection
+// We need to track by request ID to maintain the connection
+for (const message of messages) {
+  if (isJSONRPCRequest(message)) {
+    this._streamMapping.set(streamId, res);
+    this._requestToStreamMapping.set(message.id, streamId);
   }
-}
-```
-
-**2. Session Fixation**
-
-**Vulnerability:** If the session ID is not properly validated or can be influenced by the Client, an attacker might be able to force a victim to use a known session ID.
-
-**Countermeasure:** Always generate session IDs on the Server using a secure random number generator and validate incoming session IDs:
-
-```typescript
-private validateSessionId(sessionId: string): boolean {
-  // Check if the session ID exists in the session store
-  // and has not expired
-  return this._sessionStore.has(sessionId) && !this._sessionStore.isExpired(sessionId);
-}
-```
-
-**3. Denial of Service**
-
-**Vulnerability:** An attacker could create many connections or send large messages to exhaust Server resources.
-
-**Countermeasure:** Implement rate limiting, connection limits, and message size limits:
-
-```typescript
-private async handlePostRequest(req: IncomingMessage, res: ServerResponse, parsedBody?: unknown): Promise<void> {
-  // Check message size
-  const contentLength = parseInt(req.headers["content-length"] || "0", 10);
-  if (contentLength > this._maxMessageSize) {
-    res.writeHead(413).end(JSON.stringify({
-      jsonrpc: "2.0",
-      error: {
-        code: -32000,
-        message: "Message too large"
-      },
-      id: null
-    }));
-    return;
-  }
-  
-  // Check rate limit
-  if (this._rateLimiter.isLimited(req.socket.remoteAddress)) {
-    res.writeHead(429).end(JSON.stringify({
-      jsonrpc: "2.0",
-      error: {
-        code: -32000,
-        message: "Too many requests"
-      },
-      id: null
-    }));
-    return;
-  }
-  
-  // Normal processing
-}
-```
-
-**4. Information Leakage**
-
-**Vulnerability:** Error messages might reveal sensitive information about the Server implementation or internal state.
-
-**Countermeasure:** Use generic error messages and log detailed errors server-side:
-
-```typescript
-private handleError(error: Error, res: ServerResponse): void {
-  // Log detailed error for debugging
-  console.error("Internal error:", error);
-  
-  // Return generic error to client
-  if (!res.headersSent) {
-    res.writeHead(500).end(JSON.stringify({
-      jsonrpc: "2.0",
-      error: {
-        code: -32000,
-        message: "Internal error"
-      },
-      id: null
-    }));
-  }
-}
-```
-
-**5. Cross-Site Request Forgery (CSRF)**
-
-**Vulnerability:** If the MCP Server relies solely on cookies for authentication, it might be vulnerable to CSRF attacks.
-
-**Countermeasure:** Use CSRF tokens or ensure that all state-changing operations require a custom header that cannot be set by cross-site requests:
-
-```typescript
-private validateCsrfToken(req: IncomingMessage): boolean {
-  const csrfToken = req.headers["x-csrf-token"];
-  const sessionId = req.headers["mcp-session-id"];
-  
-  if (!csrfToken || !sessionId) {
-    return false;
-  }
-  
-  return this._sessionStore.validateCsrfToken(sessionId as string, csrfToken as string);
 }
 ```
 
 ## Summary
 
-In this Chapter, we explained the security-related implementation of Streamable HTTP in typescript-sdk. We covered CORS, session management, input validation, error handling, stream management, and hooks for authentication and authorization. We also discussed potential vulnerabilities and countermeasures.
+In this Chapter, we explained the detailed implementation of Streamable HTTP, mainly from the perspective of `sessions`. Looking at the implementation reveals various vulnerabilities. Since MCP is still an emerging technology, the issues mentioned above will likely be addressed in frameworks for building MCP Servers.
 
-While the typescript-sdk implementation provides a good foundation for security, it's important to remember that security is a continuous process. As the MCP specification and implementation evolve, new security considerations will emerge. Always stay updated with the latest security best practices and adapt your implementation accordingly.
+**From the perspective of MCP Server providers**, methods of providing STDIO might include publishing your own packages on Github or allowing access to APIs through public packages. In this case, **using AWS's established existing authentication and authorization mechanisms as is, like [AWS MCP Servers](https://awslabs.github.io/mcp/)**, would be a good approach. For example, having an AWS MCP Server access AWS resources with limited permissions based on a `profile` set up with `aws configure sso` is basically equivalent in terms of security measures to using AWS CLI or SDK on a local PC. `OIDC + OAuth` authentication and authorization is not necessarily required, and `AWS IAM authentication + IAM role authorization` like AWS uses is also a very secure method. On the other hand, **it might be challenging at this point to provide an HTTP-based MCP Server that addresses all the various vulnerabilities, authentication, authorization, etc. mentioned above**. From the perspective of an MCP Server provider, if the priority is to release an MCP Server quickly, STDIO is a viable option at this point, in the author's opinion. This might be why there don't seem to be many Streamable HTTP-compatible MCP Servers.
 
-In the next Chapter, we will explain the MCP Authorization specification, which builds on the Base Protocol to provide more robust security features.
+From the perspective of MCP users, I mentioned in previous Chapters that caution should be exercised when using STDIO. On the other hand, when the safety of authentication, authorization, and the commands or packages used has been confirmed, it would be good to use them under careful review. **It's dangerous to blindly believe that Streamable HTTP is safer.**
+
+> In my personal opinion, when using AWS, not using [Amazon GuardDuty](https://aws.amazon.com/jp/guardduty/) and [AWS Config](https://aws.amazon.com/jp/guardduty/) to detect vulnerabilities and check compliance with established best practices means you're not even at the starting line for discussing security. Focusing only on application vulnerabilities without using these tools is like a Lv.1 slime challenging Dark Drea◯. In such a state, there's no point in reading this book, so first activate the tools, establish responses and operational systems in line with best practices, bring along operational companions, and come back to this book when you're a slime that has learned Madan◯ at Lv.38. **It's probably premature to introduce MCP into an organization if you can't practice AWS security best practices**.
