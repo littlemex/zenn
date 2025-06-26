@@ -2,7 +2,7 @@ title: "Model Context Protocol Security on AWS (Automated Translation)"
 summary: "This book does not use AI for text creation except for reviews, figure creation, and code generation. It carefully introduces comprehensive content including an overview of MCP, security considerations, countermeasures, and implementation using AWS."
 topics: ["MCP", "AWS"]
 published: false
-price: 1800 # 有料の場合200〜5000
+price: 0 # 有料の場合200〜5000
 # 本に含めるチャプターを順番に並べましょう
 chapters:
   - chapter01
@@ -17,3 +17,4 @@ chapters:
   - chapter10
   - chapter11
   - chapter12
+  - chapter13
