@@ -9,7 +9,7 @@ ___MCP に関する理解編:___  _MCP の脆弱性と対策を理解するた�
 
 本章の説明は、2025-06-18 の[仕様](https://modelcontextprotocol.io/specification/2025-06-18)に基づきます。
 
-MCP は以下の主要なコンポーネントから構成されています：
+MCP は以下の主要なコンポーネントから構成されています。
 
 - **Base Protocol**: コアとなる JSON-RPC メッセージタイプ
 - **Lifecycle Management**: 接続初期化、機能ネゴシエーション、セッション制御
