@@ -7,11 +7,11 @@ ___MCP に関する発展理解編:___  _MCP の脆弱性と対策を理解す�
 
 ---
 
-本章の説明は、2025-03-26 の[仕様](https://modelcontextprotocol.io/specification/2025-03-26)に基づきます。
+本章の説明は、2025-06-18 の[仕様](https://modelcontextprotocol.io/specification/2025-06-18)に基づきます。
 
 MCP Specification: **Base Protocol（今ここ）**、Authorization、Client Features、Server Features、Security Best Practices
 
-本 Chapter では Base Protocol の[ライフサイクル](https://modelcontextprotocol.io/specification/2025-03-26/basic/lifecycle)について解説します。ライフサイクルと言われてもあまりピンとこないかもしれません。ライフサイクルを解説する前に Protocol についておさらいします。
+本 Chapter では Base Protocol の[ライフサイクル](https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle)について解説します。ライフサイクルと言われてもあまりピンとこないかもしれません。ライフサイクルを解説する前に Protocol についておさらいします。
 
 ## Protocol とは？
 
@@ -25,11 +25,30 @@ Protocol には様々な種類があります。例えば、認証 Protocol、�
 
 **MCP のライフサイクルは MCP という Protocol の中で接続確立から終了までの一連のフェーズを手順として定めた**ものです。[MCP specification](https://modelcontextprotocol.io/specification/2025-03-26) のすべての説明は、手順ごとにデータフォーマットをどう定め、それらをどう使いこなすのか、ということを説明していることが理解できると、情報を整理しやすくなるのではないでしょうか。
 
-> 個人的な感覚ですが、MCP の仕様は `SHOULD` が多く、HTTP などのトランスポート層や実装に委ねる記述が多いです。そのため、MCP のメッセージフォーマットで定義がある機能なのか、トランスポート層や実装側に委ねられている機能なのか、を明確に区別しながら仕様を読むことをお勧めします。
+> MCP の仕様は HTTP などのトランスポート層や実装に委ねるケースがあります。そのため、MCP のメッセージフォーマットで定義がある機能なのか、トランスポート層や実装側に委ねられている機能なのか、を明確に区別しながら仕様を読むことをお勧めします。
 
-> _引用: [Lifecycle ](https://modelcontextprotocol.io/specification/2025-03-26/basic/lifecycle)_
 
-![060101](/images/books/security-of-the-mcp/fig_c06_s01_01.png)
+```mermaid
+sequenceDiagram
+    participant クライアント
+    participant サーバー
+
+    Note over クライアント,サーバー: 初期化フェーズ
+    activate クライアント
+    クライアント->>+サーバー: initialize リクエスト
+    サーバー-->>クライアント: initialize レスポンス
+    クライアント--)サーバー: initialized 通知
+
+    Note over クライアント,サーバー: 操作フェーズ
+    rect rgb(200, 220, 250)
+        note over クライアント,サーバー: 通常のプロトコル操作
+    end
+
+    Note over クライアント,サーバー: シャットダウン
+    クライアント--)-サーバー: 切断
+    deactivate サーバー
+    Note over クライアント,サーバー: 接続終了
+```
 
 ライフサイクルの Phase には、1/ Initialization、2/ Operation、3/ Shutdown、があります。
 
@@ -39,20 +58,25 @@ Initialization Phase では、1/ Capability Negotiation、2/ Version Negotiation
 
 > Capabilities
 
-| カテゴリ   | 機能            | 説明                                                                 |
+| カテゴリ   | 機能            | 説明 |
 |------------|-----------------|----------------------------------------------------------------------|
 | Client | roots          | ファイルシステムルートを提供する能力                                |
 | Client | sampling       | LLM サンプリングリクエストのサポート                                  |
+| Client | elicitation    | Server からの質問要求のサポート                                     |
 | Client | experimental   | 非標準の実験的機能のサポートを記述                                   |
 | Server | prompts        | プロンプトテンプレートを提供                                         |
 | Server | resources      | 読み取り可能なリソースを提供                                         |
 | Server | tools          | 呼び出し可能なツールを公開                                           |
 | Server | logging        | 構造化されたログメッセージを出力                                     |
+| Server | completions    | 引数の自動補完をサポート                                             |
 | Server | experimental   | 非標準の実験的機能のサポートを記述                                   |
 
-### Initialization Phase のオブジェクト例
+**Initialization Phase のオブジェクト例**
 
 _Client: リクエストオブジェクト_
+
+> - `listChanged`: リスト変更通知のサポート（プロンプト、リソース、ツール向け）
+> - `subscribe`: 個別アイテムの変更購読サポート（リソース専用）
 
 ```json
 {
@@ -60,10 +84,10 @@ _Client: リクエストオブジェクト_
   "id": 1,
   "method": "initialize",
   "params": {
-    "protocolVersion": "2025-03-26",
+    "protocolVersion": "2025-06-18",
     "capabilities": {
       "roots": {
-        "listChanged": true # リスト変更通知のサポート（プロンプト、リソース、ツール向け）
+        "listChanged": true
       },
       "sampling": {}
     },
@@ -82,14 +106,14 @@ _Server: レスポンスオブジェクト_
   "jsonrpc": "2.0",
   "id": 1,
   "result": {
-    "protocolVersion": "2025-03-26",
+    "protocolVersion": "2025-06-18",
     "capabilities": {
       "logging": {},
       "prompts": {
         "listChanged": true
       },
       "resources": {
-        "subscribe": true, # 個別アイテムの変更購読サポート（リソース専用）
+        "subscribe": true,
         "listChanged": true
       },
       "tools": {
@@ -105,6 +129,19 @@ _Server: レスポンスオブジェクト_
 }
 ```
 
+_Client: 初期化完了通知_
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "notifications/initialized"
+}
+```
+
+## タイムアウトとエラーハンドリング
+
+MCP の実装では、**リクエストのタイムアウトとエラーハンドリングが重要な要素**です。実装では、すべての送信リクエストにタイムアウトを設定することが推奨されています。これにより、接続の停止やリソースの枯渇を防ぐことができます。
+
 ## まとめ
 
-本 Chapter では、Protocol とは何なのか、MCP ライフサイクル、について解説しました。今後の Chapter でも Protocol 仕様では、データフォーマット（オブジェクトフォーマット）とその使い方について説明されます。そのため、そもそも Protocol 仕様をどう見るべきなのか、という視点で解説してみました。ここまで理解できた方は以降の知識編の解説は読まずに SDK 実装や公式仕様を読み込んだ方が理解が早いかもしれません。
+本 Chapter では、Protocol とは何なのか、MCP ライフサイクル、タイムアウト、エラーハンドリングについて解説しました。今後の Chapter でも Protocol 仕様では、データフォーマット（オブジェクトフォーマット）とその使い方について説明されます。そのため、そもそも Protocol 仕様をどう見るべきなのか、という視点で解説してみました。ここまで理解できた方は以降の知識編の解説は読まずに SDK 実装や公式仕様を読み込んだ方が理解が早いかもしれません。
