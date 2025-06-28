@@ -1,4 +1,3 @@
----
 title: "§06 MCP Lifecycle Defines Communication Phases!"
 free: true
 ---
@@ -7,11 +6,11 @@ ___Advanced Understanding of MCP:___ _Explanation of developer-oriented knowledg
 
 ---
 
-This chapter's explanation is based on the [specification](https://modelcontextprotocol.io/specification/2025-03-26) from 2025-03-26.
+This chapter's explanation is based on the [specification](https://modelcontextprotocol.io/specification/2025-06-18) from 2025-06-18.
 
 MCP Specification: **Base Protocol (We are here)**, Authorization, Client Features, Server Features, Security Best Practices
 
-In this Chapter, we will explain the [lifecycle](https://modelcontextprotocol.io/specification/2025-03-26/basic/lifecycle) of the Base Protocol. You might not immediately grasp what "lifecycle" means. Before explaining the lifecycle, let's review what a Protocol is.
+In this Chapter, we will explain the [lifecycle](https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle) of the Base Protocol. You might not immediately grasp what "lifecycle" means. Before explaining the lifecycle, let's review what a Protocol is.
 
 ## What is a Protocol?
 
@@ -23,13 +22,31 @@ In summary, **a Protocol prepares all necessary data formats to fulfill required
 
 ## What is the MCP Lifecycle?
 
-**The MCP lifecycle defines a series of phases from connection establishment to termination as procedures within the MCP Protocol**. Understanding that all explanations in the [MCP specification](https://modelcontextprotocol.io/specification/2025-03-26) describe how to define data formats for each procedure and how to utilize them might make it easier to organize the information.
+**The MCP lifecycle defines a series of phases from connection establishment to termination as procedures within the MCP Protocol**. Understanding that all explanations in the [MCP specification](https://modelcontextprotocol.io/specification/2025-06-18) describe how to define data formats for each procedure and how to utilize them might make it easier to organize the information.
 
-> In my personal observation, the MCP specification has many "SHOULD" statements and many descriptions that defer to the transport layer or implementation. Therefore, I recommend reading the specification while clearly distinguishing between functions that have definitions in the MCP message format and functions that are left to the transport layer or implementation.
+> The MCP specification sometimes defers to the transport layer or implementation. Therefore, I recommend reading the specification while clearly distinguishing between functions that have definitions in the MCP message format and functions that are left to the transport layer or implementation.
 
-> _Quote: [Lifecycle](https://modelcontextprotocol.io/specification/2025-03-26/basic/lifecycle)_
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Server
 
-![060101](/images/books/security-of-the-mcp/fig_c06_s01_01.png)
+    Note over Client,Server: Initialization Phase
+    activate Client
+    Client->>+Server: initialize request
+    Server-->>Client: initialize response
+    Client--)Server: initialized notification
+
+    Note over Client,Server: Operation Phase
+    rect rgb(200, 220, 250)
+        note over Client,Server: Normal protocol operations
+    end
+
+    Note over Client,Server: Shutdown
+    Client--)-Server: disconnect
+    deactivate Server
+    Note over Client,Server: Connection terminated
+```
 
 The lifecycle has three Phases: 1/ Initialization, 2/ Operation, and 3/ Shutdown.
 
@@ -43,14 +60,16 @@ During the Initialization Phase, the Server and Client agree on 1/ Capability Ne
 |----------|--------------|-----------------------------------------------------------------------|
 | Client   | roots        | Ability to provide filesystem roots                                    |
 | Client   | sampling     | Support for LLM sampling requests                                      |
-| Client   | experimental | Describes support for non-standard experimental features                |
+| Client   | elicitation  | Support for question requests from the Server                          |
+| Client   | experimental | Describes support for non-standard experimental features               |
 | Server   | prompts      | Provides prompt templates                                              |
 | Server   | resources    | Provides readable resources                                            |
 | Server   | tools        | Exposes callable tools                                                 |
 | Server   | logging      | Outputs structured log messages                                        |
-| Server   | experimental | Describes support for non-standard experimental features                |
+| Server   | completions  | Supports auto-completion of arguments                                  |
+| Server   | experimental | Describes support for non-standard experimental features               |
 
-### Example Objects in Initialization Phase
+**Example Objects in Initialization Phase**
 
 _Client: Request Object_
 
@@ -60,10 +79,10 @@ _Client: Request Object_
   "id": 1,
   "method": "initialize",
   "params": {
-    "protocolVersion": "2025-03-26",
+    "protocolVersion": "2025-06-18",
     "capabilities": {
       "roots": {
-        "listChanged": true # Support for list change notifications (for prompts, resources, tools)
+        "listChanged": true
       },
       "sampling": {}
     },
@@ -75,6 +94,9 @@ _Client: Request Object_
 }
 ```
 
+> - `listChanged`: Support for list change notifications (for prompts, resources, tools)
+> - `subscribe`: Support for individual item change subscription (resources only)
+
 _Server: Response Object_
 
 ```json
@@ -82,14 +104,14 @@ _Server: Response Object_
   "jsonrpc": "2.0",
   "id": 1,
   "result": {
-    "protocolVersion": "2025-03-26",
+    "protocolVersion": "2025-06-18",
     "capabilities": {
       "logging": {},
       "prompts": {
         "listChanged": true
       },
       "resources": {
-        "subscribe": true, # Support for individual item change subscription (resources only)
+        "subscribe": true,
         "listChanged": true
       },
       "tools": {
@@ -105,6 +127,19 @@ _Server: Response Object_
 }
 ```
 
+_Client: Initialization Complete Notification_
+
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "notifications/initialized"
+}
+```
+
+## Timeout and Error Handling
+
+In MCP implementations, **request timeouts and error handling are important elements**. It is recommended that implementations set timeouts for all sent requests. This helps prevent connection stalls and resource exhaustion.
+
 ## Summary
 
-In this Chapter, we explained what a Protocol is and the MCP lifecycle. In future Chapters, the Protocol specification will continue to explain data formats (object formats) and how to use them. Therefore, we tried to explain from the perspective of how to view Protocol specifications in general. If you've understood this far, you might find it faster to understand by reading the SDK implementation or official specification directly rather than reading the subsequent knowledge-based explanations.
+In this Chapter, we explained what a Protocol is, the MCP lifecycle, timeouts, and error handling. In future Chapters, the Protocol specification will continue to explain data formats (object formats) and how to use them. Therefore, we tried to explain from the perspective of how to view Protocol specifications in general. If you've understood this far, you might find it faster to understand by reading the SDK implementation or official specification directly rather than reading the subsequent knowledge-based explanations.
