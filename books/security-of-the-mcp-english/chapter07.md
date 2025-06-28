@@ -7,13 +7,13 @@ ___Advanced Understanding of MCP:___ _Explanation of developer-oriented knowledg
 
 ---
 
-This chapter's explanation is based on the [specification](https://modelcontextprotocol.io/specification/2025-03-26) from 2025-03-26.
+This chapter's explanation is based on the [specification](https://modelcontextprotocol.io/specification/2025-06-18) from 2025-06-18.
 
 MCP Specification: **Base Protocol (We are here)**, Authorization, Client Features, Server Features, Security Best Practices
 
-In this Chapter, we will explain the [transports](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports) of the Base Protocol. We discussed transports in Chapter 04, but this time we will explain them in more detail.
+In this Chapter, we will explain the [transports](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports) of the Base Protocol. We discussed transports in Chapter 04, but this time we will explain them in more detail.
 
-While JSON-RPC 2.0 is transport-independent, MCP defines two transport mechanisms for Client ↔︎ Server communication in its specification: [STDIO](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#stdio) and [Streamable HTTP](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http). The specification defines how these transports should handle connections for message sending and receiving.
+While JSON-RPC 2.0 is transport-independent, MCP defines two transport mechanisms for Client ↔︎ Server communication in its specification: [STDIO](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#stdio) and [Streamable HTTP](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#streamable-http). The specification defines how these transports should handle connections for message sending and receiving.
 
 ## STDIO
 
@@ -51,14 +51,17 @@ The ChildProcess class inherits from [`EventEmitter`](https://nodejs.org/ja/lear
 
 Every time the MCP Server writes something to the standard output, a `data` event is issued on the `stdout` stream object. The Client receives the data and performs some processing through an event listener that is triggered when the `data` event is issued.
 
-```typescript:Example of registering an event listener using the on() method
-// Receive data from standard output
-childProcess.stdout?.on('data', (data: Buffer) => {
-   output += data.toString();
-});
-```
+https://github.com/littlemex/samples/blob/main/mcp-sec-book/chapter07/sample.ts#L13-L15
 
 STDIO is a method where the Client and Server exchange data through a child process using such a mechanism. In practice, there are implementations that interpret messages in JSON RPC 2.0 format from the output. While we'll omit the Server-side implementation, messages from the Server are passed to the Client as messages through an event-driven approach.
+
+**Error Handling**
+
+When the Server encounters an error that prevents it from continuing to process messages, it should **1/** write an appropriate JSON-RPC error message to stdout, **2/** exit with a non-zero status code. The Client should monitor the server process and handle any unexpected termination.
+
+**Security**
+
+Implementers should be aware of the following considerations: **1/ Process Isolation** Ensure proper isolation of the Server subprocess to prevent privilege escalation, **2/ Resource Limiting** Implement timeouts and resource limits to prevent denial-of-service attacks, **3/ Input Validation** Validate all input from the subprocess to prevent injection attacks, **4/ Error Handling** Handle subprocess errors gracefully to prevent information leakage.
 
 ## Summary
 
@@ -66,72 +69,6 @@ In this Chapter, we explained STDIO, one of the transports defined in the MCP Ba
 
 ## Sample Code
 
-```bash:Installing necessary libraries
-$ npm install typescript ts-node && npm install --save-dev @types/node
-```
+The sample code is available [here](https://github.com/littlemex/samples/tree/main/mcp-sec-book/chapter07).
 
-```typescript:sample.ts
-import { spawn, ChildProcess } from 'child_process';
-
-// Function to launch a child process
-function runCommand(command: string, args: string[]): Promise<string> {
-  return new Promise((resolve, reject) => {
-    // Launch child process
-    const childProcess: ChildProcess = spawn(command, args);
-
-    let output = '';
-    let errorOutput = '';
-
-    // Receive data from standard output
-    childProcess.stdout?.on('data', (data: Buffer) => {
-      output += data.toString();
-    });
-
-    // Receive data from error output
-    childProcess.stderr?.on('data', (data: Buffer) => {
-      errorOutput += data.toString();
-    });
-
-    // Detect process termination
-    childProcess.on('close', (code: number) => {
-      if (code === 0) {
-        resolve(output);
-      } else {
-        reject(new Error(`Command failed: ${errorOutput}`));
-      }
-    });
-
-    // Handle error events
-    childProcess.on('error', (error: Error) => {
-      reject(error);
-    });
-  });
-}
-
-// Example of using the function
-async function main() {
-  try {
-    const result = await runCommand('echo', ['-e', 'hello\nmcp!']);
-    console.log('Command execution result:');
-    console.log(result);
-  } catch (error) {
-    console.error('An error occurred:', error);
-  }
-}
-
-main();
-```
-
-```json:tsconfig.json
-{
-  "compilerOptions": {
-    "target": "es2016",
-    "module": "commonjs",
-    "esModuleInterop": true,
-    "forceConsistentCasingInFileNames": true,
-    "strict": true,
-    "strictNullChecks": true,
-    "skipLibCheck": true
-  }
-}
-```
+https://github.com/littlemex/samples/blob/main/mcp-sec-book/chapter07/sample.ts
