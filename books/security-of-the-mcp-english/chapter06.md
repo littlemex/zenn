@@ -1,3 +1,4 @@
+---
 title: "§06 MCP Lifecycle Defines Communication Phases!"
 free: true
 ---
