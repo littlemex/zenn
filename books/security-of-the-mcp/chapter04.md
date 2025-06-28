@@ -9,7 +9,18 @@ ___MCP に関する理解編:___  _MCP の脆弱性と対策を理解するた�
 
 本章の説明は、2025-06-18 の[仕様](https://modelcontextprotocol.io/specification/2025-06-18)に基づきます。
 
-MCP を構成するコンポーネントは、MCP Client、MCP Server、MCP Host があります。本 Chapter では MCP の全体像を確認しましょう。
+MCP は以下の主要なコンポーネントから構成されています：
+
+- **Base Protocol**: コアとなる JSON-RPC メッセージタイプ
+- **Lifecycle Management**: 接続初期化、機能ネゴシエーション、セッション制御
+- **Authorization**: HTTP 基盤のトランスポート向け認証・認可フレームワーク
+- **Server Features**: Server が公開するリソース、プロンプト、ツール
+- **Client Features**: Client が提供するサンプリングとルートディレクトリリスト
+- **Utilities**: ログ記録や引数補完などの横断的関心事
+
+すべての実装は **Base Protocol** と **Lifecycle Management** コンポーネントをサポートする必要があり、他のコンポーネントはアプリケーションの特定のニーズに基づいて実装されます。Life cycle Management については以降の Chapter で解説します。
+
+MCP を構成する主要なアクターとしては、MCP Client、MCP Server、MCP Host があります。本 Chapter では MCP の全体像を確認しましょう。
 
 > MCP コンポーネント図
 
@@ -100,13 +111,17 @@ _Responses オブジェクト_
 
 ### そのほかの MCP Protocol の機能仕様
 
+**_meta フィールド**
+
+MCP は `_meta` プロパティ/パラメータを予約しており、Client と Server が対話に追加のメタデータを付加できるようにしています。キー名の形式は、オプションの **prefix** と **name** の2つのセグメントから構成されます。この `_meta` は例えば JWT トークンの情報を MCP Server に渡すようなことも可能であり、**非常に柔軟な利用が可能なのでこのようなパラメータを利用することができる、ということを理解しておいてください！**
+
 **認証**
 
-JSON-RPC 2.0 には定義がありませんが、`SHOULD` として対応が求められています。しかし認証メカニズムについてはまだ議論の途上のようです。
+JSON-RPC 2.0 には定義がありませんが、`SHOULD` として対応が求められています。MCP は HTTP 用の認証フレームワークを提供しており、HTTP 基盤のトランスポートを使用する実装はこの仕様に準拠すべきです。一方、STDIO トランスポートを使用する実装はこの仕様に従うべきではなく、代わりに環境から認証情報を取得すべきです。詳細は以降の Chapter で取り扱いましょう。
 
 **スキーマ**
 
-プロトコルの完全な仕様は、[Typescript スキーマ](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/schema/2025-03-26/schema.ts)として定義されています。
+プロトコルの完全な仕様は、[Typescript スキーマ](https://github.com/modelcontextprotocol/specification/blob/main/schema/2025-06-18/schema.ts)として定義されています。これがすべてのプロトコルメッセージと構造の信頼できる情報源です。
 
 ## まとめ
 
