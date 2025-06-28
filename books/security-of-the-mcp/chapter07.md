@@ -7,13 +7,13 @@ ___MCP に関する発展理解編:___  _MCP の脆弱性と対策を理解す�
 
 ---
 
-本章の説明は、2025-03-26 の[仕様](https://modelcontextprotocol.io/specification/2025-03-26)に基づきます。
+本章の説明は、2025-06-18 の[仕様](https://modelcontextprotocol.io/specification/2025-06-18)に基づきます。
 
 MCP Specification: **Base Protocol（今ここ）**、Authorization、Client Features、Server Features、Security Best Practices
 
-本 Chapter では Base Protocol の[トランスポート](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports)について解説します。トランスポートについては Chapter04 で解説しましたが、今回はより詳細にトランスポートについて解説します。
+本 Chapter では Base Protocol の[トランスポート](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports)について解説します。トランスポートについては Chapter04 で解説しましたが、今回はより詳細にトランスポートについて解説します。
 
-JSON-RPC 2.0 はトランスポート非依存ですが、MCP の場合は [STDIO](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#stdio) と [Streamable HTTP](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http) という Client ↔︎ Server 間通信のための二つのトランスポートメカニズムを仕様として定義しています。これらのトランスポートがメッセージの送受信でどのように接続を取り扱うべきであるかについて仕様で定義されています。
+JSON-RPC 2.0 はトランスポート非依存ですが、MCP の場合は [STDIO](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#stdio) と [Streamable HTTP](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#streamable-http) という Client ↔︎ Server 間通信のための二つのトランスポートメカニズムを仕様として定義しています。これらのトランスポートがメッセージの送受信でどのように接続を取り扱うべきであるかについて仕様で定義されています。
 
 ## STDIO
 
@@ -51,15 +51,17 @@ ChildProcess クラスは [`EventEmitter`](https://nodejs.org/ja/learn/asynchron
 
 MCP Server が標準出力に何かを書き込む度に、`stdout` ストリームオブジェクトで定義された `data` イベントが発行されます。Client は `data` イベントが発行されると起動するイベントリスナーによってデータを受け取って何らかの処理を行います。
 
-```typescript:on() Method によるイベントリスナーの登録例
-// 標準出力からデータを受け取る
-childProcess.stdout?.on('data', (data: Buffer) => {
-   output += data.toString();
-});
-```
+https://github.com/littlemex/samples/blob/main/mcp-sec-book/chapter07/sample.ts#L13-L15
 
 このような仕組みを用いて Client と Server が子プロセスを介してデータのやり取りを行う方式が STDIO です。実際には、出力から JSON RPC 2.0 のフォーマットのメッセージを解釈して取り扱うなどの実装も存在します。Server 側の実装は割愛しますが、Server からのメッセージ受信はイベント駆動型のアプローチで Client にメッセージとして渡されます。
 
+**エラーハンドリング**
+
+Server がメッセージ処理を継続できないエラーに遭遇した場合、**1/** 適切な JSON-RPC エラーメッセージを stdout に書き込む、**2/** 非ゼロのステータスコードで終了、を実施します。Client は Server プロセスを監視し、予期しない終了に対処する必要があります。
+
+**セキュリティ**
+
+**1/ プロセス分離** Server サブプロセスの適切な分離を確保して権限昇格を防止、**2/ リソース制限** タイムアウトやリソース制限を実装して、サービス拒否攻撃を防止、**3/ 入力検証** サブプロセスからのすべての入力を検証して、インジェクション攻撃を防止、**4/ エラー処理** 情報漏洩を防ぐために、サブプロセスのエラーを適切に処理、などが適切に実装されているか実装者は意識する必要があります。
 
 ## まとめ
 
@@ -67,72 +69,6 @@ childProcess.stdout?.on('data', (data: Buffer) => {
 
 ## サンプルコード
 
-```bash:必要なライブラリのインストール
-$ npm install typescript ts-node && npm install --save-dev @types/node
-```
+[こちら](https://github.com/littlemex/samples/tree/main/mcp-sec-book/chapter07)にサンプルコードを配置しました。
 
-```typescript:sample.ts
-import { spawn, ChildProcess } from 'child_process';
-
-// 子プロセスを起動する関数
-function runCommand(command: string, args: string[]): Promise<string> {
-  return new Promise((resolve, reject) => {
-    // 子プロセスを起動
-    const childProcess: ChildProcess = spawn(command, args);
-
-    let output = '';
-    let errorOutput = '';
-
-    // 標準出力からデータを受け取る
-    childProcess.stdout?.on('data', (data: Buffer) => {
-      output += data.toString();
-    });
-
-    // エラー出力からデータを受け取る
-    childProcess.stderr?.on('data', (data: Buffer) => {
-      errorOutput += data.toString();
-    });
-
-    // プロセスの終了を検知
-    childProcess.on('close', (code: number) => {
-      if (code === 0) {
-        resolve(output);
-      } else {
-        reject(new Error(`コマンドが失敗しました: ${errorOutput}`));
-      }
-    });
-
-    // エラーイベントを処理
-    childProcess.on('error', (error: Error) => {
-      reject(error);
-    });
-  });
-}
-
-// 関数を使用する例
-async function main() {
-  try {
-    const result = await runCommand('echo', ['-e', 'hello\nmcp!']);
-    console.log('コマンド実行結果:');
-    console.log(result);
-  } catch (error) {
-    console.error('エラーが発生しました:', error);
-  }
-}
-
-main();
-```
-
-```json:tsconfig.json
-{
-  "compilerOptions": {
-    "target": "es2016",
-    "module": "commonjs",
-    "esModuleInterop": true,
-    "forceConsistentCasingInFileNames": true,
-    "strict": true,
-    "strictNullChecks": true,
-    "skipLibCheck": true
-  }
-}
-```
+https://github.com/littlemex/samples/blob/main/mcp-sec-book/chapter07/sample.ts
