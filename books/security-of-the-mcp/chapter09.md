@@ -7,19 +7,17 @@ ___MCP に関する発展理解編:___  _MCP の脆弱性と対策を理解す�
 
 ---
 
-本章の説明は、2025-03-26 の[仕様](https://modelcontextprotocol.io/specification/2025-03-26)に基づきます。
+本章の説明は、2025-06-18 の[仕様](https://modelcontextprotocol.io/specification/2025-06-18)に基づきます。
 
 MCP Specification: **Base Protocol（今ここ）**、Authorization、Client Features、Server Features、Security Best Practices
 
-本 Chapter では Base Protocol の[トランスポート](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports)について解説します。トランスポートについては Chapter04 で解説しましたが、今回はより詳細にトランスポートについて解説します。
+本 Chapter では Base Protocol の[トランスポート](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports)について解説します。トランスポートについては Chapter04 で解説しましたが、今回はより詳細にトランスポートについて解説します。
 
-JSON-RPC 2.0 はトランスポート非依存ですが、MCP の場合は [STDIO](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#stdio) と [Streamable HTTP](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http) という Client ↔︎ Server 間通信のための二つのトランスポートメカニズムを仕様として定義しています。これらのトランスポートがメッセージの送受信でどのように接続を取り扱うべきであるかについて仕様で定義されています。
+JSON-RPC 2.0 はトランスポート非依存ですが、MCP の場合は [STDIO](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#stdio) と [Streamable HTTP](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#streamable-http) という Client ↔︎ Server 間通信のための二つのトランスポートメカニズムを仕様として定義しています。これらのトランスポートがメッセージの送受信でどのように接続を取り扱うべきであるかについて仕様で定義されています。
 
 ## Streamable HTTP
 
 Streamable HTTP トランスポートは、HTTP と [Server-Sent Events (SSE)](https://en.wikipedia.org/wiki/Server-sent_events) を組み合わせて双方向通信を実現します。STDIO トランスポートがサブプロセスを起動してイベントハンドラを介して双方向で通信するのに対し、Streamable HTTP はネットワーク経由で通信を行います。SSE は Server から Client へのリアルタイム通信を HTTP で実現するための技術です。Client から Server への HTTP リクエストと Server から Client への SSE を利用して MCP で必要な双方向通信を実現します。
-
-Streamable HTTP について次回詳しく実装解説するとして、今回は SSE の実装例について説明したいと思います。
 
 **SSE について**
 
@@ -132,155 +130,14 @@ STDIO と Streamable HTTP の簡単な機能比較表を作成しました。こ
 
 ## サンプルコード
 
+[こちら](https://github.com/littlemex/samples/tree/main/mcp-sec-book/chapter09)に実装サンプルを配置しました。
+
 ```bash
 npm install express eventsource-parser node-fetch@3 typescript ts-node @types/express @types/node
 ```
 
-```typescript:server.ts
-import express from 'express';
-import { SSEMessage, CONFIG } from './types';
+https://github.com/littlemex/samples/blob/main/mcp-sec-book/chapter09/server.ts
 
-const app = express();
+https://github.com/littlemex/samples/blob/main/mcp-sec-book/chapter09/client.ts
 
-// SSEエンドポイント
-app.get(CONFIG.ENDPOINT, (req, res) => {
-  console.log('クライアント接続: 新しいSSEセッション開始');
-  
-  // SSEヘッダーを設定
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  
-  // 初期メッセージ送信
-  sendMessage(res, { message: "接続確立" });
-  console.log('SSEイベント送信: 接続確立メッセージ');
-  
-  // 定期的なメッセージ送信
-  let count = 0;
-  const intervalId = setInterval(() => {
-    const data = { 
-      count: ++count, 
-      timestamp: new Date().toISOString() 
-    };
-    sendMessage(res, data);
-    console.log(`SSEイベント送信: カウント=${count}`);
-  }, CONFIG.INTERVAL_MS);
-  
-  // クライアント切断時の処理
-  req.on('close', () => {
-    clearInterval(intervalId);
-    console.log('SSEセッション終了: クライアント切断');
-  });
-});
-
-// メッセージ送信ヘルパー関数
-function sendMessage(res: express.Response, data: SSEMessage): void {
-  const eventId = `event-${Date.now()}`;
-  const message = `id: ${eventId}\ndata: ${JSON.stringify(data)}\n\n`;
-  res.write(message);
-}
-
-// サーバー起動
-app.listen(CONFIG.PORT, () => {
-  console.log(`サーバー起動: http://${CONFIG.HOST}:${CONFIG.PORT}`);
-  console.log(`SSEエンドポイント: http://${CONFIG.HOST}:${CONFIG.PORT}${CONFIG.ENDPOINT}`);
-});
-```
-
-```typescript:client.ts
-import { createParser, type EventSourceMessage } from 'eventsource-parser';
-import { SSEMessage, CONFIG } from './types';
-
-async function connectToSSE(): Promise<void> {
-  try {
-    const url = `http://${CONFIG.HOST}:${CONFIG.PORT}${CONFIG.ENDPOINT}`;
-    const response = await fetch(url, {
-      headers: { 'Accept': 'text/event-stream' }
-    });
-    
-    if (!response.ok) {
-      throw new Error(`HTTP エラー: ${response.status}`);
-    }
-    
-    console.log('SSE接続確立');
-    await processEventStream(response);
-    
-  } catch (error) {
-    console.error('接続エラー:', error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function processEventStream(response: Response): Promise<void> {
-  if (!response.body) {
-    throw new Error('レスポンスボディが空です');
-  }
-  
-  // 正しい形式でParserCallbacksオブジェクトを渡す
-  const parser = createParser({
-    onEvent(event: EventSourceMessage) {
-      if (event.data) {
-        try {
-          const data = JSON.parse(event.data) as SSEMessage;
-          console.log('受信データ:', data);
-        } catch {
-          console.log('生データ:', event.data);
-        }
-      }
-    },
-    onError(err) {
-      console.error('パースエラー:', err);
-    }
-  });
-  
-  const reader = response.body.getReader();
-  
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      
-      const chunk = new TextDecoder().decode(value);
-      parser.feed(chunk);
-    }
-  } catch (error) {
-    console.error('ストリーム処理エラー:', error instanceof Error ? error.message : String(error));
-  } finally {
-    console.log('SSE接続終了');
-  }
-}
-
-// SSE接続を開始
-connectToSSE();
-```
-
-```typescript:types.ts
-export interface SSEMessage {
-  count?: number;
-  timestamp?: string;
-  message?: string;
-}
-
-export const CONFIG = {
-  PORT: 3001,
-  HOST: 'localhost',
-  ENDPOINT: '/sse',
-  INTERVAL_MS: 1000
-};
-```
-
-```json:tsconfig.json
-{
-  "compilerOptions": {
-    "target": "ES2020",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "esModuleInterop": true,
-    "strict": true,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "outDir": "dist",
-    "lib": ["ES2020", "DOM"]
-  },
-  "include": ["*.ts"]
-}
-```
+https://github.com/littlemex/samples/blob/main/mcp-sec-book/chapter09/types.ts
