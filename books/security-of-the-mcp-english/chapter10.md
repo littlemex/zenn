@@ -7,11 +7,11 @@ ___Understanding MCP Implementation:___ _Explanation of developer-oriented knowl
 
 ---
 
-This chapter's explanation is based on the [specification](https://modelcontextprotocol.io/specification/2025-03-26) from 2025-03-26.
+This chapter's explanation is based on the [specification](https://modelcontextprotocol.io/specification/2025-06-18) from 2025-06-18.
 
 MCP Specification: **Base Protocol (We are here)**, Authorization, Client Features, Server Features, Security Best Practices
 
-In this Chapter, we will explain the [Client implementation](https://github.com/modelcontextprotocol/typescript-sdk/blob/1.12.1/src/client/streamableHttp.ts) and [Server implementation](https://github.com/modelcontextprotocol/typescript-sdk/blob/1.12.1/src/server/streamableHttp.ts) of Streamable HTTP in typescript-sdk (tag: 1.12.1). As explained in Chapter 09, Streamable HTTP uses HTTP and SSE to enable bidirectional communication. **We will explain the security-related implementation of Streamable HTTP in the next Chapter.**
+In this Chapter, we will explain the [Client implementation](https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/client/streamableHttp.ts) and [Server implementation](https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/streamableHttp.ts) of Streamable HTTP in typescript-sdk (tag: 1.13.2). As explained in Chapter 09, Streamable HTTP uses HTTP and SSE to enable bidirectional communication.
 
 Even with typescript-sdk, there may be vulnerable implementations. Since the implementation is still in its early stages, it should not be fully trusted, and vulnerability checks should be performed.
 
@@ -25,7 +25,7 @@ Another example is the [PCI Express](https://en.wikipedia.org/wiki/PCI_Express) 
 
 **1. Types of IDs**
 
-Returning to the Streamable HTTP specification, there are **1/ Message ID:** As already explained, the ID included in JSON-RPC 2.0 requests and responses. This ID ensures the uniqueness of messages within the JSON-RPC 2.0 scope and is necessary for consistency. **2/ Session ID:** Next, there's the session ID. As the name suggests, this ID is used to manage stateful sessions. **3/ Event ID:** Finally, there's the event ID. This concept is similar to the DLLP ID mentioned above, used to resume from the next message after the already transmitted event ID if a stream is disconnected. When a Client includes a `last-event-id` in the header of a GET request, the Server can use this header to replay messages and resume the stream.
+Returning to the Streamable HTTP specification, there are **1/ Message ID:** As already explained, the ID included in JSON-RPC 2.0 requests and responses. This ID ensures the uniqueness of messages within the JSON-RPC 2.0 scope and is necessary for consistency. **2/ Session ID:** Next, there's the session ID. As the name suggests, this ID is used to manage stateful sessions. Session ID must be **globally unique and cryptographically secure**. **3/ Event ID:** Finally, there's the event ID. This concept is similar to the DLLP ID mentioned above, used to resume from the next message after the already transmitted event ID if a stream is disconnected. When a Client includes a `last-event-id` in the header of a GET request, the Server can use this header to replay messages and resume the stream.
 
 **Although not mentioned in the specification**, **4/ Stream ID:** In the typescript-sdk implementation, there's also a stream ID assigned to each stream.
 
@@ -99,6 +99,8 @@ sequenceDiagram
 
 Based on the information about IDs and streams so far, **here are examples of ID and stream relationships in stateful and stateless modes.**
 
+> Event IDs are assigned per stream and function as cursors within that stream. Event IDs must be globally unique across all streams within a session.
+
 ```bash:ID management example in stateful mode
 Session ID: "1868a90c-5f3d-4b9a-b3a2-c8e0c92e1c0a"
 ├── GET Stream (Standalone SSE stream)
@@ -143,9 +145,9 @@ POST Stream 1 (Client A)
 └── ...
 
 POST Stream 2 (Client B)
-├── Event ID: "ev-101"
+├── Event ID: "ev-201"
 │   └── JSON-RPC ID: 1 (Client B request - different Client can use same ID)
-├── Event ID: "ev-102"
+├── Event ID: "ev-202"
 │   └── JSON-RPC ID: 1 (Server response)
 └── ...
 ```
