@@ -15,7 +15,7 @@ MCP Specification: **Base Protocol（今ここ）**、Authorization、Client Fea
 
 JSON-RPC 2.0 はトランスポート非依存ですが、MCP の場合は [STDIO](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#stdio) と [Streamable HTTP](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#streamable-http) という Client ↔︎ Server 間通信のための二つのトランスポートメカニズムを仕様として定義しています。これらのトランスポートがメッセージの送受信でどのように接続を取り扱うべきであるかについて仕様で定義されています。
 
-## Streamable HTTP
+## Streamable HTTP の要素技術
 
 Streamable HTTP トランスポートは、HTTP と [Server-Sent Events (SSE)](https://en.wikipedia.org/wiki/Server-sent_events) を組み合わせて双方向通信を実現します。STDIO トランスポートがサブプロセスを起動してイベントハンドラを介して双方向で通信するのに対し、Streamable HTTP はネットワーク経由で通信を行います。SSE は Server から Client へのリアルタイム通信を HTTP で実現するための技術です。Client から Server への HTTP リクエストと Server から Client への SSE を利用して MCP で必要な双方向通信を実現します。
 
@@ -123,6 +123,53 @@ STDIO と Streamable HTTP の簡単な機能比較表を作成しました。こ
 | 再接続機能 | なし | SSE の再開機能あり |
 | セッション管理 | プロセスの生存期間 | セッション管理可能 |
 
+
+## セキュリティ警告
+
+Streamable HTTP の仕様には **DNS Rebinding という攻撃手法の対策について明示的に対応を求める**セクションがあります。まず端的にこの攻撃が成功すると何が起こるのかを説明しましょう。DNS Rebinding が成功すると悪意のある Web サイトの Javascript コードがローカル・リモート問わず MCP Server と通信できるようになります。つまり、**攻撃者の悪意のある Javascript コードが MCP Server のツールを利用できてしまいます**。とても危険なのでセキュリティ警告としてセクションを設けて仕様を定義するのは当然ですね。
+
+DNS Rebinding は、Web ブラウザの Same-Origin Policy を回避する攻撃手法です。Same-Origin Policy は Web ブラウザに組み込まれたセキュリティ機能であり、ある Web ページ上のコードが異なるオリジンのリソースにアクセスすることを制限してくれます。
+
+```mermaid
+sequenceDiagram
+    participant ブラウザ
+    participant DNS
+    participant 攻撃者 Server
+    participant MCP Server
+    
+    Note over ブラウザ,MCP Server: 通常、ブラウザは同一オリジンポリシーにより<br>evil.example.com から localhost への直接アクセスは禁止
+    
+    ブラウザ->>DNS: evil.example.com の解決を要求
+    DNS-->>ブラウザ: 攻撃者の Server IP (1.2.3.4)
+    ブラウザ->>攻撃者 Server: evil.example.com にアクセス
+    攻撃者 Server-->>ブラウザ: 悪意ある JavaScript を返す
+    
+    Note over 攻撃者 Server: DNS レコードを変更<br>evil.example.com → 127.0.0.1
+    
+    ブラウザ->>DNS: evil.example.com の再解決
+    DNS-->>ブラウザ: 127.0.0.1 (MCP Server の IP)
+    
+    Note over ブラウザ: ブラウザは「evil.example.com」という<br>同じオリジンへのアクセスと認識
+    
+    ブラウザ->>MCP Server: evil.example.com として 127.0.0.1 にアクセス
+    MCP Server-->>ブラウザ: レスポンス
+```
+
+攻撃者は最初に悪意ある Web サイトに訪問者を誘導し、その後 DNS レコードを動的に変更することで、ブラウザに同じドメイン名が今度は localhost の MCP Server を指すように仕向けます。これにより、悪意ある Web サイトのコードが、本来アクセスできないはずの MCP Server と通信できるようになります。
+
+Streamable HTTP は HTTP と SSE を仕様してネットワーク経由で通信を行うため Web ブラウザからアクセスすることが可能であり、更には SSE で長時間接続を維持するため DNS Rebinding のリスクが非常に高いです。そのため仕様では 3 つのセキュリティ対策が求められています。
+
+**1. Origin ヘッダー検証**
+
+MCP Server は**全ての接続で Origin ヘッダーを検証しなければなりません**。このヘッダーはブラウザが自動的に設定し、リクエストの発信元を示します。Server は許可されたオリジンからのリクエストのみを受け付けるようにします。これにより、DNS Rebinding で悪意あるサイトからのリクエストが来た場合、その Origin が許可リストにないため拒否されます。
+
+**2. localhost のみへのバインド**
+
+ローカル実行時、MCP Server は `0.0.0.0` ではなく、localhost インターフェースのみにバインドすべきです。これにより、同じマシン上のプロセスからのみアクセス可能になり、ネットワーク経由の外部アクセスを防ぐことができます。
+
+**3. 認証**
+
+全ての接続に適切な認証メカニズムを実装すべきです。これによって未認証のアクセスを防ぎます。
 
 ## まとめ
 
