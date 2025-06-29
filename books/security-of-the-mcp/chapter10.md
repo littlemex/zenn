@@ -7,14 +7,11 @@ ___MCP に関する実装理解編:___  _MCP の脆弱性と対策を実装す�
 
 ---
 
-本章の説明は、2025-03-26 の[仕様](https://modelcontextprotocol.io/specification/2025-03-26)に基づきます。
+本章の説明は 2025-06-18 の[仕様](https://modelcontextprotocol.io/specification/2025-06-18)に基づきます。
 
 MCP Specification: **Base Protocol（今ここ）**、Authorization、Client Features、Server Features、Security Best Practices
 
-本 Chapter では Streamable HTTP の typescript-sdk(tag: 1.12.1) の [Client 実装](https://github.com/modelcontextprotocol/typescript-sdk/blob/1.12.1/src/client/streamableHttp.ts) と [Server 実装](https://github.com/modelcontextprotocol/typescript-sdk/blob/1.12.1/src/server/streamableHttp.ts) について解説します。Chapter09 で解説した通り Streamable HTTP は HTTP と SSE を利用して双方向通信を実現しています。**Streamable HTTP のセキュリティ関連実装については次回解説します。**
-
-
-typescript-sdk であっても脆弱な実装が含まれている可能性があります。まだ実装は初期の段階であるため完全に信用するのではなく脆弱性チェックを行うべきでしょう。
+本 Chapter では Streamable HTTP の typescript-sdk(tag: 1.13.2) の [Client 実装](https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/client/streamableHttp.ts) と [Server 実装](https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/streamableHttp.ts) について解説します。Chapter09 で解説した通り Streamable HTTP は HTTP と SSE を利用して双方向通信を実現しています。
 
 ## ID と ストリーム
 
@@ -26,7 +23,7 @@ Streamable HTTP は STDIO と比べて仕様が複雑で、HTTP GET/POST/(DELETE
 
 **1. ID の種類**
 
-Streamable HTTP の仕様に戻ると、**1/ メッセージ ID:** 既に解説した JSON-RPC 2.0 のリクエスト・レスポンスに含まれる ID があります。これは JSON-RPC 2.0 の scope でのメッセージの一意性を確保するための ID であり、整合性を取るために必要です。**2/ セッション ID:** 次に、セッション ID があります。これはその名の通りステートフルなセッションを管理するための ID です。**3/イベント ID:** 最後に イベント ID があります。これは上述した DLLP ID に近い概念で、ストリームが切断された場合でも既に送信できているイベント ID の次のメッセージから再開できるようにするために利用されます。 Client が GET リクエストのヘッダーに `last-event-id` を付与すると、Server はこのヘッダーを使用して、メッセージを再生してストリームを再開することができます。
+Streamable HTTP の仕様に戻ると、**1/ メッセージ ID:** 既に解説した JSON-RPC 2.0 のリクエスト・レスポンスに含まれる ID があります。これは JSON-RPC 2.0 の scope でのメッセージの一意性を確保するための ID であり、整合性を取るために必要です。**2/ セッション ID:** 次に、セッション ID があります。これはその名の通りステートフルなセッションを管理するための ID です。セッション ID は**グローバルに一意で暗号的に安全**であることが要求されます。**3/イベント ID:** 最後に イベント ID があります。これは上述した DLLP ID に近い概念で、ストリームが切断された場合でも既に送信できているイベント ID の次のメッセージから再開できるようにするために利用されます。 Client が GET リクエストのヘッダーに `last-event-id` を付与すると、Server はこのヘッダーを使用して、メッセージを再生してストリームを再開することができます。
 
 **仕様上は記載がありませんが**、**4/ ストリームID:** typescript-sdk の実装上、ストリーム ID というストリーム単位の ID が付与されています。
 
@@ -100,6 +97,8 @@ sequenceDiagram
 
 ここまでの ID とストリームの情報を踏まえて、**ステートフル、ステートレス、それぞれのモードでの ID とストリームの関係性を例示します。**
 
+> イベント ID はストリームごとに割り当てられ、そのストリーム内でのカーソルとして機能します。イベント ID は、セッション内の全ストリーム間でグローバルに一意である必要があります。
+
 ```bash:ステートフルモードの ID 管理の例
 セッション ID: "1868a90c-5f3d-4b9a-b3a2-c8e0c92e1c0a"
 ├── GET ストリーム (スタンドアロン SSE ストリーム)
@@ -144,9 +143,9 @@ POST ストリーム 1（Client A）
 └── ...
 
 POST ストリーム 2（Client B）
-├── イベント ID: "ev-101"
+├── イベント ID: "ev-201"
 │   └── JSON-RPC ID: 1（Client B リクエスト - 別 Client なので同じ ID でも可）
-├── イベント ID: "ev-102"
+├── イベント ID: "ev-202"
 │   └── JSON-RPC ID: 1（Server レスポンス）
 └── ...
 ```
@@ -159,86 +158,27 @@ POST ストリーム 2（Client B）
 
 `StreamableHTTPClientTransport` クラスは、 `Transport` インターフェースを実装し、MCP Server との通信を管理します。
 
-```typescript
-export class StreamableHTTPClientTransport implements Transport {
-  // プライベートプロパティ
-  private _abortController?: AbortController;
-  private _url: URL;
-  private _resourceMetadataUrl?: URL;
-  private _requestInit?: RequestInit;
-  private _authProvider?: OAuthClientProvider;
-  private _sessionId?: string;
-  private _reconnectionOptions: StreamableHTTPReconnectionOptions;
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/client/streamableHttp.ts#L119
 
-  // イベントハンドラ
-  onclose?: () => void;
-  onerror?: (error: Error) => void;
-  onmessage?: (message: JSONRPCMessage) => void;
-
-  // メソッド
-  constructor(url: URL, opts?: StreamableHTTPClientTransportOptions) { ... }
-  async start() { ... }
-  async finishAuth(authorizationCode: string): Promise<void> { ... }
-  async close(): Promise<void> { ... }
-  async send(message: JSONRPCMessage | JSONRPCMessage[], options?: { ... }): Promise<void> { ... }
-  async terminateSession(): Promise<void> { ... }
-}
-```
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/client/streamableHttp.ts#L347-L355
 
 `StdioClientTransport`や `StreamableHttpClientTransport` などの具体的なトランスポート実装がこの `Transport` インターフェースを継承します。`start()`、`close()`、`send(message: JSONRPCMessage)` などを `Transport` ではメソッドとして定義しています。この抽象化によってトランスポート層の接続の実現方法の違いを隠蔽します。
 
 **2. Client からのメッセージ送信**
 
+メッセージ送信は `send()` メソッドが担います。
+
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/client/streamableHttp.ts#L378
+
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/client/streamableHttp.ts#L388-L390
+
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/client/streamableHttp.ts#L447-L453
+
 Client から Server へのメッセージ送信を見ていきましょう。**1/ コンテンツタイプ:** 仕様上 Client は `Content-Type` に `text/event-stream` と `application/json` をサポートする必要があります。つまり、Client からの Post リクエストに対して Server が単純な単一の JSON レスポンスを返してくるか、SSE イベントストリームを返してくるかを判断して Client は適切に対応する必要があります。**2/ SSE イベントストリーム:** Server が `text/event-stream` を返却してきた場合、Server は接続を維持し、Client は `_handleSseStream` メソッドを通じて Server からストリームで受信したイベントを管理・パースします。そしていずれのコンテンツタイプの場合も JSON-RPC 2.0 メッセージを抽出してクライアントアプリケーションにメッセージ通知します。コードは割愛していますが `resumptionToken` という再開のためのトークンがある場合は SSE ストリームを再開します。
-
-```typescript:send() メソッドを一部抜粋
-async send(message: JSONRPCMessage | JSONRPCMessage[], options?: { resumptionToken?: string, onresumptiontoken?: (token: string) => void }): Promise<void> {
-    ...
-    // ヘッダーの設定
-    headers.set("accept", "application/json, text/event-stream");  // 両方のコンテンツタイプをサポート
-    ...
-    const response = await fetch( ... method: "POST", ... );
-
-    // セッション ID の処理
-    const sessionId = response.headers.get("mcp-session-id");
-    if (sessionId) {
-      this._sessionId = sessionId;
-    }
-
-    // レスポンスの処理
-    if (response.status === 202) {
-      // 202 Accepted の場合、通知が受け入れられた
-      if (isInitializedNotification(message)) {
-        this._startOrAuthSse({ resumptionToken: undefined }).catch(err => this.onerror?.(err));
-      }
-      return;
-    }
-    ...
-    if (hasRequests) {
-      const contentType = response.headers.get("content-type");
-      
-      if (contentType?.includes("text/event-stream")) {
-        // SSE ストリームの処理
-        this._handleSseStream(response.body, { onresumptiontoken });
-      } else if (contentType?.includes("application/json")) {
-        // JSON 直接レスポンスの処理
-        const data = await response.json();
-        const responseMessages = Array.isArray(data)
-          ? data.map(msg => JSONRPCMessageSchema.parse(msg))
-          : [JSONRPCMessageSchema.parse(data)];
-
-        for (const msg of responseMessages) {
-          this.onmessage?.(msg);
-        }
-      }
-    }
-  ...
-}
-```
 
 **2. Client のメッセージ受信**
 
-詳細は割愛しますが、`_startOrAuthSse()` メソッドでは `GET` リクエストを Client から発行することができます。これは上述した SSE ストリームを開くために使用できます。SSE ストリームは Client, Server 双方から一方的にいつでも閉じることができます。ネットワーク切断は常時発生し得る為、予期せぬ切断と終了（キャンセル）は明示的に区別されています。
+詳細は割愛しますが、`_startOrAuthSse()` メソッドでは `GET` リクエストを Client から発行することができます。これは上述した SSE ストリームを開くために使用できます。SSE ストリームは Client、Server 双方から一方的にいつでも閉じることができます。ネットワーク切断は常時発生し得る為、予期せぬ切断と終了（キャンセル）は明示的に区別されています。
 
 ## Server 実装
 
@@ -246,131 +186,35 @@ async send(message: JSONRPCMessage | JSONRPCMessage[], options?: { resumptionTok
 
 `StreamableHTTPServerTransport` クラスは、`Transport` インターフェースを実装し、MCP Client からのリクエストを処理します。
 
-```typescript
-export class StreamableHTTPServerTransport implements Transport {
-  // プライベートプロパティ
-  private sessionIdGenerator: (() => string) | undefined;
-  private _started: boolean = false;
-  private _streamMapping: Map<string, ServerResponse> = new Map();
-  private _requestToStreamMapping: Map<RequestId, string> = new Map();
-  private _requestResponseMap: Map<RequestId, JSONRPCMessage> = new Map();
-  private _initialized: boolean = false;
-  private _enableJsonResponse: boolean = false;
-  private _standaloneSseStreamId: string = '_GET_stream';
-  private _eventStore?: EventStore;
-  private _onsessioninitialized?: (sessionId: string) => void;
-
-  // パブリックプロパティ
-  sessionId?: string | undefined;
-  onclose?: () => void;
-  onerror?: (error: Error) => void;
-  onmessage?: (message: JSONRPCMessage, extra?: { authInfo?: AuthInfo }) => void;
-
-  // メソッド
-  constructor(options: StreamableHTTPServerTransportOptions) { ... }
-  async start(): Promise<void> { ... }
-  async handleRequest(req: IncomingMessage & { auth?: AuthInfo }, res: ServerResponse, parsedBody?: unknown): Promise<void> { ... }
-  async close(): Promise<void> { ... }
-  async send(message: JSONRPCMessage, options?: { relatedRequestId?: RequestId }): Promise<void> { ... }
-}
-```
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/streamableHttp.ts#L100
 
 **2. リクエストハンドラー**
 
 Server では Client からの HTTP リクエストのメソッドに応じて上述した GET/POST ストリーム処理を振り分けます。
 
-```typescript
-async handleRequest(req: IncomingMessage & { auth?: AuthInfo }, res: ServerResponse, parsedBody?: unknown): Promise<void> {
-  if (req.method === "POST") {
-    await this.handlePostRequest(req, res, parsedBody);
-  } else if (req.method === "GET") {
-    await this.handleGetRequest(req, res);
-  } else if (req.method === "DELETE") {
-    await this.handleDeleteRequest(req, res);
-  } else {
-    await this.handleUnsupportedRequest(res);
-  }
-}
-```
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/streamableHttp.ts#L139-L149
 
 GET ストリームは、`handleGetRequest` で扱い、**1/ Accept ヘッダー検証:** Client が SSE ストリームが受け入れ可能か確認し、**2/ 既存ストリーム確認:** `_streamMapping` で既存ストリーム有無を確認、**3/ ストリーム確立:** ストリームがなければストリームを登録、します。GET ストリームのための固定 ID は`_standaloneSseStreamId` で管理されています。この  GET ストリームのための ID はステートフルかステートレスかによらず `StreamableHTTPServerTransport` インスタンス内での上限は 1 つまでです。
 
-```typescript
-private async handleGetRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  // 1. Accept ヘッダーの検証
-  const acceptHeader = req.headers.accept;
-  if (!acceptHeader?.includes("text/event-stream")) {
-    res.writeHead(406).end( ... );
-    return;
-  }
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/streamableHttp.ts#L156-L159
 
-  // 2. 既存の GET ストリームの確認
-  if (this._streamMapping.get(this._standaloneSseStreamId) !== undefined) {
-    // 既に存在する場合は409 Conflictを返す
-    res.writeHead(409).end(JSON.stringify({
-      jsonrpc: "2.0",
-      error: {
-        code: -32000,
-        message: "Conflict: Only one SSE stream is allowed per session"
-      },
-      id: null
-    }));
-    return;
-  }
-  ...
-  // 3. ストリーム登録
-  this._streamMapping.set(this._standaloneSseStreamId, res);
-  ...
-}
-```
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/streamableHttp.ts#L201-L204
+
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/streamableHttp.ts#L218-L224
 
 POST ストリームは、`handlePostRequest` で扱い、**1/ Accept ヘッダー検証:** Client が SSE ストリームと JSON を受け入れ可能か確認し、**2/ リクエストボディをパース**、**3/ リクエスト有無:**  通知のようにリクエストを含まない場合は `202` で処理受付を返却、**4A/ リクエストを含む場合** は、ストリーム ID (UUID) を生成して JSON レスポンス、もしくは SSE ストリームを開始します。
 
-```typescript
-private async handlePostRequest(req: IncomingMessage, res: ServerResponse, parsedBody?: unknown): Promise<void> {
-  try {
-    // 1. Accept ヘッダーの検証
-    const acceptHeader = req.headers.accept;
-    if (!acceptHeader?.includes("application/json") || !acceptHeader.includes("text/event-stream")) { ... }
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/streamableHttp.ts#L293
 
-    // 2. ボディのパース
-    let rawMessage = parsedBody;
-    ...
-    // 3. リクエストの有無を確認
-    const hasRequests = messages.some(isJSONRPCRequest);
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/streamableHttp.ts#L295-L298
 
-    if (!hasRequests) {
-      // 4A. 通知やレスポンスのみの場合
-      res.writeHead(202).end();
-      ...
-    } else {
-      // 4B. リクエストを含む場合
-      const streamId = randomUUID();
-      
-      if (!this._enableJsonResponse) {
-        // SSE ストリームモード
-        const headers = {
-          "Content-Type": "text/event-stream",
-          "Cache-Control": "no-cache",
-          Connection: "keep-alive",
-        };
-        
-        res.writeHead(200, headers);
-      }
-      
-      // 5. ストリームとリクエストの関連付け
-      for (const message of messages) {
-        if (isJSONRPCRequest(message)) {
-          this._streamMapping.set(streamId, res);
-          this._requestToStreamMapping.set(message.id, streamId);
-        }
-      }
-      ...
-    }
-  ...
-  }
-}
-```
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/streamableHttp.ts#L327-L334
+
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/streamableHttp.ts#L399-L400
+
+> 4A. リクエストを含む場合
+
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/streamableHttp.ts#L413-L419
 
 **3. Server からのメッセージ送信**
 
@@ -378,30 +222,11 @@ Server からのメッセージ送信は Client 同様に `send()` メソッド�
 
 Client からのリクエストに対してのレスポンス send の場合は、JSON-RPC 2.0 の仕様に沿って、リクエストに含まれるメッセージ ID (JSON-RPC 2.0 ID) をそのまま使用します。メッセージ ID がない場合は GET ストリームなので、GET ストリームの有無を確認します。そして GET ストリーム ID が既に存在する場合は、イベント ID を生成して SSE イベントとして送信を行います。POST ストリームの場合の実装の詳細は割愛しますが、メッセージ ID に対応するストリームを探し、そのストリームへ SSE イベントとして送信を行います。
 
-```typescript
-async send(message: JSONRPCMessage, options?: { relatedRequestId?: RequestId }): Promise<void> {
-  let requestId = options?.relatedRequestId;
-  if (isJSONRPCResponse(message) || isJSONRPCError(message)) {
-    // レスポンスの場合、メッセージ自体の ID を使用
-    requestId = message.id;
-  }
-  ...
-  if (requestId === undefined) {
-    // イベント ID の生成と保存
-    let eventId: string | undefined;
-    if (this._eventStore) {
-      eventId = await this._eventStore.storeEvent(this._standaloneSseStreamId, message);
-    }
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/streamableHttp.ts#L572-L577
 
-    // SSE イベントとして送信
-    this.writeSSEEvent(standaloneSse, message, eventId);
-    return;
-  }
-```
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/streamableHttp.ts#L593-L598
 
-## Client ↔︎ Server 両方で実現される機能
-
-Client、Server それぞれの実装を確認するだけでは両方を通じて実現されている機能と一連の流れを理解することが難しいため、**再接続メカニズム**、**セッション管理**については Client, Server 両方の実装の確認が必要です。そして、これらはセキュリティに深く関わるため次回解説します。
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/streamableHttp.ts#L600-L603
 
 ## まとめ
 
