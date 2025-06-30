@@ -25,7 +25,7 @@ https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/client/st
 
 https://github.com/modelcontextprotocol/typescript-sdk/blob/main/src/shared/transport.ts#L29-L83
 
-`StdioClientTransport`や `StreamableHttpClientTransport` などの具体的なトランスポート実装がこの `Transport` インターフェースを継承します。`start()`、`close()`、`send(message: JSONRPCMessage)` などを `Transport` ではメソッドとして定義しています。この抽象化によってトランスポート層の接続の実現方法の違いを隠蔽します。（FIXME: ここの説明が怪しいのでチェックしてほしい）
+`StdioClientTransport`や `StreamableHttpClientTransport` などの具体的なトランスポート実装がこの `Transport` インターフェースを継承します。`start()`、`close()`、`send(message: JSONRPCMessage)` などを `Transport` ではメソッドとして定義しています。この抽象化によってトランスポート層の接続の実現方法の違いを隠蔽します。
 
 **2. 環境変数の継承**
 
