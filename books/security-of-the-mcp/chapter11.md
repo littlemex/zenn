@@ -7,11 +7,11 @@ ___MCP に関する実装理解編:___  _MCP の脆弱性と対策を実装す�
 
 ---
 
-本章の説明は、2025-03-26 の[仕様](https://modelcontextprotocol.io/specification/2025-03-26)に基づきます。
+本章の説明は、2025-06-18 の[仕様](https://modelcontextprotocol.io/specification/2025-06-18)に基づきます。
 
 MCP Specification: **Base Protocol（今ここ）**、Authorization、Client Features、Server Features、Security Best Practices
 
-本 Chapter では Streamable HTTP の typescript-sdk(tag: 1.12.1) の [Client 実装](https://github.com/modelcontextprotocol/typescript-sdk/blob/1.12.1/src/client/streamableHttp.ts) と [Server 実装](https://github.com/modelcontextprotocol/typescript-sdk/blob/1.12.1/src/server/streamableHttp.ts) について解説します。**本 Chapter では Streamable HTTP のセキュリティ関連実装、とりわけ、セッション管理、について主に解説します。**
+本 Chapter では Streamable HTTP の typescript-sdk(tag: 1.13.2) の [Client 実装](https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/client/streamableHttp.ts) と [Server 実装](https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/streamableHttp.ts) について解説します。**本 Chapter では Streamable HTTP のセキュリティ関連実装、とりわけ、セッション管理、について主に解説します。**
 
 Streamable HTTP は複数 Client を Server に接続することができ、これは API 同様に MCP Server を多数のユーザーに提供するような形態を想定しているはずです。そのため本 Chapter では **MCP Server を提供する際に提供者側が考慮すべきセキュリティ**、の視点で主に解説します。
 
@@ -21,18 +21,9 @@ Streamable HTTP は複数 Client を Server に接続することができ、こ
 
 セッションは皆さんにとって馴染み深いものですよね。そして、その危険性も十分に承知されていると思います。例えば、セッションハイジャックは、攻撃者がログイン中の利用者のセッション ID をなんらかの方法によって不正に取得し、セッションをのっとります。通常のウェブサイトではあるユーザー A が ID/Password でログインすると、アプリケーションはユーザー A にセッション ID を返却します。このセッション ID が有効な期間はこのセッション ID を利用してアプリケーションにアクセスできます。つまり、セッション ID をなんらかの方法で攻撃者が取得できてしまうとアプリケーションを不正に利用できてしまいます。**ただし、MCP のセッションは MCP 仕様に基づくセッション定義であり、一般的な HTTP の世界のセッションとは異なります。** Cookie を利用しているわけではなく、`mcp-session-id` というカスタム HTTP ヘッダーの送受信を利用してセッション管理を実現します。この ID は `StreamableHTTPClientTransport` インスタンス内のプライベート変数に保存され、後続リクエストで `mcp-session-id` ヘッダーにセッション ID を設定します。このセッション ID は認証情報そのものというわけでもありません。
 
-```typescript:セッション ID の保存
-export class StreamableHTTPClientTransport implements Transport {
-  private _sessionId?: string;  // ここにセッションIDが保存される
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/client/streamableHttp.ts#L119-L125
 
-  private async _commonHeaders(): Promise<Headers> {
-    const headers = new Headers();
-    ...
-    // セッションIDがあればヘッダーに追加
-    if (this._sessionId) {
-      headers.set("mcp-session-id", this._sessionId);
-    }
-```
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/client/streamableHttp.ts#L174-L176
 
 セッション ID を悪用されることのリスクは一般的なセッション ID と似ており、攻撃者がセッション ID を入手することで、正規ユーザーになりすまし、そのユーザー権限で MCP ツールを呼び出すことができます。これによって攻撃者は悪意のあるクライアントインスタンスを起動して盗んだセッション ID を使用し、その人のみがアクセスできるべきツールやその先にあるデータ等にアクセスできてしまいます。
 
@@ -82,38 +73,23 @@ sequenceDiagram
 
 これらのことから、セッション ID の適切な実装の多くを SDK 利用者側に委ねており、SDK を利用すれば安全と過信せずに **MCP Server を提供する際には細心の注意を払ってセキュリティチェックを実施してください。**
 
-> セッション初期化に関連する実装箇所
+> セッション初期化に関連する実装箇所: Server
 
-```typescript
-// Client 実装 ------------------------------------------------
-// StreamableHTTPClientTransport クラスの send メソッド内
-const response = await fetch(this._url, {
-  method: "POST",
-  headers,
-  body: JSON.stringify(message),
-  signal: this._abortController?.signal,
-});
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/streamableHttp.ts#L293
 
-// セッション ID 受信処理
-const sessionId = response.headers.get("mcp-session-id");
-if (sessionId) {
-  this._sessionId = sessionId;
-}
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/streamableHttp.ts#L385-L396
 
-// Server 実装 ------------------------------------------------
-// StreamableHTTPServerTransport クラスの handlePostRequest メソッド内
-// 初期化リクエスト処理
-if (isInitializationRequest) {
-  // セッション ID 生成
-  this.sessionId = this.sessionIdGenerator?.();
-  this._initialized = true;
+初期化リクエスト処理でセッション ID を生成してヘッダーに追加します。
 
-  // セッション ID 通知
-  if (this.sessionId !== undefined) {
-    headers["mcp-session-id"] = this.sessionId;
-  }
-}
-```
+> セッション初期化に関連する実装箇所: Client
+
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/client/streamableHttp.ts#L378
+
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/client/streamableHttp.ts#L392-L398
+
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/client/streamableHttp.ts#L400-L406
+
+レスポンスから セッション ID である `mcp-session-id` ヘッダーを取得します。
 
 **2. セッション ID の保存**
 
@@ -131,17 +107,9 @@ Node.js では、モジュールはメモリ空間を共有しています。`St
 
 > _[Node.js caching:](https://nodejs.org/api/modules.html#caching)_ Modules are cached after the first time they are loaded. This means (among other things) that every call to require('foo') will get exactly the same object returned, if it would resolve to the same file.
 
-```typescript
-// src/server/streamableHttp.ts
-export class StreamableHTTPServerTransport implements Transport {
-  // パブリックプロパティとして宣言
-  sessionId?: string | undefined;
-  // ...
-}
-```
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/streamableHttp.ts#L113
 
 最後に、私が実装箇所を見逃しているだけであれば良いのですがセッション ID の明示的なクリーンアップ処理が見当たりません。セッション ID は `StreamableHTTPServerTransport` クラスのインスタンスに紐づいたパブリックプロパティであるため、このインスタンスとクリーンアップに関するライフサイクルを共にします。
-> これ自体も複数セッション ID を持てないので実装上問題がある気はしますが・・、Server のスケールアウトは期待できませんね。
 
 Node.js のガベージコレクションは、参照がなくなった時に実施されるため、参照が残っている場合にはこのインスタンスは生存します。これは **1/** メモリリークの発生、**2/** 長時間セッション ID が残り続けるセキュリティ上のリスク、の問題があります。一般的なセッション管理と同様に Redis などのセッションストアを利用してスケールアウトの容易性を考慮することも重要でしょう。そして定期的な ID 再検証、クリーンアップ、の実施も必要です。
 
@@ -171,36 +139,11 @@ Node.js のガベージコレクションは、参照がなくなった時に実
 
 リソース枯渇攻撃への対応についてはアプリケーションレベルで当然ケアすべきですが、**インフラストラクチャレベルでコンテナ利用、WAF の適用などの対応を入れることが非常に重要**です。当然リソース状況を [Amazon CloudWatch](https://aws.amazon.com/jp/cloudwatch/) で**監視することは必須**です。リソースに応じてスケーリングさせる場合、セッション管理を Redis に委ねるなどのスケールを意識したステート情報の考慮が必要でしょう。
 
-```typescript:脆弱性のある実装部分
-// Server 実装 ------------------------------------------------
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/streamableHttp.ts#L350-L363
 
-// セッション初期化フラッディング
-if (isInitializationRequest) {
-  if (this._initialized && this.sessionId !== undefined) {
-    res.writeHead(400).end(JSON.stringify({
-      jsonrpc: "2.0",
-      error: {
-        code: -32600,
-        message: "Invalid Request: Server already initialized"
-      },
-      id: null
-    }));
-    return;
-  }
-  this.sessionId = this.sessionIdGenerator?.();
-  this._initialized = true;
-}
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/streamableHttp.ts#L375-L376
 
-// リソース枯渇攻撃
-// Store the response for this request to send messages back through this connection
-// We need to track by request ID to maintain the connection
-for (const message of messages) {
-  if (isJSONRPCRequest(message)) {
-    this._streamMapping.set(streamId, res);
-    this._requestToStreamMapping.set(message.id, streamId);
-  }
-}
-```
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/streamableHttp.ts#L428-L435
 
 ## まとめ
 
