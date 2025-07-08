@@ -11,7 +11,7 @@ ___MCP に関する実装理解編:___  _MCP の脆弱性と対策を実装す�
 
 MCP Specification: Base Protocol、**Authorization（今ここ）**、Client Features、Server Features、Security Best Practices
 
-本 Chapter では Streamable HTTP の typescript-sdk(tag: 1.12.1) の [Client 実装](https://github.com/modelcontextprotocol/typescript-sdk/blob/1.12.1/src/client/streamableHttp.ts) と [Server 実装](https://github.com/modelcontextprotocol/typescript-sdk/blob/1.12.1/src/server/streamableHttp.ts) について解説します。**本 Chapter では Streamable HTTP のセキュリティ関連実装、とりわけ、認可、について主に解説します。** 前の Chapter で認可に関する仕様を解説しましたが、まだ実装側は完全に仕様に追従できていないケースもあるでしょう。認可 Server の実装詳細に関してはそもそも仕様外です。本 Chapter では **MCP Server 実装者の視点**で主に解説します。MCP Client や認可 Server を AWS でどのように実装すべきか、については今後解説します。
+本 Chapter では Streamable HTTP の typescript-sdk(tag: 1.13.2) の [Client 実装](https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/client/streamableHttp.ts) と [Server 実装](https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/streamableHttp.ts) について解説します。**本 Chapter では Streamable HTTP のセキュリティ関連実装、とりわけ、認可、について主に解説します。** 前の Chapter で認可に関する仕様を解説しましたが、まだ実装側は完全に仕様に追従できていないケースもあるでしょう。認可 Server の実装詳細に関してはそもそも仕様外です。本 Chapter では **MCP Server 実装者の視点**で主に解説します。MCP Client や認可 Server を AWS でどのように実装すべきか、については今後解説します。
 
 ## 認可
 
@@ -38,21 +38,21 @@ ___ID 02, 04, 05, 06: OAuthProtectedResourceMetadataSchema___
 
 このスキーマは RFC9728 に準拠したリソースメタデータの構造を定義しています。必須フィールドの `resource` と `authorization_servers` が定義されていますね。
 
-https://github.com/modelcontextprotocol/typescript-sdk/blob/1.12.1/src/shared/auth.ts#L3-L23
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/shared/auth.ts#L6-L23
 
 ___ID 01: mcpAuthMetadataRouter___
 
 この`mcpAuthMetadataRouter` メソッドはリソースメタデータエンドポイントを設定する Express ルーターを提供し、[`metadataHandler`](https://github.com/modelcontextprotocol/typescript-sdk/blob/1.12.1/src/server/auth/handlers/metadata.ts#L6-L19
 ) はメタデータを提供するエンドポイントハンドラーを提供します。`/.well-known/oauth-protected-resource` エンドポイントが実装されていますね。
 
-https://github.com/modelcontextprotocol/typescript-sdk/blob/1.12.1/src/server/auth/router.ts#L188-L211
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/auth/router.ts#L188-L211
 
 ___ID 03: requireBearerAuth___
 
 このメソッドは Bearer トークン検証を実施し、401 レスポンス時に適切なヘッダーを設定します。**1/** 認可ヘッダーから提供された`verifier`を使用してトークンを検証、**2/** 401 レスポンス時に `WWW-Authenticate` ヘッダーを設定、`resourceMetadataUrl` が指定されている場合、`resource_metadata`パラメータを含める、**3/** 認証成功時に `req.auth` に [`AuthInfo`](https://github.com/modelcontextprotocol/typescript-sdk/blob/0506addf35f422650658c5e665ea184e3115a184/src/server/auth/types.ts#L4) インタフェースで定義される認証情報を追加します。
 
-https://github.com/modelcontextprotocol/typescript-sdk/blob/1.12.1/src/server/auth/middleware/bearerAuth.ts#L40
-https://github.com/modelcontextprotocol/typescript-sdk/blob/1.12.1/src/server/auth/middleware/bearerAuth.ts#L67-L79
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/auth/middleware/bearerAuth.ts#L40
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/auth/middleware/bearerAuth.ts#L66-L79
 
 ### 2. トークン検証 (OAuth 2.1 / RFC8707)
 
@@ -76,31 +76,31 @@ ___ID 07, 09, 10, 11, 12: requireBearerAuth___
 
 **ID07:** **1/** `verifier.verifyAccessToken(token)` を呼び出してトークンを検証、**2/** 検証に成功すると `authInfo` を取得し、`req.auth` に設定
 
-https://github.com/modelcontextprotocol/typescript-sdk/blob/1.12.1/src/server/auth/middleware/bearerAuth.ts#L53
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/auth/middleware/bearerAuth.ts#L53
 
 **ID09:** **1/** `authInfo.expiresAt` が存在する場合は現在時刻と比較、**2/** 有効期限切れの場合は `InvalidTokenError` をスロー
 
-https://github.com/modelcontextprotocol/typescript-sdk/blob/1.12.1/src/server/auth/middleware/bearerAuth.ts#L67-L69
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/auth/middleware/bearerAuth.ts#L67-L69
 
 **ID10:** **1/** `requiredScopes` パラメータで必要なスコープを指定、**2/** トークンのスコープに必要なスコープがすべて含まれているか確認し、不足している場合は`InsufficientScopeError`をスロー
 
-https://github.com/modelcontextprotocol/typescript-sdk/blob/1.12.1/src/server/auth/middleware/bearerAuth.ts#L56-L63
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/auth/middleware/bearerAuth.ts#L56-L64
 
 **ID11:** **1/** `requiredScopes` パラメータでリソース固有のスコープを指定可能、異なるエンドポイントに異なるスコープ要件を設定可能
 
-https://github.com/modelcontextprotocol/typescript-sdk/blob/1.12.1/src/server/auth/middleware/bearerAuth.ts#L12-L15
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/auth/middleware/bearerAuth.ts#L15
 
 ___ID 08, 12: verifyAccessToken___
 
 `verifyAccessToken` はインターフェースとして定義されており、**RFC8707 に関するトークン検証は実装者が提供する必要があります。**MCP 仕様に追従する形で今後対応実装がなされると思われますが現状はトークンの audience (`aud` クレーム) を取得して自身のリソース URI と比較するなどの対応を入れる必要があります。
 
-https://github.com/modelcontextprotocol/typescript-sdk/blob/1.12.1/src/server/auth/provider.ts#L77-L82
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/auth/provider.ts#L79-L84
 
 ___ID 13: AuthorizationParams___
 
-`resource?` をパラメータに追加する必要があります。tag `1.12.1` では実装がありませんが `1.13.0` では実装が入っていました。
+`resource?` をパラメータに追加する必要があります。
 
-https://github.com/modelcontextprotocol/typescript-sdk/blob/1.12.1/src/server/auth/provider.ts#L6-L11
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/auth/provider.ts#L6-L12
 
 ## まとめ
 
