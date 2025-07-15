@@ -11,637 +11,380 @@ ___MCP に関する発展理解編:___  _MCP の脆弱性と対策を理解す�
 
 MCP Specification: Base Protocol、Authorization、**Client Features、Server Features（今ここ）**、Security Best Practices
 
-本 Chapter では MCP Client と MCP Server の機能を詳細に解説します。
+本 Chapter では Streamable HTTP の typescript-sdk(tag: 1.13.2) の [Client 実装](https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/client/streamableHttp.ts) と [Server 実装](https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/streamableHttp.ts) について解説します。**本 Chapter では  MCP Client と MCP Server の機能について主に解説します。**
+
+Client と Server は事前にお互いに宣言した機能のみを利用することができ、`listChanged` で変更があった際に通知するか否かを指定できます。
+この Chapter は機能の詳細なので利用が必要になった時に仕様と合わせて確認するのが良いでしょう。機能ごとに淡々と説明しているため読んでいて眠くなると思います。
+
+## MCP Server 機能概要
+
+MCP 仕様に基づいて、Server が提供する 3 つの主要機能の要点をおさらいしましょう。
+
+### Tools
+
+Tools は LLM が文脈理解に基づいて自動的にツールを発見・呼び出し可能です。ただしセキュリティ観点から常に Human in the loop が推奨されます。
+
+- プロトコルメッセージ
+  - `tools/list`: 利用可能な Tools のリストを取得（ページネーションをサポート）
+  - `tools/call`: 指定された引数で Tools を呼び出す
+  - `notifications/tools/list_changed`: Tools リストが変更されたときの通知
+
+> サンプル
+
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/examples/server/mcpServerOutputSchema.ts#L18-L39
+
+このサンプルは、MCP Server に ___get_weather___ という天気情報取得ツールを定義しています。
+
+- **ツール名**: "get_weather" - LLM がこのツールを呼び出す際に使用する識別子
+- **説明**: "Get weather information for a city" - このツールの機能を簡潔に説明
+- **入力スキーマ**:
+  - ツールが正しく動作するために必要な入力パラメータを定義
+  - city: 文字列型で、都市名を指定するパラメータ
+  - country: 文字列型で、国コード（例：US, UK）を指定するパラメータ
+- **出力スキーマ**:
+  - このツールが返すデータの構造と型を厳密に定義
+  - temperature: 温度情報を含むオブジェクト
+  - celsius: 摂氏温度（数値）...
+
+
+### Resources
+
+Resources はホストアプリケーションがニーズに基づいてコンテキストを組み込む方法を決定します。
+
+- プロトコルメッセージ
+  - `resources/list`: 利用可能な Resources のリストを取得
+  - `resources/read`: Resources の内容を取得
+  - `resources/templates/list`: パラメータ化された Resources テンプレートを取得
+  - `notifications/resources/list_changed`: Resources リストが変更されたときの通知
+  - `resources/subscribe`: 特定の Resources の変更を購読（オプション）
+  - `notifications/resources/updated`: Resources が更新されたときの通知（オプション）
+
+> サンプル
+
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/examples/server/simpleStreamableHttp.ts#L308-L326
+
+このサンプルは、MCP Server に ___greeting-resource___ という Resources を定義しています。この定義は、LLM が参照できる静的なコンテンツを提供するためのものです。Tools は特定の機能を実行し、入力に基づいて動的な結果を返しますが、Resources は主に静的コンテンツを提供し、通常は入力パラメータを受け取りません。Resources は LLM が参照コンテンツを提供しますが、直接 LLM への指示とはなりません。プロンプトは LLM への指示を構造化します。
+
+- **リソース名**: 'greeting-resource' - このリソースを識別するための名前
+- **URI**: 'https://example.com/greetings/default' - このリソースの一意の識別子として使用される URI。実際のウェブアドレスである必要はなく、リソースを識別するための論理的な ID として機能。
+- **メタデータ**:
+  - title: 'Default Greeting' - UIに表示される名前
+  - description: 'A simple greeting resource' - このリソースの目的を説明
+  - mimeType: 'text/plain' - リソースのコンテンツタイプを指定
+
+### Prompts
+
+Prompts により Client は利用可能なプロンプトを検索し、その内容を取得し、引数を指定してカスタマイズすることができます。
+
+- プロトコルメッセージ
+  - `prompts/list`: 利用可能な Prompts のリストを取得
+  - `prompts/get`: 指定された引数で特定の Prompts を取得
+  - `notifications/prompts/list_changed`: Prompts リストが変更されたときの通知
+
+> サンプル
+
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/examples/server/simpleStreamableHttp.ts#L242-L264
+
+このサンプルは MCP Server に ___greeting-template___ というプロンプトテンプレートを定義しています。このプロンプト定義は、LLM が特定のパラメータを使って構造化された挨拶メッセージを生成するためのテンプレートを提供します。
+
+- **プロンプト名**: 'greeting-template' - このプロンプトテンプレートを識別するための名前
+- **メタデータ**:
+  - title: 'Greeting Template' - UIに表示される名前
+  - description: 'A simple greeting prompt template' - このプロンプトテンプレートの目的を説明
+  - 引数スキーマ (argsSchema):
+    - name: 文字列型で、挨拶に含める名前を指定するパラメータ
 
 ## MCP Client 機能概要
 
+MCP 仕様に基づいて、Client が提供する 3 つの主要機能をおさらいしましょう。
 
+### Roots
 
+Roots は Client が Server にファイルシステムの操作可能な範囲を定義するための標準化された方法を提供します。これにより、Server はどのディレクトリやファイルにアクセスできるかを理解できます。
 
-1. **Roots（境界定義）**
-   - **役割**: サーバーの操作範囲を明確に制限
-   - **セキュリティ的位置づけ**: 防御の第一線（境界の明示的定義）
-   - **他機能との関係**: 他の全機能の基盤となる安全領域を確立
+- プロトコルメッセージ
+  - `roots/list`: Server が Client からルートのリストを取得するリクエスト
+  - `notifications/roots/list_changed`: ルートリストが変更されたときの通知
 
-2. **Sampling（AI機能利用）**
-   - **役割**: サーバーがクライアント経由でLLM機能を利用
-   - **セキュリティ的位置づけ**: 最も高いリスク要因（外部実行）
-   - **他機能との関係**: Rootsで定義された境界内でのみ動作すべき
+### Sampling
 
-3. **Elicitation（情報収集）**
-   - **役割**: サーバーがユーザーから構造化データを収集
-   - **セキュリティ的位置づけ**: 中程度のリスク（情報漏洩の可能性）
-   - **他機能との関係**: 収集した情報がSamplingの入力になる可能性
+Sampling は、Server からの LLM 利用リクエストを処理し、ユーザー承認を管理する機能です。この機能により、Server は Client のモデルアクセス、選択、権限を維持しながら LLM を活用できます。
 
-## 2. 具体的なユースケースと実装パターン
+- プロトコルメッセージ
+  - `sampling/createMessage`: Server が Client に対して LLM サンプリングのためのメッセージ作成をリクエストするメソッド。プロンプト、モデル設定、サンプリングパラメータなどを含み、ユーザー承認を経て LLM からの応答を取得する
 
-### 統合ユースケース
+### Elicitation
 
-1. **インテリジェントなコード補完と分析**
-   - **Roots**: プロジェクトディレクトリの境界を定義
-   - **Sampling**: コード分析と改善提案をLLMに依頼
-   - **Elicitation**: 開発者の意図や追加情報を収集
+Elicitation は、 Server からの情報収集リクエストを処理し、ユーザーからの入力を管理する機能です。この機能により、Server はユーザーから構造化されたデータを収集するためのフォームを Client に表示させることができます。
 
-2. **セキュアなデータ処理パイプライン**
-   - **Roots**: データアクセス可能な領域を厳格に制限
-   - **Sampling**: データ変換や分析をLLMに依頼
-   - **Elicitation**: 処理パラメータや設定をユーザーから収集
+- プロトコルメッセージ
+  - `elicitation/create`: Server が Client を通じてユーザーから構造化データを収集するためのリクエスト。入力スキーマ、説明、タイトルなどを含み、ユーザーからの入力を検証して返す
 
-3. **マルチステップのAIアシスタント**
-   - **Roots**: ユーザーデータへのアクセス境界を設定
-   - **Sampling**: 複雑な質問応答や推論をLLMに依頼
-   - **Elicitation**: 追加情報や明確化をユーザーから収集
+> サンプル
 
-### 実装パターン
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/examples/server/simpleStreamableHttp.ts#L97-L192
 
-```mermaid
-sequenceDiagram
-    participant User
-    participant Client
-    participant Server
-    participant LLM
-    
-    Server->>Client: roots/list要求
-    Client->>Server: 許可された境界を返却
-    Server->>Client: elicitation/create要求
-    Client->>User: 情報入力を要求
-    User->>Client: 情報を提供
-    Client->>Server: ユーザー情報を返却
-    Server->>Client: sampling/createMessage要求
-    Client->>User: LLM利用の承認を要求
-    User->>Client: 承認
-    Client->>LLM: プロンプト送信
-    LLM->>Client: 生成結果
-    Client->>User: 結果を表示
-    Client->>Server: 生成結果を返却
-```
+このサンプルは、MCP Server に ___collect-user-info___ というツールを定義しています。このツールは Elicitation 機能を使用してユーザーから情報を収集します。
 
-## 3. サンプリング機能のセキュリティ強化
+- **ツール名**: "collect-user-info" - LLM がこのツールを呼び出す際に使用する識別子
+- **説明**: "A tool that collects user information through elicitation" - このツールの機能を簡潔に説明
+- **入力パラメータ**:
+  - infoType: 収集する情報の種類を指定するパラメータ（'contact'、'preferences'、'feedback'のいずれか）
+- **処理内容**:
+  1. 指定された情報タイプに基づいて、メッセージとスキーマを構築
+  2. `server.server.elicitInput()` メソッドを呼び出してユーザー入力を要求
+  3. ユーザーの応答（accept、reject、cancel）に基づいて結果を返す
 
-### リスク分析
+## MCP Server 機能の実装詳細
 
-| リスク | 説明 | 影響度 |
-|-------|------|-------|
-| プロンプトインジェクション | 悪意あるサーバーが危険なプロンプトを送信 | 高 |
-| データ漏洩 | センシティブ情報がLLMに送信される | 高 |
-| リソース消費 | 過剰なAPI呼び出しによるコスト増加 | 中 |
-| 不適切な出力 | 有害なコンテンツの生成 | 中 |
+まずは 3 つの機能で共通の実装箇所について確認しましょう。
 
-### セキュリティ強化策
+**ストレージ**
 
-1. **多層防御アプローチ**
-   - **プロンプト検査**: すべてのプロンプトを送信前に検査
-   - **コンテンツフィルタリング**: 生成結果の自動スキャン
-   - **ユーザー承認**: すべてのサンプリング要求に明示的承認を要求
-   - **監査ログ**: すべてのサンプリング要求と結果を記録
+すべての機能は、登録されたアイテムを保存するためのプライベートコレクションを使用します。
 
-2. **技術的対策**
-   - **サンドボックス化**: サンプリング機能を分離環境で実行
-   - **レート制限**: サーバーごとの要求数を制限
-   - **コンテキスト制限**: 送信可能な情報量を制限
-   - **モデル選択制御**: 使用可能なモデルを制限
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/mcp.ts#L55-L66
 
-3. **ポリシーベースの制御**
-   - **サーバー認証**: 信頼できるサーバーのみサンプリングを許可
-   - **機能制限**: 特定のサーバーに特定の機能のみ許可
-   - **データポリシー**: センシティブデータの送信を禁止
-   - **ユーザー設定**: ユーザーごとの詳細な権限設定
+**変更通知**
 
-## 4. サンプリング機能の無効化とトレードオフ
+すべての機能は、`listChanged` 通知メカニズムを実装しています。
 
-### 無効化の方法
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/mcp.ts#L1050-L1054
+https://github.com/modelcontextprotocol/typescript-sdk/blob/c6ac083b1b37b222b5bfba5563822daa5d03372e/src/server/index.ts#L379-L381
 
-1. **クライアント設定レベル**
-   - 初期化時に`sampling`機能を宣言しない
-   - サンプリング要求に対してエラーを返す
-   - サーバーに機能非対応を通知
+**機能管理**
 
-2. **ポリシーレベル**
-   - サーバーごとに選択的に無効化
-   - 特定の条件下でのみ有効化
-   - 承認フローの厳格化
+すべての登録されたアイテムは、`enables: true` などの同様の管理メソッドを提供します。これらは機能の状態を動的に制御するためのメソッドであり、これらのメソッドによって Server 実行中に機能の有効化や更新などが可能になります。
 
-3. **アーキテクチャレベル**
-   - サンプリング機能を持たない代替実装の提供
-   - プロキシを介した間接的なサンプリング
+https://github.com/modelcontextprotocol/typescript-sdk/blob/c6ac083b1b37b222b5bfba5563822daa5d03372e/src/server/mcp.ts#L768-L792
 
-### 無効化のデメリット
+**機能アサーションと検証**
 
-1. **機能的制限**
-   - サーバーの高度なAI機能が利用不可に
-   - 複雑な推論や生成タスクの実行不可
-   - ユーザー体験の質の低下
+Server の実装には、機能が適切に宣言されていることを確認するための機能アサーションが含まれています。これは宣言外の機能が使用されることを防止するために重要です。
 
-2. **開発への影響**
-   - サーバー開発者がAI機能を独自実装する必要性
-   - 代替手段の実装コスト増加
-   - 標準化されたアプローチの欠如
+https://github.com/modelcontextprotocol/typescript-sdk/blob/c6ac083b1b37b222b5bfba5563822daa5d03372e/src/server/index.ts#L207
+https://github.com/modelcontextprotocol/typescript-sdk/blob/c6ac083b1b37b222b5bfba5563822daa5d03372e/src/server/index.ts#L244-L250
 
-3. **エコシステムへの影響**
-   - サーバー間の互換性低下
-   - 機能の断片化
-   - 開発者エクスペリエンスの複雑化
+https://github.com/modelcontextprotocol/typescript-sdk/blob/c6ac083b1b37b222b5bfba5563822daa5d03372e/src/server/index.ts#L160
+https://github.com/modelcontextprotocol/typescript-sdk/blob/c6ac083b1b37b222b5bfba5563822daa5d03372e/src/server/index.ts#L181-L186
 
-### バランスの取れたアプローチ
+### Tools
 
-```mermaid
-graph LR
-    A[サンプリング機能] --> B{リスク評価}
-    B -->|高リスク| C[完全無効化]
-    B -->|中リスク| D[制限付き有効化]
-    B -->|低リスク| E[完全有効化]
-    
-    D --> D1[承認フロー強化]
-    D --> D2[モデル制限]
-    D --> D3[コンテキスト制限]
-    
-    E --> E1[標準的な監査]
-    E --> E2[定期的なレビュー]
-```
+**入出力のスキーマ検証**
 
-最も推奨されるアプローチは、リスクに応じた段階的な制限です：
+Tools は入力引数と出力結果の両方をスキーマに対して検証します。
 
-1. **信頼レベルに基づく制御**
-   - 検証済みサーバーには広範な機能を許可
-   - 未検証サーバーには制限付き機能のみ許可
-   - 不審なサーバーには機能を完全に無効化
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/mcp.ts#L160-L169
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/mcp.ts#L203-L221
 
-2. **コンテキスト認識型セキュリティ**
-   - 処理するデータの機密性に応じて制限を調整
-   - ユーザーの操作コンテキストに基づいて承認フローを変更
-   - システムの状態に応じてポリシーを動的に適用
+**アノテーション**
 
-3. **継続的なモニタリングと適応**
-   - サンプリング要求と結果の継続的な監視
-   - 異常パターンの検出と自動対応
-   - セキュリティポリシーの定期的な見直しと更新
+Tools は `readOnlyHint`、`destructiveHint` などのアノテーションをサポートします。これらのアノテーションは、ツールの動作特性や安全性に関する重要なメタデータを提供します。これらは ___ヒント___ として機能し、Client がツールをどのように扱うべきかを理解するのに役立ちます。
 
-## 結論
+例えば、`readOnlyHint` はツールが読み取り専用操作であり、データの変更を行わないことを示します。ただしアノテーションはヒントであり、保証ではないためセキュリティ上の決定に単独で使用すべきではなく、ユーザーの権限や設定に基づいて最終的な判断を行わなければなりません。
 
-MCPのクライアント機能は、適切に実装・管理することで強力かつ安全なAIアプリケーションの構築を可能にします。特にサンプリング機能は、その強力さゆえに最も注意深い取り扱いが必要です。完全な無効化よりも、リスクに応じた多層防御アプローチを採用し、ユーザーに適切な制御を提供することが、セキュリティとユーザビリティのバランスを取る最適な方法と言えるでしょう。
+https://github.com/modelcontextprotocol/typescript-sdk/blob/c6ac083b1b37b222b5bfba5563822daa5d03372e/src/types.ts#L844
+https://github.com/modelcontextprotocol/typescript-sdk/blob/c6ac083b1b37b222b5bfba5563822daa5d03372e/src/types.ts#L854
 
-## Server 機能概要
+### Resources
 
-## Client 機能: Roots
+**URI テンプレート**
 
-# MCP Roots機能の解説
+Resources は URI テンプレートという機能を持っています。
 
-## 概要
-Roots機能は、Model Context Protocol (MCP)において、サーバーがファイルシステム上でアクセス可能な範囲を定義・管理するための重要な機能です。これは、AIモデルとファイルシステムとの安全な統合を実現する上で重要な役割を果たします。
+例えば `https://example.com/users/{userId}` というテンプレートを設定します。これに対して実際の URI が `https://example.com/users/123` だった場合は、変数として `{ userId: "123" }` が抽出されます。抽出した変数に基づいて、適切なリソース内容を生成するような使い方ができます。
 
-## 主な特徴
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/mcp.ts#L422-L431
 
-### 1. 境界の定義
-- サーバーが操作可能なファイルシステムの範囲を明確に定義
-- 各rootは一意のURI（file://形式）で識別
-- オプションで人間が読みやすい名前を付与可能
+### Prompts
 
-### 2. 動作の仕組み
-```mermaid
-sequenceDiagram
-    Client->>Server: roots/list要求
-    Server->>Client: ルート一覧を返却
-    Note over Client,Server: リストが変更された場合
-    Client->>Server: notifications/roots/list_changed通知
-```
+**引数検証**
 
-### 3. 実装要件
-クライアント側：
-- 初期化時に`roots`機能サポートを宣言
-- `listChanged`機能のサポート有無を明示
-- ルートリストの変更時に通知を送信
+Prompts ではプロンプト引数のスキーマに対する検証を行います。
 
-サーバー側：
-- `roots/list`メソッドの実装
-- 提供されたルート範囲内での操作の遵守
-- 適切なエラーハンドリング
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/mcp.ts#L503-L512
 
-## セキュリティ考慮事項
+### 初期化フロー
 
-1. アクセス制御
-- クライアントは適切な権限を持つルートのみを公開
-- パストラバーサル攻撃の防止
-- アクセス権限の継続的な監視
+MCP Server の初期化フローは、以下のステップで構成されます。
 
-2. 境界の遵守
-- サーバーは提供されたルート範囲内でのみ操作を実行
-- すべてのパスに対する厳密な検証
-- ルートの可用性変更への対応
+**1. Server インスタンスの作成**
 
-## 実装例
+Server の初期化は、`Server` クラスまたは` McpServer` クラスのインスタンスを作成で始まり、Server の名前、バージョン、Capabilities 宣言、などを指定します。
+
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/streamableHttp.test.ts#L83-L86
+
+Server の Capabilities は、初期化時に宣言するか、後から `registerCapabilities` メソッドを使用して登録できます。接続後に機能を追加しようとすると例外が発生します。
+
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/index.ts#L118-L126
+
+一例として Tools の宣言を示します。
+
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/streamableHttp.test.ts#L88-L95
+
+**2. Transport への接続**
+
+Server は Client との通信を確立するために Transport に接続します。
+
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/streamableHttp.test.ts#L97-L103
+
+**3. Client との初期化ハンドシェイク**
+
+Server 側の初期化ハンドラで互換性のあるプロトコルを決定し初期化結果を返却します。
+
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/index.ts#L105-L107
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/index.ts#L260-L277
+
+Client 側からの initiaize リクエストによって機能とバージョンの互換性の確認等を行ないます。
+
+## MCP Client 機能の実装詳細
+
+まずは 3 つの機能で共通の実装箇所について確認しましょう。
+
+**機能アサーションと検証**
+
+Client の実装にも、機能が適切に宣言されていることを確認するための機能アサーションが含まれています。
+
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/client/index.ts#L300-L307
+
+### Roots
+
+Roots 機能は、Server からのファイルシステム操作リクエストに対して、指定されたパスが許可されたルートディレクトリ内にあるかを検証します。
+
+Client はルートリストが変更されたときに Server に通知できます。
+
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/client/index.ts#L516-L518
+
+Server 側は Client からルートのリストを要求できます。
+
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/index.ts#L351-L360
+
+Roots 機能は、アクセス可能なディレクトリのリストを管理し、Server からのリクエストに応じて提供します。
+
+### Sampling
+
+Sampling 機能は、Client 側と Server 側の両方に実装があります。
+
+**Client 実装**
+
+Client 側では、`sampling/createMessage` リクエストを処理するためのハンドラを設定します。
+
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/client/index.test.ts#L584-L593
+
+Client は、`assertRequestHandlerCapability` メソッドで `sampling/createMessage` リクエストをサポートしているかどうかを確認します：
+
+**Server 実装**
+
+Server 側では、`createMessage` メソッドを提供して、Client に Sampling リクエストを送信します(v1.15.1 でサンプル実装追加)
+
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.15.1/src/examples/server/toolWithSampleServer.ts#L22-L45
+
+**モデル選択の仕組み**
+
+MCP では、Server からは Client がどのモデルに対応しているかは統制を取ることができないため LLM モデル選択に抽象化が必要です。Server は以下の方法でモデル選択の設定を指定できます。
+
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/types.ts#L1068-L1079
+
+1. **機能の優先度**: 3つの正規化された優先度値（0-1）を使用
+   - `costPriority`: コスト最小化の重要度（高い値は安価なモデルを優先）
+   - `speedPriority`: 低レイテンシーの重要度（高い値は高速なモデルを優先）
+   - `intelligencePriority`: 高度な機能の重要度（高い値は高性能なモデルを優先）
+
+2. **モデルヒント**: 特定のモデルまたはモデルファミリーを提案
+   - ヒントはモデル名に柔軟に一致するサブ文字列として扱われる
+   - 複数のヒントは優先順位に従って評価される
+   - Client は異なるプロバイダーの同等のモデルにヒントをマッピングできる
+
+> 一例
+
 ```typescript
-// ルート定義の例
 {
-  "uri": "file:///home/user/projects/myproject",
-  "name": "My Project"
-}
-
-// 複数リポジトリの例
-[
-  {
-    "uri": "file:///home/user/repos/frontend",
-    "name": "Frontend Repository"
-  },
-  {
-    "uri": "file:///home/user/repos/backend",
-    "name": "Backend Repository"
-  }
-]
-```
-
-## ユースケース
-
-1. プロジェクト管理
-- 特定のプロジェクトディレクトリへのアクセス制限
-- 複数のリポジトリの同時管理
-- ワークスペース境界の定義
-
-2. セキュリティ制御
-- センシティブなファイルへのアクセス防止
-- プロジェクト間の分離
-- アクセス権限の動的管理
-
-この機能により、MCPサーバーは安全かつ効率的にファイルシステムとやり取りすることが可能となり、AIモデルとの統合をセキュアに実現できます。
-
-## Client 機能: Sampling
-
-# MCP サンプリング機能の解説
-
-## 概要
-サンプリング（Sampling）機能は、Model Context Protocol (MCP) において、サーバーがクライアントを通じて言語モデル（LLM）の生成機能を利用するための標準化された方法を提供します。この機能により、サーバーはAPI鍵を持たなくても、クライアントを介してAI機能を活用できるようになります。
-
-## 主な特徴
-
-### 1. エージェント的な振る舞いの実現
-```mermaid
-sequenceDiagram
-    Server->>Client: sampling/createMessage要求
-    Note over Client: ユーザーに承認を求める
-    Client->>LLM: プロンプト送信
-    LLM->>Client: 生成結果
-    Note over Client: ユーザーに結果を表示
-    Client->>Server: 生成結果を返却
-```
-
-### 2. モデル選択の抽象化
-サーバーは直接モデル名を指定するのではなく、以下の要素を組み合わせて希望を表現します：
-
-1. **能力の優先度**（0〜1の正規化された値）
-   - `costPriority`: コスト最小化の重要度
-   - `speedPriority`: 低レイテンシーの重要度
-   - `intelligencePriority`: 高度な能力の重要度
-
-2. **モデルヒント**
-   - 特定のモデルやモデルファミリーを提案可能
-   - クライアントは異なるプロバイダーの同等モデルにマッピング可能
-   - 複数のヒントは優先順位順に評価される
-
-### 3. マルチモーダル対応
-サンプリング機能は以下の種類のコンテンツをサポート：
-- テキスト
-- 画像
-- 音声
-
-## 実装要件
-
-### クライアント側
-- 初期化時に`sampling`機能サポートを宣言
-- ユーザーの承認フローを実装（信頼性と安全性のため）
-- モデル選択ロジックの実装
-- レート制限の実装
-
-### サーバー側
-- `sampling/createMessage`メソッドの実装
-- 適切なメッセージ構造の構築
-- エラーハンドリングの実装
-
-## セキュリティ考慮事項
-
-1. **ユーザー承認**
-   - サンプリング要求の内容をユーザーに表示
-   - プロンプトの編集機能の提供
-   - 生成結果のレビュー機能
-
-2. **データ保護**
-   - センシティブデータの適切な処理
-   - プロンプトと生成結果の検証
-
-## 実装例
-```typescript
-// サンプリング要求の例
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "sampling/createMessage",
-  "params": {
-    "messages": [
-      {
-        "role": "user",
-        "content": {
-          "type": "text",
-          "text": "フランスの首都は何ですか？"
-        }
-      }
-    ],
-    "modelPreferences": {
-      "hints": [
-        {
-          "name": "claude-3-sonnet"
-        }
-      ],
-      "intelligencePriority": 0.8,
-      "speedPriority": 0.5
-    },
-    "systemPrompt": "あなたは役立つアシスタントです。",
-    "maxTokens": 100
-  }
-}
-
-// サンプリング応答の例
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "result": {
-    "role": "assistant",
-    "content": {
-      "type": "text",
-      "text": "フランスの首都はパリです。"
-    },
-    "model": "claude-3-sonnet-20240307",
-    "stopReason": "endTurn"
-  }
+  "hints": [
+    { "name": "claude-3-7-sonnet" }, // Sonnet クラスのモデルを優先
+    { "name": "claude" }           // 任意の Claude モデルにフォールバック
+  ],
+  "costPriority": 0.3,            // コストはあまり重要ではない
+  "speedPriority": 0.8,           // 速度は非常に重要
+  "intelligencePriority": 0.5     // 中程度の能力が必要
 }
 ```
 
-## ユースケース
+Client はこれらの設定を処理して、利用可能なオプションから適切なモデルを選択します。
 
-1. **ツール拡張**
-   - サーバーが提供するツールがLLMの能力を活用
-   - 複雑なタスクの自動化
+**Sampling フロー**
 
-2. **コンテキスト強化**
-   - サーバーが持つコンテキストをLLMに提供
-   - より適切な応答の生成
+モデル選択と LLM 呼び出しは、実際の実装ではホストアプリケーション側で行われることが多いため、SDK には具体的な実装がありません。
 
-3. **マルチモーダル処理**
-   - 画像や音声を含む複雑な入力の処理
-   - 多様なメディア形式での応答
+1: Server は `createMessage` メソッドを呼び出して、Client に LLM のサンプリングを要求します。
 
-この機能により、MCPサーバーはクライアントを介してLLMの能力を安全かつ効率的に活用できるようになり、より高度なAIアプリケーションの開発が可能になります。
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/server/index.ts#L302-L311
 
-## Client 機能: Elicitation
+2: Client は `sampling/createMessage` リクエストを受け取り、ユーザーに承認を求めます。
 
-# MCP Elicitation機能の解説
+3: ユーザーが承認すると、Client はモデル選択の設定に基づいて適切なモデルを選択します。
 
-## 概要
-Elicitation（引き出し）機能は、Model Context Protocol (MCP) の2025-06-18バージョンで新たに導入された機能で、サーバーがクライアントを通じてユーザーから追加情報を動的に収集するための標準化された方法を提供します。この機能により、サーバーは必要に応じてユーザーから構造化されたデータを収集できるようになり、よりインタラクティブなワークフローの実現が可能になります。
+4: Client は LLM を使用してテキスト、画像、または音声を生成します。
 
-## 主な特徴
+5: Client は生成された結果を Server に返します。
 
-### 1. 構造化されたデータ収集
-```mermaid
-sequenceDiagram
-    Server->>Client: elicitation/create要求
-    Note over Client: ユーザーに情報入力を求める
-    Note over Client: 入力データをスキーマに基づき検証
-    Client->>Server: ユーザー応答を返却
-```
+**セキュリティ考慮事項**
 
-### 2. JSONスキーマによる検証
-サーバーは要求するデータの構造をJSONスキーマで定義し、クライアントはこのスキーマを使用して：
-- 適切な入力フォームを生成
-- ユーザー入力を送信前に検証
-- ユーザーへのガイダンスを提供
+Sampling 機能を実装する際には、セキュリティ上の考慮事項に注意する必要があります。**1/ ユーザー承認**: Client は常にユーザー承認コントロールを実装すべき、**コンテンツ検証**: Client/Server ともにメッセージの内容を検証すべき、**3/ レート制限**: Client はレート制限を実装して過剰な使用を防ぐべき、**4/ 機密データ処理**: Client/Server は機密データを適切に処理すべき、です。
 
-### 3. 明確な応答アクション
-ユーザーの応答は3種類のアクションで区別されます：
-1. **Accept**（承諾）: ユーザーが明示的に承認し、データを提出
-2. **Reject**（拒否）: ユーザーが明示的に要求を拒否
-3. **Cancel**（キャンセル）: ユーザーが明示的な選択をせずに閉じた
+### Elicitation
 
-## サポートされるスキーマタイプ
+Elicitation 機能は、Server からのユーザー入力要求を処理し、構造化されたデータを収集するための重要な機能です。ここでは、その実装詳細について説明します。
 
-### 1. 文字列型
-```json
-{
-  "type": "string",
-  "title": "表示名",
-  "description": "説明文",
-  "minLength": 3,
-  "maxLength": 50,
-  "pattern": "^[A-Za-z]+$",
-  "format": "email"
-}
-```
-サポートされるフォーマット: `email`, `uri`, `date`, `date-time`
+**リクエスト構造**
 
-### 2. 数値型
-```json
-{
-  "type": "number", // または "integer"
-  "title": "表示名",
-  "description": "説明文",
-  "minimum": 0,
-  "maximum": 100
-}
-```
+Elicitation リクエストは、以下の構造を持ちます。
 
-### 3. 真偽値型
-```json
-{
-  "type": "boolean",
-  "title": "表示名",
-  "description": "説明文",
-  "default": false
-}
-```
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/types.ts#L1210-L1232
 
-### 4. 列挙型
-```json
-{
-  "type": "string",
-  "title": "表示名",
-  "description": "説明文",
-  "enum": ["option1", "option2", "option3"],
-  "enumNames": ["オプション1", "オプション2", "オプション3"]
-}
-```
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/types.ts#L1203-L1208
 
-## 実装要件
+`PrimitiveSchemaDefinition` は 4 種類の型を持ちます。
 
-### クライアント側
-- 初期化時に`elicitation`機能サポートを宣言
-- ユーザーインターフェースの提供
-- スキーマに基づく入力検証
-- 明確な承認・拒否・キャンセルオプションの提供
+**Client 実装**
 
-### サーバー側
-- `elicitation/create`メソッドの実装
-- 適切なJSONスキーマの定義
-- 3種類の応答アクションの処理
+Client 側では、`elicitation/create` リクエストを処理するハンドラを実装します。
 
-## セキュリティ考慮事項
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/client/index.test.ts#L614-L623
 
-1. **情報の制限**
-   - サーバーは機密情報をElicitationで要求してはならない
-   - クライアントは要求元サーバーを明示する必要がある
+**Server 実装**
 
-2. **ユーザー制御**
-   - ユーザーはいつでも要求を拒否できる
-   - クライアントはレート制限を実装すべき
+Server 側では、`elicitInput` メソッドを使用して Client にユーザー入力を要求します。
 
-3. **データ検証**
-   - 両者はスキーマに基づいてデータを検証すべき
+https://github.com/modelcontextprotocol/typescript-sdk/blob/af61a086ae4346a844e4359679404e42361e724d/src/examples/server/simpleStreamableHttp.ts#L195-L210
 
-## 実装例
+このメソッドは以下の処理を行います。
 
-### シンプルなテキスト要求
-```json
-// 要求
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "elicitation/create",
-  "params": {
-    "message": "GitHubユーザー名を入力してください",
-    "requestedSchema": {
-      "type": "object",
-      "properties": {
-        "name": {
-          "type": "string"
-        }
-      },
-      "required": ["name"]
-    }
-  }
-}
+1. Client に `elicitation/create` リクエストを送信
+2. Client からの応答を待機
+3. 応答の `action` が "accept" の場合、`content` を要求されたスキーマに対して検証
+4. 検証に成功した場合、結果を返す
 
-// 応答（承諾）
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "result": {
-    "action": "accept",
-    "content": {
-      "name": "octocat"
-    }
-  }
-}
-```
+**実装例: collect-user-info ツール**
 
-### 構造化データ要求
-```json
-// 要求
-{
-  "jsonrpc": "2.0",
-  "id": 2,
-  "method": "elicitation/create",
-  "params": {
-    "message": "連絡先情報を入力してください",
-    "requestedSchema": {
-      "type": "object",
-      "properties": {
-        "name": {
-          "type": "string",
-          "description": "氏名"
-        },
-        "email": {
-          "type": "string",
-          "format": "email",
-          "description": "メールアドレス"
-        },
-        "age": {
-          "type": "number",
-          "minimum": 18,
-          "description": "年齢"
-        }
-      },
-      "required": ["name", "email"]
-    }
-  }
-}
+https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/examples/server/simpleStreamableHttp.ts#L93-L113
 
-// 応答（拒否）
-{
-  "jsonrpc": "2.0",
-  "id": 2,
-  "result": {
-    "action": "reject"
-  }
-}
-```
+`collect-user-info` ツールは、Elicitation 機能を使用してユーザーから情報を収集する例です。
 
-## ユースケース
+**セキュリティ上の考慮事項**
 
-1. **ユーザー情報収集**
-   - アカウント設定の更新
-   - プロフィール情報の収集
+Elicitation 機能を実装する際には、以下のセキュリティ上の考慮事項に注意する必要があります。
 
-2. **設定と環境**
-   - ユーザー設定の取得
-   - 環境変数の設定
+1. **入力検証**: ユーザー入力は常にスキーマに対して厳密に検証し、不正な入力を拒否する
+2. **機密情報の扱い**: パスワードなどの機密情報を収集する場合は、適切なセキュリティ対策を講じる
+3. **ユーザー承認**: ユーザーが入力を拒否またはキャンセルできるようにする
+4. **スキーマ検証**: Server から送信されたスキーマ自体も検証し、不正なスキーマを拒否する
 
-3. **フォーム入力**
-   - 構造化されたデータ入力
-   - 検証付きのユーザー入力
-
-4. **インタラクティブなワークフロー**
-   - 段階的な情報収集
-   - 条件付きの質問フロー
-
-この機能により、MCPサーバーはユーザーとより豊かなインタラクションを実現でき、動的なデータ収集を通じてより高度なサービスを提供できるようになります。
-
-## Server 機能: Prompts
-
-## Server 機能: Resources
-
-## Server 機能: Tools
-
-
-
-
-接続再開機能・・
-
-このセクションは Client Feature
-
-サーバーは高度に組み合わせ可能であるべき
-複数のサーバーをシームレスに組み合わせ可能
-サーバーは会話全体を読んだり、他のサーバーを「覗き見る」ことができるべきではない
-完全な会話履歴はホストに保持される（脆弱性）
-各サーバー接続は分離を維持（LLM の不確定性により命令の分離が困難）
-サーバー間の相互作用はホストによって制御される（脆弱性）
-サーバーとクライアントに段階的に機能を追加できる
-プロトコルは将来の拡張性を考慮して設計
-後方互換性は維持される
-
-対策・注意3: 設定ファイルで使える記法を活用する
-MCP ClientによってはMCPの設定ファイルの認証情報部分を外部から差し込むことが可能です。例えば、VS Code（GitHub Copilot）では、設定ファイルのmcp.jsonでVariable Referenceという記法が使えます。この記法を利用することで、設定ファイルに平文で直に書いていた認証情報を${env:APIKEY}のように環境変数から埋めこむこともできたり、${input:password}のように起動時に都度入力させることもできます。設定ファイルがどのように書けるかはMCP Clientによって様々なので、MCP Clientを選択するにあたってはこの辺りの機能についても確認しましょう
-
-toolhive がええかな
-
-
-このセクションは Server Feature
-
-サーバーは高度に組み合わせ可能であるべき
-複数のサーバーをシームレスに組み合わせ可能
-サーバーは会話全体を読んだり、他のサーバーを「覗き見る」ことができるべきではない
-完全な会話履歴はホストに保持される（脆弱性）
-各サーバー接続は分離を維持（LLM の不確定性により命令の分離が困難）
-サーバー間の相互作用はホストによって制御される（脆弱性）
-サーバーとクライアントに段階的に機能を追加できる
-プロトコルは将来の拡張性を考慮して設計
-後方互換性は維持される
-
-クライアントアプリケーションがMCPサーバーに接続するとき、tools/listメソッドを通じてサーバーが提供するツールについて問い合わせる必要があります。サーバーはツールの説明で応答し、クライアントはそれをモデルのコンテキストに追加して、利用可能なツールを知らせます。
-
-ここに tools/list のような流れをここで説明する
-
-
-
-
-listChanged: リスト変更通知のサポート（プロンプト、リソース、ツール向け）
-subscribe: 個別アイテムの変更購読サポート（リソース専用）
-これのセキュリティ上の重要性を検討
-
+Elicitation 機能は、Server がユーザーから構造化されたデータを収集するための強力なメカニズムを提供します。適切に実装することで、ユーザーとのインタラクションを向上させ、より豊かな機能を実現することができます。
 
 ## まとめ
+
+Server と Client の機能について確認しました。利用する際のセキュリティの考慮事項を大別すると、1/ 入力の検証と制限、2/ ユーザー承認、3/ 機密データの保護、4/ 機能宣言、があります。
+
+1/ 全体を通して入出力の厳格な検証が最も重要なセキュリティ対策です。Tools やE licitation での入力スキーマ検証、Prompts での引数検証、Roots でのパス検証など、すべての機能で不正な入力を防ぐ仕組みが実装されています。特に Server 側からのリクエストや Client 側からの応答は、必ず定義されたスキーマに対して検証され、不正なデータは拒否されています。2/ Sampling や Elicitation などの機能では、ユーザー承認が重要な安全機構として機能します。LLM の利用やユーザー情報の収集といった重要な操作は、必ずユーザーの明示的な承認を経て実行されるべきです。これにより、ユーザーは常に処理の流れを制御でき、意図しない操作を防止できます。3/ SamplingやElicitationでは機密データの適切な処理が求められます。4/ 接続前の機能宣言と接続後の機能追加禁止により後から不正に機能を利用することを防止します。
+
+これらのセキュリティ考慮事項は相互に関連しており、アプリケーションレイヤ以外の対策も含めて総合的に実装することで MCP の安全な運用が可能になります。LLM の能力を安全に活用するためには、これらのセキュリティ対策を適切に実装することが不可欠です。
