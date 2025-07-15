@@ -16,6 +16,10 @@ MCP Specification: Base Protocol、Authorization、**Client Features、Server Fe
 Client と Server は事前にお互いに宣言した機能のみを利用することができ、`listChanged` で変更があった際に通知するか否かを指定できます。
 この Chapter は機能の詳細なので利用が必要になった時に仕様と合わせて確認するのが良いでしょう。機能ごとに淡々と説明しているため読んでいて眠くなると思います。
 
+> MCP コンポーネント図の再掲
+
+![040101](/images/books/security-of-the-mcp/fig_c04_s01_01.png)
+
 ## MCP Server 機能概要
 
 MCP 仕様に基づいて、Server が提供する 3 つの主要機能の要点をおさらいしましょう。
