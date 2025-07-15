@@ -364,12 +364,6 @@ https://github.com/modelcontextprotocol/typescript-sdk/blob/af61a086ae4346a844e4
 3. 応答の `action` が "accept" の場合、`content` を要求されたスキーマに対して検証
 4. 検証に成功した場合、結果を返す
 
-**実装例: collect-user-info ツール**
-
-https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/examples/server/simpleStreamableHttp.ts#L93-L113
-
-`collect-user-info` ツールは、Elicitation 機能を使用してユーザーから情報を収集する例です。
-
 **セキュリティ上の考慮事項**
 
 Elicitation 機能を実装する際には、以下のセキュリティ上の考慮事項に注意する必要があります。
