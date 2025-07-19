@@ -38,3 +38,9 @@ MCP はツール提供の標準化に強い価値があります。これは Saa
 本書では **SaaS コラム** で本文内容を補足する SaaS に関する解説を行います。
 
 [SaaS](https://ja.wikipedia.org/wiki/Software_as_a_Service) には Multitenancy という概念があります。例えば、SaaS サービスには、企業 A、企業 B といった複数の企業（や部門）がテナントとして存在します。このテナントの更に先にはエンドユーザーがいます。一例として、会計 SaaS サービスでは、企業 A のエンドユーザーに会計サービスを提供します。企業 A の a さん、のようにテナントという論理的な単位でユーザーを管理します。SaaS サービスをツールや MCP として提供する場合、テナントを考慮した 1/ 認証認可、2/ アクセス流量の制御、3/ コスト設計、などが必要となるでしょう。テナント単位でメタデータやアプリケーションのデータが異なるようなケースでは、AI アプリケーションはテナントデータを考慮したプロンプト設計が求められるでしょう。SaaS ではテナント間のデータ漏洩があってはなりません。そのため テナント分離に関する追加対応が必要となり、セキュリティ対策に関する実装上の難易度がより一層高まります。
+
+
+
+https://pages.awscloud.com/rs/112-TZM-766/images/AWS%E6%9F%B4%E7%94%B0_SaaS_on_AWS%E3%81%AB%E3%81%8A%E3%81%91%E3%82%8B%E8%AA%8D%E8%A8%BC%E8%AA%8D%E5%8F%AF%E3%81%AE%E5%AE%9F%E8%A3%85%E3%83%8F%E3%82%9A%E3%82%BF%E3%83%BC%E3%83%B3.pdf
+
+https://aws.amazon.com/jp/blogs/news/saas-authentication-identity-management-with-amazon-cognito-user-pools/

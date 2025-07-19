@@ -1,5 +1,5 @@
 ---
-title: ""
+title: "19 あるべき姿"
 ---
 
 !!!!全体感を語る!!!!
@@ -8,6 +8,9 @@ title: ""
 ここでアーキテクチャ全体像（aws サービスによらない) を示す
 
 技術と運用で話を分ける、Server 提供者、利用者の視点を忘れずに
+
+https://docs.litellm.ai/docs/mcp#using-your-mcp-with-client-side-credentials
+https://christina04.hatenablog.com/entry/mcp-architecture-pattern
 
 1. 不確定性を対策しなきゃ
 
@@ -22,6 +25,8 @@ Explorer – これが mlflow とかとどう連携できそうなのか？
 2. ゲートウェイパターン
 
 LLM, MCP Server の前段にゲートウェイを挟む
+
+**use-mcp** を使った認可
 
 
 3. トレース、ログ
