@@ -23,38 +23,46 @@ Protocol には様々な種類があります。例えば、認証 Protocol、�
 
 ## MCP ライフサイクルとは何なのか？
 
-**MCP のライフサイクルは MCP という Protocol の中で接続確立から終了までの一連のフェーズを手順として定めた**ものです。[MCP specification](https://modelcontextprotocol.io/specification/2025-03-26) のすべての説明は、手順ごとにデータフォーマットをどう定め、それらをどう使いこなすのか、ということを説明していることが理解できると、情報を整理しやすくなるのではないでしょうか。
+**MCP のライフサイクルは MCP という Protocol の中で接続確立から終了までの一連のフェーズを手順として定めた**ものです。
+
+[MCP specification](https://modelcontextprotocol.io/specification/2025-06-18) のすべての説明は、手順ごとにデータフォーマットをどう定め、それらをどう使いこなすのか、ということを説明していることが理解できると、情報を整理しやすくなるのではないでしょうか。
 
 > MCP の仕様は HTTP などのトランスポート層や実装に委ねるケースがあります。そのため、MCP のメッセージフォーマットで定義がある機能なのか、トランスポート層や実装側に委ねられている機能なのか、を明確に区別しながら仕様を読むことをお勧めします。
 
-
 ```mermaid
 sequenceDiagram
-    participant クライアント
-    participant サーバー
-
-    Note over クライアント,サーバー: 初期化フェーズ
-    activate クライアント
-    クライアント->>+サーバー: initialize リクエスト
-    サーバー-->>クライアント: initialize レスポンス
-    クライアント--)サーバー: initialized 通知
-
-    Note over クライアント,サーバー: 操作フェーズ
-    rect rgb(200, 220, 250)
-        note over クライアント,サーバー: 通常のプロトコル操作
-    end
-
-    Note over クライアント,サーバー: シャットダウン
-    クライアント--)-サーバー: 切断
-    deactivate サーバー
-    Note over クライアント,サーバー: 接続終了
+participant クライアント
+participant サーバー
+Note over クライアント,サーバー: 初期化フェーズ
+activate クライアント
+クライアント->>+サーバー: initialize リクエスト
+サーバー-->>クライアント: initialize レスポンス
+クライアント--)サーバー: initialized 通知
+Note over クライアント,サーバー: 操作フェーズ
+rect rgb(200, 220, 250)
+note over クライアント,サーバー: 通常のプロトコル操作
+end
+Note over クライアント,サーバー: シャットダウン
+クライアント--)-サーバー: 切断
+deactivate サーバー
+Note over クライアント,サーバー: 接続終了
 ```
 
 ライフサイクルの Phase には、1/ Initialization、2/ Operation、3/ Shutdown、があります。
 
-Initialize に関してはリクエストオブジェクトの _method_ が `initialize` になっていることで判断できます。Operation については _method_ に `initialize` 以外が入っている場合の全てを示します。Shutdown については特定のメッセージは定義されておらず、Client または Server が一方的にプロトコル接続を基盤となるトランスポート層のメカニズムでクリーンに終了します。
+Initialize に関してはリクエストオブジェクトの *method* が `initialize` になっていることで判断できます。Operation については *method* に `initialize` 以外が入っている場合の全てを示します。Shutdown については特定のメッセージは定義されておらず、Client または Server が一方的にプロトコル接続を基盤となるトランスポート層のメカニズムでクリーンに終了します。
 
 Initialization Phase では、1/ Capability Negotiation、2/ Version Negotiation、を Server と Client の間で合意します。 Capability Negotiation では Client、Server 双方がセッション中に利用可能な機能について合意します。Version Negotiation では MCP 自体の Protocol Version を合意します。
+
+## Version Negotiation（バージョンネゴシエーション）
+
+クライアントは `initialize` リクエストで、サポートするプロトコルバージョンを送信する必要があります。これは通常、クライアントがサポートする最新バージョンであるべきです。
+
+サーバーが要求されたプロトコルバージョンをサポートしている場合、同じバージョンで応答する必要があります。そうでない場合、サーバーは自身がサポートする別のプロトコルバージョンで応答する必要があります。これは通常、サーバーがサポートする最新バージョンであるべきです。
+
+クライアントがサーバーの応答のバージョンをサポートしていない場合、接続を切断すべきです。
+
+## Capabilities（機能ネゴシエーション）
 
 > Capabilities
 
@@ -71,12 +79,14 @@ Initialization Phase では、1/ Capability Negotiation、2/ Version Negotiation
 | Server | completions    | 引数の自動補完をサポート                                             |
 | Server | experimental   | 非標準の実験的機能のサポートを記述                                   |
 
+Capability オブジェクトは以下のようなサブ機能を記述できます：
+
+- `listChanged`: リスト変更通知のサポート（プロンプト、リソース、ツール向け）
+- `subscribe`: 個別アイテムの変更購読サポート（リソース専用）
+
 **Initialization Phase のオブジェクト例**
 
-_Client: リクエストオブジェクト_
-
-> - `listChanged`: リスト変更通知のサポート（プロンプト、リソース、ツール向け）
-> - `subscribe`: 個別アイテムの変更購読サポート（リソース専用）
+*Client: リクエストオブジェクト*
 
 ```json
 {
@@ -84,29 +94,31 @@ _Client: リクエストオブジェクト_
   "id": 1,
   "method": "initialize",
   "params": {
-    "protocolVersion": "2025-06-18",
+    "protocolVersion": "2024-11-05",
     "capabilities": {
       "roots": {
         "listChanged": true
       },
-      "sampling": {}
+      "sampling": {},
+      "elicitation": {}
     },
     "clientInfo": {
       "name": "ExampleClient",
+      "title": "Example Client Display Name",
       "version": "1.0.0"
     }
   }
 }
 ```
 
-_Server: レスポンスオブジェクト_
+*Server: レスポンスオブジェクト*
 
 ```json
 {
   "jsonrpc": "2.0",
   "id": 1,
   "result": {
-    "protocolVersion": "2025-06-18",
+    "protocolVersion": "2024-11-05",
     "capabilities": {
       "logging": {},
       "prompts": {
@@ -122,6 +134,7 @@ _Server: レスポンスオブジェクト_
     },
     "serverInfo": {
       "name": "ExampleServer",
+      "title": "Example Server Display Name",
       "version": "1.0.0"
     },
     "instructions": "Optional instructions for the client"
@@ -129,7 +142,7 @@ _Server: レスポンスオブジェクト_
 }
 ```
 
-_Client: 初期化完了通知_
+*Client: 初期化完了通知*
 
 ```json
 {
@@ -138,9 +151,37 @@ _Client: 初期化完了通知_
 }
 ```
 
+## 重要な制約事項
+
+- クライアントは、サーバーが `initialize` リクエストに応答する前に、ping 以外のリクエストを送信すべきではありません。
+- サーバーは、`initialized` 通知を受信する前に、ping とログ出力以外のリクエストを送信すべきではありません。
+
 ## タイムアウトとエラーハンドリング
 
 MCP の実装では、**リクエストのタイムアウトとエラーハンドリングが重要な要素**です。実装では、すべての送信リクエストにタイムアウトを設定することが推奨されています。これにより、接続の停止やリソースの枯渇を防ぐことができます。
+
+実装は以下のエラーケースに対処できるよう準備すべきです：
+
+- プロトコルバージョンの不一致
+- 必要な機能のネゴシエーション失敗
+- リクエストタイムアウト
+
+初期化エラーの例：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "error": {
+    "code": -32602,
+    "message": "Unsupported protocol version",
+    "data": {
+      "supported": ["2024-11-05"],
+      "requested": "1.0.0"
+    }
+  }
+}
+```
 
 ## まとめ
 
