@@ -94,7 +94,7 @@ Capability オブジェクトは以下のようなサブ機能を記述できま
   "id": 1,
   "method": "initialize",
   "params": {
-    "protocolVersion": "2024-11-05",
+    "protocolVersion": "2025-06-18",
     "capabilities": {
       "roots": {
         "listChanged": true
@@ -118,7 +118,7 @@ Capability オブジェクトは以下のようなサブ機能を記述できま
   "jsonrpc": "2.0",
   "id": 1,
   "result": {
-    "protocolVersion": "2024-11-05",
+    "protocolVersion": "2025-06-18",
     "capabilities": {
       "logging": {},
       "prompts": {
@@ -159,29 +159,6 @@ Capability オブジェクトは以下のようなサブ機能を記述できま
 ## タイムアウトとエラーハンドリング
 
 MCP の実装では、**リクエストのタイムアウトとエラーハンドリングが重要な要素**です。実装では、すべての送信リクエストにタイムアウトを設定することが推奨されています。これにより、接続の停止やリソースの枯渇を防ぐことができます。
-
-実装は以下のエラーケースに対処できるよう準備すべきです：
-
-- プロトコルバージョンの不一致
-- 必要な機能のネゴシエーション失敗
-- リクエストタイムアウト
-
-初期化エラーの例：
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "error": {
-    "code": -32602,
-    "message": "Unsupported protocol version",
-    "data": {
-      "supported": ["2024-11-05"],
-      "requested": "1.0.0"
-    }
-  }
-}
-```
 
 ## まとめ
 
