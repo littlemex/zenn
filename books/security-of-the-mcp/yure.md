@@ -1,4 +1,0 @@
-- STDIO
-- Client, Server
-- 認証・認可
-- Authorization -> 認可

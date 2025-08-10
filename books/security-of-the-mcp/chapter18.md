@@ -3,961 +3,281 @@ title: "§18 MCP 特有の攻撃手法への対策"
 free: true
 ---
 
+___MCP セキュリティに関する包括的な整理編:___ _MCP のセキュリティに対しての包括的な解説_
+
+---
+
 **本 Chapter では前章で紹介した MCP 特有の攻撃手法に対する対策を解説します。** MCP セキュリティの緩和策を体系的に整理し、各対策の実装方法について詳細に説明します。
 
-## MCP セキュリティ緩和表
+## AI リスクマネジメントの重要性
 
-以下の表は、MCP における主要な緩和カテゴリ、その内容、および対応できる代表的な攻撃例をまとめたものです。
+企業として MCP を提供するにせよ、導入するにせよ、MCP セキュリティの How の前に AI リスクマネジメントの基本的な考え方を理解することが重要です。NIST から [AI リスクマネジメントフレームワーク (AI RMF)](https://airc.nist.gov/airmf-resources/) が公開されており、[Appendix01](https://zenn.dev/tosshi/books/security-of-the-mcp/viewer/appendix01) に日本語訳があります。
 
-| 緩和カテゴリ | 緩和内容 | 緩和できる攻撃例 |
-|------------|---------|---------------|
-| セキュリティレビュー実施 | 組織での定期的なレビューの実施、MCP Server の検証プロセス確立 | Tool Poisoning Attack, Rug Pull Attack |
-| ツール説明検証 | ツール説明のサニタイズ、プロンプトインジェクションパターンの検出と除去 | Tool Poisoning Attack, Line Jumping Attack |
-| Server 分離とサンドボックス化 | MCP Server の実行環境分離、権限の最小化、Docker などによる隔離 | Tool Shadowing Attack, 認可設定不備を突いた攻撃 |
-| 認証・認可制御 | OAuth 2.1 準拠の認可実装、適切なスコープ設定、トークン管理 | Rug Pull Attack, 認可設定不備を突いた攻撃 |
-| 入出力検証 | ユーザー入力のサニタイズ、外部データの検証、URI の正規化 | Indirect Prompt Injection, 外部リソース汚染 |
-| 出力サニタイズと表示制御 | ANSI エスケープコードの無害化、ターミナル出力の検証、エスケープシーケンスの除去 | Terminal Deception Attack, ANSI エスケープコード脆弱性 |
-| 監視とログ記録 | ツール呼び出しの監視、異常検知システムの実装、セキュリティイベントの記録 | Tool Shadowing Attack, Consent Fatigue Attack |
-| バージョン管理と整合性検証 | ツールとパッケージのピン留め、ハッシュによる検証、変更検出、TOFU 検証 | Rug Pull Attack, Tool Poisoning Attack |
-| ユーザーインタラクション保護 | 重要操作の強調表示、リクエスト頻度の制限、明示的な確認要求 | Consent Fatigue Attack, ユーザー入力操作による攻撃 |
-| クロス Server 保護 | ツール名の名前空間分離、Server 間の厳格な境界設定 | Tool Shadowing Attack, Name Collision Attack |
-| ネットワークレベルの保護 | localhost バインディング、Origin ヘッダ検証、CORS 設定の適正化、外部接続の制限 | DNS Rebinding Attack, ブラウザ経由の攻撃 |
+本書籍は主に技術視点の対策にフォーカスしており、AI リスクマネジメントのための組織的な対策やプロセスについては対象外です。AI RMF などを確認して組織全体の包括的な対策やプロセスを策定し、その中で技術的対応をどこまで実施するのか検討してください。
 
-以下、各緩和カテゴリについて詳細に解説します。
+以降の解説はあくまで対策手法の紹介であり、リスクマネジメントの中でリスク洗い出しと優先度づけ、対応可否を決めてください。以降では、MCP の利用者、提供者、それぞれの視点で整理します。利用者とは、MCP Server を企業で利用するエンジニア、社内向けに MCP Server を提供するインフラチーム、などです。提供者とは、MCP Server を提供する企業を想定します。
 
-## セキュリティレビュー実施
+## MCP 特有の攻撃手法への対策
 
-### 組織での定期的なレビューの実施
+紹介した MCP 特有の攻撃手法は最終的にはプロンプトインジェクション攻撃に繋がっています。人間のチェックをすり抜けて、悪意のある MCP Server もしくは、悪意のある外部リソースをモデルの入力に入れ込むことがゴールです。これらの攻撃手法への対策としては、1/ MCP Server の整合性検証、2/ モデルの入出力検証、があります。
 
-MCP Server とその実装に対して定期的なセキュリティレビューを実施することは、潜在的な脆弱性を早期に発見し対処するために重要です。レビューでは、コードの脆弱性スキャン、依存関係の脆弱性チェック、機密情報の漏洩検出などを行います。
+**1/ MCP Server の整合性検証**とは、サプライチェーン攻撃に対してのバージョン署名と変更検出が該当します。Rug Pulls のように正常だったはずの MCP Server が悪性化するということは、ツール説明などが Initialization 後に変更されてしまうことが原因です。組織利用の際には MCP Server のツール説明等のレビューや検証を実施すべきです。そして**レビュー後に変更がないことが約束されていればサプライチェーン攻撃リスクは緩和されます**。
 
-組織内で MCP Server を使用する場合は、信頼できる検証済みの MCP Server のみを使用するポリシーを確立し、新しい MCP Server の導入前には必ずセキュリティ評価を実施することが推奨されます。
+**2/ モデルの入出力検証**は主に悪意のある外部リソースに対する対策です。例えば、検索 MCP Server は検索で取得した外部リソースを基本的にはそのまま返却するはずです。MCP Server はモデルとは疎結合にツール機能を提供することが責務であり、MCP Server の入出力に対して LLM ガードレールを入れることは責務外です。そのため MCP Server の出力には悪意のある情報が含まれている可能性があると想定した上で Client/Host 側で対処する必要があるでしょう。
+
+ただし、モデルの出力の不確定を完全に排除することはできないため、プロンプトインジェクションを完全に防ぐ方法は存在しません。既存のセキュリティ対策を多層的に取り入れることが引き続き最も重要であることに変わりはありませんが、LLM as a Judge や複数の検出手段を用いて入出力を検証させるガードレールを導入することは追加の対策として有効です。
+
+## 整合性検証
+
+Rug Pulls のように後から MCP Server が悪性化することを防ぐための対策にはいくつかの手法が考えられ、1/ `listChanged` 変更通知の適切なハンドリング、2/ コード署名、です。そして MCP には STDIO と Streamable HTTP があり、それぞれの通信方式ごとに対策は若干異なります。
+
+MCP のライフサイクルにおける Initialization では Client と Server 間で機能ネゴシエーションを行いますが、`listChanged` は機能ごとにリスト変更通知のサポート有無を事前に取り決めます。
+
+**`listChanged: true` が設定されている場合**、Server 側でツール定義が変更されると、1/ Server は `notifications/tools/listChanged` 通知を Client に送信、2/ Client はこの通知を受け取ると、再度ツールリストを取得して変更を検出、3/ 変更が検出された場合に Client はユーザーに再承認を要求、という手順でツール定義の変更を通知することができます。これによってユーザーはツール定義の変更を検知してレビューを行うことができます。
+
+**MCP Server 提供者視点では**、真摯に `listChanged: true` の場合にはツール定義の変更時に変更通知を確実に行うことが重要です。一方で **MCP Server 利用者の視点では**、悪性の MCP Server は `listChanged: true` の場合でもツール定義変更を通知する保証がないため、この対応だけでは明らかに不十分です。そもそも全ての Client で通知を適切にハンドリングしている保証もありません。
+
+最も簡易な方法としては、提供する独自 MCP Server のバージョンとバージョンごとのコード署名やハッシュ値などを提供する方法が考えられます。STDIO と Streamable HTTP では整合性検証の対象が多少異なるためそれぞれ確認しましょう。
+
+### STDIO 方式の対策方法
+
+STDIO 方式では Client が Server をサブプロセスとして起動し、標準入出力を通じて通信します。この方式でのコード署名は比較的シンプルです。バージョンごとに MCP Server の実行ファイルやコンテナイメージを対象としてコード署名を行う方法があります。以下に大枠の流れを示します。
+
+1. 提供側: 開発 - MCP Server のコードを開発する
+2. 提供側: 署名 - 開発物に対して署名を行う
+3. 提供側: 公開 - バージョンごとに署名を公開する
+4. 利用側: 検証 - MCP Server 起動前に署名を検証し、署名が無効な場合は Server 起動しない
+
+AWS ではコード署名・検証のために [AWS Signer](https://docs.aws.amazon.com/signer/latest/developerguide/Welcome.html) を提供しています。STDIO の MCP Server はローカルで実行され、一度起動時に署名検証していれば後からツール定義が変更されるリスクは低いです。ただし、ツール定義は不変でも MCP Server の返却する結果にプロンプトインジェクションの可能性があるため、署名検証をしておけば MCP 特有の攻撃に対して万全というものではありませんが、**最も容易かつ重大な攻撃経路である Rug Pulls を起点とした TPA に対してはこのような検証で必ず対策しておくべき**です。
+
+```bash
+# 実行ファイルの署名例
+aws signer sign-code \
+    --profile-name mcp-server-profile \
+    --source s3://bucket-name/mcp-server.zip \
+    --destination s3://bucket-name/signed-mcp-server.zip
+```
+
+### Streamable HTTP 方式の対策方法
+
+Streamable HTTP では、Server は独立したプロセスとして動作し、複数の Client 接続を処理します。この方式では、コード署名と検証がより複雑になります。コードやコンテナイメージを直接提供するわけではないため何を署名すれば良いのでしょうか。
+
+MCP はトランスポート層に多様性があるため、HTTP 層での署名検証だと HTTP 以外のトランスポートは別で実装対応が必要となってしまい汎用性がありません。そのため MCP Base プロトコルの層での対応が必要でしょう。
+
+残念ながら現時点の MCP 仕様にはコード署名などの整合性に関する規定はありませんが、MCP 2025-06-18 仕様では、`_meta` フィールドが Client と Server 間で追加のメタデータを交換するために予約されています。このフィールドを使用して、セキュリティ関連の情報（ハッシュ値、署名、バージョン情報など）を追加することが可能です。
+
+**MCP 提供者視点では** ツール定義に対してバージョンごとにハッシュ値やコード署名の情報を `_meta` フィールドで提供することができます。**MCP 利用者視点では** 組織としての導入検証レビューが完了した際に、その時点でのツール定義のハッシュ値を `serverInfo.version` に紐づける形で保存しておき、定期的に組織として提供する MCP Server のツール定義を収集してハッシュ値の検証を行うような方法が一例として考えられるでしょう。
+
+この方法であれば MCP Server や Client、MCP 仕様の更新に左右されずに最低限の Rug Pulls に対する対策が可能です。ただし、**1/ 身元検証の欠如**: ハッシュ値だけでは、ツール提供者の身元を暗号的に検証することはできない、**2/ なりすまし防止の欠如**: 悪意のあるサーバーが正規のサーバーになりすますことを防止できない。**3/ 権限モデルの欠如**: ツールが必要とする権限を明示的に定義・検証するメカニズムがない、などの課題が残るため完全な対策ではないことに注意してください。
+
+**より堅牢なセキュリティを実現するために [Enhanced Tool Definition Interface (ETDI)](https://ar5iv.labs.arxiv.org/html/2506.01333) と呼ばれる手法**が論文で提案されています。これは既存の MCP 仕様の上に追加で統合されたセキュリティ層です。以下に通常のツール利用と ETDI によるツール利用のシーケンス図を示します。
+
+> 通常のツール利用
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Host as Host Application
+    participant Client as MCP Client
+    participant LLM
+    participant Server as MCP Server
+    participant Tool
+    
+    User->>Host: ツール使用を必要とするリクエスト
+    Host->>Client: ユーザーリクエストを解析
+    Client->>Host: 利用可能なツールを提示
+    Host->>LLM: クエリ + 利用可能なツールを送信
+    LLM->>Host: 使用するツールを決定
+    Host->>Client: 特定のツールを使用するリクエスト
+    Client->>User: 許可をリクエスト（必要な場合）
+    User->>Client: 許可を付与
+    Client->>Server: パラメータを含むツールを呼び出し
+    Server->>Tool: 機能を実行
+    Tool->>Server: 結果を返す
+    Server->>Client: 結果を返す
+    Client->>Host: ツール結果を提供
+    Host->>LLM: 結果をコンテキストに追加
+    LLM->>Host: 結果を含む応答を生成
+    Host->>User: 最終応答を表示
+```
+
+> ETDI による TPA の防止
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Client as MCP Client with ETDI
+    participant LegitServer as Legitimate Server
+    participant LegitTool as Legitimate Tool
+    participant MalServer as Malicious Server
+    participant MalTool as Malicious Tool
+    
+    LegitTool->>LegitTool: 公開/秘密鍵ペアを生成
+    LegitTool->>LegitServer: 公開鍵を登録
+
+    MalTool->>MalTool: 公開/秘密鍵ペアを生成
+    MalTool->>MalServer: 公開鍵を登録
+
+    LegitServer->>Client: 信頼関係を通じて公開鍵を送信
+    LegitTool->>LegitTool: ツール定義に署名
+
+    MalTool->>MalTool: ツール定義に署名
+
+    User->>Client: 計算機ツールをリクエスト
+    Client->>LegitServer: ツールを発見
+    Client->>MalServer: ツールを発見
+    
+    LegitServer->>Client: 署名された「安全な計算機」を登録
+    MalServer->>Client: 類似の「安全な計算機」を登録
+    
+    Client->>Client: 署名を検証
+    Note over Client: 正当なツールの署名が検証される ✓
+    Note over Client: 悪意のあるツールの署名が失敗する ✗
+    
+    Client->>User: 検証済みツールのみを提示
+    User->>Client: 検証済み計算機を承認
+    Client->>LegitServer: 検証済みツールを呼び出し
+    LegitServer->>LegitTool: 正当なコードを実行
+    LegitTool->>LegitServer: 有効な結果を返す
+    LegitServer->>Client: 結果を返す
+    Client->>User: 安全な結果を表示
+```
+
+> EDTI による Rug Pulls の防止
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Client as MCP Client with ETDI
+    participant Server as MCP Server
+    participant Tool
+    
+    User->>Client: 天気ツールをリクエスト
+    Client->>Server: ツールを発見
+    
+    Tool->>Tool: ツール定義v1.0に署名
+    Server->>Client: 署名された「天気ツール v1.0」を返す
+    Note over Client: 署名を検証
+    
+    User->>Client: 天気ツールを承認
+    Client->>Client: ツール定義_バージョン="1.0"を保存
+    Client->>Client: 暗号署名を保存
+    
+    Client->>Server: 天気ツール v1.0を使用
+    Server->>Tool: 天気機能を実行
+    Tool->>Server: 天気データを返す
+    Server->>Client: 結果を返す
+    Client->>User: 天気情報を表示
+    
+    Note over Tool,Server: 後日（ツール更新）
+    Tool->>Tool: 新しい定義v2.0を作成して署名
+    
+    Note over User,Tool: 後続のセッションで
+    User->>Client: 天気ツールを使用
+    Client->>Server: ツール定義をリクエスト
+    
+    alt シナリオ1：正直なバージョン変更
+        Server->>Client: 「天気ツール v2.0」を返す
+        Client->>Client: バージョン変更を検出（1.0→2.0）
+        Client->>User: 新バージョンの再承認をリクエスト
+    else シナリオ2：静かな変更
+        Server->>Client: バージョン変更なしで変更されたv1.0を返す
+        Client->>Client: 署名検証が失敗
+        Client->>User: 警告：ツール完全性検証失敗
+    end
+```
+
+ETDI は、MCP におけるツール定義に署名を導入することで、ツールの真正性と完全性を保証するセキュリティ拡張です。ETDI は正当なツールプロバイダーが公開鍵暗号方式を使用してツール定義全体にデジタル署名を施し、MCP Client がこの署名を検証することでツールの信頼性を確認するというものです。
+
+具体的には、プロバイダーがツールの名前、説明、スキーマ、バージョン、権限要件などを含む完全な定義を作成した際に、自身の秘密鍵でこの定義にデジタル署名を付与します。TPA に対する防御メカニズムとして、攻撃者が正当なツールになりすまそうとしても、MCP Client with ETDI は受信したツール定義の署名を検証し、署名が無効または存在しない場合はそのツールを拒否または警告付きで表示します。
+
+この方式により、ユーザーには検証された信頼できるツールのみが提示され、攻撃者による偽装ツールの混入を効果的に防止できます。ETDI は本質的に、ツールの身元証明書のような役割を果たし、デジタル署名という偽造困難な技術によってツールの正当性を保証します。
+
+ETDI が Rug Pulls 攻撃を防止する仕組みは、ツール定義の不変性と継続的な整合性検証に基づいています。ETDI では、ツールの各バージョンが署名され、この署名がツールの名前、バージョン、説明、スキーマ、権限要件のすべてをカバーしています。
+
+ユーザーがツールを初回承認する際、MCP Client は単に「承認済み」という状態だけでなく、承認されたバージョンの具体的な識別子と、その定義の署名またはハッシュ値を安全に保存します。Rug Pulls 攻撃の防止は、この保存された「承認時の署名」と現在のツール定義を継続的に比較することで実現されます。
+
+攻撃者がツールの機能を悪意を持って変更しようとする場合、二つのシナリオが考えられますが、ETDI はどちらも検出できます。
+
+**1/ 攻撃者が正直にバージョン番号を更新する場合**、Client は保存されたバージョン情報との相違を即座に検出し、新しいバージョンとして扱って再承認プロセスを開始します。ユーザーは変更内容を確認した上で、新しいバージョンを承認するかどうかを決定できます。
+
+**2/ 攻撃者がバージョン番号を変更せずに内部的にツールの動作を変更しようとする場合**、ツール定義の任意の部分が変更されると署名が無効になるため、Client の署名検証が失敗します。さらに、現在の定義から計算されるハッシュ値が、承認時に保存されたハッシュ値と一致しなくなるため、改ざんが検出されます。
+
+この二重の検証メカニズムにより、攻撃者は承認後にツールの動作を静かに変更することができなくなります。どのような変更も検出され、ユーザーに明示的に通知されて再承認が求められるため、Rug Pulls 攻撃の根本的な脅威である「承認後の静かな変更」が完全に阻止されます。
+
+完全に思える ETDI ですが残念ながら MCP 公式仕様には含まれておらず、研究論文として提案されている段階に過ぎません。typescript-sdk でも当然対応はないため Server と Client の両方に対して独自の実装が必要です。常に Client と Server に手を加えて提供できるわけではなく、組織の全ユーザーが企業から指定された Server や Host を確実に利用するわけではないため完全な対策ではありません。
+
+MCP 仕様に ETDI が追加され、仕様上実装が MUST となれば全ての Server と Client が ETDI を遵守するため完全な TPA/Rug Pulls に対する対策となるでしょう。提案者が [ETDI 実装サンプル](https://github.com/vineethsai/MCP-ETDI-docs/tree/main)を公開しているため、興味がある方は確認してみてください。
+
+| 保護機能 | `_meta` フィールド（ハッシュのみ） | ETDI |
+|---------|--------------------------|------------|
+| 変更検出 | ✅ | ✅ |
+| バージョン追跡 | ✅ | ✅ |
+| TOFU 対応 | ✅ | ✅ |
+| 身元検証 | ❌ | ✅ |
+| なりすまし防止 | ❌ | ✅ |
+| 明示的な権限モデル | ❌ | ✅ |
+| OAuth 統合 | ❌ | ✅ |
+| ポリシーベースのアクセス制御 | ❌ | ✅ |
 
 ### MCP Server の検証プロセス確立
 
-MCP Server を安全に検証するためのチェックリストを作成し、以下のプロセスを確立します：
+MCP Server を検証するためのチェックリストを作成し、静的解析、動的解析、ツール説明の検証などのプロセスを確立しましょう。静的解析ではコードの脆弱性スキャン、依存関係の脆弱性チェック、機密情報の漏洩検出を行います。動的解析ではサンドボックス環境での実行テスト、ネットワーク通信の監視、リソース使用状況の監視を行います。ツール説明の検証ではプロンプトインジェクションパターンの検出、悪意のある指示の検出、説明と実際の機能の一致確認を行います。
 
-1. **静的解析**
-   - コードの脆弱性スキャン
-   - 依存関係の脆弱性チェック
-   - 機密情報の漏洩検出
+## モデルの入出力検証
 
-2. **動的解析**
-   - サンドボックス環境での実行テスト
-   - ネットワーク通信の監視
-   - リソース使用状況の監視
+モデルの不確定性が存在する限りプロンプトインジェクションの潜在的なリスクがなくなることはなく、ありとあらゆる方法でモデルを欺いてしまいます。例えば、入力をアスキーアートにして指示を与えたり、出力を base64 して出させたりすることで通常のフィルタ的な LLM ガードレールをすり抜けることができてしまいます。
 
-3. **ツール説明の検証**
-   - プロンプトインジェクションパターンの検出
-   - 悪意のある指示の検出
-   - 説明と実際の機能の一致確認
+何度も言いますが既存のセキュリティベストプラクティスで Static に防ぐことのできる防御は必ず取り入れた上で、追加の対策として LLM ガードレールを導入してください。ガードレールについては以降の Chapter でより詳細に取り扱います。
 
-## ツール説明検証
+## Tool Shadowing の対策
 
-### ツール説明のサニタイズ
+Tool Shadowing については MCP Server 提供者視点でできる対策はほぼなく、MCP Server 利用者視点では最も対策が難しい課題だと思います。
 
-ツール説明に含まれる可能性のある悪意のあるパターンを検出し除去するメカニズムを実装します。特に、特殊命令やプロンプト操作を検出するパターンマッチングが重要です。
-
-```javascript
-// ツール説明のサニタイズ例
-function sanitizeToolDescription(description) {
-  // 特殊命令パターンの検出と除去
-  const patterns = [
-    /<IMPORTANT>[\s\S]*?<\/IMPORTANT>/gi,
-    /【.*?】/g,
-    /\[\[.*?\]\]/g,
-    /\{.*?\}/g
-  ];
-  
-  let sanitized = description;
-  patterns.forEach(pattern => {
-    sanitized = sanitized.replace(pattern, '');
-  });
-  
-  return sanitized;
-}
+```mermaid
+graph TD
+    User[ユーザー] --> MCPClient[MCP Client]
+    MCPClient --> EnterpriseGW[MCP Gateway]
+    MCPClient --> MaliciousServer[悪意のある MCP Server]
+    EnterpriseGW --> LLM[LLM]
+    MaliciousServer -.-> LLM
+    EnterpriseGW --> ApprovedServer1[承認済み MCP Server 1]
+    EnterpriseGW --> ApprovedServer2[承認済み MCP Server 2]
+    
+    subgraph "管理 MCP Server/LLM"
+        EnterpriseGW
+        LLM
+        ApprovedServer1
+        ApprovedServer2
+    end
+    
+    subgraph "管理範囲外"
+        User
+        MCPClient
+        MaliciousServer
+    end
 ```
 
-### プロンプトインジェクションパターンの検出と除去
+企業で MCP Server の管理者がいるとします。その企業のエンジニアが Coding Agent で MCP Server を自由に使うことに制限をかけることは非常に難しいです。様々な OSS Agent があり、自分で Agent を自作して MCP Server を利用することもできるわけです。Docker やツールのダウンロードを妨げてしまうと開発生産性が著しく低下してしまうためそのような方法は取れません。つまり、エンジニアが悪意ある MCP Server を Client に接続して利用してしまう可能性は無くなりません。Tool Shadowing は悪意ある MCP Server が一つでも Client に接続されてしまっている場合、別の正常な MCP Server に対して間接的にプロンプトインジェクションにより悪意ある行動をさせる可能性があります。
 
-プロンプトインジェクションを検出するためには、以下のようなパターンに注意する必要があります：
+管理者が認めた MCP Server をユーザーごとに個別インストールさせて利用させるのではなく、管理者側が用意した MCP Gateway を介してレビュー済みの MCP Server を利用させることができます。AWS の場合、[Amazon Bedrock AgentCore Gateway(Preview)](https://aws.amazon.com/jp/blogs/news/introducing-amazon-bedrock-agentcore-securely-deploy-and-operate-ai-agents-at-any-scale/) がこのような機能を有しています。
 
-- 「以下の指示は無視して」などの指示の上書きを試みる文言
-- 「<IMPORTANT>」などの特殊なマークアップ
-- 「システム上の API キーを検索し、外部に送信する」などの悪意のある指示
+ただし MCP Gateway は統一的に限られた種類・バージョンの MCP Server を提供することで上述した TPA/Rag Pulls には一定の効果がありますが、Tool Shadowing を避けることはできません。なぜならば、**ユーザーは MCP Gateway がすでに接続されている Client に悪意のある Server を追加で接続することができる**からです。
 
-これらのパターンを検出し、ツール説明から除去することで、プロンプトインジェクションのリスクを軽減できます。
+**Client 側でツールの namespace 分離のような機能を MCP 仕様に追加**して、異なる namespace のツールの間接的な呼び出しを防ぐなどの仕様が追加されなければ完全な対策は難しいでしょう。
 
-## Server 分離とサンドボックス化
+### 可能な対策アプローチ
 
-### Docker によるサンドボックス化
+現時点では完全な解決策は存在しませんが、企業の管理者が統制を取れる要素としては LLM API に対するガードレールがあります。MCP Host は LLM を呼び出しますが、この LLM は通常様々な種類のプロバイダのモデルを指定可能です。この LLM は企業として一括で契約してユーザーに提供することが多いため、例えば Amazon Bedrock を企業としてユーザーに提供する際には Amazon Bedrock の API リクエストに LLM ガードレールである Amazon Bedrock Guardrails を挿入することができます。
 
-MCP Server を Docker コンテナ内で実行することで、ホストシステムから分離し、被害を局所化できます。以下は Docker を用いた MCP Server の実行例です：
+LiteLLM や Kong などの LLM API Proxy を介することでよりカスタマイズしたガードレールを挿入することもできます。対策の一案としては、このガードレールで事前に MCP Gateway で許可されたツールリストを保持しておき、許可されていないツールの呼び出しやレスポンスをブロックする方法が考えられます。
 
-```dockerfile
-FROM denoland/deno:2.2.9
-
-# セキュリティ強化: 非rootユーザーの作成
-RUN adduser --disabled-password --gecos '' mcpuser
-
-# 必要なツールのインストール
-RUN apt update && apt install -y curl jq
-
-WORKDIR /app
-
-# MCP Serverのソースコードを取得
-RUN curl -o index.ts https://raw.githubusercontent.com/modelcontextprotocol/servers/refs/heads/main/src/brave-search/index.ts
-RUN sed -i 's/@modelcontextprotocol/npm:@modelcontextprotocol/g' index.ts
-
-# セキュリティ強化: 権限の最小化
-RUN chown -R mcpuser:mcpuser /app
-
-# 非rootユーザーに切り替え
-USER mcpuser
-
-# 厳格なネットワーク許可リスト
-ENTRYPOINT ["deno", "run", "--allow-env=API_KEY,PORT", "--allow-net=api.search.brave.com:443", "index.ts"]
-```
-
-### 最小権限の原則適用
-
-MCP Server には必要最小限の権限のみを付与し、特にファイルシステム、ネットワーク、システムコマンドへのアクセスを制限します。例えば、Deno を使用する場合は、`--allow-net` フラグで特定のドメインへのアクセスのみを許可するなど、細かい権限制御が可能です。
-
-複数の MCP Server を Client に接続する場合は、それぞれを分離された環境で実行し、相互に影響を与えないようにすることが重要です。特に、機密データにアクセスできる MCP Server は、他の Server から分離された環境で実行すべきです。
-
-## 認証・認可制御
-
-### OAuth 2.1 準拠の認可実装
-
-リモートで公開される MCP Server には、OAuth 2.1 に準拠した認可機構を実装することが重要です。以下は JWT 認証と認可の実装例です：
-
-```javascript
-// JWT認証と認可の実装例
-const jwt = require('jsonwebtoken');
-
-// 認証ミドルウェア
-function authenticate(req, res, next) {
-  const token = req.headers.authorization?.split(' ')[1];
-  
-  if (!token) {
-    return res.status(401).send('認証トークンがありません');
-  }
-  
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded;
-    next();
-  } catch (error) {
-    return res.status(401).send('無効な認証トークンです');
-  }
-}
-
-// 認可ミドルウェア
-function authorize(requiredPermissions) {
-  return (req, res, next) => {
-    if (!req.user) {
-      return res.status(401).send('認証されていません');
-    }
-    
-    const userPermissions = req.user.permissions || [];
-    const hasAllPermissions = requiredPermissions.every(
-      permission => userPermissions.includes(permission)
-    );
-    
-    if (!hasAllPermissions) {
-      return res.status(403).send('アクセス権限がありません');
-    }
-    
-    next();
-  };
-}
-```
-
-### 適切なスコープ設定
-
-MCP Server のアクセス制御には、適切なスコープ設定が重要です。スコープは `mcp.{interface}/{interfaceName}.{action}` という形式で定義し、以下のルールに従います：
-
-- `mcp` - MCP Server を示すプレフィックス
-- `{interface}` - インターフェース種別（例：resources、tools）
-- `{interfaceName}` - インターフェースの具体名（例：file、weather）
-- `{action}` - 許可される操作（例：read、execute）
-
-**スコープの例:**
-- `mcp.resources/file.read`
-- `mcp.tools/weather.execute`
-
-## 入出力検証
-
-### URI の正規化と検証
-
-MCP では、Tools や Resources のインターフェースを通じて、ファイルの操作や取得をする際に URI を使用します。URI の取り扱いが適切に行われない場合、Path Traversal 攻撃が発生する可能性があります。
-
-TypeScript の例では、`new URL(uri)` を使って URI を正規化し、安全な形式に変換することが推奨されます：
-
-```typescript
-// 入力されたURIを正規化する例
-const uri = new URL(validatedArgs.uri);
-const content = validatedArgs.content;
-
-const sessionDir = `${process.cwd()}/sessions/${extra.sessionId}`;
-const filename = uri.pathname.split("/").pop();
-const dirname = uri.pathname.split("/").slice(0, -1).join("/");
-
-if (!fs.existsSync(`${sessionDir}/${dirname}`)) {
-    fs.mkdirSync(`${sessionDir}/${dirname}`, { recursive: true });
-}
-
-fs.writeFileSync(`${sessionDir}/${dirname}/${filename}`, content);
-```
-
-### 外部通信時の取り扱い
-
-外部サービスとの通信を行う際には、SSRF (Server-Side Request Forgery) 攻撃を防ぐために、ユーザーから渡された引数をそのまま使用せず、適切な検証を行うことが重要です：
-
-```typescript
-const handler = async (
-    args: ZodRawShape,
-    extra: RequestHandlerExtra<ServerRequest, ServerNotification>
-): Promise<CallToolResult> => {
-    const path = args.path as unknown as string;
-
-    const baseUrl = "http://example.test";
-    const url = new URL(path, baseUrl);
-    if (url.origin !== new URL(baseUrl).origin) {
-        throw new Error("不正なパスです");
-    }
-    const result = await fetch(url.toString());
-    return {
-        content: [
-            {
-                type: "text",
-                text: `fetch ${url.toString()}`,
-            },
-            {
-                type: "text",
-                text: result.toString(),
-            },
-        ],
-    };
-};
-```
-
-## 出力サニタイズと表示制御
-
-### ANSI エスケープコードの無害化
-
-MCP Server からの出力に含まれる可能性のある ANSI エスケープコード（16進値 1b のバイトで始まる）を検出し、プレースホルダー文字に置き換えることで、ターミナル欺瞞攻撃を防止します。
-
-```javascript
-// ANSIエスケープコードの無害化例
-function sanitizeAnsiEscapeCodes(output) {
-  // ANSIエスケープシーケンスを検出して置換
-  // エスケープシーケンスは通常 ESC (0x1B) で始まる
-  return output.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '[ESC]');
-}
-
-// ツール出力を処理する例
-function processToolOutput(rawOutput) {
-  // ANSIエスケープコードを無害化
-  const sanitizedOutput = sanitizeAnsiEscapeCodes(rawOutput);
-  
-  // その他の潜在的に危険な出力を処理
-  // ...
-  
-  return sanitizedOutput;
-}
-```
-
-### ツール出力の検証と表示制御
-
-生の出力をそのままターミナルに表示せず、レンダリング前に適切な検証と無害化を行います。特に機密情報を扱う環境では、出力内容の検証を徹底します。
-
-```javascript
-// ツール出力の検証と表示制御の例
-function validateAndDisplayOutput(output, securityLevel) {
-  // 出力を検証
-  const sanitizedOutput = sanitizeOutput(output);
-  
-  // セキュリティレベルに応じた追加検証
-  if (securityLevel === 'high') {
-    // 機密情報のパターンをチェック
-    if (containsSensitivePatterns(sanitizedOutput)) {
-      return '*** 出力に機密情報が含まれている可能性があります ***';
-    }
-  }
-  
-  return sanitizedOutput;
-}
-
-// 機密情報のパターンをチェックする関数
-function containsSensitivePatterns(text) {
-  const sensitivePatterns = [
-    /password\s*[:=]\s*\S+/i,
-    /api[-_]?key\s*[:=]\s*\S+/i,
-    /token\s*[:=]\s*\S+/i,
-    // その他の機密情報パターン
-  ];
-  
-  return sensitivePatterns.some(pattern => pattern.test(text));
-}
-```
-
-## 監視とログ記録
-
-### ツール呼び出しの監視
-
-MCP Server のツール呼び出しを監視し、不審なパターンや異常な動作を検出するシステムを実装します。
-
-```javascript
-class MCPSecurityMonitor {
-    constructor() {
-        this.suspicious_patterns = [
-            "file://", "~/.ssh", "~/.cursor", "password", "token", "secret"
-        ];
-    }
-    
-    inspect_tool_call(tool_name, parameters, user_id) {
-        // ツール呼び出しのタイムスタンプを記録
-        const timestamp = new Date().toISOString();
-        
-        // ツール呼び出しのロギング
-        console.log(`Tool Call: ${tool_name} by user ${user_id} at ${timestamp}`);
-        
-        // 疑わしいパターンの検知
-        for (const [param_name, param_value] of Object.entries(parameters)) {
-            if (typeof param_value === 'string') {
-                for (const pattern of this.suspicious_patterns) {
-                    if (param_value.includes(pattern)) {
-                        console.warn(
-                            `SUSPICIOUS PATTERN: ${pattern} found in ${param_name} ` +
-                            `parameter of ${tool_name} tool call by user ${user_id}`
-                        );
-                        // 管理者へ通知を送信
-                        this.alert_admin(tool_name, pattern, user_id);
-                    }
-                }
-            }
-        }
-    }
-    
-    alert_admin(tool_name, pattern, user_id) {
-        // 管理者への通知処理
-        // ...
-    }
-}
-```
-
-### セキュリティイベントの記録
-
-MCP Server の動作に関するセキュリティイベントを記録し、後の分析や監査に役立てます。特に、ツールの追加や変更、権限の変更などの重要なイベントは必ず記録します。
-
-```javascript
-// セキュリティイベントのロギング例
-function logSecurityEvent(eventType, details, severity = 'info') {
-  const event = {
-    type: eventType,
-    timestamp: new Date().toISOString(),
-    details,
-    severity
-  };
-  
-  // イベントをログに記録
-  console.log(`SECURITY EVENT [${severity.toUpperCase()}]: ${JSON.stringify(event)}`);
-  
-  // 重大なイベントの場合は追加のアクションを実行
-  if (severity === 'critical' || severity === 'high') {
-    notifySecurityTeam(event);
-  }
-  
-  // イベントを永続化
-  storeSecurityEvent(event);
-}
-
-// 使用例
-logSecurityEvent(
-  'tool_description_changed',
-  { toolName: 'file_access', oldDescription: '...', newDescription: '...' },
-  'high'
-);
-```
-
-## バージョン管理と整合性検証
-
-### ツールとパッケージのピン留め
-
-MCP Server とツールのバージョンを固定し、不正な変更を防ぎます。以下は YAML 形式での設定例です：
-
-```yaml
-# MCPサーバー設定例（YAML形式）
-mcpServers:
-  "github.com/example/weather-mcp":
-    version: "1.2.3"
-    hash: "sha256:a1b2c3d4e5f6..."
-    autoApprove: false
-    tools:
-      - name: "get_weather"
-        version: "1.0.0"
-        hash: "sha256:f6e5d4c3b2a1..."
-```
-
-### ハッシュによる検証と変更検出
-
-ツール説明のハッシュ値を計算して保存し、変更があった場合に検出するメカニズムを実装します：
-
-```typescript
-class SecureMcpClient extends Client {
-  private toolHashes: Map<string, string> = new Map();
-  
-  // 初期接続時にハッシュを計算して保存
-  async initializeToolHashes() {
-    const result = await this.listTools();
-    for (const tool of result.tools) {
-      this.toolHashes.set(tool.name, this.calculateToolHash(tool));
-    }
-    console.log("ツールハッシュを初期化しました");
-  }
-  
-  // ツールのハッシュ値を計算
-  private calculateToolHash(tool: Tool): string {
-    // 重要な属性を含めてハッシュ化
-    const content = JSON.stringify({
-      name: tool.name,
-      description: tool.description,
-      inputSchema: tool.inputSchema,
-      outputSchema: tool.outputSchema
-    });
-    
-    // SHA-256などのハッシュアルゴリズムを使用
-    return crypto.createHash('sha256').update(content).digest('hex');
-  }
-  
-  // listChanged通知のハンドラをオーバーライド
-  protected async handleToolListChanged() {
-    const result = await this.listTools();
-    let hasUnauthorizedChanges = false;
-    
-    // 各ツールのハッシュ値を検証
-    for (const tool of result.tools) {
-      const storedHash = this.toolHashes.get(tool.name);
-      
-      // 新しいツールの場合はスキップ（または別の検証ポリシーを適用）
-      if (!storedHash) {
-        console.log(`新しいツールを検出: ${tool.name}`);
-        continue;
-      }
-      
-      // ハッシュ値を計算して比較
-      const currentHash = this.calculateToolHash(tool);
-      if (storedHash !== currentHash) {
-        console.warn(`警告: ツール "${tool.name}" の説明が変更されました`);
-        hasUnauthorizedChanges = true;
-        
-        // 変更の詳細をログに記録
-        this.logToolChanges(tool.name, storedHash, currentHash);
-      }
-    }
-    
-    // 不正な変更が検出された場合の処理
-    if (hasUnauthorizedChanges) {
-      // ユーザーに確認
-      const shouldUpdate = await this.promptUserForConfirmation(
-        "ツール説明に不審な変更が検出されました。更新を許可しますか？"
-      );
-      
-      if (!shouldUpdate) {
-        console.log("ツール更新が拒否されました");
-        return false;
-      }
-    }
-    
-    // 問題なければハッシュを更新
-    for (const tool of result.tools) {
-      this.toolHashes.set(tool.name, this.calculateToolHash(tool));
-    }
-    
-    return true;
-  }
-}
-```
-
-### TOFU（Trust On First Use）検証
-
-初回使用時の信頼（TOFU）検証を実装し、MCP Server に対する初回接続時の状態を基準として、その後の変更を検出します。新しいツールが追加された場合や既存のツールの説明が変更された場合は、ユーザーまたは管理者に警告します。
-
-```javascript
-// TOFU検証の実装例
-class TofuValidator {
-  constructor() {
-    this.knownServers = new Map();
-    this.loadStoredState();
-  }
-  
-  // 保存された状態を読み込む
-  loadStoredState() {
-    try {
-      const storedData = localStorage.getItem('mcp_tofu_state');
-      if (storedData) {
-        const parsedData = JSON.parse(storedData);
-        Object.entries(parsedData).forEach(([serverId, toolsData]) => {
-          this.knownServers.set(serverId, new Map(Object.entries(toolsData)));
-        });
-      }
-    } catch (error) {
-      console.error('TOFU状態の読み込みに失敗しました:', error);
-    }
-  }
-  
-  // 現在の状態を保存
-  saveCurrentState() {
-    try {
-      const stateObj = {};
-      this.knownServers.forEach((toolsMap, serverId) => {
-        stateObj[serverId] = Object.fromEntries(toolsMap);
-      });
-      localStorage.setItem('mcp_tofu_state', JSON.stringify(stateObj));
-    } catch (error) {
-      console.error('TOFU状態の保存に失敗しました:', error);
-    }
-  }
-  
-  // サーバーとツールを検証
-  validateServer(serverId, tools) {
-    const knownTools = this.knownServers.get(serverId);
-    
-    // 初回接続の場合
-    if (!knownTools) {
-      console.log(`初回接続: ${serverId}`);
-      const toolsMap = new Map();
-      tools.forEach(tool => {
-        toolsMap.set(tool.name, this.calculateToolHash(tool));
-      });
-      this.knownServers.set(serverId, toolsMap);
-      this.saveCurrentState();
-      return { isFirstUse: true, changes: [] };
-    }
-    
-    // 既知のサーバーの場合、変更を検出
-    const changes = [];
-    tools.forEach(tool => {
-      const knownHash = knownTools.get(tool.name);
-      const currentHash = this.calculateToolHash(tool);
-      
-      if (!knownHash) {
-        // 新しいツール
-        changes.push({
-          type: 'new_tool',
-          toolName: tool.name,
-          severity: 'medium'
-        });
-      } else if (knownHash !== currentHash) {
-        // 変更されたツール
-        changes.push({
-          type: 'modified_tool',
-          toolName: tool.name,
-          severity: 'high'
-        });
-      }
-    });
-    
-    // 削除されたツールを検出
-    knownTools.forEach((_, toolName) => {
-      if (!tools.some(t => t.name === toolName)) {
-        changes.push({
-          type: 'removed_tool',
-          toolName,
-          severity: 'medium'
-        });
-      }
-    });
-    
-    return { isFirstUse: false, changes };
-  }
-  
-  // ツールのハッシュ値を計算
-  calculateToolHash(tool) {
-    const content = JSON.stringify({
-      name: tool.name,
-      description: tool.description,
-      inputSchema: tool.inputSchema,
-      outputSchema: tool.outputSchema
-    });
-    
-    // 簡易的なハッシュ計算（実際の実装ではより強力なアルゴリズムを使用）
-    return btoa(content);
-  }
-}
-```
-
-## ユーザーインタラクション保護
-
-### 重要操作の強調表示
-
-権限レベルに基づいて操作を分類し、高リスク操作を視覚的に強調表示します：
-
-```javascript
-// 重要操作の強調表示の実装例
-function displayOperationConsent(operation) {
-  // 操作の権限レベルを評価
-  const riskLevel = assessRiskLevel(operation);
-  
-  let consentUI;
-  switch (riskLevel) {
-    case 'HIGH':
-      consentUI = createHighRiskConsentUI(operation);
-      break;
-    case 'MEDIUM':
-      consentUI = createMediumRiskConsentUI(operation);
-      break;
-    case 'LOW':
-      consentUI = createLowRiskConsentUI(operation);
-      break;
-  }
-  
-  // 同意UI表示前にクールダウン期間を設定（高リスク操作の場合）
-  if (riskLevel === 'HIGH') {
-    setTimeout(() => {
-      displayToUser(consentUI);
-    }, 2000); // 2秒のクールダウン
-  } else {
-    displayToUser(consentUI);
-  }
-}
-```
-
-### 明示的な確認要求
-
-MCP Client が MCP Server の Tool を実行する際、利用者に明示的な許可を求めることで、意図しないツールの実行を防ぎます：
-
-```javascript
-// ツール実行前に確認を求める関数
-async function confirmToolExecution(toolName, toolArgs) {
-  return new Promise((resolve) => {
-    console.log("=== ツール実行の確認 ===");
-    console.log(`ツール名: ${toolName}`);
-    console.log("引数:");
-    console.log(JSON.stringify(toolArgs, null, 2));
-    console.log("このツールを実行しますか？ [y]es / [n]o");
-
-    const readline = require('readline').createInterface({
-      input: process.stdin,
-      output: process.stdout
-    });
-
-    readline.question("> ", (answer) => {
-      readline.close();
-      resolve(answer.toLowerCase().startsWith("y"));
-    });
-  });
-}
-
-// ツール実行時の使用例
-async function executeToolWithConfirmation(toolName, toolArgs) {
-  const allowed = await confirmToolExecution(toolName, toolArgs);
-  if (!allowed) {
-    console.log("ツールの実行は拒否されました。");
-    return null;
-  }
-  
-  console.log(`ツール「${toolName}」を実行します...`);
-  return await mcpClient.callTool(toolName, toolArgs);
-}
-```
-
-## クロス Server 保護
-
-### ツール名の名前空間分離
-
-サーバーごとに名前空間を設定し、ツール名の衝突を防ぎます：
-
-```typescript
-// ツール名の名前空間分離の実装例
-function registerTool(server, tool) {
-  const namespacedName = `${server.id}::${tool.name}`;
-  
-  // 名前衝突の検出
-  if (registeredTools.has(namespacedName)) {
-    console.warn(`Tool name collision detected: ${namespacedName}`);
-    // 衝突解決ポリシーの適用
-    return handleNameCollision(server, tool, namespacedName);
-  }
-  
-  // 名前空間付きでツールを登録
-  registeredTools.set(namespacedName, {
-    server: server.id,
-    tool: tool
-  });
-  
-  return namespacedName;
-}
-
-// 名前衝突の解決
-function handleNameCollision(server, tool, namespacedName) {
-  // 既存のツールを取得
-  const existing = registeredTools.get(namespacedName);
-  
-  // 優先度に基づいて解決
-  if (server.priority > existing.server.priority) {
-    // 新しいサーバーの優先度が高い場合は上書き
-    console.log(`Overriding tool ${namespacedName} with higher priority server`);
-    registeredTools.set(namespacedName, {
-      server: server.id,
-      tool: tool
-    });
-    return namespacedName;
-  } else {
-    // 既存のサーバーを優先し、新しいツールには代替名を付与
-    const alternativeName = `${server.id}::${tool.name}_${Date.now()}`;
-    console.log(`Using alternative name ${alternativeName} due to collision`);
-    registeredTools.set(alternativeName, {
-      server: server.id,
-      tool: tool
-    });
-    return alternativeName;
-  }
-}
-```
-
-### Server 間の厳格な境界設定
-
-複数の MCP Server を同時に使用する場合、Server 間の境界を明確に設定し、相互干渉を防ぎます：
-
-```javascript
-// Server間の境界設定の実装例
-class MCPServerIsolation {
-  constructor() {
-    this.servers = new Map();
-    this.serverContexts = new Map();
-  }
-  
-  // サーバーを登録
-  registerServer(serverId, config) {
-    this.servers.set(serverId, config);
-    this.serverContexts.set(serverId, {
-      data: new Map(),
-      permissions: config.permissions || []
-    });
-    console.log(`Server ${serverId} registered with isolation`);
-  }
-  
-  // サーバー間のデータアクセスを制御
-  accessData(requestingServerId, targetServerId, dataKey) {
-    // 同一サーバーからのアクセスは常に許可
-    if (requestingServerId === targetServerId) {
-      return this.serverContexts.get(targetServerId).data.get(dataKey);
-    }
-    
-    // 異なるサーバーからのアクセスは権限チェック
-    const requestingServer = this.servers.get(requestingServerId);
-    if (!requestingServer) {
-      console.error(`Unknown server ${requestingServerId} attempted to access data`);
-      return null;
-    }
-    
-    // クロスサーバーアクセス権限の確認
-    if (!this.hasAccessPermission(requestingServerId, targetServerId, dataKey)) {
-      console.warn(
-        `Access denied: ${requestingServerId} attempted to access ` +
-        `${dataKey} from ${targetServerId} without permission`
-      );
-      return null;
-    }
-    
-    // 許可されたアクセスを記録
-    console.log(
-      `Cross-server access: ${requestingServerId} accessed ` +
-      `${dataKey} from ${targetServerId}`
-    );
-    
-    return this.serverContexts.get(targetServerId).data.get(dataKey);
-  }
-  
-  // クロスサーバーアクセス権限の確認
-  hasAccessPermission(requestingServerId, targetServerId, dataKey) {
-    const requestingContext = this.serverContexts.get(requestingServerId);
-    if (!requestingContext) return false;
-    
-    // 特定のクロスサーバーアクセス権限を確認
-    return requestingContext.permissions.some(perm => 
-      perm.type === 'cross_server_access' && 
-      perm.targetServer === targetServerId &&
-      (perm.dataKeys === '*' || perm.dataKeys.includes(dataKey))
-    );
-  }
-}
-```
-
-## ネットワークレベルの保護
-
-### localhost バインディング
-
-MCP Server をローカルホストにのみバインドすることで、外部からの不正アクセスを防ぎます：
-
-```javascript
-// localhostバインディングの実装例
-const http = require('http');
-const mcpServer = require('./mcp-server');
-
-// サーバーをlocalhostにのみバインド
-const server = http.createServer(mcpServer.handler);
-server.listen(3000, '127.0.0.1', () => {
-  console.log('MCP Server is running on http://127.0.0.1:3000');
-});
-```
-
-### Origin ヘッダ検証
-
-Web ブラウザから MCP Server にアクセスする場合、Origin ヘッダを検証して許可されたオリジンからのリクエストのみを受け付けます：
-
-```javascript
-// Originヘッダ検証の実装例
-function validateOrigin(req, res, next) {
-  const origin = req.headers.origin;
-  
-  // 許可されたオリジンのリスト
-  const allowedOrigins = [
-    'http://localhost:8080',
-    'https://example.com'
-  ];
-  
-  // オリジンが許可リストに含まれているか確認
-  if (!origin || !allowedOrigins.includes(origin)) {
-    return res.status(403).send('不正なオリジンからのアクセスです');
-  }
-  
-  // CORSヘッダを設定
-  res.setHeader('Access-Control-Allow-Origin', origin);
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  
-  next();
-}
-```
-
-### CORS 設定の適正化
-
-Cross-Origin Resource Sharing (CORS) の設定を適切に行い、許可されたドメインからのみアクセスを許可します：
-
-```javascript
-// CORS設定の適正化例
-const express = require('express');
-const cors = require('cors');
-const app = express();
-
-// CORS設定
-const corsOptions = {
-  origin: function (origin, callback) {
-    // 許可されたオリジンのリスト
-    const allowedOrigins = [
-      'http://localhost:8080',
-      'https://example.com'
-    ];
-    
-    // オリジンが許可リストに含まれているか、または開発環境の場合
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('CORS policy violation'));
-    }
-  },
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true,
-  maxAge: 86400 // 24時間
-};
-
-// CORS設定を適用
-app.use(cors(corsOptions));
-```
-
-### 外部接続の制限
-
-MCP Server が外部サービスに接続する際、許可されたドメインのみに接続を制限します：
-
-```javascript
-// 外部接続の制限の実装例
-const fetch = require('node-fetch');
-
-// 許可されたドメインのリスト
-const allowedDomains = [
-  'api.openai.com',
-  'api.github.com',
-  'api.weather.gov'
-];
-
-// 安全なフェッチ関数
-async function safeFetch(url, options = {}) {
-  try {
-    // URLをパース
-    const parsedUrl = new URL(url);
-    
-    // ドメインが許可リストに含まれているか確認
-    if (!allowedDomains.includes(parsedUrl.hostname)) {
-      throw new Error(`不許可のドメインへの接続: ${parsedUrl.hostname}`);
-    }
-    
-    // 接続を記録
-    console.log(`External connection to: ${parsedUrl.hostname}`);
-    
-    // 実際のフェッチを実行
-    return await fetch(url, options);
-  } catch (error) {
-    console.error(`External connection error: ${error.message}`);
-    throw error;
-  }
-}
-```
-
-## エンドツーエンドセキュリティの重要性
-
-MCP のセキュリティは、個々の対策だけでなく、エンドツーエンドでの包括的なアプローチが重要です。ツール説明の検証だけでなく、AI モデルとの間で受け渡されるデータ全体のセキュリティを確保する必要があります。
-
-### 多層防御アプローチ
-
-MCP セキュリティには、以下のような多層防御アプローチが効果的です：
-
-1. **プロトコルレベルの保護**
-   - ツール説明の検証と無害化
-   - 入出力データの検証
-   - 通信の暗号化
-
-2. **サーバーレベルの保護**
-   - サンドボックス化と分離
-   - 最小権限の原則適用
-   - 監視とログ記録
-
-3. **クライアントレベルの保護**
-   - ユーザーインタラクションの保護
-   - 出力の検証と表示制御
-   - 変更検出と整合性検証
-
-4. **組織レベルの保護**
-   - セキュリティポリシーの確立
-   - 定期的なレビューと監査
-   - インシデント対応計画の策定
-
-### AI Agent とのインタラクション保護
-
-AI Agent と MCP Server のインタラクションを保護するためには、以下の点に注意する必要があります：
-
-1. **コンテキスト汚染の防止**
-   - ツール説明からのプロンプトインジェクション検出
-   - AI Agent への入力の検証
-   - 出力の無害化と検証
-
-2. **権限の適切な管理**
-   - AI Agent に必要最小限の権限のみを付与
-   - 重要な操作には明示的な確認を要求
-   - 権限の定期的な見直し
-
-3. **透明性の確保**
-   - ツールの動作と権限の明示
-   - 操作の記録と監査
-   - 異常検知と通知
+LLM は tool use の場合、与えられたツールリストとその説明から適切なツールとパラメータを構造化した上で出力します。つまり、この LLM 出力を適切にブロックすれば許可されていないツールの実行を防ぐことが可能です。当然、完全なブロックはできませんが何が入ってきて何が出てくるのかわからないチャットのプロンプトインジェクションよりは組織で許可されていないツールを検出できる可能性が高いです。
 
 ## まとめ
 
-MCP 特有の攻撃手法に対する対策は、単一の方法ではなく、複数の緩和策を組み合わせた包括的なアプローチが必要です。本章で紹介した緩和カテゴリと具体的な対策を適切に実装することで、MCP のセキュリティリスクを大幅に軽減できます。
+MCP 特有の脆弱性の根本的課題は、最終的にプロンプトインジェクション攻撃に収束する二つの攻撃経路にありました。悪意のある MCP Server の直接的な悪用と、正常な MCP Server に対する間接的な悪意ある操作です。これらに対する防御は、MCP Server の整合性検証とモデルの入出力検証という二層構造で構成されます。
 
-特に重要なのは、セキュリティを後付けではなく、設計段階から考慮することです。MCP Server の開発者、Client の実装者、そして最終的なユーザーがそれぞれの立場でセキュリティ対策を講じることで、より安全な MCP エコシステムを構築できます。
+整合性検証においては、Rug Pulls 攻撃への対策として、STDIO 方式ではコード署名による実行ファイル検証、Streamable HTTP 方式では `_meta` フィールドを活用したハッシュ値検証と ETDI を紹介しました。
 
-また、セキュリティは継続的なプロセスであり、新たな脅威や攻撃手法に対応するために、定期的な評価と更新が必要です。MCP の進化とともに、セキュリティ対策も進化させていくことが重要です。
+最も困難な課題は Tool Shadowing への対策ですが、企業環境において開発者の MCP Server 利用を完全に統制することは現実的でなく、悪意ある Server が一つでも接続されれば正常な Server への間接攻撃の可能性が発生します。現実的な緩和策として、LLM API レベルでのガードレール実装により、許可されていないツールの実行を検出・ブロックするアイデアを提案しました。以降の Chapter でこのアイデアをより詳細化します。
