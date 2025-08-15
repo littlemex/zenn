@@ -177,14 +177,6 @@ MCP Server は**全ての接続で Origin ヘッダーを検証しなければ�
 
 ## サンプルコード
 
-[こちら](https://github.com/littlemex/samples/tree/main/mcp-sec-book/chapter09)に実装サンプルを配置しました。
+[こちら](https://github.com/littlemex/samples/blob/main/mcp_security_book/chapter09)に実装サンプルを配置しました。
 
-```bash
-npm install express eventsource-parser node-fetch@3 typescript ts-node @types/express @types/node
-```
-
-https://github.com/littlemex/samples/blob/main/mcp-sec-book/chapter09/server.ts
-
-https://github.com/littlemex/samples/blob/main/mcp-sec-book/chapter09/client.ts
-
-https://github.com/littlemex/samples/blob/main/mcp-sec-book/chapter09/types.ts
+https://github.com/littlemex/samples/blob/main/mcp_security_book/chapter09/README.md
