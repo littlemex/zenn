@@ -51,7 +51,7 @@ ChildProcess クラスは [`EventEmitter`](https://nodejs.org/ja/learn/asynchron
 
 MCP Server が標準出力に何かを書き込む度に、`stdout` ストリームオブジェクトで定義された `data` イベントが発行されます。Client は `data` イベントが発行されると起動するイベントリスナーによってデータを受け取って何らかの処理を行います。
 
-https://github.com/littlemex/samples/blob/main/mcp-sec-book/chapter07/sample.ts#L13-L15
+https://github.com/littlemex/samples/blob/main/mcp_security_book/chapter07/sample.ts#L12-L15
 
 このような仕組みを用いて Client と Server が子プロセスを介してデータのやり取りを行う方式が STDIO です。実際には、出力から JSON RPC 2.0 のフォーマットのメッセージを解釈して取り扱うなどの実装も存在します。Server 側の実装は割愛しますが、Server からのメッセージ受信はイベント駆動型のアプローチで Client にメッセージとして渡されます。
 
