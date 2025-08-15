@@ -69,6 +69,6 @@ Server がメッセージ処理を継続できないエラーに遭遇した場�
 
 ## サンプルコード
 
-[こちら](https://github.com/littlemex/samples/tree/main/mcp-sec-book/chapter07)にサンプルコードを配置しました。
+[こちら](https://github.com/littlemex/samples/blob/main/mcp_security_book/chapter07)にサンプルコードを配置しました。
 
 https://github.com/littlemex/samples/blob/main/mcp_security_book/chapter07/README.md
