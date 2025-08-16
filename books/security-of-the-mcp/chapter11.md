@@ -19,7 +19,7 @@ Streamable HTTP は複数 Client を Server に接続することができ、こ
 
 ## セッション管理
 
-セッションは皆さんにとって馴染み深いものですよね。そして、その危険性も十分に承知されていると思います。例えば、セッションハイジャックは、攻撃者がログイン中の利用者のセッション ID をなんらかの方法によって不正に取得し、セッションをのっとります。通常のウェブサイトではあるユーザー A が ID/Password でログインすると、アプリケーションはユーザー A にセッション ID を返却します。このセッション ID が有効な期間はこのセッション ID を利用してアプリケーションにアクセスできます。つまり、セッション ID をなんらかの方法で攻撃者が取得できてしまうとアプリケーションを不正に利用できてしまいます。**ただし、MCP のセッションは MCP 仕様に基づくセッション定義であり、一般的な HTTP の世界のセッションとは異なります。** Cookie を利用しているわけではなく、`mcp-session-id` というカスタム HTTP ヘッダーの送受信を利用してセッション管理を実現します。この ID は `StreamableHTTPClientTransport` インスタンス内のプライベート変数に保存され、後続リクエストで `mcp-session-id` ヘッダーにセッション ID を設定します。このセッション ID は認証情報そのものというわけでもありません。
+セッションは皆さんにとって馴染み深いものですよね。そして、その危険性も十分に承知されていると思います。例えば、セッションハイジャックは、攻撃者がログイン中の利用者のセッション ID をなんらかの方法によって不正に取得し、セッションをのっとります。通常のウェブサイトではあるユーザー A が ID/Password でログインすると、アプリケーションはユーザー A にセッション ID を返却します。このセッション ID が有効な期間はこのセッション ID を利用してアプリケーションにアクセスできます。つまり、セッション ID をなんらかの方法で攻撃者が取得できてしまうとアプリケーションを不正に利用できてしまいます。**ただし、MCP のセッションは MCP 仕様に基づくセッション定義であり、一般的な HTTP の世界のセッションとは異なります。** Cookie を利用しているわけではなく、`Mcp-Session-Id` というカスタム HTTP ヘッダーの送受信を利用してセッション管理を実現します。この ID は `StreamableHTTPClientTransport` インスタンス内のプライベート変数に保存され、後続リクエストで `Mcp-Session-Id` ヘッダーにセッション ID を設定します。このセッション ID は認証情報そのものというわけでもありません。
 
 https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/client/streamableHttp.ts#L119-L125
 
@@ -39,24 +39,24 @@ sequenceDiagram
     
     Note over Client,Server: 1. セッション初期化
     Client->>+Server: Initialize リクエスト (POST)
-    Server-->>-Client: 200 OK + セッション ID (mcp-session-id ヘッダー)
+    Server-->>-Client: 200 OK + セッション ID (Mcp-Session-Id ヘッダー)
     
     Note over Client,Server: 2. SSE ストリーム確立
-    Client->>+Server: SSE ストリーム要求 (GET + mcp-session-id)
+    Client->>+Server: SSE ストリーム要求 (GET + Mcp-Session-Id)
     Server-->>Client: 200 OK + SSE ストリーム開始
     
     Note over Client,Server: 3. 通常のリクエスト/レスポンス
-    Client->>+Server: ツール呼び出し (POST + mcp-session-id)
+    Client->>+Server: ツール呼び出し (POST + Mcp-Session-Id)
     Server-->>-Client: SSE ストリーム経由でレスポンス
     Server->>Client: サーバー主導通知 (SSE ストリーム経由)
     
     Note over Client,Server: 4. 切断と再接続
     Client--xServer: 接続切断 (ネットワーク問題など)
-    Client->>+Server: 再接続 (GET + mcp-session-id + last-event-id)
+    Client->>+Server: 再接続 (GET + Mcp-Session-Id + last-event-id)
     Server-->>-Client: 200 OK + 未受信イベントの再送
     
     Note over Client,Server: 5. セッション終了
-    Client->>+Server: セッション終了要求 (DELETE + mcp-session-id)
+    Client->>+Server: セッション終了要求 (DELETE + Mcp-Session-Id)
     Server-->>-Client: 200 OK
 ```
 
@@ -69,7 +69,7 @@ sequenceDiagram
 | ネットワーク傍受による平文セッションIDの盗取 | **通信の暗号化:** TLS(HTTPS) の使用の強制 |
 | 長期間有効なセッションの乗っ取り | **セッションの有効期限設定:** 1/ 絶対的なタイムアウト、2/ 非アクティブタイムアウト、3/ セッション状態の検証強化 |
 
-**1/ セッション固定化:** セッション固定化攻撃について考えましょう。この攻撃は事前に攻撃者が用意したセッション ID をユーザーに使用させ、認証後のセッションを乗っ取る攻撃です。MCP では Client からセッション ID を提供する仕組みはなく、**Server 側がセッション ID を発行**することになっているためこの点では問題ありません。**2/ セッション ID 漏洩・推測:** 初期化リクエスト時に `sessionIdGenerator` メソッドによって新しいセッション ID が生成されますが、このメソッドで利用する乱数生成器については SDK ユーザー側に委ねられています。誤ってシーケンシャルな ID を払い出してしまうと、セッション ID を推測できてしまうため、容易にセッションハイジャックできてしまいます。そして、セッション有効期限は MCP 仕様上言及がなく、実装上も考慮されていません。そして HTTP ヘッダに平文で `mcp-session-id` が送信されていることが見て取れますが、ネットワーク傍受によってセッション ID が漏洩する可能性があります。中間者攻撃のようなリスクもあるため必ずあらゆる HTTP 通信経路で強力な暗号スイートを備えた TLSv1.2 以上のプロトコルを強制使用するようにしてください。
+**1/ セッション固定化:** セッション固定化攻撃について考えましょう。この攻撃は事前に攻撃者が用意したセッション ID をユーザーに使用させ、認証後のセッションを乗っ取る攻撃です。MCP では Client からセッション ID を提供する仕組みはなく、**Server 側がセッション ID を発行**することになっているためこの点では問題ありません。**2/ セッション ID 漏洩・推測:** 初期化リクエスト時に `sessionIdGenerator` メソッドによって新しいセッション ID が生成されますが、このメソッドで利用する乱数生成器については SDK ユーザー側に委ねられています。誤ってシーケンシャルな ID を払い出してしまうと、セッション ID を推測できてしまうため、容易にセッションハイジャックできてしまいます。そして、セッション有効期限は MCP 仕様上言及がなく、実装上も考慮されていません。そして HTTP ヘッダに平文で `Mcp-Session-Id` が送信されていることが見て取れますが、ネットワーク傍受によってセッション ID が漏洩する可能性があります。中間者攻撃のようなリスクもあるため必ずあらゆる HTTP 通信経路で強力な暗号スイートを備えた TLSv1.2 以上のプロトコルを強制使用するようにしてください。
 
 これらのことから、セッション ID の適切な実装の多くを SDK 利用者側に委ねており、SDK を利用すれば安全と過信せずに **MCP Server を提供する際には細心の注意を払ってセキュリティチェックを実施してください。**
 
@@ -89,7 +89,7 @@ https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/client/st
 
 https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/client/streamableHttp.ts#L400-L406
 
-レスポンスから セッション ID である `mcp-session-id` ヘッダーを取得します。
+レスポンスから セッション ID である `Mcp-Session-Id` ヘッダーを取得します。
 
 **2. セッション ID の保存**
 
