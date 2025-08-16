@@ -43,6 +43,10 @@ Amazon Bedrock **AgentCore Observability** は OTEL 形式で 3rd Party の Lang
 
 AgentCore の機能ではありませんが AWS で AI Guardrail 機能を実現するサービスについて紹介しておきます。Amazon Bedrock Guardrails は **AI Guardrail** 機能を提供し、まだ一部機能制限はありますが日本語に対応しました。
 
+***その他***
+
+Amazon Bedrock AgentCore にはその他にも、AgentCore Memory、AgentCore Browser、AgentCore Interpreter などがあります。直接的に MCP と関係する機能ではありませんが AI Agent 実装には欠かせない機能です。まだ 2025/08 時点でプレビューであり、機能や価格等も変更の可能性がある点に注意してください。現状は python ベースでの SDK を提供していますが、Runtime の Docker 内ではカスタムコンテナを作れば自由な言語を使うことができます。
+
 ## AgentCore によるセキュリティ対策の実装
 
 [Chapter 16](https://zenn.dev/tosshi/books/security-of-the-mcp/viewer/chapter16) で紹介した MCP セキュリティ対策を Amazon AgentCore でどのように実装できるかを以下の表にまとめました。
