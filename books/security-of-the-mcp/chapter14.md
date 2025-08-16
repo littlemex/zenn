@@ -138,7 +138,7 @@ https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/examples/
 
 ## MCP Client 機能概要
 
-MCP 仕様に基づいて、Client が提供する 3 つの主要機能をおさらいしましょう。
+MCP 仕様に基づいて、Client が提供する 3 つの主要機能をおさらいしましょう。Sampling と Eliciation については厳密には、Server が Client に依頼できる機能（Client 側で実装が必要な機能）です。
 
 ### Roots
 
