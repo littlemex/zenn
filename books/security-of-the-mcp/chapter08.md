@@ -29,7 +29,7 @@ https://github.com/modelcontextprotocol/typescript-sdk/blob/main/src/shared/tran
 
 **2. 環境変数の継承**
 
-この実装では `sudo` コマンドのデフォルトの環境変数継承リストなどのように必要最低限の環境変数のみをサブプロセスに引き継ぎます。そして、**コマンドインジェクションなどを防ぐために実行可能コードの場合は除外**しています。API キーなどの情報がサブプロセスに漏れないようにケアされています。ユーザー自身が定義した環境変数はサブプロセスにセットされます。
+この実装では、Node.js の標準的な環境変数継承が行われます。基本的にはメインプロセスの環境変数がサブプロセスに継承され、ユーザーが明示的に定義した環境変数が追加されます。ただし、TypeScript SDK 自体では環境変数の自動フィルタリングや実行可能コードの検出・除外機能は提供されていません。API キーや機密情報の漏洩を防ぐには、MCP Client 側でアプリケーションレベルでの環境変数制御が必要です。
 
 https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/client/stdio.ts#L66-L84
 
@@ -39,7 +39,7 @@ https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/client/st
 
 https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/client/stdio.ts#L112-L170
 
-サブプロセス起動時の引数である `shell` が `false` になっているのはセキュリティ上重要です。`true` の場合、シェルを起動してユーザーからのコマンドを文字列としてそのまま実行してしまうため、**コマンドインジェクションのリスク**があります。これによって権限昇格やバックドアのインストール、などが考えられます。
+サブプロセス起動時の引数である `shell` が `false` になっているのはセキュリティ上重要です。`true` の場合、シェルを起動してユーザーからのコマンドを文字列としてそのまま実行してしまうため、**コマンドインジェクションのリスク**があります。これによって権限昇格やバックドアのインストール、などが考えられます。ただし `false` になっていればコマンドインジェクションに万全というわけではありませんので引数の厳格な検証とホワイトリスト、エスケープ、サニタイゼーション、サンドボックス環境での実行など多層的アプローチを講じましょう。
 
 https://github.com/modelcontextprotocol/typescript-sdk/blob/1.13.2/src/client/stdio.ts#L125
 
