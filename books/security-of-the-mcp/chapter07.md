@@ -17,7 +17,7 @@ JSON-RPC 2.0 はトランスポート非依存ですが、MCP の場合は [STDI
 
 ## STDIO
 
-STDIO トランスポートの場合、Client が MCP Server をサブプロセスとして起動します。サブプロセスとはメインのプロセスから**独立して**コマンドやプログラムを提供するための仕組みです。例えば、Node であれば `child_process` モジュールを通じて実現することができます。Typescript を用いたサブプロセス生成コードを Chapter の最後に示しておきます。単に `echo -e hello\nmcp!` を別プロセスで実行するだけのサンプルです。
+STDIO トランスポートの場合、Client が MCP Server をサブプロセスとして起動します。例えば、Node であれば `child_process` モジュールを通じて実現することができます。Typescript を用いたサブプロセス生成コードを Chapter の最後に示しておきます。単に `echo -e hello\nmcp!` を別プロセスで実行するだけのサンプルです。
 
 ```bash:実行結果
 $ ts-node sample.ts
@@ -53,7 +53,7 @@ MCP Server が標準出力に何かを書き込む度に、`stdout` ストリー
 
 https://github.com/littlemex/samples/blob/main/mcp_security_book/chapter07/sample.ts#L12-L15
 
-このような仕組みを用いて Client と Server が子プロセスを介してデータのやり取りを行う方式が STDIO です。実際には、出力から JSON RPC 2.0 のフォーマットのメッセージを解釈して取り扱うなどの実装も存在します。Server 側の実装は割愛しますが、Server からのメッセージ受信はイベント駆動型のアプローチで Client にメッセージとして渡されます。
+このような仕組みを用いて Client と Server がサブプロセスを介してデータのやり取りを行う方式が STDIO です。実際には、出力から JSON RPC 2.0 のフォーマットのメッセージを解釈して取り扱うなどの実装も存在します。Server 側の実装は割愛しますが、Server からのメッセージ受信はイベント駆動型のアプローチで Client にメッセージとして渡されます。
 
 **エラーハンドリング**
 
