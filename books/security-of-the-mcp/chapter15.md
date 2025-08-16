@@ -65,18 +65,18 @@ MCP プロキシ Server を介してサードパーティ API にアクセスす
 | ID | アクション | 説明 |
 |----|------------|------|
 | A1 | 正規認可 | ユーザーが MCP プロキシ Server を通じてサードパーティ API に正規にアクセス |
-| A2 | Cookie 設定 | サードパーティ認可 Server がユーザーのブラウザに静的 Client ID に対する同意を示す Cookie を設定 |
-| A3 | 悪意ある登録 | 攻撃者が MCP プロキシ Server に悪意のある Client を登録（redirect_uri: attacker.com） |
+| A2 | Consent Cookie 設定 | サードパーティ認可 Server がユーザーのブラウザに静的 Client ID に対する同意を示す consent cookie を設定 |
+| A3 | 動的クライアント登録 | 攻撃者が MCP プロキシ Server に悪意のある dynamically registered client を登録（redirect_uri: attacker.com） |
 | A4 | 悪意あるリンク送付 | 攻撃者がユーザーに悪意のあるリンク（認可リクエストを含む）を送信 |
-| A5 | リンククリック | ユーザーがリンクをクリック（ブラウザには同意 Cookie が保存済み） |
-| A6 | 同意スキップ | サードパーティ認可 Server は Cookie を検出し、同意画面をスキップ |
+| A5 | リンククリック | ユーザーがリンクをクリック（ブラウザには consent cookie が保存済み） |
+| A6 | 同意スキップ | サードパーティ認可 Server は consent cookie を検出し、同意画面をスキップ |
 | A7 | コード横取り | 認可コードが攻撃者のサーバー（redirect_uri）にリダイレクト |
 | A8 | トークン取得 | 攻撃者は認可コードをアクセストークンと交換 |
 | A9 | 不正アクセス | 攻撃者はユーザーになりすましてサードパーティ API にアクセス |
 
 **問題点**
 
-この攻撃では、MCP プロキシ Server は ___代理人___ としてサードパーティ API にアクセスする権限を持っていますが、**誰の指示で動いているか**を適切に確認していません。サードパーティ認可 Server も、以前の同意に基づいて新しい Client に対する同意をスキップしてしまいます。
+この攻撃では、MCP プロキシ Server は ___代理人___ としてサードパーティ API にアクセスする権限を持っていますが、**誰の指示で動いているか**を適切に確認していません。サードパーティ認可 Server も、以前の同意に基づいて新しい dynamically registered client に対する同意をスキップしてしまいます。
 
 ### シーケンス図
 
@@ -113,10 +113,10 @@ sequenceDiagram
     participant Auth as サードパーティ認可 Server
     participant API as サードパーティ API
 
-    Note over User,Auth: 以前の正規認証で Cookie が保存済み (A1, A2)
-    Attacker->>MCP: 悪意のある Client 登録（redirect_uri: attacker.com） (A3)
+    Note over User,Auth: 以前の正規認証で consent cookie が保存済み (A1, A2)
+    Attacker->>MCP: 動的クライアント登録（redirect_uri: attacker.com） (A3)
     Attacker->>User: 悪意のあるリンクを送信（認可リクエスト含む） (A4)
-    User->>Auth: リンクをクリック（保存済み Cookie 付き） (A5)
+    User->>Auth: リンクをクリック（保存済み consent cookie 付き） (A5)
     Auth->>Attacker: 認可コード（同意画面スキップ） (A6, A7)
     Attacker->>Auth: トークン交換リクエスト (A8)
     Auth->>Attacker: アクセストークン
@@ -127,11 +127,11 @@ sequenceDiagram
 
 ### 対策
 
-公式仕様書によると、MCP プロキシ Server は静的 Client ID を使用する場合、**各動的登録 Client に対してユーザーの同意を必ず取得する必要があります**。
+公式仕様書によると、MCP プロキシ Server は静的 Client ID を使用する場合、**各 dynamically registered client に対してユーザーの同意を MUST 取得する必要があります**。
 
 **1. 明示的な同意の要求**
 
-MCP プロキシ Server は、新しい Client が登録されるたびに、ユーザーの明示的な同意を必ず取得する必要があります。以前の同意があっても、新しい Client には適用しないようにします。
+MCP プロキシ Server は、新しい dynamically registered client が登録されるたびに、ユーザーの明示的な同意を必ず取得する必要があります。以前の同意があっても、新しい Client には適用しないようにします。
 
 ```mermaid
 sequenceDiagram
@@ -140,7 +140,7 @@ sequenceDiagram
     participant MCP as MCP プロキシ Server
     participant Auth as サードパーティ認可 Server
 
-    Attacker->>MCP: 悪意のある Client 登録 (A3)
+    Attacker->>MCP: 動的クライアント登録 (A3)
     Attacker->>User: 悪意のあるリンクを送信 (A4)
     User->>MCP: リンクをクリック (A5)
     MCP->>User: 新しい Client の同意画面を表示
@@ -178,7 +178,7 @@ MCP Server は、Client から受け取った認可トークンが自身（MCP S
 
 ### 対策
 
-MCP Server は、MCP Server 自身に対して明示的に発行されていないトークンを**絶対に受け入れてはなりません**。必ず新しいトークンを発行して下流 API にアクセスする必要があります。
+MCP Server は、MCP Server 自身に対して明示的に発行されていないトークンを **MUST NOT** 受け入れてはなりません。必ず新しいトークンを発行して下流 API にアクセスする必要があります。
 
 具体的には、以下の対策を実装する必要があります：
 
@@ -233,7 +233,9 @@ MCP Server がステートフルな HTTP Server を使用してセッション�
 | A5 | 誤認 | MCP Server は攻撃者を正規ユーザーと誤認し、リクエストを処理 |
 | A6 | 不正操作 | 攻撃者は正規ユーザーの権限で操作を行える |
 
-**1. セッションハイジャックプロンプトインジェクション**
+### セッションハイジャックの2つの攻撃パターン
+
+**1. Session Hijack Prompt Injection（セッションハイジャックプロンプトインジェクション）**
 
 ```mermaid
 sequenceDiagram
@@ -259,7 +261,7 @@ sequenceDiagram
     Client->>Client: 悪意のあるペイロードに基づいて行動
 ```
 
-**2. セッションハイジャックなりすまし**
+**2. Session Hijack Impersonation（セッションハイジャックなりすまし）**
 
 ```mermaid
 sequenceDiagram
@@ -282,21 +284,23 @@ sequenceDiagram
 セッションハイジャックとセッションハイジャックプロンプトインジェクション攻撃を防ぐために、以下の対策を実装する必要があります。
 
 1. **認可の強化**: 
-   - MCP Server は、すべての受信リクエストの認可トークンを必ず検証する
+   - MCP Server は、すべての受信リクエストの認可トークンを **MUST** 検証する
    - 各リクエストごとに audience、scope、発行者、有効期限、署名を検証する
    - セッション ID だけでなく、必ず認可トークンも要求する
 
 2. **セッションベースの認可の禁止**: 
-   - MCP Server は認可にセッションを絶対に使用しない
+   - MCP Server は認可にセッションを **MUST NOT** 使用する
    - セッションはユーザー体験向上のための補助的な仕組みとしてのみ使用する
    - 重要な操作には必ず認可トークンを要求する
 
 3. **安全なセッション ID**: 
-   - 必要な場合は予測不可能な値を使用する（安全な乱数生成器を使用）
+   - MCP Server は安全で非決定的なセッション ID を **MUST** 使用する
+   - 生成されたセッション ID（例：UUID）は安全な乱数生成器を **SHOULD** 使用する
    - セッション ID は十分な長さと複雑さを持たせる（最低 128 ビット以上のエントロピー）
    - セッション ID は URL や Cookie 以外の場所に保存しない
 
 4. **セッション ID のバインド**: 
+   - MCP Server はセッション ID をユーザー固有の情報と **SHOULD** バインドする
    - セッション ID をユーザー固有の情報と組み合わせる（例：`<user_id>:<session_id>`）
    - クライアントの IP アドレスやユーザーエージェントなどの情報と紐付ける
    - セッションの有効期限を短く設定し、定期的に更新する
