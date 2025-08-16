@@ -118,7 +118,7 @@ MCP Client と Server の間の認証・認可を都度接続前に事前設定�
 
 以降で RFC 番号がいくつか出てきますが、MCP の認可仕様の目的に立ち返って考えると理解しやすいでしょう。
 
-- OAuth 2.1 IETF ドラフト ([draft-ietf-oauth-v2-1-12](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-12)), _OAuth 2.1 はドラフト段階_
+- OAuth 2.1 IETF ドラフト ([draft-ietf-oauth-v2-1-13](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1-13)), _OAuth 2.1 はドラフト段階_
 - OAuth 2.0 Authorization Server Metadata ([RFC8414](https://datatracker.ietf.org/doc/html/rfc8414))
 - OAuth 2.0 Dynamic Client Registration Protocol ([RFC7591](https://datatracker.ietf.org/doc/html/rfc7591))
 - OAuth 2.0 Protected Resource Metadata ([RFC9728](https://datatracker.ietf.org/doc/html/rfc9728))
