@@ -35,7 +35,7 @@ MCP Client にとっては、MCP Server が MCP 仕様に沿ってさえいれ�
 
 **2. 内部接続パターン**
 
-外部サービスが提供する STDIO 形式の MCP Server や、自社で開発した Streamable HTTP/STDIO の MCP Server を提供したいパターンがあるでしょう。STDIO の場合は Docker 化した上でクラウド上でサービングし、内部の Streamable HTTP 形式の MCP Server の場合は外部接続パターン同様に適切な認証・認可の上で接続します。
+外部サービスが提供する STDIO 形式の MCP Server や、自社で開発した Streamable HTTP/STDIO の MCP Server を提供したいパターンがあるでしょう。STDIO の場合は Docker 化した上でクラウド上でサービングし、内部の Streamable HTTP 形式の MCP Server の場合は外部接続パターン同様に適切な認証・認可の上で接続します。ユーザーへのインタフェースを統一したい場合はどうすれば良いでしょうか。 STDIO ベースの MCP サーバーを Streamable HTTP インターフェースとして公開するためのソリューションに [`mcp-proxy`](https://github.com/sparfenyuk/mcp-proxy) があり、このようなファサードパターンを用いてインタフェースを統一することが可能でしょう。
 
 **3. MCPify パターン**
 
