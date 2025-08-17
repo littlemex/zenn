@@ -35,7 +35,18 @@ MCP Client にとっては、MCP Server が MCP 仕様に沿ってさえいれ�
 
 **2. 内部接続パターン**
 
-外部サービスが提供する STDIO 形式の MCP Server や、自社で開発した Streamable HTTP/STDIO の MCP Server を提供したいパターンがあるでしょう。STDIO の場合は Docker 化した上でクラウド上でサービングし、内部の Streamable HTTP 形式の MCP Server の場合は外部接続パターン同様に適切な認証・認可の上で接続します。ユーザーへのインタフェースを統一したい場合はどうすれば良いでしょうか。 STDIO ベースの MCP サーバーを Streamable HTTP インターフェースとして公開するためのソリューションに [`mcp-proxy`](https://github.com/sparfenyuk/mcp-proxy) があり、このようなファサードパターンを用いてインタフェースを統一することが可能でしょう。
+外部サービスが提供する STDIO 形式の MCP Server や、自社で開発した Streamable HTTP/STDIO の MCP Server を提供したいパターンがあるでしょう。二つの Base プロトコルが混在で存在するため、どちらのプロトコルも統一的にサービングして提供するにはどうすれば良いでしょうか。Streamable HTTP の場合は MCP Client とは別プロセスで MCP Server がサービングされていることを期待しているのでそのまま Streamable HTTP 形式のコンテナイメージをサービングすれば良いでしょう。
+
+一方で STDIO は MCP Client のサブプロセスとしてローカルで稼働することが期待されているプロトコルであるためクラウド等でサービングされた Server に直接接続することは考慮されていません。どうしても STDIO を利用したい場合は [`mcp-proxy`](https://github.com/sparfenyuk/mcp-proxy) などのプロトコルアダプターを STDIO 形式を用いて Streamable HTTP 形式に変換するなどの対処が必要です。ただし、追加のレイヤが挟まることでセキュリティリスクが増加する可能性があるため組織導入時には入念なレビューと管理体制を検討してください。
+
+```Dockerfile
+FROM python:3.11-slim
+...
+EXPOSE 8080
+CMD ["mcp-proxy", "--port=8080", "--host=0.0.0.0", "--stateless", "uvx", "mcp-server-fetch"]
+```
+
+余談ですが、`mcp-proxy` は STDIO ↔︎ Streamable HTTP の双方向変換が可能です。
 
 **3. MCPify パターン**
 

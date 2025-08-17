@@ -21,7 +21,7 @@ ___MCP セキュリティに関する包括的な実装編:___ _MCP のセキュ
 
 ***AgentCore Runtime***
 
-Amazon Bedrock **AgentCore Runtime** という MCP Server コード、もしくは Docker コンテナイメージを作成すればすぐに MCP Server をサービングできる機能があります。サーバレスであり自前でインスタンスを持つ必要はありませんし、最大 8 時間の長時間実行に耐え、Streamable HTTP 形式にも対応しています。自作の MCP Server や 3rd Party MCP Server を **Internal MCP Servers** としてサービングすることができます。
+Amazon Bedrock **AgentCore Runtime** という MCP Server コード、もしくは Docker コンテナイメージを作成すればすぐに MCP Server をサービングできる機能があります。サーバレスであり自前でインスタンスを持つ必要はありませんし、最大 8 時間の長時間実行に耐え、Streamable HTTP 形式にも対応しています。自作の MCP Server や 3rd Party MCP Server を **Internal MCP Servers** としてサービングすることができます。STDIO 形式に対応していない点に注意が必要です。
 
 ***AgentCore Gateway***
 
