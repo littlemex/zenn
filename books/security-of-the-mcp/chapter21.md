@@ -1,5 +1,5 @@
 ---
-title: "§21 AgentCore Runtime"
+title: "§21 AgentCore Runtime 解説"
 free: true
 ---
 
