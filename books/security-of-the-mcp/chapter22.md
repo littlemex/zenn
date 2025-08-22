@@ -155,7 +155,9 @@ DCR が完全に実装されていない環境においても、Gateway レベ�
 
 ## まとめ
 
-Amazon Bedrock AgentCore Gateway は、MCP 認可仕様の主要な MUST 要件（OAuth 2.1 with PKCE、RFC 8414、RFC 9728）に対応しており、基本的な標準準拠を実現しています。特に RFC 9728 対応により、MCP Client による動的なメタデータ発見が可能となり、標準的な OAuth 2.0 エコシステムとの統合が円滑に行えます。
+Amazon Bedrock AgentCore Gateway について解説しました。MCPify のためのゲートウェイとして認証・認可やセマンティック検索に対応しており、実運用レベルのケイパビリティがあることが確認できました。
+
+AgentCore Gateway は、MCP 認可仕様の主要な MUST 要件（OAuth 2.1 with PKCE、RFC 8414、RFC 9728）に対応しており、基本的な標準準拠を実現しています。特に RFC 9728 対応により、MCP Client による動的なメタデータ発見が可能となり、標準的な OAuth 2.0 エコシステムとの統合が円滑に行えます。
 
 一部の SHOULD 要件（RFC 7591 Dynamic Client Registration）や新しい仕様（RFC 8707 Resource Indicators）への対応については、プレビュー段階での今後の機能拡張が期待されます。現在の制約に対しては、自前での実装、Gateway の論理的分離やスコープベースの制御といった実用的な回避策により、企業レベルでの運用要件を満たすことが可能です。
 
