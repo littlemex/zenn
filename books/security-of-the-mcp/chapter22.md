@@ -143,7 +143,7 @@ MCP 仕様では以下の要件が必須とされていることを Chapter12 �
 
 **🔶 RFC 7591 (OAuth 2.0 Dynamic Client Registration Protocol)** については、MCP Client がユーザーの操作なしに OAuth Client ID を取得できるようにする動的 Client 登録プロトコルのサポートが推奨されます。これは MCP において重要な機能である理由として、Client が事前にすべての可能な MCP Server とその認可 Server を知ることができない場合があること、手動登録がユーザーにとって摩擦を生むこと、新しい MCP Server とその認可 Server へのシームレスな接続を可能にすること、認可 Server が独自の登録ポリシーを実装できることが挙げられます。
 
-Gateway と連携する Cognito は AWS API を通じてプログラマティックな Client 登録をサポートしていますが、標準的な RFC 7591 エンドポイント（`/register`）は実装されていません。一方、Auth0、Keycloak、Okta などの認可 Server は RFC 7591 に対応しており、これらを使用することで標準準拠の DCR を実現できます。
+Gateway と連携する Cognito は AWS API を通じてプログラマティックな Client 登録をサポートしていますが、標準的な RFC 7591 エンドポイント（`/register`）は実装されていません。RFC 7591 に対応した認可 Server を使用することで標準準拠の DCR を実現できます。
 
 AgentCore Gateway 側では、`UpdateGateway` API を通じて `allowedClients` の動的更新が可能です。具体的には、[`authorizerConfiguration`](https://docs.aws.amazon.com/bedrock-agentcore-control/latest/APIReference/API_CustomJWTAuthorizerConfiguration.html) パラメータ内の `customJWTAuthorizer` オブジェクトにおいて、`allowedClients` 配列を更新することで新しい Client ID を追加できます。ただし、この更新は配列全体の置き換えとなるため、既存の Client ID を保持したい場合は、事前に `GetGateway` API で現在の設定を取得し、新しい Client ID を既存のリストに追加する形で実装する必要があります。
 
@@ -153,14 +153,10 @@ RFC 7591 準拠の完全な自動化を実現するためには、認可 Server 
 
 DCR が完全に実装されていない環境においても、Gateway レベルでの論理的分離により部門別や環境別に複数の Gateway を運用することで粗粒度な制御を実現し、OAuth スコープを活用した機能レベルでの制御と組み合わせることで、読み取り専用、書き込み可能、管理者権限といった段階的な権限管理が可能になります。さらに、Target レベルでの Outbound Auth 設定を適切に行うことで、Gateway からバックエンドリソースへのアクセス制御を強化し、多層防御の観点からセキュリティを向上させることができます。
 
-**結論**
-
-RFC 7591 への対応は、認可サーバーの選択または Lambda による追加実装により技術的に実現可能です。AgentCore Gateway 自体は DCR に必要な基盤機能（動的 Client 更新）を提供しており、完全な DCR 対応は実装方法の選択の問題となります。企業環境では、セキュリティ要件と運用負荷のバランスを考慮し、段階的な導入アプローチが推奨されます。
-
 ## まとめ
 
 Amazon Bedrock AgentCore Gateway は、MCP 認可仕様の主要な MUST 要件（OAuth 2.1 with PKCE、RFC 8414、RFC 9728）に対応しており、基本的な標準準拠を実現しています。特に RFC 9728 対応により、MCP Client による動的なメタデータ発見が可能となり、標準的な OAuth 2.0 エコシステムとの統合が円滑に行えます。
 
-一部の SHOULD 要件（RFC 7591 Dynamic Client Registration）や新しい仕様（RFC 8707 Resource Indicators）への対応については、プレビュー段階での今後の機能拡張が期待されます。現在の制約に対しては、Gateway の論理的分離やスコープベースの制御といった実用的な回避策により、企業レベルでの運用要件を満たすことが可能です。
+一部の SHOULD 要件（RFC 7591 Dynamic Client Registration）や新しい仕様（RFC 8707 Resource Indicators）への対応については、プレビュー段階での今後の機能拡張が期待されます。現在の制約に対しては、自前での実装、Gateway の論理的分離やスコープベースの制御といった実用的な回避策により、企業レベルでの運用要件を満たすことが可能です。
 
 > P.S 自分で MCPify Proxy の実装を進めていましたがとんでもないスピード感で MCPify のサービスが出てきたので驚いています。このような MCPify の仕様への追従がより進めばわざわざ自前で MCP Server を実装するケースは今後減るかもしれませんね。
