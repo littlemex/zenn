@@ -1,5 +1,12 @@
 title: "Model Context Protocol Security on AWS"
-summary: "本書は MCP の概要、考慮すべきセキュリティ、その対策方法、AWS を用いた実装まで踏み込んだ内容を丁寧に紹介します。"
+summary: "本書は MCP の概要、考慮すべきセキュリティ、その対策方法、AWS を用いた実装まで踏み込んだ内容を丁寧に紹介します。
+
+# ライセンス
+
+© 2025 littlemex. 
+
+本文および自作図表: CC BY 4.0
+引用画像: 各画像の出典に記載されたライセンスに従う"
 topics: ["MCP", "AWS"]
 published: false
 price: 1800 # 有料の場合200〜5000
