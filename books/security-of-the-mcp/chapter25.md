@@ -11,9 +11,9 @@ ___MCP セキュリティに関する包括的な実装編:___ _MCP のセキュ
 
 ![200101](/images/books/security-of-the-mcp/fig_c20_s01_01.png)
 
-Amazon Bedrock Guardrails は、AI Guardrail を実現する AWS サービスです。本 Chapter ではこのサービスについての理解を深め、どのように AI Guardrail を MCP のセキュリティリスクの緩和に利用できるかの検討を行います。本 Chapter は MCP 利用者、MCP を企業に導入する管理者視点で解説します。
+Amazon Bedrock Guardrails は、AI Guardrail を実現する AWS サービスです。本 Chapter ではこのサービスについての理解を深め、AI Guardrail を MCP のセキュリティリスクの緩和に利用できるか否かの検討を行います。本 Chapter は MCP 利用者、MCP を企業に導入する管理者視点で解説します。
 
-[2025 年 6 月 25 日に日本語に対応](https://aws.amazon.com/jp/blogs/news/amazon-bedrock-guardrails-supports-japanese/)し、MCP における Tool Poisoning Attack や Tool Shadowing Attack などのセキュリティリスクの検出・防止において重要な役割を果たします。
+[2025 年 6 月 25 日に日本語に対応](https://aws.amazon.com/jp/blogs/news/amazon-bedrock-guardrails-supports-japanese/)し、Generative AI ワークロードのセキュリティリスクの検出・防止において重要な役割を果たします。
 
 ## Amazon Bedrock Guardrails とは
 
