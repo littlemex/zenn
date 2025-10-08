@@ -19,10 +19,11 @@ MCP の認可仕様は基本的なフレームワークを提供しています�
 
 MCP Client が認可 Server にアクセストークンを要求する際、どのスコープを要求すべきかが明確ではありませんでした。スコープとは、 OAuth でアクセストークンに付与される「権限の範囲」のことです。例えば、 GitHub API では以下のようなスコープがあります。
 
-- `repo:read` - リポジトリの読み取り専用
-- `repo:write` - リポジトリへの書き込み
-- `user:read` - ユーザー情報の読み取り
-- `admin:org` - 組織の管理権限
+  - `repo` - フルリポジトリアクセス
+  - `public_repo` - パブリックリポジトリのみ
+  - `user` - ユーザー情報アクセス
+  - `read:user` - ユーザー情報読み取り専用
+  - `admin:org` - 組織管理権限
 
 現在の仕様では、 MCP Client は Protected Resource Metadata から `scopes_supported` を取得できますが、実際にどのスコープを最初に要求すべきかの優先順位が定義されていません。
 
@@ -30,9 +31,9 @@ MCP Client が認可 Server にアクセストークンを要求する際、ど�
 Protected Resource Metadata から取得できる情報：
 {
   "scopes_supported": [
-    "repo:read", 
-    "repo:write", 
-    "user:read", 
+    "repo", 
+    "public_repo", 
+    "user", 
     "admin:org"
   ]
 }
@@ -42,11 +43,11 @@ Protected Resource Metadata から取得できる情報：
 
 ```
 ❌ 悪い例：
-scope = "repo:read repo:write user:read admin:org"
+scope = "repo public_repo user admin:org"
 （すべてのスコープを要求）
 
 ✅ 良い例：
-scope = "repo:read"
+scope = "public_repo"
 （最初は最小限から開始）
 ```
 
@@ -208,9 +209,9 @@ SEP-835 の提案により、実装者は以下の具体的な改善を期待で
 
 Client 種別に応じた適切な対応により、様々な環境での MCP 導入が容易になります。特に、自動化された環境での client_credentials フローの扱いが明確になることで、企業環境での MCP 採用が促進されることが期待されます。
 
-## Dynamic Client Registration の現状の課題と解決策
+## Client Registration の進化と新しいセキュリティアプローチ
 
-MCP の認可において、Dynamic Client Registration （DCR）に関する課題が議論されています。これらの課題に対して具体的な解決策が提案されています。
+MCP の認可において、Dynamic Client Registration （DCR）に関する課題が議論されています。これらの課題に対して具体的な解決策が提案されており、 2025 年 8 月の [MCP 公式ブログ記事「 Evolving OAuth Client Registration in the Model Context Protocol」](https://blog.modelcontextprotocol.io/posts/client_registration/) では、 Client Registration の進化について詳細に解説されています。
 
 [MCP 公式仕様（2025-06-18 版）](https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization)では、DCR をサポートしない認可 Server に対して、**MCP Client が必ず代替手段を提供しなければならない**と明確に規定しています。
 
@@ -225,7 +226,7 @@ DCR のみに対応する Client 実装があるとします。 MCP 仕様では
 
 ### SEP-991 で議論されている DCR の具体的な課題
 
-[SEP-991: Enable URL-based Client Registration using OAuth Client ID Metadata Documents](https://github.com/modelcontextprotocol/modelcontextprotocol/issues/991) では、現在の DCR アプローチが抱える以下の具体的な課題が詳細に分析されています。
+[SEP-991: Enable URL-based Client Registration using OAuth Client ID Metadata Documents(CIMD)](https://github.com/modelcontextprotocol/modelcontextprotocol/issues/991) では、現在の DCR アプローチが抱える以下の具体的な課題が詳細に分析されています。
 
 MCP は USB-C のようなプラグアンドプレイ体験であり、そのために手動設定などをすることなく「端子に刺せば使える」ような体験を提供することに重要な価値があります。しかし現在のアプローチにはいくつかの課題があります。
 
@@ -307,6 +308,67 @@ Client ID Metadata Documents は、前述の 3 つの課題を解決します。
   "token_endpoint_auth_method": "none"
 }
 ```
+
+### Software Statements によるデスクトップアプリケーションのセキュリティ強化
+
+ブログ記事では、Client ID Metadata Documents と組み合わせて使用できる **Software Statements** という新しいセキュリティメカニズムが提案されています。これは、デスクトップアプリケーションにおける Client 偽装攻撃を防ぐための重要な技術です。
+
+**Trust Spectrum の概念**
+
+ブログ記事では、偽装攻撃のコストと緩和策の複雑性を 2 つの軸で整理した「Trust Spectrum」が紹介されています。
+
+- **低攻撃コスト/低緩和複雑性**: ドメインベース攻撃
+  - 攻撃：悪意のあるコールバック URI を登録し、「Claude Desktop」を名乗る
+  - 緩和策：信頼できるドメイン/URL の制限、未知ドメインへの警告表示
+  - CIMD と DCR の両方で対応可能
+
+- **中攻撃コスト/中緩和複雑性**: `localhost` 偽装攻撃
+  - 攻撃：`localhost:8080` で悪意のあるアプリを実行し、正当な Client を偽装
+  - 問題：デスクトップアプリは秘密を保持できず、身元証明が困難
+
+- **高攻撃コスト/高緩和複雑性**: プラットフォーム証明アプリケーション
+  - 攻撃：信頼できる認証機関によって署名された悪意のある Client
+  - 緩和策：プラットフォームシステムレベルの証明（将来の課題）
+
+**Software Statements の実装**
+
+`localhost` 偽装攻撃を防ぐため、 Software Statements では以下の仕組みを提案しています。
+
+1. **Client のバックエンドサービスでの JWKS ホスティング**
+2. **Client 自身の認証フローを通じたユーザー認証**
+3. **Client 所有のバックエンドサービスによる短期間の署名付き JWT 発行**
+4. **OAuth フローでの JWT 含有**
+5. **認可 Server による信頼できる JWKS に対する JWT 検証**
+
+この仕組みにより、攻撃者は以下のいずれかを実行する必要があり、攻撃コストが大幅に増加します。
+
+- Client のバックエンドインフラストラクチャの侵害
+- Client の認証フローの偽装成功
+
+**重要な点として、 Software Statements は DCR と CIMD の両方で使用可能**であり、競合する解決策ではなく相補的なセキュリティレイヤーとして機能します。
+
+### セキュリティ考慮事項の具体化
+
+ブログ記事では、 CIMD と Software Statements の実装における具体的なセキュリティ要件が明確化されています。
+
+**CIMD 実装でのセキュリティ要件**
+
+認可 Server が HTTPS URL からメタデータを取得する際、以下の対策が必須です。
+
+- **SSRF 攻撃防止**: 内部ネットワークアクセスのブロック
+- **タイムアウトとサイズ制限**: DoS 攻撃防止のための制限実装
+- **レスポンス形式の厳密検証**: 悪意のあるメタデータによる攻撃防止
+- **キャッシュ戦略**: パフォーマンス向上とセキュリティ考慮事項のバランス
+
+**相補的アプローチの明確化**
+
+ブログ記事では、これらの技術が相互に排他的ではなく、相補的に機能することが強調されています。
+
+- **DCR の後方互換性維持**: 既存実装への影響を最小化
+- **CIMD の新規実装推奨**: 運用負荷軽減のための推奨アプローチ
+- **Software Statements の重ね合わせ**: 必要に応じたセキュリティ強化
+
+この段階的なアプローチにより、実装者は自身の要件とリスク許容度に応じて適切なセキュリティレベルを選択できます。
 
 ## MCP に適した新しい Auth メカニズムの提案
 
@@ -917,8 +979,54 @@ SEP-646 は理論的な提案にとどまらず、実際の実装と実証が進
 
 - **エンドツーエンド実装**: [Okta Cross-App Access MCP](https://github.com/oktadev/okta-cross-app-access-mcp) で実証済み
 - **パートナー実装**: 複数のパートナーと進行中の実装
-- **MCP Dev Summit**: 2025 年 5 月に発表済み
 
 ## まとめ
+
+### MCP Auth 技術の全体像
+
+本 Appendix で紹介した各 SEP の関係性と併用可能性を以下の図で整理します。
+
+```mermaid
+graph TB
+    subgraph "現行の基盤技術層"
+        OAuth[標準 OAuth 2.1<br/>基本認証・認可]
+        DCR[Dynamic Client Registration<br/>動的 Client 登録]
+    end
+    
+    subgraph "拡張・改善層"
+        SEP835[SEP-835<br/>スコープ管理改善<br/>・最小権限原則<br/>・段階的権限拡張]
+        SEP991[SEP-991<br/>CIMD<br/>・DCR 運用負荷解決<br/>・プラグ&プレイ実現]
+        SS[Software Statements<br/>・Client 偽装防止<br/>・localhost 攻撃対策]
+        SEP646[SEP-646<br/>企業プロファイル<br/>・既存 IdP 統合<br/>・企業ポリシー適用]
+    end
+    
+    subgraph "代替アーキテクチャ層"
+        SEP1299[SEP-1299<br/>新認証方式<br/>・OAuth 根本課題解決<br/>・暗号学的認証]
+    end
+    
+    OAuth -->|"拡張"| SEP835
+    DCR -->|"代替手段"| SEP991
+    OAuth -->|"プロファイル"| SEP646
+    SEP991 -->|"セキュリティ強化"| SS
+    SEP1299 -.->|"完全置換"| OAuth
+    
+    style SEP835 fill:#2e7d32,color:#ffffff
+    style SEP991 fill:#f57c00,color:#ffffff
+    style SS fill:#ff6f00,color:#ffffff
+    style SEP646 fill:#1976d2,color:#ffffff
+    style SEP1299 fill:#c62828,color:#ffffff
+    style OAuth fill:#424242,color:#ffffff
+    style DCR fill:#616161,color:#ffffff
+```
+
+### 矢印の意味
+
+- **拡張**: 既存技術の機能を改善・強化
+- **代替手段**: DCR の運用負荷と信頼性問題を別のアプローチで解決
+- **プロファイル**: 既存技術を特定環境に最適化
+- **セキュリティ強化**: 追加のセキュリティレイヤーを提供
+- **完全置換**: 既存技術を根本的に新しい方式で置き換え
+
+### 技術選択の指針
 
 SEP-646 は現実的にすぐに実装可能なアプローチとしてエンタープライズ企業で導入が進むと思われます。一方で SEP-646 は残存する課題全てに対処できるものではないため、課題の優先度に応じて SEP-1299 なのか別の SEP などでユースケースに応じた提案が進むのではないかと考えています。Rug Pull 攻撃に対処するクライアント真正性の確認やツール変更検知なども重要なテーマであり、最終的な仕様は非常に複雑なものとなる可能性がありそうです。USB も広報互換性を保ちながらニーズに対処してきて背景があり、IP コアの裏側の LSI 実装はもはや誰も一からバグ混入なしで作ることは不可能な状態なのではないかと思います。利用者にとって非常に簡単な仕組みの裏側のプロトコルは化け物のように複雑になる、というのはどのプロトコルでも共通するのかもしれませんね。
