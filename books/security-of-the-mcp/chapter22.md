@@ -7,6 +7,18 @@ ___MCP セキュリティに関する包括的な実装編:___ _MCP のセキュ
 
 ---
 
+FIXME: 以下のツール同期機能について調査して文章を相応しい箇所に追記して。
+
+**ツール同期機能**
+
+Gateway は MCP Server との連携において、重要なツール同期機能を提供します。
+
+- **暗黙的同期（Implicit Synchronization）**: `CreateGatewayTarget` および `UpdateGatewayTarget` 操作中に自動的にツール発見とインデックス化が実行されます。Gateway は即座に MCP Server の tools/list 機能を呼び出し、利用可能なツールを取得して統合カタログで利用可能にします。
+
+- **明示的同期（Explicit Synchronization）**: `SynchronizeGatewayTargets` API を呼び出すことで手動でツールカタログの更新をトリガーできます。MCP Server がツール定義を変更した際に使用します。この API は非同期で処理され、大規模なツールセットの場合は数分かかる場合があります。
+
+同期機能により、Gateway はベクター埋め込みを事前計算してセマンティック検索を可能にし、正規化されたツールカタログを維持します。これにより、ユーザーは全てのターゲットタイプにわたって最新の利用可能なツールを発見し、呼び出すことができます。
+
 **本 Chapter では Amazon Bedrock AgentCore Gateway について解説します。**
 
 ## AgentCore Gateway の概要
