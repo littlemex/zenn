@@ -13,4 +13,3 @@
 - be9a83eb0c6645: LLM-as-a-judge on Amazon Bedrock Model Evaluation
 - cd0a414b563733: Detect hallucinations for RAG-based systems
 - e709a2e00f7a01: 00045.SageMaker 開発環境を整える
-
