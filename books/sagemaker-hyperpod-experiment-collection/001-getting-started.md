@@ -1,5 +1,5 @@
 ---
-title: "Amazon SageMaker Hyperpod - Getting Started"
+title: " - Getting Started"
 free: true
 ---
 
