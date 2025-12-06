@@ -193,7 +193,85 @@ graph TB
     style Storage fill:#f7e9d4
 ```
 
-## インスタンス
+| 世代 | インスタンス | 最大スケール | ネットワーク | 特徴 |
+|------|-----------|------------|------------|------|
+| **1.0** | P4d (A100) | 数千GPU | 400Gbps EFA | 初代大規模クラスター |
+| **2.0** | P5 (H100) | 20,000 GPU | 3,200Gbps EFA | NVLink 強化 |
+| **3.0** | Trn3, P6e (GB200/GB300) | 100万チップ | 28.8Tbps EFA | 前世代の 10 倍スケール |
+
+::::details 図の用語説明
+## コンピュートインスタンス
+
+### Accelerator
+
+:::message
+役割: AI/ML の計算を高速に実行する専用チップです。
+:::
+
+- **GPU**: NVIDIA 製のアクセラレータ（H100、H200、B200 など）
+- **Trainium**: AWS が独自開発した ML 専用チップ、コスト効率に優れる
+
+## ネットワーク
+
+大規模モデル訓練では、GPU 間で頻繁にデータを交換する必要があります。ネットワークの性能が訓練速度に直結します。詳細は割愛しますが LSI チップ内（もしくは SoC のパッケージ内）、やボード内、サーバーラック 内、ラック間など複数の通信があります。
+
+### EFA（Elastic Fabric Adapter）- ノード間通信
+
+:::message
+役割: 異なるサーバー（ノード）間を接続する高速ネットワーク
+:::
+
+AWS が開発した専用ネットワークインターフェースで、以下の特徴があります。
+
+- **超低レイテンシ**: マイクロ秒単位（1/1,000,000 秒）の通信遅延
+- **OS バイパス**: カーネルを介さずに直接通信（RDMA 技術）
+- **高帯域幅**: 世代により 400Gbps～28.8Tbps
+
+### NVLink - GPU 間通信（ノード内）
+
+:::message
+役割: 同じサーバー内の GPU 同士を接続する超高速インターコネクト
+:::
+
+NVIDIA 製の GPU 専用接続技術で、PCIe よりも遥かに高速です。
+
+- **NVLink 4.0**: 900GB/s（H100）- 1つの GPU から見た帯域幅
+- **NVLink-C2C**: Grace CPU と Blackwell GPU（GB200/GB300）を接続
+
+### NeuronLink と NeuronSwitch - Trainium 間通信
+
+:::message
+役割: AWS Trainium チップ専用の高速インターコネクト
+:::
+
+- **NeuronLink-v4**: チップあたり2TB/s の帯域幅
+- **NeuronSwitch-v1**: 144チップを All-to-all 接続するファブリック、総帯域幅 368TB/s
+
+## ストレージ
+
+### FSx for Lustre - 分散並列ファイルシステム
+
+:::message
+役割: 高速な共有ストレージ、チェックポイントと学習データの保存
+:::
+
+- **並列アクセス**: 数百～数千の GPU から同時に読み書き可能
+- **高帯域幅**: 最大数百 GB/s
+- **低レイテンシ**: サブミリ秒（1/1,000 秒未満）
+- **EFA アクセス**: 専用高速ネットワークを使用するため、通常のストレージより高速
+
+### Amazon S3 - オブジェクトストレージ
+
+:::message
+役割: 大容量データの長期保存
+:::
+
+- **FSx との関係**: FSx for Lustre のバックエンドとして統合可能。頻繁にアクセスするデータは FSx、長期保存は S3 という使い分けが一般的
+::::
+
+## コンピュートインスタンス
+
+UltraClustes のコンピュートインスタンスには NVIDIA GPU、Trainium アクセラレータが主に分類として存在します。基本的には NVIDIA GPU を利用するケースが多いと思いますが、Trainium が利用可能なモデルアーキテクチャでは GPU と比べてコスト効率よく大規模基盤モデルの学習ができるため、コストとパフォーマンス観点では Trainium が自分たちのモデルで利用可能かどうかについては常に選択肢に入れておくべきでしょう。
 
 ### NVIDIA GPU インスタンス
 
@@ -211,149 +289,76 @@ graph TB
 | P6e-GB300 (UltraServer) | GB300 (72) | ~20TB | - | 28.8Tbps | NVLink-C2C, ~278GB/GPU |
 ::::
 
-::::details ## インスタンスタイプ選定ガイド
+::::details インスタンスタイプ選定ガイド
 
-ここに整理して
+## NVIDIA Compute Capability
 
+NVIDIA GPU は世代ごとに **Compute Capability**（計算能力レベル）が定義されており、サポートされる機能や命令セットが異なります。詳細は [NVIDIA CUDA GPUs ページ](https://developer.nvidia.com/cuda-gpus) を参照してください。
+
+| GPU | Compute Capability | 世代 | 主な特徴 |
+|-----|-------------------|------|---------|
+| **A100** | 8.0 | Ampere | FP64 Tensor Core、構造化スパース |
+| **H100** | 9.0 | Hopper | Transformer Engine (FP8)、Thread Block Clusters |
+| **H200** | 9.0 | Hopper | H100 と同じ、メモリ容量・帯域幅強化 |
+| **B200/B300** | 10.0 | Blackwell | FP4 サポート、第5世代 Tensor Core |
+
+新しい世代ほど、LLM や Transformer モデルに最適化された機能が追加されています。
+
+https://www.nvidia.com/ja-jp/technologies/
+
+## 選定時の主要考慮事項
+
+### 1. アクセラレータメモリ容量
+
+モデルサイズとバッチサイズに応じて必要なメモリが決まります。単一インスタンスで良いのか UltraServer が必要になるのかを考える必要があります。
+
+**目安**:
+- 小規模モデル（～13B）: 40-80GB（A100、H100）
+- 中規模モデル（～70B）: 80-141GB（H100、H200）
+- 大規模モデル（70B～）: 141GB+（H200、B200、B300）
+- 超大規模モデル（405B～）: UltraServer（GB200/GB300, 72 GPU）
+
+メモリ不足の場合、Model Parallel などの分割手法が必要になり、実装が複雑化します。
+
+### 2. ネットワーク帯域幅とレイテンシ
+
+複数 GPU での学習が必要な場合は GPU 間通信の性能が学習時間に直結します。
+
+**EFA 帯域幅**:
+- P4d: 400Gbps
+- P5/P5e/P5en/P6-B200: 3,200Gbps（8倍）
+- P6-B300: 6,400Gbps（16倍）
+- P6e UltraServer: 28.8Tbps（72倍）
+
+大規模クラスター（64ノード以上）では、高帯域幅が学習効率に大きく影響します。
+
+### 3. コストと利用効率
+
+**常に最新が良いとは限らない理由**
+
+- **キャパシティ確保**: 新世代は入手困難な場合あり（サービスクォータ、物理的な供給制約）
+- **コスト**: 新世代は高額（ただし性能あたりのコストは改善される傾向）
+- **ソフトウェア成熟度**: 新世代は対応ライブラリやツールが限定的な場合あり
+
+**実用的なアプローチ**:
+1. **小規模実験**: 枯れた P5（H100）で検証、十分な実績とエコシステム
+2. **中規模訓練**: P5e（H200）、メモリ容量と費用のバランス
+3. **大規模本番**: 要件に応じて P6-B300 や P6e UltraServer を検討
 ::::
 
-#### P6e UltraServer シリーズ（NVIDIA GB200/GB300）
+### Trainium インスタンス
 
-**P6e-GB200 UltraServer**（2024年発表）
-- 72 GPU（NVIDIA GB200 NVL72）
-- 13.3TB GPU メモリ
-- 28.8Tbps ネットワーク帯域幅
-- NVLink-C2C 接続による Grace Blackwell Superchip
+::::details Trainium インスタンスタイプ表
+| インスタンスタイプ | Accelerator (数) | HBM Memory | Local SSD | Network (EFA) | 備考 |
+|------------------|-----------------|-----------|----------|--------------|------|
+| Trn1.32xlarge | Trainium (16) | 512GB | - | 800Gbps (8x100Gbps) | 32GB/chip |
+| Trn1n.32xlarge | Trainium (16) | 512GB | - | 1,600Gbps (16x100Gbps) | EFA 2倍、ネットワーク強化版 |
+| Trn2.48xlarge | Trainium2 (16) | 8,192GB | - | 3,200Gbps (16x200Gbps) | 512GB/chip、Trn1 の16倍メモリ |
+| Trn2u.48xlarge | Trainium2 (16) | 8,192GB | - | 3,200Gbps (16x200Gbps) | Trn2 の別バリアント |
+| Trn3 UltraServer | Trainium3 (最大144) | - | - | EFA v3 (3.2Tbps推定) | NeuronLink-v4 (2TB/s per chip)NeuronSwitch-v1 (368TB/s total) |
+::::
 
-**P6e-GB300 UltraServer**（2025年12月発表、GA）
-- P6e-GB200 と比較して GPU メモリ 1.5倍（約20TB）
-- FP4 コンピュート 1.5倍（スパースなし）
-- 高コンテキスト要求モデル、推論技術（Reasoning）、Agentic AI に最適
-
-#### P5 インスタンス（NVIDIA H100）
-
-- 8x NVIDIA H100 80GB GPU
-- 3,200Gbps EFA ネットワーク
-- 640GB システムメモリ
-- NVLink 4.0（900GB/s）でGPU間を接続
-- 汎用的な大規模モデル訓練に最適
-
-
-
-
-
-
-
-**接続の説明**:
-- **EFA（ノード間通信）**: P5/Trn3 は EFA v3（3.2Tbps）、P6e は EFA v4（28.8Tbps）
-- **NVLink（GPU 間通信）**: P5 は NVLink 4.0（900GB/s）、P6e は NVLink-C2C（Grace-Blackwell アーキテクチャ）
-- **NeuronLink/NeuronSwitch（Trainium 間通信）**: チップあたり2TB/s、UltraServer 全体で368TB/s
-- **FSx for Lustre**: EFA 経由でアクセス、分散並列ファイルシステム
-- **S3**: FSx for Lustre のバックエンドとして統合可能、または VPC エンドポイント経由でアクセス
-- **EBS**: 各インスタンスに直接接続（図には表示していないが、OS やアプリケーション用途で使用）
-
-### 世代別 UltraClusters の進化
-
-| 世代 | 主要チップ | 最大スケール | ネットワーク | 特徴 |
-|------|-----------|------------|------------|------|
-| **UltraClusters 1.0** | P4d (A100) | 数千GPU | 400Gbps EFA | 初代大規模クラスター |
-| **UltraClusters 2.0** | P5 (H100) | 20,000 GPU | 3,200Gbps EFA | NVLink 強化 |
-| **UltraClusters 3.0** | Trn3, P6e (GB200/GB300) | 100万チップ | 28.8Tbps EFA | 前世代の10倍スケール |
-
-2025年12月の re:Invent で発表された **UltraClusters 3.0** では、最大100万個のチップを接続可能になり、前世代と比較して10倍のスケールを実現しています。
-
-### 主要インスタンスタイプの詳細
-
-
-
-#### Trn3 UltraServer（AWS Trainium3）
-
-2025年12月に一般提供開始された AWS の第3世代カスタム AI チップです。
-
-**主要スペック**:
-- 1台の UltraServer に最大144個の Trainium3 チップ
-- 最大362 FP8 PFLOPs の処理能力
-- 3nm プロセス技術
-
-**Trainium2 との比較**:
-- 計算性能: 最大4.4倍向上
-- エネルギー効率: 4倍向上
-- メモリ帯域幅: 約4倍向上
-- レイテンシ: 4分の1に削減
-
-**ネットワーク機能**:
-- **NeuronSwitch-v1**: 
-  - All-to-all ファブリックアーキテクチャ
-  - NeuronLink-v4 を使用
-  - チップあたり2TB/s（2,560GB/s）の帯域幅
-  - Trn2 UltraServer 比で2倍の帯域幅
-  - 144チップ構成での総帯域幅: 約368TB/s
-- 強化された Neuron Fabric ネットワーク: チップ間通信遅延を10マイクロ秒未満に削減
-
-**次世代 Trainium4**（発表済み、リリース予定）:
-- FP4 処理性能: 6倍以上
-- FP8 性能: 3倍
-- メモリ帯域幅: 4倍
-- **NVIDIA NVLink Fusion** 統合: Trainium4、Graviton、EFA が共通の MGX ラック内で連携
-
-### ネットワークアーキテクチャ
-
-EC2 UltraClusters のネットワークは、大規模分散訓練において最も重要なコンポーネントの一つです。
-
-#### EFA (Elastic Fabric Adapter)
-
-AWS が開発した高速ネットワークインターフェースで、以下の特徴があります。
-
-- **低レイテンシ**: マイクロ秒単位の通信遅延
-- **高帯域幅**: 最大3,200Gbps（P5）、28.8Tbps（P6e）
-- **スケーラビリティ**: 数万ノードまでスケール可能
-- **OS バイパス**: カーネルを介さない直接通信
-
-**世代別 EFA 性能**:
-- EFA v1: 100Gbps
-- EFA v2: 400Gbps
-- EFA v3: 3,200Gbps（P5）
-- EFA v4: 28.8Tbps（P6e）
-
-#### NVLink
-
-NVIDIA GPU 間を接続する高速インターコネクトです。
-
-- **NVLink 3.0**（A100）: 600GB/s
-- **NVLink 4.0**（H100）: 900GB/s
-- **NVLink-C2C**（GB200/GB300）: Grace CPU と Blackwell GPU を接続
-
-#### NeuronLink と NeuronSwitch
-
-AWS Trainium 専用の高速インターコネクト技術です。
-
-**NeuronLink-v4**（Trainium3）:
-- チップあたり2TB/s（2,560GB/s）の帯域幅
-- デバイス間の効率的なスケールアウト訓練を実現
-- デバイス間のメモリプーリングをサポート
-
-**NeuronSwitch-v1**（Trn3 UltraServer）:
-- All-to-all ファブリックアーキテクチャ
-- 144チップを完全メッシュで接続
-- UltraServer 内の総帯域幅: 約368TB/s
-- Trn2 UltraServer 比で2倍の帯域幅
-- Model Parallel と MoE の効率を向上
-
-#### ネットワーク技術の比較
-
-| 技術 | 用途 | 帯域幅/デバイス | スコープ | 主な用途 |
-|------|------|---------------|---------|---------|
-| **NVLink 4.0** | GPU間接続 | 900GB/s | ノード内（8 GPU） | Tensor Parallel |
-| **NVLink-C2C** | CPU-GPU接続 | - | UltraServer内 | Grace-Blackwell |
-| **NeuronLink-v4** | Trainium間接続 | 2TB/s (2,560GB/s) | UltraServer内 | Tensor Parallel、MoE |
-| **NeuronSwitch-v1** | Trainium間ファブリック | 368TB/s（総計） | UltraServer内（144チップ） | 超大規模 Model Parallel |
-| **EFA v3** | ノード間接続 | 3,200Gbps | ノード間 | Data Parallel（FSDP） |
-| **EFA v4** | ノード間接続 | 28.8Tbps | ノード間 | 超大規模 Data Parallel |
-
-**特筆すべき点**:
-- **NeuronSwitch-v1** の総帯域幅368TB/s は、単一 UltraServer 内で NVIDIA NVLink 4.0（900GB/s × 8 GPU = 7.2TB/s）を大きく上回る
-- All-to-all トポロジーにより、任意の2チップ間で直接通信が可能
-- Model Parallel や MoE（Mixture of Experts）での通信効率が向上
+## ネットワーク
 
 #### ネットワークトポロジー
 
