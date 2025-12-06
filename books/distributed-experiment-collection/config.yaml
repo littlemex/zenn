@@ -7,3 +7,5 @@ price: 4000 # 有料の場合200〜5000
 chapters:
   - background
   - infrastructures
+#  - appendix-optimizer
+#  - appendix-vast-data-checkpoint-analysis
