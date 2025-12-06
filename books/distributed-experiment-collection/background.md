@@ -8,7 +8,15 @@ free: true
 
 ::::details 前提
 :::message
-**対象読者**: 大規模基盤モデルの学習に興味があり、これから学び始める方。機械学習の基礎知識は不要ですが、クラウドコンピューティングの基本的な概念 (GPU、ストレージなど) に触れたことがあると理解しやすい内容です。
+**対象読者**: 大規模基盤モデルの学習に興味があり、これから学び始める方。機械学習の基礎知識は不要ですが、クラウドコンピューティングの基本的な概念（GPU、ストレージなど）に触れたことがあると理解しやすい内容です。
+:::
+:::message
+**初学者の方へ - 読み方ガイド**
+この章には詳細な技術情報が含まれていますが、最初はすべてを理解する必要はありません。
+1. まず各セクションの概要部分（冒頭の説明）を読んで全体像を把握してください
+2. `::::details` タグで折りたたまれた詳細情報は、興味のある部分のみ読めば十分です
+3. 数式や計算過程は「こういう計算が必要なんだ」という理解で問題ありません
+4. わからない用語は「基本用語の説明」セクションや各所の詳細セクションを参照してください
 :::
 :::message
 **ライセンス**: © 2025 littlemex.
@@ -22,6 +30,11 @@ free: true
 ::::
 
 **本章では今後実験を進める上で把握しておくべき大規模基盤モデル学習に関する背景と基礎的な知識を整理します。**
+
+**この章で学ぶこと**
+1. 大規模モデル学習に必要な 3 つのリソース（GPU メモリ、計算能力、ストレージ）
+2. 実際のモデル（Llama、DeepSeek など）がどれだけのリソースを使っているか
+3. なぜこれほど大規模なリソースが必要なのか
 
 ---
 
@@ -66,29 +79,27 @@ AWS Principle WW Solutions Architect,GenAI, Keita Watanabe さんの [Scalable I
 
 | モデル | リリース時期 | 総パラメータ | アクティブ | 学習GPU時間 | 使用GPU | 学習トークン | 特記事項 |
 |--------|-------------|-------------|-----------|-------------|---------|-------------|----------|
-| **[Llama 2 7B](https://huggingface.co/meta-llama/Llama-2-7b)** | 2023年7月 | 7B | 7B | **0.184M** | A100-80GB | 2T | Dense、BF16 |
-| **[Llama 2 13B](https://huggingface.co/meta-llama/Llama-2-13b)** | 2023年7月 | 13B | 13B | **0.369M** | A100-80GB | 2T | Dense、BF16 |
-| **[Llama 2 70B](https://huggingface.co/meta-llama/Llama-2-70b)** | 2023年7月 | 70B | 70B | **1.72M** | A100-80GB | 2T | GQA、BF16 |
-| **[Llama 3 8B](https://github.com/meta-llama/llama3)** | 2024年4月 | 8B | 8B | **推定1.0M** | H100-80GB | 15T+ | GQA、8K context |
-| **[Llama 3 70B](https://github.com/meta-llama/llama3/blob/main/MODEL_CARD.md)** | 2024年4月 | 70B | 70B | **推定6.7M** | H100-80GB | 15T+ | GQA、8K context |
-| **[Llama 3.1 8B](https://huggingface.co/meta-llama/Llama-3.1-8B)** | 2024年7月 | 8B | 8B | **1.46M** | H100-80GB | 15T+ | GQA、128K context |
-| **[Llama 3.1 70B](https://huggingface.co/meta-llama/Llama-3.1-70B)** | 2024年7月 | 70B | 70B | **7.0M** | H100-80GB | 15T+ | GQA、128K context |
-| **[Llama 3.1 405B](https://huggingface.co/meta-llama/Llama-3.1-405B)** | 2024年7月 | 405B | 405B | **30.84M** | H100-80GB | 15T+ | GQA、128K context |
-| **[DeepSeek V3](https://huggingface.co/deepseek-ai/DeepSeek-V3)** | 2024年12月 | 671B | 37B | **2.788M** | H800-80GB | 14.8T | MoE、FP8学習 |
-| **[Llama4 Maverick](https://huggingface.co/meta-llama/Llama-4-Maverick-17B-128E-Instruct)** | 2025年4月 | 400B | 17B | **2.38M** | H100-80GB | 未公開 | MoE |
+| **[Llama 2 7B](https://huggingface.co/meta-llama/Llama-2-7b)** | 2023 年 7 月 | 7B | 7B | **推定 0.184M** | A100-80GB | 2T | Dense、BF16 |
+| **[Llama 2 13B](https://huggingface.co/meta-llama/Llama-2-13b)** | 2023 年 7 月 | 13B | 13B | **推定 0.369M** | A100-80GB | 2T | Dense、BF16 |
+| **[Llama 2 70B](https://huggingface.co/meta-llama/Llama-2-70b)** | 2023 年 7 月 | 70B | 70B | **推定 1.72M** | A100-80GB | 2T | GQA、BF16 |
+| **[Llama 3 8B](https://github.com/meta-llama/llama3)** | 2024 年 4 月 | 8B | 8B | **推定 1.0M** | H100-80GB | 15T+ | GQA、8K context |
+| **[Llama 3 70B](https://github.com/meta-llama/llama3/blob/main/MODEL_CARD.md)** | 2024 年 4 月 | 70B | 70B | **推定 6.7M** | H100-80GB | 15T+ | GQA、8K context |
+| **[Llama 3.1 8B](https://huggingface.co/meta-llama/Llama-3.1-8B)** | 2024 年 7 月 | 8B | 8B | **1.46M** | H100-80GB | 15T+ | GQA、128K context |
+| **[Llama 3.1 70B](https://huggingface.co/meta-llama/Llama-3.1-70B)** | 2024 年 7 月 | 70B | 70B | **7.0M** | H100-80GB | 15T+ | GQA、128K context |
+| **[Llama 3.1 405B](https://huggingface.co/meta-llama/Llama-3.1-405B)** | 2024 年 7 月 | 405B | 405B | **30.84M** | H100-80GB | 15T+ | GQA、128K context |
+| **[DeepSeek V3](https://huggingface.co/deepseek-ai/DeepSeek-V3)** | 2024 年 12 月 | 671B | 37B | **2.788M** | H800-80GB | 14.8T | MoE、FP8 学習 |
 
 ::::details 注意事項
 :::message alert
 GPU を単純に増やせば増やすほど学習時間が単純計算で短縮されるわけではないことに注意が必要です。基本的に計算はノードに閉じていることが最も効率が良く、ノード間で通信をしだすと効率が落ちてきます。100 人それぞれが自分の中だけで考えて意思決定するのと、一箇所に集まった 100 人が議論した上で意思決定する、世界各地にいる 100 人が議論した上で意思決定する、では同じ 100 人による意思決定でも合意形成のためのエフォートが全然違いますよね。誤解を恐れずに言うとそれと同じことです。
 :::
 :::message alert
-必ずしも最新モデルやパラメータ数の大きいモデルの方が性能が良いわけではありません。
-以下のサイトにモデルの Intelligence, speed, price などの情報が掲載されており、参考情報として有用かと思います。
+必ずしもパラメータ数の大きいモデルの方が性能が良いわけではありません。以下のサイトにモデルの Intelligence、speed、price などの情報が掲載されており、参考情報として有用かと思います。
 :::
 https://artificialanalysis.ai/
 
 :::message
-皆さんのよくご存知の OpenAI、Anthropic、Google などのプロバイダから提供されるいわゆるプロプライエタリモデルは情報が公開されていないケースが多いため表からは除外しています。
+皆さんのよくご存知の OpenAI、Anthropic、Google などのプロバイダから提供されるいわゆるプロプライエタリモデルは情報が公開されていないケースが多いため表からは除外しています。また、Llama 2 および Llama 3 の GPU 時間は公式に公開されていない推定値です。
 :::
 ::::
 
@@ -119,11 +130,19 @@ Swallow プロジェクトにおける実践と知見をシェア。主に評価
 
 ## GPU メモリ要求の概要
 
-Llama 3 70B を BF16 精度で学習する場合、約 0.6TB の GPU メモリが必要です。この内訳は、
+Llama 3 70B を BF16 精度で学習する場合、約 0.6TB の GPU メモリが必要です。
 
-- **Parameters（140 GB）**：モデルの重みとバイアス
-- **Gradients（140 GB）**：学習時の勾配情報
-- **Optimizer States（280 GB）**：AdamW オプティマイザの状態
+**BF16 とは**：Brain Floating Point 16-bit の略で、1 つの数値を 2 バイト（16 ビット）で表現する形式です。より精度の高い FP32（4 バイト）に比べてメモリ使用量が半分になり、最新の GPU（NVIDIA Ampere 以降）で高速に計算できます。H100 などの更に新しい GPU では FP8（1 バイト）も利用可能です。
+
+**必要なメモリの内訳**
+
+学習時には、モデル自体（Parameters）だけでなく、学習を効率的に進めるための追加情報も GPU メモリに保存する必要があります。
+
+1. **Parameters（140 GB）**：モデルの重みとバイアス
+2. **Gradients（140 GB）**：学習時の勾配情報
+3. **Optimizer States（280 GB）**：AdamW オプティマイザの状態
+
+合計で約 560 GB が必要で、さらに計算中の中間結果（Activations）用のメモリも必要なため、実際には約 0.6TB となります。
 
 ```mermaid
 graph TD
@@ -138,31 +157,34 @@ graph TD
     style D fill:#fff4e1
 ```
 
-::::details BF16 とは
+::::details 数値精度形式の詳細
 :::message
 **精度形式とハードウェアの関係**
-数値精度を下げること（ex. FP32 → BF16 → FP8 → NVFP4）により、メモリ使用量と計算負荷を削減できます。ただし、これらの低精度形式を効果的に活用するには、対応するハードウェアとソフトウェアフレームワークのサポートが必要です。
+数値精度を下げること（FP32 → BF16 → FP8 → NVFP4）により、メモリ使用量と計算負荷を削減できます。ただし、これらの低精度形式を効果的に活用するには、対応するハードウェアとソフトウェアフレームワークのサポートが必要です。
 :::
 
-**精度選択**
-- **BF16**：現代の標準、Ampere 以降の GPU で高速動作
-- **FP8**：H100 以降で利用可能、Transformer Engine による自動管理
+**主な精度形式**
+- **FP32（単精度）**：4 バイト、高精度だがメモリと計算コストが高い
+- **BF16（半精度）**：2 バイト、現代の標準、Ampere 以降の GPU で高速動作
+- **FP8**：1 バイト、H100 以降で利用可能、Transformer Engine による自動管理
+- **NVFP4**：0.5 バイト、推論専用の超低精度形式
 
 **参考 URL**
 - [NVIDIA Developer Blog: FP8 Introduction](https://developer.nvidia.com/blog/floating-point-8-an-introduction-to-efficient-lower-precision-ai-training/)
 - [NVIDIA Developer Blog: NVFP4 Introduction](https://developer.nvidia.com/blog/introducing-nvfp4-for-efficient-and-accurate-low-precision-inference/)
 ::::
 
-::::details メモリ要求の詳細
+::::details メモリ要求の詳細計算
+
 :::message
-初学者の方は、まず「0.6TB（BF16）必要なんだ」というざっくりの GPU メモリ要求の規模感を理解した上で、詳細は読み飛ばしても構いません。
+初学者の方へ：まず「Llama 3 70B の学習には約 0.6TB の GPU メモリが必要」という規模感を理解すれば十分です。この詳細セクションは、計算方法に興味がある方向けです。
 :::
 
 :::message
-メモリ要求の計算方法は、[LLM Training Memory Optimization Guide](https://github.com/WhitePegasis/LLM-Training-Memory-and-Speed-Optimization-Guide) を参照しました。
+メモリ要求の計算方法は [LLM Training Memory Optimization Guide](https://github.com/WhitePegasis/LLM-Training-Memory-and-Speed-Optimization-Guide) を参照しました。
 :::
 
-## Parameters (140 GB)
+## 1. Parameters（140 GB）
 
 モデルの重みとバイアス、つまり学習済みの知識そのものを格納するメモリです。70B パラメータとは 700 億個の調整可能な数値のことで、BF16 (2 bytes) という形式で 1 つの数値を保存すると、以下のように計算できます。
 
@@ -179,11 +201,11 @@ graph TD
 | **FP32（単精度）** | 4 bytes | 280 GB | 参考 |
 | **FP8** | 1 byte | 70 GB | H100 以降 |
 
-## Gradients (140 GB)
+## 2. Gradients（140 GB）
 
 バックプロパゲーション（逆伝播）時に「どう改善すべきか」を一時的に記録するメモリです。バックプロパゲーションとは、モデルの予測結果と正解を比較して、「どのパラメータをどのくらい調整すべきか」を計算する処理のことです。これは optimizer step でパラメータを更新した後にクリアされますが、次の学習ステップで再度必要になります。
 
-## AdamW Optimizer States (280 GB)
+## 3. AdamW Optimizer States（280 GB）
 
 AdamW オプティマイザは、効率的に学習するために各パラメータに対して 2 種類の履歴情報を保持します。
 
@@ -205,23 +227,34 @@ AdamW オプティマイザは、効率的に学習するために各パラメ�
 
 ### メモリ要求から必要な GPU 台数
 
-H100-80GB GPU は 1 台で 80 GB の GPU メモリ（VRAM）を持っています。つまり単純計算で 560GB/80GB = 7 台、の H100-8GB GPU が必要です。
+H100-80GB GPU は 1 台で 80 GB の GPU メモリ（VRAM）を持っています。
 
-実際には、この他に活性化関数の値を格納するメモリも必要となります。Activations は、ニューラルネットワークの各層で計算された中間結果を保持するもので、バックプロパゲーション時に再利用されます。
+**単純計算**
+```
+必要メモリ 560 GB ÷ GPU あたりのメモリ 80 GB = 7 台
+```
+
+実際には、計算中の中間結果（Activations）を格納するメモリも必要です。Activations は、ニューラルネットワークの各層で計算された中間結果を保持するもので、逆伝播時に再利用されます。
 
 :::message
-上記は理論上の最小構成です。実用的には、各精度で 1.5-2 倍の GPU が必要となります。
+**実用的な台数**: 上記は理論上の最小構成です。実際には、メモリ管理やバッファのために 1.5～2 倍の GPU が必要となります。したがって Llama 3 70B の学習には **10～14 台の H100-80GB** が必要です。
 :::
 
 ## 計算能力要求の概要
 
-モデル学習に必要な計算量を理解しましょう。計算量は **FLOPS**（Floating Point Operations Per Second、浮動小数点演算の回数）という単位で測定されます。1 回の足し算や掛け算が 1 FLOPS に相当します。モデル学習に必要な計算量は、以下の Scaling Law で推定できます。
+モデル学習に必要な計算量を理解しましょう。
+
+**FLOPS とは**：Floating Point Operations Per Second（浮動小数点演算の回数）の略で、コンピュータの計算性能を表す単位です。1 回の足し算や掛け算が 1 FLOPS に相当します。大規模モデルの学習には、数百エクサ FLOPS（10²¹ 回）もの計算が必要になります。
+
+**計算量の推定式**
+
+モデル学習に必要な計算量は、以下の Scaling Law で推定できます。
 
 **FLOPS = 6 × Parameters × Tokens**
 
-::::details 70B パラメータのモデル、 1.4 兆トークンで学習する場合
+この式により、モデルのパラメータ数と学習データのトークン数から、必要な計算量を概算できます。
 
-## 基本的な計算
+**具体例：Llama 3 70B を 1.4 兆トークンで学習する場合**
 
 ```
 6 × 70,000,000,000 × 1,400,000,000,000 
@@ -229,6 +262,8 @@ H100-80GB GPU は 1 台で 80 GB の GPU メモリ（VRAM）を持っていま�
 = 588 × 10²¹ FLOPS
 = 588 エクサ FLOPS
 ```
+
+これは途方もない計算量です。比喩的に言えば、地球上の全人類（80 億人）が電卓を使って 1 秒に 1 回計算しても、約 2,300 年かかる計算量です。
 
 ```mermaid
 graph LR
@@ -243,7 +278,6 @@ graph LR
     
     style D fill:#e1f5ff
 ```
-::::
 
 ::::details FLOPS 計算式「6 × Parameters × Tokens」の詳細
 
@@ -479,6 +513,14 @@ Llama 3.1 405B の学習事例 (16,000 H100 GPU) では、平均故障間隔 (Me
 **総ストレージ容量 = 学習データサイズ + (チェックポイントサイズ × 保持世代数)**
 
 ::::details Llama 3.1 405B、RedPajama-Data-v2 (170TB) で学習する場合
+
+**チェックポイントサイズの計算**
+```
+Parameters: 405B × 2 bytes (BF16) = 810 GB
+Optimizer States: 405B × 2 bytes × 2 (Momentum + Variance) = 1,620 GB
+合計: 810 GB + 1,620 GB = 2,430 GB = 2.43 TB
+```
+
 - **学習データ**: 170TB
 - **チェックポイントサイズ**: 2.43TB (BF16)
 - **保持世代数**: 3 世代
