@@ -21,13 +21,11 @@ free: true
 :::
 ::::
 
-**本章では Amazon SageMaker HyperPod（以降 HyperPod）の説明と、2025 年の大規模基盤モデル学習に関する基礎知識を整理します。**
+**本章では今後実験を進める上で把握しておくべき大規模基盤モデル学習に関する背景と基礎的な知識を整理します。**
 
 ---
 
 AWS Principle WW Solutions Architect,GenAI, Keita Watanabe さんの [Scalable Infrastructure for Large-Scale AI Training with AWS Sagemaker Hyperpod](https://speakerdeck.com/keitaw/scalable-infrastructure-for-large-scale-ai-training-with-aws-sagemaker-hyperpod-at-singapore-ai-hour) 資料の流れを参照しながら初学者向けに情報を整理します。
-
-# バックグラウンド
 
 ## 前提知識
 
@@ -36,29 +34,35 @@ AWS Principle WW Solutions Architect,GenAI, Keita Watanabe さんの [Scalable I
 :::
 2025 年現在、Anthropic、OpenAI、Google、DeepSeek など多くのモデルプロバイダから毎月のように最先端モデルの発表があります。これらの最先端モデルの事前学習には総じて大規模なコンピュートを必要とします。
 
-なぜ大規模なコンピュートが必要なのかを整理する前に、まずは事実としてモデル学習のためにどのくらい大規模なコンピュートを要求するのか確認してみましょう。
+なぜ大規模なコンピュートが必要なのかを整理する前に、まずは事実としてモデル学習のためにどのくらい大規模なコンピュートが要求されているのか確認してみましょう。
 
 ### 基本用語の説明
 
-表を見る前に、重要な用語を理解しておきましょう。
-
-- **パラメータ**: モデルが学習する変数の数。人間の脳のニューロン数に相当します。70B は 700 億個のパラメータを意味します。パラメータ数が多いほど、モデルは複雑なパターンを学習できますが、必要な計算量とメモリも増加します。
-
+::::details 読み進める上で必須の用語
+- **パラメータ**: モデルが学習する変数の数。70B は 700 億個のパラメータを意味します。パラメータ数が多いほど、モデルは複雑なパターンを学習できますが、必要な計算量とメモリも増加します。
 - **トークン**: テキストを小さな単位 (単語や単語の一部) に分割したもの。例えば「こんにちは」は 2-3 トークンになります。1 兆トークンは、約 3,000 億～5,000 億語の英文に相当します。
+- **GPU 時間**: GPU 1 台が稼働した時間の合計。例えば GPU 100 台を 10 時間使うと 1,000 GPU 時間になります。
+- **事前学習**: モデルに膨大な情報を読ませて、モデルに汎用的な基礎知識を習得させる工程です。
+::::
 
-- **GPU 時間**: GPU 1 台が稼働した時間の合計。例えば GPU 100 台を 10 時間使うと 1,000 GPU 時間になります。GPU を並列化することで学習時間を短縮できますが、台数を増やすほど通信のオーバーヘッドも増加します。
-
-- **事前学習**: モデルに大量のテキストを読ませて、言語の基本的なパターンを学習させる工程。人間が本を読んで言葉の使い方を学ぶのに似ています。
-
-::::details 事前学習の詳細
-参考 URL
+::::details 事前学習に関する参考情報
 - [JSAI: 【LLM強化学習①】事前学習と事後学習](https://www.youtube.com/watch?v=nfLLfb3r6io)
 - [2024年度 人工知能学会全国大会（第38回）チュートリアル講演１: 大規模言語モデルの開発](https://speakerdeck.com/chokkan/jsai2024-tutorial-llm?slide=15)
 ::::
 
-### 代表的なモデルの学習規模
+## 代表的なモデルの学習規模
 
 以下の表は、代表的なモデルの事前学習時のコンピュートに関する情報を整理したものです。
+
+::::details 表記説明はこちら!
+表中の **M** は Million（百万）を表します。例えば 2.788M は 278 万 8 千、30.84M は 3,084 万を意味します。**GPU 時間**は、GPU 1 台が稼働した時間の累計です。例えば [NVIDIA H100 GPU](https://www.nvidia.com/ja-jp/data-center/h100/) という GPU 1 台で 640 万時間かかる学習を、 H100 100 台で並列実行すれば 6 万 4 千時間（約 7.3 年）で完了します。**使用GPU** の欄には、学習に使用された GPU の種類を記載しています。A100-80GB、H100-80GB、H800-80GB などがあり、数字が大きいほど新しい世代で性能が高くなります。H100-80GB の 80GB は VRAM と呼ばれる GPU のメモリサイズを表しています。
+
+**学習トークン**の **T** は Trillion（兆）を表します。2T は 2 兆トークン、15T+ は 15 兆トークン以上を意味します。
+
+:::message alert
+ややこしいですが H100 GPU を 8 つ搭載したサーバーが NVIDIA DGX H100 という名前で販売されていたりするので、同じ H100 と書かれている際にはサーバーと GPU のどちらを指しているのか確認したほうが良いでしょう。
+:::
+::::
 
 | モデル | リリース時期 | 総パラメータ | アクティブ | 学習GPU時間 | 使用GPU | 学習トークン | 特記事項 |
 |--------|-------------|-------------|-----------|-------------|---------|-------------|----------|
@@ -82,17 +86,15 @@ GPU を単純に増やせば増やすほど学習時間が単純計算で短縮�
 以下のサイトにモデルの Intelligence, speed, price などの情報が掲載されており、参考情報として有用かと思います。
 :::
 https://artificialanalysis.ai/
-::::
 
-::::details 表記説明
-表中の **M** は Million（百万）を表します。例えば 2.788M は 278 万 8 千、30.84M は 3,084 万を意味します。**GPU 時間**は、GPU 1 台が稼働した時間の累計です。例えば H100 1 台で 640 万時間かかる学習を、H100 100 台で並列実行すれば 6 万 4 千時間（約 7.3 年）で完了します。**使用GPU** の欄には、学習に使用された GPU の種類を記載しています。A100-80GB、H100-80GB、H800-80GB などがあり、数字が大きいほど新しい世代で性能が高くなります。
-
-**学習トークン**の **T** は Trillion（兆）を表します。2T は 2 兆トークン、15T+ は 15 兆トークン以上を意味します。
+:::message
+皆さんのよくご存知の OpenAI、Anthropic、Google などのプロバイダから提供されるいわゆるプロプライエタリモデルは情報が公開されていないケースが多いため表からは除外しています。
+:::
 ::::
 
 この表から最先端のモデルが如何に大規模なコンピュートを必要とするのか分かったのではないでしょうか。現実的に Llama 3 70B の GPU 時間を 1 ヶ月で達成しようとすると 1250 台の H100 を連携させながら学習する必要があります。AWS の p5.48xlarge だとオンデマンドで単純に計算すると約 440 億円必要です。
 
-大規模基盤モデルの詳細について説明することが本書の目的ではなく、主に Hyperpod を用いた分散学習・推論の実験を行うことが目的です。背景情報や理論的説明については既に優れた資料が世の中に多数存在するためそれらの URL を雑に貼って次に進みます。
+大規模基盤モデルの学習手法の詳細について説明することが本書の目的ではなく、分散学習・推論の実験を行うことが目的です。背景情報や理論的説明については既に優れた資料が世の中に多数存在するためそれらの URL を雑に貼って次に進みます。ぜひ一読してから実験されることをお勧めします。
 
 ::::details 参考情報
 **[2024年度 人工知能学会全国大会（第38回）チュートリアル講演１: 大規模言語モデルの開発](https://speakerdeck.com/chokkan/jsai2024-tutorial-llm?slide=15)**
@@ -105,81 +107,137 @@ Swallow プロジェクトにおける実践と知見をシェア。主に評価
 コーパス作成の苦労が滲んでいて非常に参考になる。
 ::::
 
-## コンピュート要求
+## 大規模基盤モデル学習が必要とするリソース
 
 :::message
-**Point !** ***大規模基盤モデル学習には大規模なコンピュートが必要***
+**Point !** ***大規模基盤モデル学習には大規模な計算能力と GPU メモリ、分散ストレージが必要***
 :::
 
-### ルーフラインモデルによる性能分析
+1. **GPU メモリ（VRAM）**：モデルのパラメータ、勾配、オプティマイザの状態を保存
+2. **計算能力（FLOPS）**：学習に必要な膨大な演算を実行
+3. **分散ストレージ**：学習データとチェックポイントを保存
 
-大規模基盤モデルの学習では、メモリ帯域幅と計算性能という 2 つの要素が性能を決定します。ルーフラインモデル (Roofline Model) は、この 2 軸の関係を可視化し、どちらがボトルネックになっているかを判定する手法です。ルーフラインモデルの詳細は、[NVIDIA Nsight Compute によるパフォーマンス分析](https://developer.nvidia.com/blog/accelerating-hpc-applications-with-nsight-compute-roofline-analysis/)および [Hierarchical Roofline Analysis 論文 (arXiv:2009.05257)](https://arxiv.org/pdf/2009.05257) に記載されています。
+## GPU メモリ要求の概要
 
-```mermaid
-graph TB
-    subgraph "ルーフラインモデルの概念"
-    A[ワークロード] --> B{演算強度<br/>OPs/Byte}
-    B -->|低い| C[メモリバウンド<br/>メモリ帯域幅が<br/>ボトルネック]
-    B -->|高い| D[コンピュートバウンド<br/>計算性能が<br/>ボトルネック]
-    end
-    
-    C --> E[最適化方針:<br/>量子化、カーネル融合<br/>バッチサイズ増加]
-    D --> F[最適化方針:<br/>計算効率化<br/>並列化改善]
-```
+Llama 3 70B を BF16 精度で学習する場合、約 0.6TB の GPU メモリが必要です。この内訳は、
 
-演算強度 (Arithmetic Intensity) は、メモリアクセス 1 バイトあたりの演算回数 (OPs/Byte) として定義されます。演算強度が低い場合はメモリバウンド、高い場合はコンピュートバウンドとなります。深層学習の推論では、Prefill stage (初回入力処理) はコンピュートバウンド、Decode stage (逐次生成) はメモリバウンドになる傾向があります。このため、推論性能の最適化では Decode stage のメモリバウンド特性への対処が重要となります。
-
-### メモリ要求: 1.2TB VRAM の内訳
-
-Llama 3 70B を FP32 精度で学習する場合、約 1.2TB の VRAM が必要です。この内訳を理解することは、必要なハードウェア構成を計画する上で重要です。メモリ要求の計算方法は、[LLM Training Memory Optimization Guide](https://github.com/WhitePegasis/LLM-Training-Memory-and-Speed-Optimization-Guide) に詳細に記載されています。
+- **Parameters（140 GB）**：モデルの重みとバイアス
+- **Gradients（140 GB）**：学習時の勾配情報
+- **Optimizer States（280 GB）**：AdamW オプティマイザの状態
 
 ```mermaid
 graph TD
-    A[総メモリ要求<br/>Llama 3 70B FP32<br/>1.2TB VRAM] --> B[Parameters<br/>280GB<br/>70B × 4 bytes]
-    A --> C[Gradients<br/>280GB<br/>70B × 4 bytes]
-    A --> D[Adam Optimizer States<br/>560GB<br/>70B × 4 bytes × 2]
+    A[総メモリ要求<br/>Llama 3 70B BF16<br/>0.6TB VRAM] --> B[Parameters<br/>140GB<br/>70B × 2 bytes]
+    A --> C[Gradients<br/>140GB<br/>70B × 2 bytes]
+    A --> D[AdamW Optimizer States<br/>280GB<br/>70B × 2 bytes × 2]
     
-    D --> E[Momentum<br/>280GB]
-    D --> F[Variance<br/>280GB]
+    D --> E[Momentum<br/>140GB]
+    D --> F[Variance<br/>140GB]
     
     style A fill:#e1f5ff
     style D fill:#fff4e1
 ```
 
-#### Parameters (280 GB)
+::::details BF16 とは
+:::message
+**精度形式とハードウェアの関係**
+数値精度を下げること（ex. FP32 → BF16 → FP8 → NVFP4）により、メモリ使用量と計算負荷を削減できます。ただし、これらの低精度形式を効果的に活用するには、対応するハードウェアとソフトウェアフレームワークのサポートが必要です。
+:::
 
-モデルの重みとバイアスを格納するメモリです。70B パラメータを FP32 (4 bytes) で格納すると、70B × 4 bytes = 280 GB となります。これは学習中常に GPU メモリに常駐する必要があります。FP16 や BF16 といった半精度形式を使用すると、このサイズは半分の 140 GB となりますが、数値精度とのトレードオフを考慮する必要があります。
+**精度選択**
+- **BF16**：現代の標準、Ampere 以降の GPU で高速動作
+- **FP8**：H100 以降で利用可能、Transformer Engine による自動管理
 
-#### Gradients (280 GB)
+**参考 URL**
+- [NVIDIA Developer Blog: FP8 Introduction](https://developer.nvidia.com/blog/floating-point-8-an-introduction-to-efficient-lower-precision-ai-training/)
+- [NVIDIA Developer Blog: NVFP4 Introduction](https://developer.nvidia.com/blog/introducing-nvfp4-for-efficient-and-accurate-low-precision-inference/)
+::::
 
-バックプロパゲーション時に計算される勾配を一時的に格納するメモリです。各パラメータに対して勾配が計算されるため、パラメータと同じサイズが必要となります。勾配は optimizer step でパラメータを更新した後にクリアされますが、計算中は GPU メモリを占有します。
+::::details メモリ要求の詳細
+:::message
+初学者の方は、まず「0.6TB（BF16）必要なんだ」というざっくりの GPU メモリ要求の規模感を理解した上で、詳細は読み飛ばしても構いません。
+:::
 
-#### Adam Optimizer States (560 GB)
+:::message
+メモリ要求の計算方法は、[LLM Training Memory Optimization Guide](https://github.com/WhitePegasis/LLM-Training-Memory-and-Speed-Optimization-Guide) を参照しました。
+:::
 
-Adam オプティマイザは各パラメータに対して 2 つの状態、momentum (1次モーメント) と variance (2次モーメント) を保持します。このため、70B パラメータ × 4 bytes × 2 = 560 GB のメモリが必要となります。SGD など単純なオプティマイザではこのサイズは小さくなりますが、Adam 系オプティマイザは収束性能の高さから大規模モデル学習で標準的に使用されています。
+## Parameters (140 GB)
 
-これらの合計が約 1.2TB となり、H100 80GB GPU であれば最低 15 台、実用的には余裕を持って 20 台以上の GPU が必要となります。実際には、この他に活性化関数 (Activations) の値を格納するメモリも必要となるため、さらに多くの GPU メモリが要求されます。
+モデルの重みとバイアス、つまり学習済みの知識そのものを格納するメモリです。70B パラメータとは 700 億個の調整可能な数値のことで、BF16 (2 bytes) という形式で 1 つの数値を保存すると、以下のように計算できます。
 
-### Compute 要求: Scaling Law とトークン数の関係
+**計算式（BF16）**
+```
+70,000,000,000 個 × 2 bytes = 140,000,000,000 bytes = 140 GB
+```
 
-モデル学習に必要な計算量を理解しましょう。計算量は **FLOPS** (Floating Point Operations Per Second、浮動小数点演算の回数) という単位で測定されます。1 回の足し算や掛け算が 1 FLOPS に相当します。
+**精度形式によるメモリサイズ**
 
-モデル学習に必要な計算量は、以下の Scaling Law で推定できます。
+| 精度形式 | bytes/parameter | 70B モデルのサイズ | 備考 |
+|---------|----------------|------------------|------|
+| **BF16（半精度）** | 2 bytes | **140 GB** | **標準** |
+| **FP32（単精度）** | 4 bytes | 280 GB | 参考 |
+| **FP8** | 1 byte | 70 GB | H100 以降 |
+
+## Gradients (140 GB)
+
+バックプロパゲーション（逆伝播）時に「どう改善すべきか」を一時的に記録するメモリです。バックプロパゲーションとは、モデルの予測結果と正解を比較して、「どのパラメータをどのくらい調整すべきか」を計算する処理のことです。これは optimizer step でパラメータを更新した後にクリアされますが、次の学習ステップで再度必要になります。
+
+## AdamW Optimizer States (280 GB)
+
+AdamW オプティマイザは、効率的に学習するために各パラメータに対して 2 種類の履歴情報を保持します。
+
+**2 種類の履歴**
+
+1. **Momentum（1次モーメント）** = 「最近どの方向に改善してきたか」の記録
+   - 過去の改善方向を記憶し、同じ方向への改善を加速します
+   - 例：坂道を転がるボールのように、勢いをつけて学習を進める
+
+2. **Variance（2次モーメント）** = 「どのくらい安定して改善できているか」の記録
+   - 各パラメータの改善のばらつきを記録し、不安定なパラメータは慎重に更新します
+   - 例：でこぼこ道では慎重に、平坦な道では大胆に進む
+
+**計算式（BF16）**
+```
+70,000,000,000 個 × 2 bytes × 2 種類 = 280 GB
+```
+::::
+
+### メモリ要求から必要な GPU 台数
+
+H100-80GB GPU は 1 台で 80 GB の GPU メモリ（VRAM）を持っています。つまり単純計算で 560GB/80GB = 7 台、の H100-8GB GPU が必要です。
+
+実際には、この他に活性化関数の値を格納するメモリも必要となります。Activations は、ニューラルネットワークの各層で計算された中間結果を保持するもので、バックプロパゲーション時に再利用されます。
+
+:::message
+上記は理論上の最小構成です。実用的には、各精度で 1.5-2 倍の GPU が必要となります。
+:::
+
+## 計算能力要求の概要
+
+モデル学習に必要な計算量を理解しましょう。計算量は **FLOPS**（Floating Point Operations Per Second、浮動小数点演算の回数）という単位で測定されます。1 回の足し算や掛け算が 1 FLOPS に相当します。モデル学習に必要な計算量は、以下の Scaling Law で推定できます。
 
 **FLOPS = 6 × Parameters × Tokens**
 
-例えば、70B パラメータのモデルを 1.4 兆トークンで学習する場合:
-- 6 × 70,000,000,000 × 1,400,000,000,000 = 588,000,000,000,000,000,000,000 回の計算
-- これは約 588 エクサFLOPS (10²¹ FLOPS) に相当します
+例えば、70B パラメータのモデルを 1.4 兆トークンで学習する場合、約 588 エクサ FLOPS の計算が必要です。H100 GPU（BF16）の実効性能を 1 PFLOPS と仮定すると、1 台で約 19 年、1,000 台で約 7 日かかる計算となります。
 
-この係数 6 は、Transformer アーキテクチャの 1 トークンあたりの計算量に由来します。forward pass (順伝播) で約 2 FLOPs/parameter、backward pass (逆伝播) で約 4 FLOPs/parameter の計算が必要なため、合計で約 6 FLOPs/parameter となります。この計算方法は、[Chinchilla 論文](https://arxiv.org/abs/2203.15556)および [Scaling Law の解説記事](https://lifearchitect.ai/chinchilla/) で詳述されています。
+::::details 70B パラメータのモデル、 1.4 兆トークンで学習する場合
+
+## 基本的な計算
+
+```
+6 × 70,000,000,000 × 1,400,000,000,000 
+= 588,000,000,000,000,000,000,000 回の計算
+= 588 × 10²¹ FLOPS
+= 588 エクサ FLOPS
+```
 
 ```mermaid
 graph LR
     subgraph "Scaling Law: FLOPS = 6 × Parameters × Tokens"
     A[Parameters<br/>例: 70B] --> D[総 FLOPS<br/>588 × 10²¹]
     B[Tokens<br/>例: 1.4T] --> D
-    C[係数<br/>6 FLOPs/param/token] --> D
+    C[係数 6<br/>2N forward<br/>+ 4N backward] --> D
     end
     
     D --> E[必要な GPU 時間<br/>GPU 性能と台数から算出]
@@ -187,43 +245,131 @@ graph LR
     
     style D fill:#e1f5ff
 ```
+::::
 
-#### Chinchilla Law: Compute-Optimal Training
+::::details FLOPS 計算式「6 × Parameters × Tokens」の詳細
 
-2022 年の Chinchilla 論文 ([Training Compute-Optimal Large Language Models](https://arxiv.org/abs/2203.15556)) では、固定された計算予算の下で最適な学習を行うには、パラメータ数とトークン数を 1:20 の比率でスケールすべきことが示されました。
+:::message
+初学者は読み飛ばして大丈夫です。
+:::
 
-**例え話で理解する Chinchilla Law:**
-勉強に例えると、「70 ページの参考書を 1 回読む」より「7 ページの参考書を 10 回読む」方が、限られた時間で効率的に学べる、というのが Chinchilla Law の考え方です。つまり、大きすぎるモデルよりも、適切なサイズのモデルに十分なデータを与える方が効率的です。
+この係数 6 は、Transformer の学習時における 1 トークンあたりの計算量から導かれます。
 
-Llama 3 70B を Compute-Optimal に学習する場合の計算例を示します。
+## 学習時と推論時の計算量
 
-**パラメータ数**: 70B  
-**Compute-Optimal トークン数**: 70B × 20 = 1.4T トークン  
-**必要 FLOPS**: 6 × 70B × 1.4T = 588 × 10²¹ FLOPS
+**Transformer モデルにおける標準的な FLOPS の近似式**
 
-H100 GPU の理論演算性能は FP16/BF16 で約 989 TFLOPS (約 1 PFLOPS) です。実効性能を 50% と仮定すると、1 台あたり約 0.5 PFLOPS となります。この性能で 588 × 10²¹ FLOPS を処理するには、1 台で約 1,176 万時間 (約 1,342 年) かかる計算となります。
+```
+学習時（Training）: 6N FLOPs/token
+推論時（Inference）: 2N FLOPs/token
 
-実際には GPU を並列化して学習時間を短縮します。例えば H100 を 1,000 台使用すると、理論上は約 1,176 時間 (約 49 日) で学習が完了します。ただし、通信オーバーヘッドや効率低下を考慮すると、実際の学習期間はこれより長くなります。
+※ N = パラメータ数（非埋め込みパラメータ）
+```
 
-#### Beyond Chinchilla-Optimal: Inference-Optimal Training
+学習では forward pass と backward pass の両方が必要ですが、推論では forward pass のみで十分なため、推論時の計算量は学習時の 1/3 となります。
 
-2024 年以降の主流モデルは、推論コストを考慮した Inference-Optimal Training を採用しています。小さいモデルを多くのトークンで学習することで、学習コストは増加しますが、推論時の計算コストを大幅に削減できます。
+## 学習時の内訳（6N FLOPs/token）
 
-**例え話で理解する Inference-Optimal Training (over-training):**
-勉強に例えると、一度勉強したら何千回もテストを受ける場合を考えましょう。勉強時間が 2 倍になっても、テストが毎回 3 倍速く解ければ、トータルでは得になります。これが over-training の発想です。学習に時間をかけても、何兆回も実行される推論が速ければ、総コストは削減できます。
+```
+Forward pass（順伝播）:  2N FLOPs/token
+Backward pass（逆伝播）: 4N FLOPs/token
+─────────────────────────────────────
+合計:                    6N FLOPs/token
+```
 
-この戦略の理論的根拠は、MosaicML の論文 ([Beyond Chinchilla-Optimal: Accounting for Inference in Language Model Scaling Laws](https://arxiv.org/abs/2401.00448)) で示されています。モデルは一度だけ学習されますが、何兆回も推論されます。このため、学習コストと推論コストの総和である生涯コスト (Lifetime Cost) を最小化する観点では、over-training (Chinchilla 比でより多くのトークンで学習) が最適解となります。
+これを D トークンで学習すると
 
-Llama 3.1 70B の実例を見てみましょう。
+**総 FLOPS = 6 × N × D**
 
-**パラメータ数**: 70B  
-**実際の学習トークン数**: 15T+ トークン  
-**Chinchilla-Optimal との比較**: 15T ÷ 1.4T ≈ 10.7 倍 (+970%)  
-**必要 FLOPS**: 6 × 70B × 15T = 6,300 × 10²¹ FLOPS
+```mermaid
+graph TB
+    subgraph Training["学習時: 6N FLOPs/token"]
+    A[Forward Pass<br/>2N FLOPs] --> C[Total<br/>6N FLOPs]
+    B[Backward Pass<br/>4N FLOPs] --> C
+    end
+    
+    subgraph Inference["推論時: 2N FLOPs/token"]
+    D[Forward Pass<br/>2N FLOPs]
+    end
+    
+    style Training fill:#fff4e1
+    style Inference fill:#e1f5ff
+```
 
-学習に必要な FLOPS は Chinchilla-Optimal の約 10.7 倍に増加しますが、パラメータ数を抑えることで推論コストを削減できます。例えば、同じ性能を 200B パラメータのモデルで達成する場合と比較すると、推論時の計算量は約 1/3 となり、数千億回の推論を考慮すると総コストで有利になります。
+## Forward Pass が 2N FLOPs/token の理由
 
-この over-training の傾向は、前章の表で示した Llama 3.1 シリーズ、DeepSeek V3、Llama4 Maverick など、2024 年以降のモデルに共通して見られます。計算予算が十分にある場合、Chinchilla Law は学習時の計算効率を最適化しますが、実運用では推論コストを含めた生涯コストの最適化が重要となっています。
+Transformer の各演算では **multiply-accumulate operation（積和演算、MAC）** が使用されます。
+
+**MAC 演算とは**
+```
+a = a + (b × c)
+```
+この演算は、乗算と加算を組み合わせた複合演算です。
+
+**FLOPS カウントの慣例**
+機械学習の分野では、1 回の MAC 演算を **2 FLOPs** としてカウントする慣例があります。
+- 乗算：1 FLOP
+- 加算：1 FLOP
+
+**具体例**：
+行列積 Y = W × X を計算する場合、重み行列 W の各要素について
+
+1. 入力との乗算（1 FLOP）
+2. 結果の加算（1 FLOP）
+
+パラメータ数 N 個に対してこの操作を行うため、forward pass では約 2N FLOPs が必要です。
+
+## Backward Pass が約 4N FLOPs/token の理由
+
+逆伝播では、以下の 2 つの計算が必要です
+
+1. **勾配の計算**（forward と同程度）：損失関数の各パラメータに対する偏微分を計算
+2. **勾配の伝播**（さらに forward と同程度）：計算した勾配を前の層へ伝播
+
+この 2 つの処理により、backward pass は forward pass の約 2 倍、つまり約 4N FLOPs が必要となります。
+
+## 重要な注意点
+
+:::message alert
+**コンテキスト依存項の省略**
+
+モデルの次元数がコンテキスト長に比べて十分大きい場合（d_model ≫ n_ctx/12）、コンテキスト長に依存する計算コストは全体の中で小さな割合となるため省略されています。
+:::
+
+:::message alert
+**FLOPS と実行時間の違い**
+
+FLOPS（Floating Point Operations Per Second）は理論的な演算回数を示す標準指標です。TPU や GPU などの専用ハードウェアでは、積和演算（MAC）を 1 サイクルで実行できるため、実際の処理時間は FLOPS カウントから予想されるよりも短くなります。しかし、異なるハードウェア間で公平に比較するため、FLOPS カウントでは 1 MAC = 2 FLOPs という慣例が維持されています。
+:::
+
+:::message
+**Self-attention の計算量も含む**
+
+上記の 6N には、Transformer の特徴である Self-attention 機構の計算量も含まれています。
+:::
+
+## 推論コストを考慮した最適化
+
+大量の推論リクエストが予想される場合（例：10⁹ 回以上）、推論時の計算コスト（2N FLOPs/token）も重要な要素となります。
+
+[Beyond Chinchilla-Optimal (Sardana & Frankle, 2024)](https://arxiv.org/abs/2401.00448) の研究では、このような場合、Chinchilla の推奨よりも**小さいモデルをより長く学習する**ことで、学習と推論を合わせた総コストを削減できることが示されています。
+
+**例**
+- Chinchilla 最適：70B モデルを 1.4T トークンで学習
+- Inference 最適：41.6B モデルを 7.9T トークンで学習（推論需要 10⁹ リクエストの場合）
+
+学習コストは増加しますが、何兆回も実行される推論が高速になるため、総コストは削減できます。
+
+---
+
+### 出典
+
+- [Scaling Laws for Neural Language Models (Kaplan et al., 2020)](https://arxiv.org/abs/2001.08361)：6N per token の標準的な見積もり方法を定義
+- [Training Compute-Optimal Large Language Models (Hoffmann et al., 2022、通称 Chinchilla 論文)](https://arxiv.org/abs/2203.15556)：Compute-Optimal な学習方法を提案
+- [Beyond Chinchilla-Optimal (Sardana & Frankle, 2024)](https://arxiv.org/abs/2401.00448)：推論コストを考慮した最適化を提案
+
+::::
+
 
 ## 分散ファイルストレージ要求
 
@@ -264,6 +410,22 @@ BF16 精度 (2 bytes/parameter) で学習する場合、チェックポイント
 ```mermaid
 graph TD
     A[チェックポイント<br/>総サイズ] --> B[Parameters<br/>2 bytes × N]
+    A --> C[Optimizer States<br/>4 bytes × N]
+    
+    C --> D[Momentum<br/>2 bytes × N]
+    C --> E[Variance<br/>2 bytes × N]
+    
+    style A fill:#e1f5ff
+    style C fill:#fff4e1
+```
+
+具体的なモデルサイズでの試算は以下の通りです。
+
+| モデルサイズ | Parameters | Optimizer States | チェックポイント総サイズ (BF16) |
+|-------------|-----------|-----------------|---------------------------|
+| **7B** | 14GB | 28GB | **42GB** |
+| **13B** | 26GB | 52GB | **78GB** |
+| **70B
     A --> C[Optimizer States<br/>4 bytes × N]
     
     C --> D[Momentum<br/>2 bytes × N]
@@ -353,12 +515,12 @@ graph LR
 **学習に必要な 3 つの要素:**
 
 1. **大量のコンピュート (GPU)**: Llama 3 70B では 1,000 台以上の H100 GPU を数週間稼働
-2. **大容量のメモリ (VRAM)**: 1.2TB の GPU メモリが必要 (Parameters + Gradients + Optimizer States)
+2. **大容量のメモリ (VRAM)**: 0.6TB の GPU メモリが必要（BF16 使用時、Parameters + Gradients + Optimizer States）
 3. **高速なストレージ**: 数十～数百 TB のデータセットと頻繁なチェックポイント保存
 
-これらを実現する上で、どのような課題があり、HyperPod がどう解決するのかを次のセクションで見ていきます。
-
-## 第2部: 2025 年の基盤モデル学習における課題
+:::message
+現代の学習では BF16 が標準です。FP32 を使用した場合はメモリ要求が 2 倍（約 1.2TB）となりますが、実用上 BF16 を使用することで効率的な学習が可能です。
+:::
 
 ### AWS の成功事例: Amazon Nova の開発
 
@@ -546,7 +708,7 @@ Swallow プロジェクトにおいて HyperPod は、大規模な継続事前�
 
 ### 本章のまとめ
 
-Amazon SageMaker HyperPod は、以下の現代的課題に対する包括的なソリューションです：
+Amazon SageMaker HyperPod は、以下の現代的課題に対する包括的なソリューションです
 
 - **規模の課題**: 671B パラメータモデルの効率的学習
 - **コストの課題**: 40% のコスト削減を実現
