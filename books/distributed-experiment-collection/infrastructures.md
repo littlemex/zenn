@@ -213,7 +213,7 @@ graph TB
 
 ## ネットワーク
 
-大規模モデル訓練では、GPU 間で頻繁にデータを交換する必要があります。ネットワークの性能が訓練速度に直結します。詳細は割愛しますが LSI チップ内（もしくは SoC のパッケージ内）、やボード内、サーバーラック 内、ラック間など複数の通信があります。
+大規模モデル訓練では、GPU 間で頻繁にデータを交換する必要があります。ネットワークの性能が訓練速度に直結します。詳細は割愛しますがサーバー内、ラック内、ラック間など複数の通信があります。
 
 ### EFA（Elastic Fabric Adapter）- ノード間通信
 
@@ -360,32 +360,344 @@ https://www.nvidia.com/ja-jp/technologies/
 
 ## ネットワーク
 
-#### ネットワークトポロジー
+UltraClusters では、GPU 間の通信が複数の階層で行われます。それぞれの階層で最適な技術が使用され、大規模分散学習の効率を最大化します。
+
+### ネットワークトポロジーの階層構造
+
+GPU 間通信はいくつかの階層に分かれます（[NVIDIA DGX H100/H200 公式ドキュメント](https://docs.nvidia.com/dgx/dgxh100-user-guide/introduction-to-dgxh100.html)、[NVIDIA GB200 SuperPOD ドキュメント](https://docs.nvidia.com/dgx-superpod/reference-architecture-scalable-infrastructure-gb200/latest/network-fabrics.html)）。
+
+:::message alert
+物理的なチップ、サーバー、ラック、トポロジー等の構成によって通信性能が大幅に変わり、クラスターを構築する際にはインターコネクトの設計は非常に重要です。
+:::
 
 ```mermaid
 graph TB
-    subgraph Rack["ラック内通信"]
-        GPU1[GPU 0] ---|NVLink 900GB/s| GPU2[GPU 1]
-        GPU2 ---|NVLink| GPU3[GPU 2]
-        GPU3 ---|NVLink| GPU4[GPU 7]
+    subgraph Layer1["階層1: サーバー内 GPU 間"]
+        direction TB
+        GPU1[GPU 0]
+        GPU2[GPU ...]
+        GPU3[GPU 7]
+        NVSwitch1[NVSwitch]
         
-        Node1[ノード] ---|EFA 3,200Gbps| Node2[ノード]
+        GPU1 ---|NVLink 4.0<br/>900GB/s| NVSwitch1
+        GPU2 ---|NVLink 4.0| NVSwitch1
+        GPU3 ---|NVLink 4.0| NVSwitch1
+        
+        Note1[Full-mesh 接続<br/>任意の2つのGPU間が<br/>single-hop で通信可能]
     end
     
-    subgraph CrossRack["ラック間通信"]
-        Rack1[ラック A] ---|EFA Network<br/>Spine-Leaf| Rack2[ラック B]
-        Rack2 ---|EFA Network| Rack3[ラック C]
+    subgraph Layer2["階層2: ラック内（NVL72）"]
+        direction TB
+        Tray1[トレイ 1<br/>4 GPU]
+        Tray2[トレイ 2<br/>4 GPU]
+        Tray18[トレイ 18<br/>4 GPU]
+        NVLSwitch[18x NVLink Switch]
+        
+        Tray1 ---|NVLink 5.0<br/>1.8TB/s per GPU| NVLSwitch
+        Tray2 ---|NVLink 5.0| NVLSwitch
+        Tray18 ---|NVLink 5.0| NVLSwitch
+        
+        Note2[GB200 NVL72:<br/>72 GPU が full-mesh<br/>130TB/s 総帯域幅]
     end
     
-    style Rack fill:#e1f5ff
-    style CrossRack fill:#fff4e1
+    subgraph Layer3["階層3: ラック間"]
+        direction TB
+        Server1[サーバー A]
+        Server2[サーバー B]
+        ToR[ToR Switch]
+        Spine[Spine Switch]
+        
+        Server1 ---|EFA v2<br/>3.2Tbps| ToR
+        Server2 ---|EFA v2| ToR
+        ToR ---|ペタビットスケール<br/>ノンブロッキング| Spine
+        
+        Note3[AWS ToR アーキテクチャ<br/>Single AZ 内で配置<br/>超低レイテンシ]
+    end
+    
+    style Layer1 fill:#e1f5ff
+    style Layer2 fill:#fff4e1
+    style Layer3 fill:#f0fff4
+    style Note1 fill:#ffe1e1
+    style Note2 fill:#ffe1e1
+    style Note3 fill:#ffe1e1
 ```
 
-- **ノード内通信**: NVLink による超高速 GPU 間通信
-- **ノード間通信**: EFA による低レイテンシ・高帯域幅通信
-- **ラック間通信**: Spine-Leaf トポロジーによるスケーラブルなネットワーク
+| トポロジー | 使用箇所 | 接続技術 | 最大スケール | レイテンシ |
+|-----------|---------|---------|------------|----------|
+| **Full-mesh (NVSwitch)** | ノード内 | NVLink 4.0/5.0 | 8 GPU | サブマイクロ秒 |
+| **Full-mesh (NVLink Switch)** | ラック内（NVL72） | NVLink 5.0 | 72 GPU | サブマイクロ秒 |
+| **ToR ベース** | ラック間 | EFA v2/v3/v4 | 100万チップ | マイクロ秒 |
 
-### ストレージオプション
+
+
+::::details 階層1: ノード内通信（サーバー内の GPU 間）
+
+:::message
+**使用技術**: NVLink + NVSwitch
+**トポロジー**: Full-mesh（完全相互接続）
+:::
+
+### 物理構成の階層
+
+DGX H100/H200 システムは、以下の物理階層で構成されています（[NVIDIA DGX H100 公式ドキュメント](https://docs.nvidia.com/dgx/dgxh100-user-guide/introduction-to-dgxh100.html)、[NVIDIA HGX H100 ベースボード](https://directmacro.com/blog/post/nvidia-hgx-h100-baseboard-for-mining)）。
+
+```mermaid
+graph TB
+    subgraph Level1["GPU チップレベル"]
+        direction TB
+        Die[H100 GPU Die<br/>━━━━━━━━━━<br/>16,896 CUDA Cores<br/>528 Tensor Cores<br/>80GB HBM3]
+    end
+    
+    subgraph Level2["SXM モジュールレベル"]
+        direction TB
+        SXM[SXM5 Module<br/>━━━━━━━━━━<br/>1 GPU Die<br/>+ HBM3 メモリ<br/>+ NVLink コネクタ]
+        Die -.パッケージング.-> SXM
+    end
+    
+    subgraph Level3["HGX ベースボードレベル"]
+        direction TB
+        
+        subgraph GPUs["8x SXM5 Modules"]
+            SXM0[SXM Module 0]
+            SXM1[SXM Module 1]
+            SXM2[SXM Module 2]
+            SXM7[SXM Module 7]
+        end
+        
+        subgraph Switches["4x NVSwitch チップ"]
+            NS0[NVSwitch 0]
+            NS1[NVSwitch 1]
+            NS2[NVSwitch 2]
+            NS3[NVSwitch 3]
+        end
+        
+        SXM0 ---|NVLink<br/>900GB/s| NS0
+        SXM1 ---|NVLink| NS0
+        SXM2 ---|NVLink| NS1
+        SXM7 ---|NVLink| NS3
+        
+        NS0 ---|内部接続| NS1
+        NS1 ---|内部接続| NS2
+        NS2 ---|内部接続| NS3
+        
+        Note3[HGX H100 Baseboard<br/>━━━━━━━━━━<br/>8 GPU を full-mesh 接続<br/>任意の 2 GPU 間が<br/>single-hop で通信可能]
+    end
+    
+    subgraph Level4["DGX サーバーレベル"]
+        direction LR
+        Server[DGX H100<br/>8U Rackmount<br/>━━━━━━━━━━<br/>+ 2x Intel Xeon CPU<br/>+ 2TB DDR5 RAM<br/>+ 8x ConnectX-7 NIC<br/>+ ストレージ]
+    end
+    
+    Level3 -.統合.-> Level4
+    
+    style Level1 fill:#e1f5ff
+    style Level2 fill:#fff4e1
+    style Level3 fill:#f0fff4
+    style Level4 fill:#ffe1f5
+    style Note3 fill:#ffe1e1
+```
+
+**重要なポイント**
+
+- **1 SXM5 モジュール = 1 GPU チップ**: 複数チップを搭載する構成ではない
+- **NVLink はベースボード上**: SXM モジュールと NVSwitch を物理的に接続
+- **NVSwitch もベースボード上**: 4 個の NVSwitch チップが配置され、8 GPU を相互接続
+- **Full-mesh 接続**: どの GPU からどの GPU へも NVSwitch 経由で 1 ホップで到達可能
+
+---
+
+### DGX H100/H200 の構成
+
+8 GPU が 4 つの NVSwitch チップで完全に相互接続されています。NVSwitch が all-to-all 接続を提供し、任意の 2 つの GPU 間が single-hop（1ホップ）で通信できます。
+
+| GPU 世代 | NVLink 世代 | GPU あたり帯域幅 | ノード内総帯域幅 | 接続方式 |
+|---------|-----------|----------------|--------------|---------|
+| A100 | NVLink 3.0 | 600 GB/s | 4.8 TB/s | NVSwitch × 6 |
+| H100 | NVLink 4.0 | 900 GB/s | 7.2 TB/s | NVSwitch × 4 |
+| H200 | NVLink 4.0 | 900 GB/s | 7.2 TB/s | NVSwitch × 4 |
+| B200 | NVLink 5.0 | 1.8 TB/s | 14.4 TB/s | NVSwitch × 4 |
+
+---
+
+### なぜ NVSwitch なのか
+
+NVSwitch がない場合、GPU は直接接続（ポイントツーポイント）しかできず、複雑なメッシュトポロジーになります。NVSwitch を使用することで、以下のメリットがあります。
+
+- **シンプルな接続**: 各 GPU は NVSwitch にのみ接続
+- **フルバンド幅**: すべての GPU ペアが最大帯域幅で通信可能
+- **低レイテンシ**: 常に 1 ホップで到達
+::::
+
+
+:::: details 階層2: ラック内通信（GB200 NVL72 の特殊ケース）
+
+:::message
+**使用技術**: NVLink 5.0 + NVLink Switch
+
+**トポロジー**: Full-mesh（完全相互接続）
+
+**対象**: GB200 NVL72 UltraServer のみ
+:::
+
+**GB200 NVL72 の構成**
+
+1 ラックに 72 GPU（18 トレイ × 4 GPU）を配置し、18 個の NVLink Switch チップで full-mesh 接続を実現しています。
+
+- **各 GPU**: 18 個の NVLink 5.0 リンクを持つ
+- **各リンク**: 各 Switch への専用接続
+- **総帯域幅**: 1.8 TB/s per GPU
+- **ラック全体**: 130 TB/s の GPU 間通信帯域幅
+
+**通常の構成との違い**
+
+| 構成 | GPU 数 | スケール | 接続技術 |
+|------|--------|---------|---------|
+| 通常のノード（DGX H100） | 8 GPU | ノード単位 | NVSwitch（ノード内） |
+| GB200 NVL72 | 72 GPU | ラック単位 | NVLink Switch（ラック全体） |
+
+ラック全体が 1 つの統合 GPU のように動作し、従来のノード間通信が不要になります。
+::::
+
+:::: details 階層3: ラック間通信（ノード間/サーバー間）
+
+:::message
+**使用技術**: EFA（Elastic Fabric Adapter）+ GPUDirect RDMA
+
+**トポロジー**: ToR（Top-of-Rack）スイッチベース
+
+**スケール**: ペタビットスケールノンブロッキングネットワーク
+:::
+
+## AWS の ToR アーキテクチャ
+
+AWS は NVIDIA の rail-optimized clos topology を採用せず、ToR スイッチを優先するアプローチを取っています（[AWS Trainium3 詳細分析](https://newsletter.semianalysis.com/p/aws-trainium3-deep-dive-a-potential)）。
+
+```mermaid
+graph TB
+    subgraph Rack1["ラック A"]
+        Server1A[サーバー 1]
+        Server2A[サーバー 2]
+        Server8A[サーバー 8]
+        ToR1[ToR Switch A]
+        
+        Server1A ---|EFA| ToR1
+        Server2A ---|EFA| ToR1
+        Server8A ---|EFA| ToR1
+    end
+    
+    subgraph Rack2["ラック B"]
+        Server1B[サーバー 1]
+        Server2B[サーバー 2]
+        Server8B[サーバー 8]
+        ToR2[ToR Switch B]
+        
+        Server1B ---|EFA| ToR2
+        Server2B ---|EFA| ToR2
+        Server8B ---|EFA| ToR2
+    end
+    
+    subgraph Fabric["Spine-Leaf ファブリック"]
+        Spine1[Spine Switch 1]
+        Spine2[Spine Switch 2]
+        Leaf1[Leaf Switch 1]
+        Leaf2[Leaf Switch 2]
+        
+        ToR1 ---|高帯域幅| Leaf1
+        ToR2 ---|高帯域幅| Leaf2
+        Leaf1 ---|ペタビット| Spine1
+        Leaf1 ---|スケール| Spine2
+        Leaf2 ---|ペタビット| Spine1
+        Leaf2 ---|スケール| Spine2
+    end
+    
+    ToR1 -.->Fabric
+    ToR2 -.->Fabric
+    
+    style Rack1 fill:#e1f5ff
+    style Rack2 fill:#e1f5ff
+    style Fabric fill:#fff4e1
+```
+
+## EFA 世代別の帯域幅
+
+| EFA 世代 | 帯域幅 | 対応インスタンス | 特徴 |
+|---------|--------|----------------|------|
+| EFA v1 | 400 Gbps | P4d (A100) | 初代 EFA |
+| EFA v2 | 3,200 Gbps | P5/P5e/P5en (H100/H200) | 8倍の帯域幅 |
+| EFA v3 | 3,200 Gbps | Trn3 (Trainium3) | Trainium 最適化 |
+| EFA v4 | 3,200 Gbps | P6-B200 (B200) | 標準帯域幅 |
+| EFA v4 | 6,400 Gbps | P6-B300 (B300) | 2倍帯域幅 |
+| EFA v4 | 28.8 Tbps | P6e-GB200/GB300 (NVL72) | UltraServer 専用 |
+
+## GPUDirect RDMA の役割
+
+EFA は GPUDirect RDMA と組み合わせることで、以下を実現します。
+
+- **OS バイパス**: カーネルを経由せず直接 GPU メモリにアクセス
+- **ゼロコピー**: CPU メモリを経由せずに GPU 間でデータ転送
+- **低レイテンシ**: マイクロ秒単位の通信遅延
+
+## UltraClusters の特徴
+
+- **Single AZ 配置**: すべてのインスタンスが同一 AZ に配置され、物理的に近接
+- **専用ネットワーク**: ペタビットスケールのノンブロッキングネットワーク
+- **レイテンシ**: マイクロ秒単位（Multi AZ の 1/1000 以下）
+::::
+
+### ネットワーク帯域幅の実用的な理解
+
+大規模モデル訓練における通信量を具体例で理解しましょう。
+
+**例: Llama 3 70B モデルの勾配同期**
+
+- モデルサイズ: 70B パラメータ × 2 bytes（FP16）= 140 GB
+- 勾配サイズ: 140 GB（All-Reduce で全ノードと同期）
+- 1 イテレーションあたりの通信量: 約 245 GB（ring All-Reduce 想定）
+
+**8 ノード（64 GPU）での通信時間**
+
+| ネットワーク | 帯域幅 | 通信時間 | 1000 ステップ |
+|------------|--------|---------|-------------|
+| **EFA v1 (P4d)** | 400 Gbps | 4.9 秒 | 1.36 時間 |
+| **EFA v2 (P5)** | 3,200 Gbps | 0.61 秒 | 0.17 時間 |
+| **EFA v4 (P6-B300)** | 6,400 Gbps | 0.31 秒 | 0.09 時間 |
+
+帯域幅が 8 倍になれば、通信時間も約 1/8 になり、訓練全体の効率が大幅に向上します。
+
+### ネットワークが学習速度に与える影響
+
+```mermaid
+graph LR
+    subgraph Training["学習1イテレーション"]
+        Compute[計算<br/>80%時間]
+        Comm[通信<br/>20%時間]
+        
+        Compute --> Comm
+    end
+    
+    subgraph Bottleneck["ボトルネック"]
+        direction TB
+        Fast[高速ネットワーク<br/>通信時間短縮]
+        Slow[低速ネットワーク<br/>GPU待機時間増加]
+    end
+    
+    Comm -.->Bottleneck
+    
+    style Compute fill:#e1f5ff
+    style Comm fill:#ffe1e1
+    style Fast fill:#d4ffd4
+    style Slow fill:#ffd4d4
+```
+
+**ネットワークがボトルネックになる条件**
+
+- **モデルサイズが大きい**: パラメータ数が多いほど通信量が増加
+- **ノード数が多い**: ノード間通信の回数が増加
+- **バッチサイズが小さい**: 計算時間が短く、通信の割合が増加
+
+UltraClusters の高速ネットワークは、これらのボトルネックを最小化し、GPU の計算能力を最大限に活用できるように設計されています。
+
+## ストレージ
 
 大規模モデル訓練では、チェックポイント保存、データセット読み込み、結果保存のために高性能なストレージが必要です。
 
@@ -407,814 +719,3 @@ graph TB
 - **種類**: gp3, io2, io2 Block Express
 - **最大帯域幅**: 8,000MB/s（io2 Block Express）
 - **用途**: OS、アプリケーション、一時データ
-
-## AWS AI プラットフォームの選択肢
-
-EC2 UltraClusters 上で大規模 AI/ML ワークロードを実行するには、適切なオーケストレーション・管理プラットフォームを選択する必要があります。AWS は以下の4つの主要な選択肢を提供しています。
-
-```mermaid
-graph TB
-    subgraph Platform["AWS AI プラットフォーム"]
-        direction TB
-        
-        ParallelCluster[AWS ParallelCluster<br/>━━━━━━━━━━━━<br/>HPC向けクラスター管理<br/>Slurm, SGE, Torque<br/>CloudFormation]
-        
-        HyperPodSlurm[SageMaker HyperPod<br/>Slurm版<br/>━━━━━━━━━━━━<br/>マネージドML訓練<br/>自動リカバリー<br/>ヘルスモニタリング]
-        
-        HyperPodEKS[SageMaker HyperPod<br/>EKS版<br/>━━━━━━━━━━━━<br/>Kubernetes管理<br/>Karpenter, MIG対応<br/>Spot対応]
-        
-        EKS[Amazon EKS<br/>━━━━━━━━━━━━<br/>マネージドKubernetes<br/>EKS Capabilities<br/>汎用オーケストレーション]
-    end
-    
-    subgraph Infrastructure["EC2 UltraClusters"]
-        GPU[GPU: P5, P6e]
-        Trainium[Trainium: Trn3]
-        Network[Network: EFA, NVLink]
-        Storage[Storage: S3, FSx, EBS]
-    end
-    
-    ParallelCluster --> Infrastructure
-    HyperPodSlurm --> Infrastructure
-    HyperPodEKS --> Infrastructure
-    EKS --> Infrastructure
-    
-    style Platform fill:#e1f5ff
-    style Infrastructure fill:#f0fff4
-    style ParallelCluster fill:#ffd4d4
-    style HyperPodSlurm fill:#d4ffd4
-    style HyperPodEKS fill:#d4d4ff
-    style EKS fill:#ffffd4
-```
-
-### 比較表
-
-| プラットフォーム | オーケストレーター | 管理レベル | 自動リカバリー | 主な用途 | Spot対応 |
-|----------------|------------------|-----------|--------------|---------|---------|
-| **ParallelCluster** | Slurm, SGE, Torque | セルフマネージド | 手動 | HPC、バッチ処理 | 手動設定 |
-| **HyperPod (Slurm)** | Slurm | フルマネージド | 自動 | 長期間ML訓練 | ❌ |
-| **HyperPod (EKS)** | Kubernetes | フルマネージド | 自動 | コンテナベースML | ✅ 自動 |
-| **EKS** | Kubernetes | マネージドK8s | 手動 | 汎用コンテナ | 手動設定 |
-
-### 1. AWS ParallelCluster
-
-**概要**: HPC（High Performance Computing）向けのクラスター管理ツールで、従来の HPC ワークロードや研究機関での利用に最適です。
-
-**特徴**:
-- CloudFormation による自動デプロイ
-- Slurm, SGE, Torque などの HPC ジョブスケジューラーをサポート
-- カスタム AMI、スクリプトによる柔軟な環境構築
-- コスト最適化のための Auto Scaling
-
-**適用ケース**:
-- 従来の HPC ワークロード（分子動力学、気象シミュレーションなど）
-- 研究機関での大規模計算
-- オンプレミス HPC からのリフト&シフト
-
-**制約**:
-- ノード障害時のリカバリーは手動
-- ヘルスチェックは基本的な死活監視のみ
-- ML 特化の最適化は限定的
-
-### 2. Amazon SageMaker HyperPod（Slurm版）
-
-**概要**: Slurm をジョブスケジューラーとして使用する、フルマネージドの ML 訓練プラットフォームです。
-
-**特徴**:
-- **自動ノードリカバリー**: ハードウェア障害を検出し、自動的にノードを交換
-- **ヘルスモニタリング**: GPU、ネットワーク、ストレージの包括的な監視
-- **自動ジョブ再開**: チェックポイントから自動的に訓練を再開
-- **Slurm 統合**: 既存の Slurm スクリプトをそのまま使用可能
-
-**適用ケース**:
-- 数週間から数ヶ月にわたる大規模基盤モデル訓練
-- Slurm に慣れたチームでの利用
-- 高い信頼性が求められる本番環境
-
-**新機能（re:Invent 2025）**:
-- **Checkpointless Training**: リカバリー時間を80%以上削減
-- **Elastic Training**: リソース可用性に基づく自動スケーリング
-- **Programmatic Node Operations**: API による再起動・交換
-
-### 3. Amazon SageMaker HyperPod（EKS版）
-
-**概要**: Kubernetes（EKS）をオーケストレーターとして使用する、最も柔軟で現代的なマネージド ML プラットフォームです。
-
-**特徴**:
-- **Kubernetes ネイティブ**: 標準的な K8s API、kubectl、Helm を使用
-- **Karpenter 統合**: ワークロードに応じた自動スケーリング
-- **コンテナベース**: Docker コンテナによる環境の再現性
-- **マルチテナント**: Namespace による分離、RBAC
-
-**適用ケース**:
-- コンテナベースの ML ワークフロー
-- CI/CD パイプラインとの統合
-- マイクロサービス的なアプローチ
-- 複数チームでのリソース共有
-
-**新機能（re:Invent 2025）**:
-- **MIG（Multi-Instance GPU）サポート**: 1 GPU を最大7パーティションに分割
-- **Spot Instances サポート**: 最大90%のコスト削減
-- **Custom Kubernetes Labels & Taints**: 柔軟な Pod スケジューリング
-- **Managed Tiered KV Cache**: 推論レイテンシ40%削減、スループット25%向上
-
-### 4. Amazon EKS（スタンドアロン）
-
-**概要**: AWS のマネージド Kubernetes サービスで、汎用的なコンテナオーケストレーションに使用されます。
-
-**特徴**:
-- **標準 Kubernetes**: アップストリーム K8s との完全な互換性
-- **EKS Capabilities**（2025年12月発表）: Argo CD, ACK, KRO の統合
-- **柔軟性**: あらゆるコンテナワークロードに対応
-- **エコシステム**: Kubernetes エコシステムのツールを活用
-
-**適用ケース**:
-- ML 以外のワークロードも含む統合プラットフォーム
-- 既存の Kubernetes 環境からの移行
-- カスタマイズ性を最大限に活用したい場合
-
-**EKS Capabilities**（2025年12月発表）:
-- **Argo CD**: GitOps による継続的デプロイメント
-- **ACK（AWS Controllers for Kubernetes）**: K8s から AWS リソースを管理
-- **KRO（Kube Resource Orchestrator）**: 複雑なリソースの抽象化
-
-### プラットフォーム選択のガイドライン
-
-```mermaid
-graph TD
-    Start[大規模AI/MLワークロード] --> Q1{既存のSlurm<br/>スクリプトあり?}
-    
-    Q1 -->|Yes| Q2{自動リカバリー<br/>必要?}
-    Q1 -->|No| Q3{Kubernetes<br/>使用したい?}
-    
-    Q2 -->|Yes| HyperPodSlurm[HyperPod Slurm版]
-    Q2 -->|No| ParallelCluster[ParallelCluster]
-    
-    Q3 -->|Yes| Q4{ML特化機能<br/>必要?}
-    Q3 -->|No| ParallelCluster
-    
-    Q4 -->|Yes| HyperPodEKS[HyperPod EKS版]
-    Q4 -->|No| EKS[Amazon EKS]
-    
-    style Start fill:#e1f5ff
-    style HyperPodSlurm fill:#d4ffd4
-    style ParallelCluster fill:#ffd4d4
-    style HyperPodEKS fill:#d4d4ff
-    style EKS fill:#ffffd4
-```
-
-**選択基準**:
-
-1. **既存のワークフロー**: Slurm スクリプトがあれば HyperPod Slurm、Kubernetes 経験があれば HyperPod EKS
-2. **管理レベル**: フルマネージドを求めるなら HyperPod、柔軟性を求めるなら ParallelCluster や EKS
-3. **コスト**: Spot インスタンスを活用したいなら HyperPod EKS
-4. **スケール**: 数万 GPU のスケールには HyperPod
-5. **統合**: 既存の AWS サービスとの統合には ACK を含む EKS Capabilities
-
-## プラットフォーム別インスタンス対応表
-
-各プラットフォームで利用可能なインスタンスタイプを整理します。
-
-| インスタンスタイプ | ParallelCluster | HyperPod (Slurm) | HyperPod (EKS) | EKS |
-|------------------|----------------|------------------|----------------|-----|
-| **P5 (H100)** | ✅ | ✅ | ✅ | ✅ |
-| **P6e-GB200** | ✅ | ✅ | ✅ | ✅ |
-| **P6e-GB300** | ✅ | ✅ | ✅ | ✅ |
-| **P4d (A100)** | ✅ | ✅ | ✅ | ✅ |
-| **Trn1 (Trainium)** | ✅ | ✅ | ✅ | ✅ |
-| **Trn2 (Trainium2)** | ✅ | ✅ | ✅ | ✅ |
-| **Trn3 (Trainium3)** | ✅ | ✅ | ✅ | ✅ |
-| **Inf2 (Inferentia2)** | ✅ | ✅ | ✅ | ✅ |
-| **Spot インスタンス** | 手動設定 | ❌ | ✅ 自動 | 手動設定 |
-| **MIG 分割** | 手動設定 | ❌ | ✅ 自動 | 手動設定 |
-
-### 注意事項
-
-- **ParallelCluster**: すべてのインスタンスタイプをサポートしますが、Spot や MIG は手動設定が必要
-- **HyperPod (Slurm)**: 現在 Spot と MIG は未サポート（将来的にサポート予定の可能性）
-- **HyperPod (EKS)**: Spot と MIG を完全サポートし、自動管理機能を提供
-- **EKS**: すべてのインスタンスをサポートしますが、Spot や MIG の管理は自前で実装
-
-## re:Invent 2025 主要アップデート
-
-2025年11月～12月の AWS re:Invent で発表された、大規模 AI/ML インフラストラクチャに関する主要なアップデートを整理します。
-
-### ハードウェア・インフラストラクチャ
-
-#### 1. Trn3 UltraServer（一般提供開始）
-
-**発表日**: 2025年12月2日
-
-**主要改善**:
-- Trainium2 比で計算性能4.4倍、エネルギー効率4倍
-- メモリ帯域幅4倍、レイテンシ1/4
-- EC2 UltraClusters 3.0 で最大100万チップ接続可能（前世代の10倍）
-
-**実測パフォーマンス**（OpenAI GPT-OSS モデル）:
-- チップあたりのスループット: 3倍向上
-- 応答時間: 4倍高速化
-
-**参考**: [AWS ブログ記事](https://www.aboutamazon.com/news/aws/trainium-3-ultraserver-faster-ai-training-lower-cost)
-
-#### 2. P6e-GB300 UltraServer（一般提供開始）
-
-**発表日**: 2025年12月2日
-
-**主要スペック**:
-- NVIDIA GB300 NVL72 搭載
-- GPU メモリ: P6e-GB200 の1.5倍（約20TB）
-- FP4 コンピュート: P6e-GB200 の1.5倍
-
-**用途**: 高コンテキスト要求モデル、推論技術（Reasoning）、Agentic AI
-
-**参考**: [AWS 発表](https://aws.amazon.com/jp/about-aws/whats-new/2025/12/amazon-ec2-p6e-gb300-ultraservers-nvidia-gb300-nvl72-generally-available/)
-
-#### 3. AWS AI Factories
-
-**コンセプト**: 顧客データセンター内への専用 AI インフラ直接展開
-
-**提供内容**:
-- NVIDIA GB300、AWS Trainium チップ
-- Amazon Bedrock、SageMaker AI などのサービス
-- AWS が完全管理（展開、スケーリング、パッチ、セキュリティ）
-
-**メリット**:
-- 既存のデータセンタースペース、ネットワーク、電力を活用
-- データ主権と規制要件への対応
-- 導入期間の大幅短縮
-
-**実例**: サウジアラビアの HUMAIN と協力し、GB300 GPU を含む最大150,000個の AI チップを備えた「AI ゾーン」を構築中
-
-**参考**: [AWS ニュース](https://www.aboutamazon.com/news/aws/aws-data-centers-ai-factories)
-
-### SageMaker HyperPod の新機能
-
-#### 4. Spot Instances サポート（HyperPod EKS）
-
-**発表日**: 2025年11月24日
-
-**主要機能**:
-- On-Demand 比で最大90%のコスト削減
-- Karpenter による自動スケーリング
-- 中断処理の完全自動化（2分前通知、グレースフル eviction）
-- 自動容量再プロビジョニング
-
-**対応インスタンス**: ml.p4d.24xlarge、ml.p5.48xlarge、ml.p5e.48xlarge など
-
-**具体例**（p4d.24xlarge × 10台、24時間×30日）:
-- 従来（On-Demand 100%）: $236,000/月
-- 新方式（Spot 80% + On-Demand 20%）: $73,400/月
-- **削減額: $162,600/月（69%削減）**
-
-**参考**: [AWS 発表](https://aws.amazon.com/jp/about-aws/whats-new/2025/11/amazon-sagemaker-hyperpod-spot-instances/)
-
-#### 5. MIG（Multi-Instance GPU）サポート（HyperPod EKS）
-
-**発表日**: 2025年11月24日
-
-**主要機能**:
-- 1つの GPU を最大7つの独立したパーティションに分割
-- ハードウェアレベルでの分離と予測可能なパフォーマンス
-- コンソールまたは Kubernetes での簡単設定
-
-**対応 GPU と MIG プロファイル**:
-
-**A100 GPU (ml.p4d.24xlarge)**:
-- 1g.5gb（5GB）: 1 GPU → 7パーティション
-- 2g.10gb（10GB）: 1 GPU → 3パーティション
-- 3g.20gb（20GB）: 1 GPU → 2パーティション
-- 7g.40gb（40GB）: GPU 全体使用
-
-**H100 GPU (ml.p5.48xlarge)**:
-- 1g.10gb（10GB）: 1 GPU → 7パーティション
-- 2g.20gb（20GB）: 1 GPU → 3パーティション
-- 3g.40gb（40GB）: 1 GPU → 2パーティション
-- 7g.80gb（80GB）: GPU 全体使用
-
-**H200 GPU (ml.p5e.48xlarge, ml.p5en.48xlarge)**:
-- 1g.18gb（18GB）: 1 GPU → 7パーティション
-- 2g.35gb（35GB）: 1 GPU → 3パーティション
-- 3g.71gb（71GB）: 1 GPU → 2パーティション
-- 7g.141gb（141GB）: GPU 全体使用
-
-**効果**（ml.p4d.24xlarge、8 × A100 80GB の例）:
-- 従来: 8タスク並行実行、GPU 利用率 ~10%
-- MIG 有効化: 56タスク並行実行（8 GPU × 7パーティション）、GPU 利用率 ~70-80%
-- **同じコストで7倍のスループット**
-
-**参考**: [AWS 発表](https://aws.amazon.com/jp/about-aws/whats-new/2025/11/sagemaker-hyperpod-nvidia-multi-instance-gpu/)
-
-#### 6. Checkpointless Training
-
-**発表日**: 2025年12月
-
-**主要機能**:
-- チェックポイント-再起動サイクルを排除
-- ピアツーピアの状態復旧
-- 健全なピアを使用した即座のリカバリー
-- 手動介入ゼロの自動検出・復旧
-
-**効果**:
-- リカバリー時間を**80%以上削減**（時間単位から分単位へ）
-- 数千の AI アクセラレータにスケール可能
-- トレーニングの勢いを維持
-
-**実績**: Amazon Nova モデルは数万のアクセラレータでこの技術を使用してトレーニング
-
-**参考**: [AWS ブログ](https://aws.amazon.com/jp/blogs/aws/introducing-checkpointless-and-elastic-training-on-amazon-sagemaker-hyperpod/)
-
-#### 7. Elastic Training
-
-**発表日**: 2025年12月
-
-**主要機能**:
-- リソース可用性に基づく自動スケーリング
-- アイドル状態の容量を自動的に活用
-- 高優先度ワークロード（推論など）のピーク時は自動縮小
-- トレーニング品質を維持しながらスケーリング
-
-**仕組み**:
-- HyperPod トレーニングオペレーターが Kubernetes と統合
-- Pod ライフサイクル、ノード可用性、リソーススケジューラーを監視
-- データ並列レプリカの追加・削除によるスケーリング
-- グローバルバッチサイズを保持、学習率を適応
-
-**効果**:
-- クラスタ使用率の最大化
-- 週あたり数時間のエンジニアリング時間を節約
-
-**参考**: [AWS ブログ](https://aws.amazon.com/jp/blogs/aws/introducing-checkpointless-and-elastic-training-on-amazon-sagemaker-hyperpod/)
-
-#### 8. Custom Kubernetes Labels & Taints
-
-**発表日**: 2025年11月26日
-
-**主要機能**:
-- インスタンスグループレベルでラベルとテイントを設定
-- ノードライフサイクル全体で自動維持
-- 最大50ラベル、50テイントまで指定可能
-
-**効果**:
-- GPU リソースの保護（NoSchedule テイントで明示的な Toleration を持つジョブのみ実行）
-- デバイスプラグイン統合の簡素化（EFA、NVIDIA GPU オペレーターなど）
-- 手動再適用作業の完全排除
-
-**参考**: [AWS 発表](https://aws.amazon.com/jp/about-aws/whats-new/2025/11/amazon-sagemaker-hyperpod-kubernetes/)
-
-#### 9. Programmatic Node Operations
-
-**発表日**: 2025年11月26日
-
-**新 API**:
-- **BatchRebootClusterNodes**: 最大25ノードを一度に再起動
-- **BatchReplaceClusterNodes**: 最大25ノードを新ハードウェアに交換
-
-**主要機能**:
-- オーケストレータ非依存（Slurm、EKS 両対応）
-- 既存のオーケストレータ固有方法と併用可能
-- 進捗状況の監視が可能
-
-**効果**:
-- 大規模復旧シナリオの効率的な管理
-- ダウンタイムの削減
-- 一貫した復旧オペレーション
-
-**参考**: [AWS 発表](https://aws.amazon.com/jp/about-aws/whats-new/2025/11/amazon-sagemaker-hyperpod-programmatic-node-reboot-replacement/)
-
-#### 10. Managed Tiered KV Cache & Intelligent Routing
-
-**発表日**: 2025年11月26日
-
-**主要機能**:
-- 2層アーキテクチャ（L1: ローカル CPU メモリ、L2: 分散ストレージ）
-- AWS-native 分散階層ストレージ（テラバイト規模）
-- 3つのルーティング戦略: Prefix-aware、KV-aware、Round-robin
-
-**効果**:
-- レイテンシ: 最大**40%削減**
-- スループット: **25%向上**
-- コスト: **25%削減**
-
-**参考**: [AWS 発表](https://aws.amazon.com/jp/about-aws/whats-new/2025/11/sagemaker-hyperpod-managed-tiered-kv-cache/)
-
-### 推論の新機能
-
-#### 11. EAGLE Speculative Decoding
-
-**発表日**: 2025年11月
-
-**主要機能**:
-- モデル自身の隠れ層表現を利用した複数トークン並列予測
-- 外部 draft モデル不要
-- EAGLE 2 と EAGLE 3 の両方をサポート
-
-**対応モデル**:
-- EAGLE 3: LlamaForCausalLM、Qwen3ForCausalLM、GptOssForCausalLM など
-- EAGLE 2: Qwen3NextForCausalLM
-
-**効果**（Qwen3-32B、ml.p5.48xlarge）:
-- スループット: **2.5倍向上**（No EAGLE 比）
-- TTFT（Time to First Token）: 20-40%短縮
-- TPOT（Time Per Output Token）: 56-63%短縮
-
-**参考**: [AWS ブログ](https://aws.amazon.com/jp/blogs/machine-learning/amazon-sagemaker-ai-introduces-eagle-based-adaptive-speculative-decoding-to-accelerate-generative-ai-inference/)
-
-#### 12. Bidirectional Streaming
-
-**発表日**: 2025年11月
-
-**主要機能**:
-- HTTP/2 と WebSocket による双方向ストリーミング
-- 単一の永続的接続でリアルタイムにデータが流れる
-- 60秒ごとの ping/pong によるヘルスモニタリング
-
-**用途**:
-- 音声テキスト変換
-- 音声エージェント
-- リアルタイム翻訳
-
-**効果**:
-- ネットワークオーバーヘッド削減（単一接続）
-- レイテンシー低減（リアルタイム処理）
-- 音声認識の応答性向上
-
-**参考**: [AWS ブログ](https://aws.amazon.com/jp/blogs/machine-learning/introducing-bidirectional-streaming-for-real-time-inference-on-amazon-sagemaker-ai/)
-
-#### 13. Flexible Training Plans for Inference Endpoints
-
-**発表日**: 2025年11月26日
-
-**主要機能**:
-- 推論エンドポイント用の GPU 容量事前予約
-- 計画的な評価や本番ピーク時の容量保証
-- 自動プロビジョニング
-
-**効果**:
-- モデル評価サイクルの予測可能性向上
-- 本番ピーク時の安定したパフォーマンス
-- インフラ管理の工数削減（数週間→自動）
-
-**参考**: [AWS 発表](https://aws.amazon.com/jp/about-aws/whats-new/2025/11/sagemaker-ai-flexible-training-plans-inference/)
-
-### その他の重要発表
-
-#### 14. Amazon EKS Capabilities
-
-**発表日**: 2025年12月
-
-**提供内容**:
-- **Argo CD**: GitOps による継続的デプロイメント
-- **ACK（AWS Controllers for Kubernetes）**: K8s から AWS リソースを管理
-- **KRO（Kube Resource Orchestrator）**: 複雑なリソースの抽象化
-
-**特徴**:
-- フルマネージド（EKS サービス所有アカウントで実行）
-- 自動アップグレード
-- IAM Identity Center との統合
-
-**料金**: 使用分のみ課金、前払い・最低料金なし
-
-**参考**: [AWS ブログ](https://aws.amazon.com/jp/blogs/aws/announcing-amazon-eks-capabilities-for-workload-orchestration-and-cloud-resource-management/)
-
-#### 15. Amazon Nova Forge
-
-**発表日**: 2025年11月
-
-**主要機能**:
-- Nova AI モデルを使用した独自フロンティアモデル構築
-- プレトレーニング、ミッドトレーニング、ポストトレーニングからの開発
-- データブレンディングによる壊滅的忘却の削減
-- 強化学習（RL）サポート
-
-**利用可能リージョン**: US East (N. Virginia)
-
-**参考**: [AWS ブログ](https://aws.amazon.com/jp/blogs/aws/introducing-amazon-nova-forge-build-your-own-frontier-models-using-nova/)
-
-#### 16. Serverless Customization in SageMaker AI
-
-**発表日**: 2025年12月
-
-**主要機能**:
-- サーバーレスモデルカスタマイズ（インフラ管理不要）
-- Supervised Fine-Tuning、DPO、RLVR、RLAIF をサポート
-- モデルカスタマイズを数ヶ月から数日に短縮
-
-**対応モデル**: Amazon Nova、DeepSeek、GPT-OSS、Llama、Qwen など
-
-**参考**: [AWS ブログ](https://aws.amazon.com/jp/blogs/aws/new-serverless-customization-in-amazon-sagemaker-ai-accelerates-model-fine-tuning/)
-
-## スケールと制約の理解
-
-大規模 AI/ML ワークロードを計画する際、複数のレベルで制約が存在することを理解する必要があります。
-
-### 制約の階層構造
-
-```mermaid
-graph TB
-    subgraph Constraints["制約の階層"]
-        direction TB
-        
-        Instance[インスタンスレベル<br/>━━━━━━━━━━<br/>P5: 8 GPU 固定<br/>P6e: 72 GPU 固定<br/>Trn3: 最大144チップ]
-        
-        UltraCluster[UltraClusters レベル<br/>━━━━━━━━━━<br/>物理的最大スケール<br/>3.0: 100万チップ]
-        
-        Platform[プラットフォームレベル<br/>━━━━━━━━━━<br/>HyperPod: 数千ノード<br/>ParallelCluster: 設定次第]
-        
-        Quota[AWS サービスクォータ<br/>━━━━━━━━━━<br/>実質的な制約<br/>デフォルト: 0〜数台<br/>要事前申請]
-    end
-    
-    Instance --> UltraCluster
-    UltraCluster --> Platform
-    Platform --> Quota
-    
-    style Instance fill:#e1f5ff
-    style UltraCluster fill:#fff4e1
-    style Platform fill:#f0fff4
-    style Quota fill:#ffe1e1
-```
-
-### 1. インスタンスレベルの制約
-
-各インスタンスタイプには固定の GPU/Trainium 数があります。
-
-| インスタンスタイプ | GPU/チップ数 | GPUメモリ | 総GPUメモリ | vCPU | システムメモリ |
-|------------------|------------|----------|-----------|------|--------------|
-| **P5 (ml.p5.48xlarge)** | 8x H100 | 80GB/GPU | 640GB | 192 | 2,048GB |
-| **P6e-GB200 (ml.p6e.48xlarge)** | 72x GB200 | 185GB/GPU | 13.3TB | - | - |
-| **P6e-GB300 (ml.p6e.48xlarge)** | 72x GB300 | ~278GB/GPU | ~20TB | - | - |
-| **P4d (ml.p4d.24xlarge)** | 8x A100 | 40GB/GPU | 320GB | 96 | 1,152GB |
-| **Trn1 (ml.trn1.32xlarge)** | 16x Trainium | - | 512GB HBM | 128 | 512GB |
-| **Trn3 UltraServer** | 最大144x Trainium3 | - | - | - | - |
-
-**重要なポイント**:
-- インスタンスタイプごとに GPU/チップ数は固定
-- ノード数を増やすことでスケール（例: P5 × 8ノード = 64 GPU）
-
-### 2. EC2 UltraClusters レベルの制約
-
-物理インフラストラクチャの限界です。
-
-| 世代 | 最大スケール | 実例 |
-|------|------------|------|
-| **UltraClusters 2.0** | 20,000 GPU | P5 インスタンス |
-| **UltraClusters 3.0** | 100万チップ | Trn3、P6e（前世代の10倍）|
-
-**実績**:
-- **Project Rainier**（Anthropic）: 50万個以上の Trainium2 チップを接続
-- **Amazon Nova**: 数万のアクセラレータでトレーニング
-
-### 3. プラットフォームレベルの制約
-
-#### SageMaker HyperPod
-
-**ノード数の制約**:
-- 明示的な上限の公開情報は限定的
-- 実質的に数百～数千ノード規模に対応
-- 大規模クラスター（512ノード以上）は AWS との調整が必要
-
-**インスタンスグループ**:
-- 複数のインスタンスグループを作成可能
-- 各グループで異なるインスタンスタイプを指定可能
-- 例: GPUグループ + Trainiumグループの混在
-
-#### AWS ParallelCluster
-
-**MaxCount 設定**:
-```yaml
-Scheduling:
-  Queues:
-    - Name: compute
-      ComputeResources:
-        - Name: gpu-nodes
-          InstanceType: p5.48xlarge
-          MinCount: 0
-          MaxCount: 128  # 最大ノード数
-```
-
-- 理論上は数千ノードまで対応可能
-- 実際の制限はサービスクォータに依存
-
-### 4. AWS サービスクォータ（最重要）
-
-これが実質的な制約になります。
-
-#### デフォルトクォータの例
-
-| サービス | リソース | デフォルトクォータ |
-|---------|---------|-----------------|
-| SageMaker | ml.p5.48xlarge インスタンス | 0〜2台 |
-| SageMaker | ml.p4d.24xlarge インスタンス | 0〜2台 |
-| SageMaker | ml.trn1.32xlarge インスタンス | 0〜2台 |
-| EC2 | P instances vCPUs | 128〜512 vCPUs |
-| EC2 | Running On-Demand instances | アカウント・リージョン依存 |
-
-**重要**: デフォルトは非常に小さく、大規模クラスターには**事前申請が必須**です。
-
-#### サービスクォータの確認方法
-
-```bash
-# SageMaker のクォータを確認
-aws service-quotas list-service-quotas \
-  --service-code sagemaker \
-  --region us-east-1
-
-# EC2 のクォータを確認
-aws service-quotas list-service-quotas \
-  --service-code ec2 \
-  --region us-east-1
-
-# 特定のクォータを取得
-aws service-quotas get-service-quota \
-  --service-code sagemaker \
-  --quota-code L-XXXXXX \
-  --region us-east-1
-```
-
-#### クォータ引き上げ申請
-
-```bash
-# クォータ引き上げをリクエスト
-aws service-quotas request-service-quota-increase \
-  --service-code sagemaker \
-  --quota-code L-XXXXXX \
-  --desired-value 100 \
-  --region us-east-1
-```
-
-**申請プロセス**:
-1. AWS Service Quotas コンソールから申請
-2. ビジネスケースを説明
-3. 承認まで数日～数週間
-4. 大規模（512ノード以上）の場合は TAM（Technical Account Manager）との調整を推奨
-
-### 実用的なスケーリングガイドライン
-
-#### スモールスタート（～8ノード）
-
-**想定構成**: P5 × 8ノード = 64 GPU
-
-```json
-{
-  "InstanceGroupName": "gpu-workers",
-  "InstanceType": "ml.p5.48xlarge",
-  "InstanceCount": 8
-}
-```
-
-**サービスクォータ申請**:
-- 小規模または不要の場合あり
-- vCPUs: 8 × 192 = 1,536 vCPUs
-
-**用途**: 概念実証、小規模モデル訓練（Llama 7B など）
-
-#### ミディアムスケール（～64ノード）
-
-**想定構成**: P5 × 64ノード = 512 GPU
-
-```json
-{
-  "InstanceGroupName": "gpu-workers",
-  "InstanceType": "ml.p5.48xlarge",
-  "InstanceCount": 64
-}
-```
-
-**サービスクォータ申請**:
-- **必須**
-- vCPUs: 64 × 192 = 12,288 vCPUs
-- 申請理由と使用計画を明記
-
-**用途**: 中規模モデル訓練（Llama 70B など）
-
-#### ラージスケール（～512ノード）
-
-**想定構成**: P5 × 512ノード = 4,096 GPU
-
-```json
-{
-  "InstanceGroupName": "gpu-workers",
-  "InstanceType": "ml.p5.48xlarge",
-  "InstanceCount": 512
-}
-```
-
-**サービスクォータ申請**:
-- **必須**、TAM との調整推奨
-- vCPUs: 512 × 192 = 98,304 vCPUs
-- 段階的な増加計画を提示
-
-**用途**: 大規模モデル訓練（Llama 405B など）
-
-#### エクストララージ（512ノード～）
-
-**想定構成**: P5 × 1,000+ ノード = 8,000+ GPU
-
-**サービスクォータ申請**:
-- AWS との密接な連携が**必須**
-- 専任の TAM や Solutions Architect のサポート
-- 段階的なロールアウト計画
-
-**用途**: 最先端の基盤モデル訓練、研究プロジェクト
-
-**実例**:
-- Amazon Nova モデル: 数万のアクセラレータ
-- Project Rainier: 50万個以上の Trainium2 チップ
-
-### スケーリング時の考慮事項
-
-#### 1. ネットワーク帯域幅
-
-ノード数が増えると、ノード間通信が重要になります。
-
-| ノード数 | 総GPU数（P5） | All-Reduce通信量（概算） | 必要帯域幅 |
-|---------|-------------|----------------------|-----------|
-| 8 | 64 | 中程度 | 標準 EFA |
-| 64 | 512 | 高い | EFA 最適化必要 |
-| 512 | 4,096 | 非常に高い | UltraClusters 推奨 |
-
-#### 2. ストレージ帯域幅
-
-大規模クラスターでは、チェックポイント保存やデータロードが課題になります。
-
-**推奨構成**:
-- 小規模（～64 GPU）: FSx for Lustre 1.2 TB/s
-- 中規模（～512 GPU）: FSx for Lustre 2.4 TB/s
-- 大規模（512+ GPU）: 複数の FSx for Lustre + S3
-
-#### 3. コスト見積もり
-
-| 構成 | インスタンス数 | 月間コスト（On-Demand、概算） |
-|------|--------------|--------------------------|
-| **P5 × 8** | 8 | ~$250,000 |
-| **P5 × 64** | 64 | ~$2,000,000 |
-| **P5 × 512** | 512 | ~$16,000,000 |
-
-**コスト削減オプション**:
-- **Spot Instances**（HyperPod EKS）: 最大90%削減
-- **Reserved Instances**: 長期利用で30-50%削減
-- **Savings Plans**: 柔軟な割引オプション
-
-### ベストプラクティス
-
-#### 1. 段階的なスケーリング
-
-```
-フェーズ1: 8ノードで概念実証（1-2週間）
-  ↓
-フェーズ2: 64ノードで中規模訓練（1ヶ月）
-  ↓
-フェーズ3: 512ノードで本番規模訓練（3ヶ月）
-```
-
-#### 2. サービスクォータの事前準備
-
-- プロジェクト開始**6-8週間前**に申請
-- 段階的な増加計画を提示
-- ビジネスケースを明確に説明
-
-#### 3. モニタリングとコスト管理
-
-```bash
-# Cost Explorer で使用状況を確認
-aws ce get-cost-and-usage \
-  --time-period Start=2025-12-01,End=2025-12-31 \
-  --granularity DAILY \
-  --metrics UnblendedCost \
-  --filter file://filter.json
-```
-
-## まとめ
-
-本章では、大規模基盤モデル学習に必要なインフラストラクチャについて、以下の観点から整理しました。
-
-### インフラストラクチャの階層構造
-
-1. **物理インフラ層（EC2 UltraClusters）**: GPU、カスタムシリコン、高速ネットワーク、ストレージ
-2. **コントロール層**: Slurm、Kubernetes によるオーケストレーション
-3. **アプリケーション層**: PyTorch、TensorFlow、JAX などの ML フレームワーク
-
-### 主要なプラットフォーム
-
-- **AWS ParallelCluster**: HPC 向けセルフマネージドクラスター
-- **SageMaker HyperPod (Slurm)**: Slurm ベースのフルマネージド ML 訓練
-- **SageMaker HyperPod (EKS)**: Kubernetes ベースのフルマネージド ML 訓練
-- **Amazon EKS**: 汎用マネージド Kubernetes サービス
-
-### re:Invent 2025 の主要アップデート
-
-**ハードウェア**:
-- Trn3 UltraServer（Trainium2 比4.4倍性能）
-- P6e-GB300（GB200 比1.5倍メモリ）
-- AWS AI Factories（顧客データセンター展開）
-
-**HyperPod 新機能**:
-- Spot Instances（最大90%コスト削減）
-- MIG サポート（1 GPU を7分割）
-- Checkpointless Training（リカバリー80%削減）
-- Elastic Training（自動スケーリング）
-
-**推論強化**:
-- EAGLE Speculative Decoding（2.5倍スループット）
-- Bidirectional Streaming（リアルタイム双方向通信）
-- Managed Tiered KV Cache（40%レイテンシ削減）
-
-これらの技術革新により、大規模基盤モデルの訓練・推論がより効率的、低コスト、高性能になりました。次章以降では、これらのインフラストラクチャ上で実際に分散訓練を実装する方法について解説します。
