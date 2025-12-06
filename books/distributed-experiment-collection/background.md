@@ -244,13 +244,17 @@ H100-80GB GPU は 1 台で 80 GB の GPU メモリ（VRAM）を持っていま�
 
 モデル学習に必要な計算量を理解しましょう。
 
-**FLOPS とは**：Floating Point Operations Per Second（浮動小数点演算の回数）の略で、コンピュータの計算性能を表す単位です。1 回の足し算や掛け算が 1 FLOPS に相当します。大規模モデルの学習には、数百エクサ FLOPS（10²¹ 回）もの計算が必要になります。
+**FLOP と FLOPS**
+- **FLOP**（Floating Point Operation）: 浮動小数点演算の**回数**を表す単位
+- **FLOPS**（Floating Point Operations **Per Second**）: 浮動小数点演算の**速度**を表す単位（回数/秒）
+
+大規模モデルの学習には、数百エクサ FLOP（10²¹ 回）もの計算が必要になります。
 
 **計算量の推定式**
 
-モデル学習に必要な計算量は、以下の Scaling Law で推定できます。
+モデル学習に必要な総演算回数は、以下の Scaling Law で推定できます。
 
-**FLOPS = 6 × Parameters × Tokens**
+**FLOP = 6 × Parameters × Tokens**
 
 この式により、モデルのパラメータ数と学習データのトークン数から、必要な計算量を概算できます。
 
@@ -259,16 +263,16 @@ H100-80GB GPU は 1 台で 80 GB の GPU メモリ（VRAM）を持っていま�
 ```
 6 × 70,000,000,000 × 1,400,000,000,000 
 = 588,000,000,000,000,000,000,000 回の計算
-= 588 × 10²¹ FLOPS
-= 588 エクサ FLOPS
+= 588 × 10²¹ FLOP
+= 588 エクサ FLOP
 ```
 
 これは途方もない計算量です。比喩的に言えば、地球上の全人類（80 億人）が電卓を使って 1 秒に 1 回計算しても、約 2,300 年かかる計算量です。
 
 ```mermaid
 graph LR
-    subgraph "Scaling Law: FLOPS = 6 × Parameters × Tokens"
-    A[Parameters<br/>例: 70B] --> D[総 FLOPS<br/>588 × 10²¹]
+    subgraph "Scaling Law: FLOP = 6 × Parameters × Tokens"
+    A[Parameters<br/>例: 70B] --> D[総 FLOP<br/>588 × 10²¹]
     B[Tokens<br/>例: 1.4T] --> D
     C[係数 6<br/>2N forward<br/>+ 4N backward] --> D
     end
@@ -279,7 +283,7 @@ graph LR
     style D fill:#e1f5ff
 ```
 
-::::details FLOPS 計算式「6 × Parameters × Tokens」の詳細
+::::details FLOP 計算式「6 × Parameters × Tokens」の詳細
 
 :::message
 初学者は読み飛ばして大丈夫です。
@@ -289,46 +293,46 @@ graph LR
 
 ## 学習時と推論時の計算量
 
-**Transformer モデルにおける標準的な FLOPS の近似式**
+**Transformer モデルにおける標準的な近似式**
 
 ```
-学習時（Training）: 6N FLOPs/token
-推論時（Inference）: 2N FLOPs/token
+学習時（Training）: 6N FLOP/token
+推論時（Inference）: 2N FLOP/token
 
 ※ N = パラメータ数（非埋め込みパラメータ）
 ```
 
 学習では forward pass と backward pass の両方が必要ですが、推論では forward pass のみで十分なため、推論時の計算量は学習時の 1/3 となります。
 
-## 学習時の内訳（6N FLOPs/token）
+## 学習時の内訳（6N FLOP/token）
 
 ```
-Forward pass（順伝播）:  2N FLOPs/token
-Backward pass（逆伝播）: 4N FLOPs/token
+Forward pass（順伝播）:  2N FLOP/token
+Backward pass（逆伝播）: 4N FLOP/token
 ─────────────────────────────────────
-合計:                    6N FLOPs/token
+合計:                    6N FLOP/token
 ```
 
 これを D トークンで学習すると
 
-**総 FLOPS = 6 × N × D**
+**総 FLOP = 6 × N × D**
 
 ```mermaid
 graph TB
-    subgraph Training["学習時: 6N FLOPs/token"]
-    A[Forward Pass<br/>2N FLOPs] --> C[Total<br/>6N FLOPs]
-    B[Backward Pass<br/>4N FLOPs] --> C
+    subgraph Training["学習時: 6N FLOP/token"]
+    A[Forward Pass<br/>2N FLOP] --> C[Total<br/>6N FLOP]
+    B[Backward Pass<br/>4N FLOP] --> C
     end
     
-    subgraph Inference["推論時: 2N FLOPs/token"]
-    D[Forward Pass<br/>2N FLOPs]
+    subgraph Inference["推論時: 2N FLOP/token"]
+    D[Forward Pass<br/>2N FLOP]
     end
     
     style Training fill:#fff4e1
     style Inference fill:#e1f5ff
 ```
 
-## Forward Pass が 2N FLOPs/token の理由
+## Forward Pass が 2N FLOP/token の理由
 
 Transformer の各演算では **multiply-accumulate operation（積和演算、MAC）** が使用されます。
 
@@ -338,8 +342,8 @@ a = a + (b × c)
 ```
 この演算は、乗算と加算を組み合わせた複合演算です。
 
-**FLOPS カウントの慣例**
-機械学習の分野では、1 回の MAC 演算を **2 FLOPs** としてカウントする慣例があります。
+**FLOP カウントの慣例**
+機械学習の分野では、1 回の MAC 演算を **2 FLOP** としてカウントする慣例があります。
 - 乗算：1 FLOP
 - 加算：1 FLOP
 
@@ -349,16 +353,16 @@ a = a + (b × c)
 1. 入力との乗算（1 FLOP）
 2. 結果の加算（1 FLOP）
 
-パラメータ数 N 個に対してこの操作を行うため、forward pass では約 2N FLOPs が必要です。
+パラメータ数 N 個に対してこの操作を行うため、forward pass では約 2N FLOP が必要です。
 
-## Backward Pass が約 4N FLOPs/token の理由
+## Backward Pass が約 4N FLOP/token の理由
 
-逆伝播では、以下の 2 つの計算が必要です
+逆伝播では、以下の 2 つの計算が必要です。
 
 1. **勾配の計算**（forward と同程度）：損失関数の各パラメータに対する偏微分を計算
 2. **勾配の伝播**（さらに forward と同程度）：計算した勾配を前の層へ伝播
 
-この 2 つの処理により、backward pass は forward pass の約 2 倍、つまり約 4N FLOPs が必要となります。
+この 2 つの処理により、backward pass は forward pass の約 2 倍、つまり約 4N FLOP が必要となります。
 
 ## 重要な注意点
 
@@ -369,14 +373,17 @@ a = a + (b × c)
 :::
 
 :::message alert
-**FLOPS と実行時間の違い**
+**FLOP と FLOPS の使い分け**
 
-FLOPS（Floating Point Operations Per Second）は理論的な演算回数を示す標準指標です。TPU や GPU などの専用ハードウェアでは、積和演算（MAC）を 1 サイクルで実行できるため、実際の処理時間は FLOPS カウントから予想されるよりも短くなります。しかし、異なるハードウェア間で公平に比較するため、FLOPS カウントでは 1 MAC = 2 FLOPs という慣例が維持されています。
+- **FLOP**: 演算回数（例: 588 エクサ FLOP）
+- **FLOPS**: 演算速度（例: 1 PFLOPS = 1×10¹⁵ FLOP/秒）
+
+TPU や GPU などの専用ハードウェアでは、積和演算（MAC）を 1 サイクルで実行できるため、実際の処理時間は FLOP カウントから予想されるよりも短くなります。しかし、異なるハードウェア間で公平に比較するため、FLOP カウントでは 1 MAC = 2 FLOP という慣例が維持されています。
 :::
 
 ## 推論コストを考慮した最適化
 
-大量の推論リクエストが予想される場合（例：10⁹ 回以上）、推論時の計算コスト（2N FLOPs/token）も重要な要素となります。
+大量の推論リクエストが予想される場合（例：10⁹ 回以上）、推論時の計算コスト（2N FLOP/token）も重要な要素となります。
 
 [Beyond Chinchilla-Optimal (Sardana & Frankle, 2024)](https://arxiv.org/abs/2401.00448) の研究では、このような場合、Chinchilla の推奨よりも**小さいモデルをより長く学習する**ことで、学習と推論を合わせた総コストを削減できることが示されています。
 
@@ -406,17 +413,17 @@ FLOPS（Floating Point Operations Per Second）は理論的な演算回数を示
 実効性能 50% は保守的な見積もりです。実際の学習では、通信オーバーヘッドやメモリアクセスのボトルネックにより、理論ピーク性能の 50-60% 程度しか達成できない可能性があります。
 :::
 
-例えば、70B パラメータのモデルを 1.4 兆トークンで学習する場合、約 588 エクサ FLOPS の計算が必要です。H100 GPU（BF16）の実効性能を 1 PFLOPS と仮定すると、1 台で約 19 年、1,000 台で約 7 日かかる計算となります。台数と所要時間はトレードオフの関係にあることがわかると思います。通常は費用や調達面から利用できる台数に上限があるため台数と総 FLOPS から所要時間を概算できます。
+例えば、70B パラメータのモデルを 1.4 兆トークンで学習する場合、約 588 エクサ FLOP の計算が必要です。H100 GPU（BF16）の実効性能を 1 PFLOPS と仮定すると、1 台で約 19 年、1,000 台で約 7 日かかる計算となります。台数と所要時間はトレードオフの関係にあることがわかると思います。通常は費用や調達面から利用できる台数に上限があるため、台数と GPU の処理能力（PFLOPS）から所要時間を概算できます。
 
 ::::details 1 台での所要時間の計算
 ```
 理論性能: 1,979 TFLOPS ≈ 2 PFLOPS
 実効性能: 約 1 PFLOPS = 1 × 10¹⁵ FLOPS/秒
 
-総 FLOPS: 588 × 10²¹ FLOPS
+総 FLOP: 588 × 10²¹ FLOP
 
 所要時間:
-588 × 10²¹ ÷ (1 × 10¹⁵)
+588 × 10²¹ FLOP ÷ (1 × 10¹⁵ FLOPS)
 = 588 × 10⁶ 秒
 = 5.88 × 10⁸ 秒
 
