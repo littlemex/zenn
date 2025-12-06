@@ -21,7 +21,7 @@ free: true
 :::
 ::::
 
-**本章では Amazon SageMaker HyperPod（以降 HyperPod）の説明と、大規模基盤モデル学習に求められるインフラストラクチャについて整理します。**
+**本章では大規模基盤モデル学習に求められるインフラストラクチャについて整理します。**
 
 ---
 
@@ -79,67 +79,143 @@ graph TB
 
 Amazon EC2 UltraClusters は、大規模な AI/ML ワークロード向けに設計された物理的なハードウェアインフラストラクチャの集合体です。数千から数万の GPU やカスタムシリコンを高速ネットワークで相互接続し、単一の統合されたコンピューティング環境を提供します。
 
-### UltraClusters の主要コンポーネント
+::::details UltraClusters の必要性
+
+なぜこのようなインフラストラクチャが必要なのでしょうか。ウェブサービスのように Amazon EC2 を複数台使いたいなら、オートスケールして Multi AZ 構成にすればいいのではないか、と思う方がいるかもしれません。
+
+## ウェブサービスと基盤モデル学習のインフラストラクチャの違い
+
+:::message
+**通常のウェブサービス（疎結合）**
+- 各サーバーは独立して動作
+- ノード間の通信は少ない
+- レイテンシは数十～数百ミリ秒でも問題なし
+- → Multi AZ 構成で高可用性を実現
+:::
+
+:::message
+**基盤モデル学習（密結合）**
+- 全 GPU が常に同期して計算
+- 毎回の学習ステップで大量のデータを交換（例: Llama 3 70B で 245GB/iteration）
+- **レイテンシはマイクロ秒単位が必須**
+- → Single AZ の物理的近接性が必須
+:::
+
+## なぜ Single AZ なのか
+
+**Multi AZ の問題点**
+- AZ 間レイテンシ: 1-5ms
+- 専用高速ネットワークなし
+- 学習時間が数十倍～数百倍に増加し実用不可能
+
+**Single AZ（UltraClusters）の利点**
+- 物理的な近接性: ラック内/ラック間で配置が可能
+- 専用ネットワーク: EFA、NVLink による超低レイテンシ（マイクロ秒単位）
+
+## FSx for Lustre も Single AZ
+
+チェックポイント保存時、数百の GPU が同時にストレージへアクセスします。仮に Multi AZ 構成が実現できたとしても帯域幅が不足し、保存に数十分かかる可能性があります。Single AZ では EFA 経由で数百 GB/s の帯域幅を実現し、保存時間を最小化します。
+
+## まとめ
+
+Amazon EC2 UltraClusters は、通常のウェブサービスの「分散」「高可用性」とは逆の「集中」「物理的近接性」を重視した設計です。これは大規模基盤モデルの学習という密結合ワークロードの要件（超低レイテンシ、超高帯域幅）を満たすために必要不可欠なアーキテクチャです。
+::::
+
+
+## UltraClusters の主要コンポーネント概観
+
+以下に UltraClusters の主要コンポーネントを整理しました。古いインスタンスタイプなどは省略しています。
 
 ```mermaid
 graph TB
     subgraph UltraCluster["EC2 UltraClusters"]
         direction TB
         
-        subgraph GPU["GPU インスタンス"]
-            P5[P5 インスタンス<br/>NVIDIA H100<br/>8x 80GB GPU<br/>3,200Gbps EFA]
-            P6eGB200[P6e-GB200 UltraServer<br/>NVIDIA GB200<br/>72 GPU, 13.3TB メモリ<br/>28.8Tbps EFA]
-            P6eGB300[P6e-GB300 UltraServer<br/>NVIDIA GB300<br/>72 GPU, 約20TB メモリ<br/>GB200の1.5倍性能]
+        subgraph Compute["コンピュートインスタンス"]
+            P5[P5 インスタンス<br/>NVIDIA H100<br/>8x 80GB GPU]
+            
+            subgraph P6e["P6e UltraServer<br/>72 GPU"]
+                GB200[GB200<br/>13.3TB メモリ]
+                GB300[GB300<br/>約20TB メモリ]
+            end
+            
+            Trn3[Trn3 UltraServer<br/>AWS Trainium3<br/>最大144チップ]
         end
         
-        subgraph CustomSilicon["カスタムシリコン"]
-            Trn3[Trn3 UltraServer<br/>AWS Trainium3<br/>最大144チップ<br/>362 FP8 PFLOPs]
-        end
-        
-        subgraph Network["高速ネットワーク"]
-            EFA[EFA<br/>Elastic Fabric Adapter<br/>最大28.8Tbps]
-            NVLink[NVLink 4.0<br/>900GB/s]
-            Neuron[NeuronSwitch-v1<br/>Trainium3専用]
+        subgraph Network["ネットワーク"]
+            subgraph EFAGroup["EFA: ノード間通信"]
+                EFAv3[EFA v3<br/>3.2Tbps<br/>P5, Trn3]
+                EFAv4[EFA v4<br/>28.8Tbps<br/>P6e]
+            end
+            
+            subgraph NVLinkGroup["NVLink: GPU間通信"]
+                NVLink4[NVLink 4.0<br/>900GB/s<br/>H100]
+                subgraph NVLinkC2CGroup["NVLink-C2C"]
+                    C2C[Grace-Blackwell<br/>GB200/GB300]
+                end
+            end
+            
+            subgraph NeuronGroup["Neuron: Trainium間通信"]
+                NeuronLink[NeuronLink-v4<br/>2TB/s per chip]
+                NeuronSwitch[NeuronSwitch-v1<br/>368TB/s total]
+            end
         end
         
         subgraph Storage["ストレージ"]
-            S3[Amazon S3<br/>オブジェクトストレージ]
             FSx[FSx for Lustre<br/>並列ファイルシステム]
-            EBS[Amazon EBS<br/>ブロックストレージ]
+            S3[Amazon S3<br/>オブジェクトストレージ]
         end
     end
     
-    P5 --> EFA
-    P5 --> NVLink
-    P6eGB200 --> EFA
-    P6eGB200 --> NVLink
-    P6eGB300 --> EFA
-    P6eGB300 --> NVLink
-    Trn3 --> EFA
-    Trn3 --> Neuron
+    P5 --> EFAv3
+    P5 --> NVLink4
     
-    EFA --> S3
-    EFA --> FSx
-    EFA --> EBS
+    P6e --> EFAv4
+    P6e --> C2C
+    
+    Trn3 --> EFAv3
+    Trn3 --> NeuronLink
+    Trn3 --> NeuronSwitch
+    
+    EFAv3 --> FSx
+    EFAv4 --> FSx
+    
+    FSx -.S3統合.-> S3
     
     style UltraCluster fill:#e8f4f8
-    style GPU fill:#d4e9f7
-    style CustomSilicon fill:#d4f7e9
+    style Compute fill:#d4e9f7
+    style P6e fill:#c4d9e7
     style Network fill:#fff9d4
+    style EFAGroup fill:#ffe9d4
+    style NVLinkGroup fill:#e9d4ff
+    style NVLinkC2CGroup fill:#d9c4ef
+    style NeuronGroup fill:#d4ffe9
     style Storage fill:#f7e9d4
 ```
 
-### 世代別 UltraClusters の進化
+## インスタンス
 
-| 世代 | 主要チップ | 最大スケール | ネットワーク | 特徴 |
-|------|-----------|------------|------------|------|
-| **UltraClusters 1.0** | P4d (A100) | 数千GPU | 400Gbps EFA | 初代大規模クラスター |
-| **UltraClusters 2.0** | P5 (H100) | 20,000 GPU | 3,200Gbps EFA | NVLink 強化 |
-| **UltraClusters 3.0** | Trn3, P6e (GB200/GB300) | 100万チップ | 28.8Tbps EFA | 前世代の10倍スケール |
+### NVIDIA GPU インスタンス
 
-2025年12月の re:Invent で発表された **UltraClusters 3.0** では、最大100万個のチップを接続可能になり、前世代と比較して10倍のスケールを実現しています。
+::::details GPU インスタンスタイプ表
+| インスタンスタイプ | Accelerator (数) | VRAM | Local SSD | Network (EFA) | 備考 |
+|------------------|---------|-----------|----------|--------------|------|
+| P4d.24xlarge | A100 (8) | 320GB | 8x1TB NVMe | 400Gbps | NVLink 3.0, 40GB/GPU |
+| P4de.24xlarge | A100 (8) | 640GB | 8x1TB NVMe | 400Gbps | NVLink 3.0, 80GB/GPU |
+| P5.48xlarge | H100 (8) | 640GB | 8x3.8TB NVMe | 3,200Gbps | NVLink 4.0, 80GB/GPU |
+| P5e.48xlarge | H200 (8) | 1,128GB | 8x3.8TB NVMe | 3,200Gbps | NVLink 4.0, 141GB/GPU |
+| P5en.48xlarge | H200 (8) | 1,128GB | 8x3.8TB NVMe | 3,200Gbps | Intel CPU, 141GB/GPU |
+| P6-B200.48xlarge | B200 (8) | 1,432GB | - | 3,200Gbps | 179GB/GPU |
+| P6-B300.48xlarge | B300 (8) | 2,148GB | - | 6,400Gbps | 268GB/GPU, EFA 2倍 |
+| P6e-GB200 (UltraServer) | GB200 (72) | 13.3TB | - | 28.8Tbps | NVLink-C2C, 185GB/GPU |
+| P6e-GB300 (UltraServer) | GB300 (72) | ~20TB | - | 28.8Tbps | NVLink-C2C, ~278GB/GPU |
+::::
 
-### 主要インスタンスタイプの詳細
+::::details ## インスタンスタイプ選定ガイド
+
+ここに整理して
+
+::::
 
 #### P6e UltraServer シリーズ（NVIDIA GB200/GB300）
 
@@ -161,6 +237,34 @@ graph TB
 - 640GB システムメモリ
 - NVLink 4.0（900GB/s）でGPU間を接続
 - 汎用的な大規模モデル訓練に最適
+
+
+
+
+
+
+
+**接続の説明**:
+- **EFA（ノード間通信）**: P5/Trn3 は EFA v3（3.2Tbps）、P6e は EFA v4（28.8Tbps）
+- **NVLink（GPU 間通信）**: P5 は NVLink 4.0（900GB/s）、P6e は NVLink-C2C（Grace-Blackwell アーキテクチャ）
+- **NeuronLink/NeuronSwitch（Trainium 間通信）**: チップあたり2TB/s、UltraServer 全体で368TB/s
+- **FSx for Lustre**: EFA 経由でアクセス、分散並列ファイルシステム
+- **S3**: FSx for Lustre のバックエンドとして統合可能、または VPC エンドポイント経由でアクセス
+- **EBS**: 各インスタンスに直接接続（図には表示していないが、OS やアプリケーション用途で使用）
+
+### 世代別 UltraClusters の進化
+
+| 世代 | 主要チップ | 最大スケール | ネットワーク | 特徴 |
+|------|-----------|------------|------------|------|
+| **UltraClusters 1.0** | P4d (A100) | 数千GPU | 400Gbps EFA | 初代大規模クラスター |
+| **UltraClusters 2.0** | P5 (H100) | 20,000 GPU | 3,200Gbps EFA | NVLink 強化 |
+| **UltraClusters 3.0** | Trn3, P6e (GB200/GB300) | 100万チップ | 28.8Tbps EFA | 前世代の10倍スケール |
+
+2025年12月の re:Invent で発表された **UltraClusters 3.0** では、最大100万個のチップを接続可能になり、前世代と比較して10倍のスケールを実現しています。
+
+### 主要インスタンスタイプの詳細
+
+
 
 #### Trn3 UltraServer（AWS Trainium3）
 
