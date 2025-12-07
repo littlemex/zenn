@@ -2,7 +2,11 @@
 
 - Transformer のアーキテクチャの違い、SwiGLU、RoPE、RMSNorm、GQA、MoE
 - グローバルバッチサイズ、学習率、計算精度（BF16など）の適切な設定とは？
-
+- NCCL
+- DP/PP, ZeRO あたり
+- scaling inf on EKS
+- Slurm
+- 
 
 
 Infos
