@@ -734,114 +734,166 @@ AWS 上での PyTorch FSDP 大規模モデル訓練における EFA の影響を
 
 大規模基盤モデル学習において、ストレージがボトルネックにならないようにすることが重要です。つまり GPU や CPU が十分にデータを供給され、コンピュートリソースが限界となるようにすることを目指します。
 
-### ストレージ選択の考慮ポイント
+### 分散学習・推論における推奨ストレージアーキテクチャ
 
-ストレージ選択には 2 つの重要な考慮事項があります。
+大規模な分散学習や推論では、複数の階層を持つストレージアーキテクチャが推奨されます。以下の図は FSx for Lustre、Amazon S3、Instance Store NVMe の 3 層構成を示しています。
 
-第 1 にスループットです。これは 1 秒間に読み書きできるデータ量で測定され、高性能ワークロードでは GB/秒や TB/秒単位になります。小さなファイルを多く扱うワークロードでは、1 秒あたりのトランザクション数（TPS）も重要な指標となります。第 2 にレイテンシーです。これはストレージへの小さな操作のラウンドトリップ時間を指します。Amazon S3 では「ファーストバイトレイテンシー」、つまりデータ提供開始までの時間が重要な指標となります。レイテンシーはワークロードの同時実行性に影響を与え、特にエンドユーザーが関与するケースでは応答性を決定する重要な要因となります。
+```mermaid
+graph TB
+    subgraph S3["Amazon S3</br>長期保存層"]
+        Dataset[データセット<br/>最大 50TB のオブジェクト]
+        Checkpoint[チェックポイント<br/>数十 TB のモデルステート]
+    end
+    
+    subgraph FSx["FSx for Lustre</br>共有ストレージ層"]
+        direction TB
+        FSxCache[ホットデータキャッシュ<br/>頻繁アクセスデータ]
+        FSxMeta[メタデータサーバー<br/>サブミリ秒レイテンシ]
+    end
+    
+    subgraph Cluster["GPU クラスター"]
+        direction LR
+        
+        subgraph Node1["GPU インスタンス 1"]
+            GPU1[GPU メモリ]
+            NVMe1[Instance Store<br/>NVMe SSD]
+        end
+        
+        subgraph Node2["GPU インスタンス 2"]
+            GPU2[GPU メモリ]
+            NVMe2[Instance Store<br/>NVMe SSD]
+        end
+        
+        subgraph NodeN["GPU インスタンス N"]
+            GPUN[GPU メモリ]
+            NVMeN[Instance Store<br/>NVMe SSD]
+        end
+    end
+    
+    S3 -->|DRA<br/>Lazy Load| FSx
+    FSx -->|EFA<br/>最大 1,200 Gbps| Node1
+    FSx -->|EFA| Node2
+    FSx -->|EFA| NodeN
+    
+    Node1 <-->|NVLink/EFA<br/>All-reduce| Node2
+    Node2 <-->|NVLink/EFA| NodeN
+    
+    NVMe1 -.->|GPU Direct<br/>Storage| GPU1
+    NVMe2 -.->|GPU Direct<br/>Storage| GPU2
+    NVMeN -.->|GPU Direct<br/>Storage| GPUN
+    
+    style S3 fill:#fff4e1
+    style FSx fill:#e1f5ff
+    style Cluster fill:#f0fff4
+    style Node1 fill:#e9f5e9
+    style Node2 fill:#e9f5e9
+    style NodeN fill:#e9f5e9
+```
 
-### AWS ストレージオプション
+*図: 分散学習における 3 層ストレージアーキテクチャ*
 
-#### Amazon S3
+#### 各層の役割と特性
 
-**S3 Standard**
+::::details Amazon S3（長期保存層）
+:::message
+Amazon S3 は学習のための入力データ、出力結果等の永続データに利用できます。
+:::
 
-一般用途バケットでは接続ごとに 95 MBps を提供し、並列化により GB/TB 級スループットを実現できます。プレフィックスごとに 5,500 読み取り/秒、3,500 書き込み/秒から自動スケールします。長期保存データやアクセスパターンが多様なデータレイクに適しています。
+Amazon S3 は学習データセットとチェックポイントの永続化に使用されます。データの耐久性は 99.999999999%（イレブンナイン）で、長期保存に最適です。2025 年 12 月から最大オブジェクトサイズが 5TB から 50TB に拡大され、大規模モデルのチェックポイント管理が容易になりました（[AWS 公式発表](https://aws.amazon.com/jp/about-aws/whats-new/2025/12/amazon-s3-maximum-object-size-50-tb/)）。
 
-**S3 Express One Zone**
+S3 Express One Zone は、シングルディジットミリ秒のレイテンシーと数十万 TPS を提供する高性能ストレージクラスです。2025 年 4 月から価格が大幅に削減され、ストレージコストが 31% 減（$0.16 → $0.11/GB-month）、PUT リクエストが 55% 減、GET リクエストが 85% 減となりました（[AWS 公式ブログ](https://aws.amazon.com/jp/blogs/aws/up-to-85-price-reductions-for-amazon-s3-express-one-zone/)）。高頻度アクセスのチェックポイント保存で大幅なコスト削減が可能です。
+::::
 
-2024 年に導入された高性能ストレージクラスで、シングルディジットミリ秒のレイテンシーと数十万 TPS を提供します。S3 Standard と比較して 10 倍高速なデータアクセスを実現し、リクエストコストは 50% 削減されます。高頻度アクセスデータや低レイテンシーが要求されるワークロードに最適です。単一 Availability Zone に配置されるため、99.95% の可用性を提供します。
+::::details FSx for Lustre（共有ストレージ層）
+:::message
+FSx for Lustre は DRA によって S3 から必要データを自動的に取得・キャッシュできます。
+:::
 
-最適化のポイントは、プレフィックス設計による分散、DNS TTL 設定（5 秒以下）、適切なストレージクラス選択です。
+FSx for Lustre は、Data Repository Association（DRA）により S3 と透過的に統合され、必要なデータを自動的に取得してキャッシュします（Lazy Load）。EFA 経由で最大 1,200 Gbps のスループットを提供し、サブミリ秒レベルの低レイテンシを実現します。複数の GPU インスタンス間でデータを共有し、頻繁なチェックポイント保存にも対応します（[AWS 公式ブログ](https://aws.amazon.com/blogs/aws/amazon-fsx-for-lustre-unlocks-full-network-bandwidth-and-gpu-performance/)）。
+::::
 
-#### Amazon FSx for Lustre（ファイルシステム）
+::::details Instance Store NVMe（ローカル高速層）
+:::message
+NVMe SSD はインスタンスボリュームとして一時データを扱うことが可能です。
+:::
 
-Amazon FSx for Lustre は、オンプレミスからのファイルベースワークロード移行向けソリューションです。POSIX 準拠で完全なファイルシステム機能を提供し、強力な整合性とロック機能をサポートします。
+P5 インスタンスには 8 × 3.8TB = 30.4TB の NVMe SSD が直結されています。GPU Direct Storage により CPU バイパスでの高速アクセスが可能で、一時データやバッチデータのキャッシュに最適です。ただし揮発性のため、インスタンス停止時にデータは消失します。GPU Direct Storage により、CPU を経由せずに GPU メモリとストレージ間で直接データ転送を行うことで、CPU 負荷を大幅に削減します（[NVIDIA GPUDirect Storage ドキュメント](https://docs.nvidia.com/gpudirect-storage/overview-guide/index.html)）。
+::::
 
-SSD ベースと直接接続アーキテクチャによりサブミリ秒レベルのレイテンシーを実現します。EFA（Elastic Fabric Adapter）と GPU Direct Storage（GDS）により最大 1,200 Gbps のスループットを提供し、従来の TCP ネットワーキング（100 Gbps）と比較して 12 倍の性能向上を達成しています。
+#### データフロー
 
-GPU Direct Storage は GPU メモリとストレージ間の直接データパスを提供し、CPU を経由せずにデータ転送を行うことで CPU 負荷を 70% 削減します。これにより P5 インスタンスなどの高性能 GPU インスタンスのネットワーク帯域幅を完全に活用できます。
+1. **学習開始時**: S3 から FSx に DRA 経由で Lazy Load
+2. **学習中**: FSx から各 GPU インスタンスへ EFA 経由で高速配信
+3. **バッチ処理**: Instance Store NVMe を使用して GPU への直接データ供給
+4. **チェックポイント保存**: FSx 経由で S3 または S3 Express One Zone へ保存
+5. **学習完了後**: 最終チェックポイントを S3 に保存し、FSx を削除
 
-サーバー・クライアント両側での自動キャッシングと、独立プロビジョニングによる最大 15 倍のメタデータ性能向上が特徴です。最適化のポイントは、適切なスループットティア選択、EFA 有効化、メタデータ要件に応じた独立プロビジョニングです。
+### FSx for Lustre のコスト考慮
 
-既存ファイルベースアプリケーション、POSIX 準拠が必要なワークロード、極低レイテンシーが要求される処理に適用されます。
+:::message alert
+FSx for Lustre は高性能ですがコストも高額です。学習プロジェクトの費用試算時には必ず FSx for Lustre のコストを考慮することが推奨されます。
+:::
 
-#### Mountpoint for Amazon S3（FUSE）
+一例で SSD Scratch 200MB/s を 2.5TB 利用すると月額コストでは $3.503 必要です。サブミリ秒のレイテンシ、最大 1,200 Gbps のスループット、GPU Direct Storage による CPU 負荷軽減といった機能は、大規模分散学習では必要不可欠であるため、適切に永続化は S3、学習中の一時利用に FSx for Lustre を利用するなどパフォーマンスとコスト効率を考慮しましょう。結局ストレージ性能が低く GPU が Wait で遊んでいる時間ばかりになるとトータルの学習時間が伸びてしまいコスト効率は悪化します。ストレージをケチって GPU 費用が嵩むのは本末転倒なので自身の利用する学習データの規模やモデルサイズなどを加味して適切なインフラストラクチャを設計しましょう。
 
-Mountpoint for Amazon S3 は、S3 データレイクへのファイルアクセスを提供する AWS 公式サポートの FUSE クライアントです。2023 年 8 月に一般提供が開始され、AWS による継続的な開発とサポートが保証されています。
+:::: details 価格例
+US East N. Virginia の例
 
-FUSE クライアントとして動作し、既存のファイルベースツールとの互換性を実現します。標準的な S3 API（GET、PUT、LIST、DELETE）を使用し、大きなオブジェクトのストリーミングに最適化されています。AWS Common Runtime（CRT）ライブラリを基盤としており、効率的なパフォーマンス設計パターンを実装しています。
+| 構成 | 容量 | 月額コスト | 用途 |
+|------|------|-----------|------|
+| SSD Persistent 200MB/s | 2.5TB | $6,022 | 高性能学習 |
+| SSD Persistent 200MB/s | 10TB | $24,090 | 大規模学習 |
+| HDD Persistent 12MB/s | 10TB | $2,070 | コスト重視 |
+| SSD Scratch 200MB/s | 2.5TB | $3,503 | 一時利用 |
 
-ローカルキャッシュによる性能向上と、S3 Express One Zone との組み合わせで共有キャッシュを実現できます。ただし、完全な POSIX セマンティクス未対応、ファイル名変更・ロック機能なしという制限があります。
+*価格は 2025 年 12 月時点、[AWS 公式価格ページ](https://aws.amazon.com/fsx/lustre/pricing/)を参照*
+::::
 
-軽量なファイルアクセス、データストリーミング中心のワークロード、既存 S3 データレイクの活用に適用されます。他の FUSE 実装（s3fs-fuse、goofys など）と異なり、AWS 公式サポートを受けられる点が特徴です。
+:::details Scratch ファイルシステムの活用
+FSx for Lustre の Persistent ファイルシステムはデータをレプリケートし、ファイルサーバー障害時にも自動復旧します。一方、Scratch ファイルシステムはレプリケーションなしで約 60% のコストで利用できます。短期間の学習や実験では、Scratch ファイルシステムで十分なケースも多く、コスト最適化の選択肢として検討する価値があります。ただし、障害時のデータ損失リスクがあるため、S3 へのバックアップ戦略は必須です。
+::::
 
-### ワークロード別推奨構成
+### コラム: Mountpoint for S3
 
-#### 推論ワークロード
+::::details Mountpoint for S3 の使い所
+:::message
+Mountpoint for Amazon S3 は、S3 データレイクへのファイルアクセスを提供する AWS 公式サポートの FUSE クライアントです（[GitHub リポジトリ](https://github.com/awslabs/mountpoint-s3)）。2023 年 8 月に一般提供が開始され、AWS による継続的な開発とサポートが保証されています。
+:::
 
-**軽量モデルの推論**
+## 適用可能なケース
+- 軽量な推論ワークロード（モデルサイズ: 数 GB ～ 数十 GB）
+- レイテンシ要件が緩やか（数十ミリ秒許容）
+- 単一インスタンスまたは小規模分散
+- 大きなオブジェクトの順次読み取り
 
-軽量な機械学習モデルの推論ワークロードでは、モデルサイズが比較的小さく、レイテンシー要件も緩やかです。推論頻度が低く、コスト効率を重視する場合が多く、単一インスタンスでの実行が一般的です。
+:::message alert
+S3 で直接マウントできるので分散学習に良いのではないか、と思う方がいますが、これまでに解説したように分散学習の頻繁かつ大規模なチェックポイントや学習データの読み込みが学習時間のオーバーヘッドに繋がることを考えると慎重に検討すべきです。**以下のような制約**もあるので基本は軽量な推論用途と考えても差し支えないでしょう。
 
-推奨ソリューションは Mountpoint for Amazon S3 です。S3 バケットに保存されたモデルファイルに対して、ファイルシステムインターフェースを通じてアクセスできるため、既存のファイルベースアプリケーションをそのまま利用できます。軽量モデルの場合、FUSE オーバーヘッドによる性能制約も問題になりにくく、コスト効率的なソリューションとして機能します。
-
-**分散推論**
-
-大規模な機械学習モデルや高スループットが要求される推論ワークロードでは、複数インスタンス間での高速データ共有が必要になります。低レイテンシーでの並列アクセスが重要で、大規模モデルの分散ロードが必要な場合、高いスループットが求められます。
-
-推奨ソリューションは Amazon FSx for Lustre と S3 Express One Zone の組み合わせです。Amazon FSx for Lustre は、サブミリ秒レベルの超低レイテンシーと最大 1,200 Gbps の極めて高いスループットを提供します。S3 Express One Zone と組み合わせることで、ホットデータに対するシングルディジットミリ秒のレイテンシーを実現し、数十万 TPS の処理能力を活用できます。
-
-#### 学習ワークロード
-
-**単一インスタンスの学習**
-
-単一インスタンスでの機械学習では、学習データの一回限りの読み込みが多く、チェックポイント保存の頻度も比較的低い傾向があります。コスト効率を重視し、実験的なワークロードに適したソリューションが求められます。
-
-推奨ソリューションは Mountpoint for Amazon S3 とローカルキャッシュの組み合わせです。Mountpoint for S3 と Amazon EBS ボリュームを組み合わせたローカルキャッシュ構成により、データセットへの効率的なアクセスを実現できます。初回アクセス時は S3 からデータを取得し、ローカルキャッシュに保存することで、後続のアクセスを高速化できます。
-
-**分散学習**
-
-大規模な分散学習では、頻繁なチェックポイント保存が必要になります。複数インスタンス間での高速データ共有、大規模データセットの並列読み込み、GPU Direct Storage による CPU 負荷軽減が重要な要素となります。
-
-推奨ソリューションは Amazon FSx for Lustre with EFA です。Amazon FSx for Lustre と Elastic Fabric Adapter（EFA）を組み合わせることで、最大 1,200 Gbps のスループットと GPU Direct Storage による CPU 負荷 70% 削減を実現できます。頻繁なチェックポイント保存においても、サブミリ秒レベルの低レイテンシーにより、学習の中断時間を最小限に抑えることができます。
-
-S3 Standard でデータセット保存、FSx for Lustre を高性能共有ストレージとして配置、複数の P5 インスタンスと EFA で分散学習を実行、S3 Express One Zone でチェックポイントを管理する構成が推奨されます。
+- 完全な POSIX セマンティクス未対応
+- ファイル名変更やロック機能なし
+- 既存ファイルの編集には不向き
+- FUSE レイヤーによるオーバーヘッド（数ミリ秒）
+:::
+::::
 
 ### まとめ
-
-| ワークロード | 推奨ストレージ | 主な理由 |
-|------------|--------------|---------|
-| 軽量推論 | Mountpoint for S3 | シンプル・低コスト |
-| 分散推論 | FSx for Lustre + S3 Express | 超低レイテンシー・高スループット |
-| 単一学習 | Mountpoint + キャッシュ | コスト効率重視 |
-| 分散学習 | FSx for Lustre with EFA | 最高性能・GPU Direct Storage |
-
-ワークロードの特性とパフォーマンス要件に応じて、最適なストレージソリューションを選択することで、GPU や CPU のアイドル時間を最小化し、コンピュートリソースを効率的に活用できます。
-
-本セクションの内容は、[AI/ML ワークロード向けストレージ選択ガイド](https://zenn.dev/tosshi/scraps/a6c0eca080152f) を参考に、AWS 公式ドキュメント（[S3 Express One Zone](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-performance.html)、[Mountpoint for Amazon S3](https://aws.amazon.com/s3/features/mountpoint/)、[FSx for Lustre with EFA](https://docs.aws.amazon.com/fsx/latest/LustreGuide/efa-file-systems.html)）の情報を基に作成しました。
-
-## まとめ
 
 本章では大規模基盤モデル学習に必要なインフラストラクチャの技術的詳細を整理しました。Amazon EC2 UltraClusters を構成するコンピュートインスタンス、ネットワーク、ストレージという 3 つの主要コンポーネントについて、それぞれが持つ技術的な複雑性を説明してきました。特にネットワークでは、サーバー内の NVLink、ラック内の NVLink Switch、ラック間の EFA という階層的なトポロジーが必要であり、各階層で適切な帯域幅とレイテンシを実現する必要があります。また分散学習では All-reduce や All-to-All といった通信パターンが頻繁に発生し、ネットワーク性能が学習時間に直接影響を与えることも見てきました。ストレージにおいても、FSx for Lustre と Amazon S3 の統合、Data Repository Association による透過的なデータ管理など、高度な技術的考慮が求められます。
 
 これらのインフラストラクチャを独自に構築し運用することは、技術的にもコスト的にも困難な課題です。故障時の検知と交換、ネットワークトポロジーの最適化、ストレージの階層管理など、多岐にわたる専門知識と運用体制が必要となります。しかし AWS のマネージドサービスを活用することで、これらの複雑性の多くを抽象化し、モデル開発そのものに集中できる環境を構築できます。次章では今回整理したインフラストラクチャを統制するコントロールレイヤについて説明します。
 
-::::details AWS マネージドサービスの価値
-Amazon SageMaker HyperPod や AWS ParallelCluster は、本章で説明したインフラストラクチャコンポーネントを統合的に管理し、リファレンスアーキテクチャとして提供されています。GitHub で公開されている [awsome-distributed-training](https://github.com/aws-samples/awsome-distributed-training) リポジトリには、事前検証済みの設定テンプレートが含まれており、ネットワーク設定、ストレージ統合、モニタリング基盤まで含めた環境を迅速にデプロイできます。
+::::details AWS インフラストラクチャのリファレンス
+Amazon SageMaker HyperPod や AWS ParallelCluster は、本章で説明したインフラストラクチャコンポーネントを統合的に管理し、リファレンスアーキテクチャとして提供されています。GitHub で公開されている awsome-distributed-training リポジトリには、事前検証済みの設定テンプレートが含まれており、ネットワーク設定、ストレージ統合、モニタリング基盤まで含めた環境を迅速にデプロイできます。
 
 この効果は、日本の GENIAC（Generative AI Accelerator Challenge）プログラムでの実践例からも確認できます。2024 年の第 2 サイクルでは、12 の事業者が AWS を利用して基盤モデル開発に取り組みました。AWS は Cross Functional なサポート体制（Virtual Team）を構築し、アカウントチーム、Specialist SA、サービスチーム、WWSO Frameworks チームが連携して技術支援を提供しました。リファレンスアーキテクチャとデプロイメントガイドを活用することで、参加事業者は 1 日で 127 台の P5 インスタンス（NVIDIA H100）と 24 台の Trn1 インスタンス（AWS Trainium）をデプロイし、その後 6 ヶ月間の学習期間で各社が基盤モデルの開発を完了しました。ワークショップでは Prometheus と Grafana によるモニタリング、EFA トラフィックの最適化、GPU 障害のトラブルシューティングなど、実践的な知識が共有されました。
 
 AWS の仕組みを活用することで得られる価値は、単なるハードウェアの提供にとどまりません。本章で解説した複雑なインフラストラクチャ層の多くが抽象化され、開発者はモデルアーキテクチャの設計、データセットの準備、ハイパーパラメータのチューニングといった本質的な機械学習の課題に集中できます。小規模なチームでも、数百から数千の GPU を使用する大規模クラスターを構築し運用することが可能になります。事前に検証されたベストプラクティスとリファレンスアーキテクチャを活用することで、試行錯誤に要する時間を大幅に削減し、より早く実験サイクルを回すことができます。
 
 GENIAC プログラムでの詳細な取り組みと得られた知見については、AWS 公式ブログで公開されています。
-
 https://aws.amazon.com/jp/blogs/news/beyond-accelerators-lessons-from-building-foundation-models-on-aws-with-japans-geniac-program/
 ::::
 
-
 ::::details AI インフラの整理スライド
 このスライドは AI インフラストラクチャの全体感を把握するのに非常に有用です。
-
 https://speakerdeck.com/markunet/aiinhurawokao-eru
 ::::
