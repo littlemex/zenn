@@ -697,6 +697,147 @@ graph LR
 
 UltraClusters の高速ネットワークは、これらのボトルネックを最小化し、GPU の計算能力を最大限に活用できるように設計されています。
 
+### Bisection Bandwidth とネットワークの品質
+
+:::message
+**Bisection Bandwidth（バイセクション帯域幅）**: ネットワークを 2 つの等しいグループに分割した時、グループ間の総通信帯域幅
+:::
+
+Bisection bandwidth は、ネットワークトポロジーの品質を評価する重要な指標です。高い bisection bandwidth は、大規模な並列計算において GPU 間のデータ交換がボトルネックにならないことを保証します。
+
+**DGX H100 の Bisection Bandwidth**
+
+```mermaid
+graph TB
+    subgraph Group1["グループ A（4 GPU）"]
+        GPU0[GPU 0<br/>900GB/s]
+        GPU1[GPU 1<br/>900GB/s]
+        GPU2[GPU 2<br/>900GB/s]
+        GPU3[GPU 3<br/>900GB/s]
+    end
+    
+    subgraph NVSwitch["NVSwitch Fabric"]
+        Switch[4x NVSwitch<br/>Full-mesh 接続]
+    end
+    
+    subgraph Group2["グループ B（4 GPU）"]
+        GPU4[GPU 4<br/>900GB/s]
+        GPU5[GPU 5<br/>900GB/s]
+        GPU6[GPU 6<br/>900GB/s]
+        GPU7[GPU 7<br/>900GB/s]
+    end
+    
+    GPU0 ---|NVLink| Switch
+    GPU1 ---|NVLink| Switch
+    GPU2 ---|NVLink| Switch
+    GPU3 ---|NVLink| Switch
+    
+    Switch ---|NVLink| GPU4
+    Switch ---|NVLink| GPU5
+    Switch ---|NVLink| GPU6
+    Switch ---|NVLink| GPU7
+    
+    Note[Bisection Bandwidth<br/>━━━━━━━━━━<br/>グループ A → B: 3.6TB/s<br/>4 GPU × 900GB/s<br/><br/>Full-mesh により<br/>理論上最大の帯域幅を実現]
+    
+    style Group1 fill:#e1f5ff
+    style Group2 fill:#fff4e1
+    style NVSwitch fill:#f0fff4
+    style Note fill:#ffe1e1
+```
+
+**計算例**:
+- 各 GPU: 900GB/s の NVLink 帯域幅
+- 8 GPU を 4+4 に分割
+- **Bisection bandwidth**: 3.6TB/s（グループ A の全 GPU からグループ B への総帯域幅）
+
+**なぜ重要なのか**
+
+- **All-Reduce 操作**: 全 GPU 間で勾配を同期する際、bisection bandwidth が実効的な限界になる
+- **Model Parallel**: モデルを分割して複数 GPU に配置する際、分割境界での通信性能が訓練速度を決定
+- **トポロジー評価**: Full-mesh（NVSwitch）は理論上最大の bisection bandwidth を提供
+
+### Local vs Global Bandwidth の非対称性
+
+大規模 GPU クラスターでは、ノード内（Local）とノード間（Global）で帯域幅に大きな差があります。
+
+| 通信レベル | 場所 | 技術 | 帯域幅（H100） | レイテンシ | 比率 |
+|-----------|------|------|--------------|----------|------|
+| **Local** | サーバー内 | NVLink + NVSwitch | 900GB/s per GPU | サブμs | 1x |
+| **Global** | サーバー間 | EFA v2 | 3.2Tbps total<br/>(400GB/s per GPU) | 数μs | ~1/2 |
+
+**重要な観察**
+
+1. **帯域幅の非対称性**: Local は Global の約 2 倍の帯域幅（GPU あたり）
+2. **レイテンシの違い**: Local はサブマイクロ秒、Global は数マイクロ秒
+3. **コストと物理的制約**: より高速な Global 接続はコストとケーブル長の物理的制約により実現困難
+
+### 通信パターンとモデル並列化への影響
+
+この帯域幅の非対称性は、分散訓練の並列化戦略に直接影響します。
+
+```mermaid
+graph TB
+    subgraph Parallel["並列化手法と配置戦略"]
+        direction TB
+        
+        subgraph TP["Tensor Parallel（TP）"]
+            TPDesc[層内で重みを分割<br/>━━━━━━━━━━<br/>・頻繁な通信が必要<br/>・各 forward/backward で通信<br/>・**Local に配置すべき**]
+        end
+        
+        subgraph PP["Pipeline Parallel（PP）"]
+            PPDesc[層ごとに分割<br/>━━━━━━━━━━<br/>・層の境界で通信<br/>・Micro-batch でパイプライン化<br/>・**Global でも許容可能**]
+        end
+        
+        subgraph DP["Data Parallel（DP）"]
+            DPDesc[データを分割<br/>━━━━━━━━━━<br/>・勾配同期のみ<br/>・各イテレーション後に 1 回<br/>・**Global で問題なし**]
+        end
+    end
+    
+    subgraph Placement["推奨配置"]
+        direction LR
+        Local[Local<br/>━━━━━━━━<br/>NVLink<br/>900GB/s<br/><br/>TP を配置]
+        
+        Global[Global<br/>━━━━━━━━<br/>EFA<br/>400GB/s<br/><br/>PP, DP を配置]
+    end
+    
+    TP -.推奨.-> Local
+    PP -.推奨.-> Global
+    DP -.推奨.-> Global
+    
+    style TP fill:#ffe1e1
+    style PP fill:#fff4e1
+    style DP fill:#e1f5ff
+    style Local fill:#d4ffd4
+    style Global fill:#ffd4ff
+```
+
+**実用的なガイドライン**
+
+**小規模モデル（～70B、8 GPU 以内）**:
+- 単一ノード内で TP のみで完結
+- Local 帯域幅を最大限活用
+
+**中規模モデル（～405B、64 GPU 程度）**:
+- ノード内: TP（8-way）
+- ノード間: PP（8 ノード）
+- Global 帯域幅への負荷を最小化
+
+**大規模モデル（1T～、数百ノード）**:
+- TP: ノード内（Local）
+- PP: ノード間（Global）
+- DP: 最外層（Global、帯域幅要求が最も低い）
+- 3D Parallelism（TP+PP+DP）の組み合わせで最適化
+
+**通信量の比較**
+
+| 並列化 | 通信頻度 | 通信量（Llama 70B 例） | 帯域幅要求 |
+|--------|---------|----------------------|----------|
+| **TP** | forward/backward ごと | 数十 GB/iteration | ⭐⭐⭐ 非常に高い |
+| **PP** | 層の境界 | 数 GB/micro-batch | ⭐⭐ 中程度 |
+| **DP** | iteration 終了時 | 140GB/iteration | ⭐ 低い（頻度が少ない） |
+
+この設計により、最も通信量の多い TP を高速な Local に、通信頻度の低い DP を Global に配置することで、全体の効率を最大化します。
+
 ## ストレージ
 
 大規模モデル訓練では、チェックポイント保存、データセット読み込み、結果保存のために高性能なストレージが必要です。

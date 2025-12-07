@@ -1,6 +1,6 @@
 title: "Distributed Training/Inference - Experiment Collection"
 summary: "分散学習・推論関連の実験集です。"
-topics: ["AWS", "SageMaker Hyperpod", "Distributed Training"]
+topics: ["AWS", "SageMaker Hyperpod", "Distributed Training", "Distributed Inference"]
 published: false
 price: 4000 # 有料の場合200〜5000
 # 本に含めるチャプターを順番に並べましょう
@@ -9,3 +9,4 @@ chapters:
   - infrastructures
 #  - appendix-optimizer
 #  - appendix-vast-data-checkpoint-analysis
+#  - appendix-network-topologies
