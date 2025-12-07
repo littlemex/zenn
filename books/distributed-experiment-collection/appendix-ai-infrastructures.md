@@ -6,6 +6,455 @@ topics: ["aws", "sagemaker", "hyperpod", "ai", "ml"]
 free: false
 ---
 
+::::details EFA の裏側
+# AWS Elastic Fabric Adapter (EFA) -- 入門: 高性能ネットワーキング技術の詳細解説
+
+## EFA の概要
+
+Amazon Web Services (AWS) の Elastic Fabric Adapter (EFA) は、AI/ML (人工知能・機械学習) および HPC (ハイパフォーマンスコンピューティング) ワークロード向けに設計された高性能ネットワークインターフェースです。EFA は従来のクラウド環境における TCP/IP ベースの通信と比較して、大幅に低いレイテンシーと高いスループットを実現します。
+
+EFA の最大の特徴は、オンプレミスの HPC クラスターと同等のネットワークパフォーマンスを AWS クラウド環境で提供することです。これは AWS が独自開発した Scalable Reliable Datagram (SRD) プロトコルと、AWS Nitro System のハードウェアオフロード機能により実現されています。
+
+### 従来の課題と EFA による解決
+
+従来のクラウド環境では、仮想化オーバーヘッドと TCP/IP スタックの制約により、HPC や分散機械学習に必要な低レイテンシー通信の実現が困難でした。特に以下の課題がありました。
+
+**従来の TCP/IP における課題**
+- Head-of-line blocking: 単一パケットロスが後続パケット全体をブロックする問題
+- 単一パス制約: TCP は基本的に単一パスを使用し、ネットワークの並列性を活用できない
+- 保守的な再送タイムアウト: ミリ秒単位の RTO (Retransmission Timeout) はマイクロ秒レベルのデータセンター環境では過剰
+- OS kernel のオーバーヘッド: システムコールや割り込み処理による CPU 負荷
+
+EFA はこれらの課題を、OS-bypass アーキテクチャ、SRD プロトコル、ハードウェアオフロードの組み合わせにより解決します。
+
+## アーキテクチャの詳細
+
+### Scalable Reliable Datagram (SRD) プロトコル
+
+SRD は AWS が独自開発した通信プロトコルで、データセンター環境に最適化された設計となっています。SRD の核となる設計思想は、信頼性を保証しながらも Out-of-order (順序外) 配信を許容することです。
+
+```mermaid
+graph TB
+    subgraph "送信側"
+        A[アプリケーション<br/>MPI/NCCL/Libfabric]
+        B[SRD プロトコル層<br/>Nitro Card で処理]
+        C[パケット分散エンジン]
+    end
+    
+    subgraph "並列ネットワークパス"
+        P1[パス 1<br/>RTT: 動的監視]
+        P2[パス 2<br/>RTT: 動的監視]
+        P3[パス 3<br/>RTT: 動的監視]
+        P64[パス 64<br/>RTT: 動的監視]
+    end
+    
+    subgraph "受信側"
+        D[パケット受信]
+        E[Out-of-order 再構成<br/>信頼性確認]
+        F[アプリケーション<br/>メッセージ再構成]
+    end
+    
+    A --> B
+    B --> C
+    C --> P1
+    C --> P2
+    C --> P3
+    C -.-> P64
+    
+    P1 --> D
+    P2 --> D
+    P3 --> D
+    P64 -.-> D
+    
+    D --> E
+    E --> F
+    
+    style B fill:#fff3e0,stroke:#f57c00,stroke-width:3px
+    style C fill:#e8f5e9,stroke:#43a047,stroke-width:2px
+    style E fill:#e1f5fe,stroke:#0288d1,stroke-width:2px
+    style P1 fill:#fff8e1,stroke:#fbc02d,stroke-width:1px
+    style P2 fill:#fff8e1,stroke:#fbc02d,stroke-width:1px
+    style P3 fill:#fff8e1,stroke:#fbc02d,stroke-width:1px
+    style P64 fill:#fff8e1,stroke:#fbc02d,stroke-width:1px
+```
+
+**SRD の主要な特徴**
+
+1. **Out-of-order パケット配信**: SRD はパケットの到達順序を保証しません。これにより、単一パケットのロスや遅延が後続パケットの処理をブロックする head-of-line blocking 問題を回避します。順序の再構成はアプリケーション層で実施されます。
+
+2. **インテリジェントマルチパス転送**: SRD は単一の論理フローを最大 64 の並列パスに分散して転送します。各パスの RTT (Round-Trip Time) を継続的に監視し、混雑したパスから高速なパスへ動的に切り替えます。
+
+3. **サブミリ秒レベルの再送制御**: 従来の TCP では RTO が数ミリ秒であるのに対し、SRD は AWS Nitro System のハードウェア実装により、サブミリ秒レベルでのパケット再送を実現します。
+
+4. **プロアクティブな輻輳制御**: SRD は「予防は治療に勝る」という設計哲学に基づき、スイッチのキュー長を最小限に保つことで、輻輳の発生を事前に防ぎます。
+
+### Out-of-order 転送の仕組み
+
+従来の TCP と SRD の動作を比較すると、Out-of-order 転送の利点が明確になります。
+
+```mermaid
+graph TB
+    subgraph "TCP (In-order 配信)"
+        T1[送信: パケット 1,2,3,4,5]
+        T2[パケット 3 がロス]
+        T3[パケット 1,2 は到達<br/>パケット 4,5 は待機]
+        T4[パケット 3 の再送待ち<br/>数ミリ秒の遅延]
+        T5[全パケット到達後<br/>アプリケーションに配信]
+        
+        T1 --> T2
+        T2 --> T3
+        T3 --> T4
+        T4 --> T5
+    end
+    
+    subgraph "SRD (Out-of-order 配信)"
+        S1[送信: パケット 1,2,3,4,5<br/>複数パスに分散]
+        S2[パケット 3 がロス]
+        S3[パケット 1,2,4,5 は即座に配信]
+        S4[パケット 3 のみ再送<br/>サブミリ秒で完了]
+        S5[アプリケーション層で再構成]
+        
+        S1 --> S2
+        S2 --> S3
+        S3 --> S4
+        S4 --> S5
+    end
+    
+    style T4 fill:#ffebee,stroke:#c62828,stroke-width:3px
+    style S4 fill:#e8f5e9,stroke:#43a047,stroke-width:3px
+```
+
+この仕組みにより、SRD は P99.9 テールレイテンシーを 85% 削減することに成功しています。これは、HPC や ML ワークロードにおいて、クラスター全体のパフォーマンスが最も遅いノードに律速される問題 (BSP: Bulk Synchronous Parallel モデル) を大幅に改善します。
+
+### マルチパスルーティングの動的制御
+
+SRD のマルチパスルーティングは、従来の ECMP (Equal-Cost Multi-Path routing) による静的な負荷分散を超えた、動的な最適化を実現します。
+
+```mermaid
+graph LR
+    subgraph "動的パス選択プロセス"
+        A[RTT 監視<br/>各パスの遅延測定]
+        B[パス評価<br/>混雑度の判定]
+        C[パス選択<br/>高速パスを優先]
+        D[パケット送信<br/>最大 64 パス並列]
+        
+        A --> B
+        B --> C
+        C --> D
+        D --> A
+    end
+    
+    subgraph "パス状態例"
+        P1[パス 1<br/>RTT: 10μs<br/>使用中]
+        P2[パス 2<br/>RTT: 15μs<br/>使用中]
+        P3[パス 3<br/>RTT: 50μs<br/>混雑 - 回避]
+        P4[パス 4<br/>RTT: 12μs<br/>使用中]
+    end
+    
+    C --> P1
+    C --> P2
+    C -.避ける.-> P3
+    C --> P4
+    
+    style A fill:#e8f5e9,stroke:#43a047,stroke-width:2px
+    style B fill:#fff3e0,stroke:#f57c00,stroke-width:2px
+    style C fill:#e1f5fe,stroke:#0288d1,stroke-width:2px
+    style P3 fill:#ffebee,stroke:#c62828,stroke-width:2px
+```
+
+**マルチパスの利点**
+- 自然な負荷分散: トラフィックが複数のリンクに分散され、単一リンクのホットスポット発生確率が低減
+- 耐障害性の向上: 単一リンクの障害が全体の通信を中断しない
+- スケーラビリティ: クラスターが大きくなるほど利用可能なパス数が増加し、パフォーマンスが向上
+
+### Kernel Bypass (OS-bypass) アーキテクチャ
+
+EFA の高パフォーマンスを支える基盤技術の一つが、OS kernel を経由しないデータパスです。
+
+```mermaid
+graph TB
+    subgraph "従来の TCP/IP スタック"
+        A1[アプリケーション]
+        A2[システムコール]
+        A3[TCP/IP スタック<br/>Kernel Space]
+        A4[デバイスドライバー]
+        A5[NIC]
+        
+        A1 --> A2
+        A2 --> A3
+        A3 --> A4
+        A4 --> A5
+    end
+    
+    subgraph "EFA (Kernel Bypass)"
+        B1[アプリケーション]
+        B2[Libfabric API<br/>User Space]
+        B3[EFA デバイス<br/>直接アクセス]
+        B4[Nitro Card<br/>SRD プロトコル処理]
+        
+        B1 --> B2
+        B2 --> B3
+        B3 --> B4
+    end
+    
+    style A3 fill:#ffebee,stroke:#c62828,stroke-width:2px
+    style B2 fill:#e8f5e9,stroke:#43a047,stroke-width:3px
+    style B4 fill:#fff3e0,stroke:#f57c00,stroke-width:3px
+```
+
+**Kernel Bypass の利点**
+- CPU オーバーヘッドの削減: システムコールや割り込み処理、コンテキストスイッチが不要
+- 決定論的な実行環境: OS のスケジューリングによる性能ジッターを排除
+- 低レイテンシー: ユーザー空間から直接ハードウェアにアクセス可能
+
+EFA は Libfabric API を通じてこの機能を提供します。Libfabric は OpenFabrics Interfaces (OFI) フレームワークの一部であり、MPI (Message Passing Interface) や NCCL (NVIDIA Collective Communications Library) などの上位レイヤーから透過的に利用できます。
+
+### GPU-direct RDMA
+
+EFA は NVIDIA GPU との統合により、GPU-direct RDMA をサポートします。これは GPU メモリへの直接アクセスを可能にする技術です。
+
+```mermaid
+graph TB
+    subgraph "従来の GPU 間通信"
+        A1[GPU 1 メモリ]
+        A2[CPU メモリへコピー]
+        A3[NIC 送信]
+        A4[NIC 受信]
+        A5[CPU メモリへコピー]
+        A6[GPU 2 メモリへコピー]
+        
+        A1 --> A2
+        A2 --> A3
+        A3 -.ネットワーク.-> A4
+        A4 --> A5
+        A5 --> A6
+    end
+    
+    subgraph "EFA + GPU-direct RDMA"
+        B1[GPU 1 メモリ]
+        B2[EFA デバイス<br/>直接アクセス]
+        B3[ネットワーク転送<br/>SRD プロトコル]
+        B4[EFA デバイス]
+        B5[GPU 2 メモリ<br/>直接書き込み]
+        
+        B1 --> B2
+        B2 --> B3
+        B3 --> B4
+        B4 --> B5
+    end
+    
+    style A2 fill:#ffebee,stroke:#c62828,stroke-width:2px
+    style A5 fill:#ffebee,stroke:#c62828,stroke-width:2px
+    style B2 fill:#e8f5e9,stroke:#43a047,stroke-width:3px
+    style B5 fill:#e8f5e9,stroke:#43a047,stroke-width:3px
+```
+
+**GPU-direct RDMA の利点**
+- メモリコピーの削減: GPU メモリと CPU メモリ間の往復コピーが不要
+- CPU オフロード: GPU 間通信に CPU リソースを消費しない
+- レイテンシー削減: データパスが短縮され、通信遅延が減少
+
+GPU-direct RDMA は特に分散機械学習において重要で、NCCL を使用したマルチノードの GPU 間通信を大幅に高速化します。
+
+## ハードウェア要件と互換性
+
+### AWS Nitro System とバージョン別機能
+
+EFA の機能は AWS Nitro System のバージョンに依存します。Nitro System は AWS の仮想化基盤であり、ハードウェアアクセラレーションを提供します。
+
+```mermaid
+graph TB
+    subgraph "Nitro バージョン別機能対応"
+        V6[Nitro v6<br/>2024年以降]
+        V5[Nitro v5<br/>2023年]
+        V4[Nitro v4<br/>2021-2022年]
+        V3[Nitro v3<br/>2019-2020年]
+        
+        V6 --> F61[RDMA Read: ✓]
+        V6 --> F62[RDMA Write: ✓]
+        V6 --> F63[GPU-direct: ✓]
+        
+        V5 --> F51[RDMA Read: ✓]
+        V5 --> F52[RDMA Write: ✗ 一部]
+        V5 --> F53[GPU-direct: ✓]
+        
+        V4 --> F41[RDMA Read: ✓]
+        V4 --> F42[RDMA Write: ✓ 多数]
+        V4 --> F43[GPU-direct: ✓]
+        
+        V3 --> F31[RDMA Read: ✗ 一部のみ]
+        V3 --> F32[RDMA Write: ✗]
+        V3 --> F33[GPU-direct: △ 制約あり]
+    end
+    
+    style V6 fill:#c8e6c9,stroke:#43a047,stroke-width:3px
+    style V5 fill:#fff9c4,stroke:#f9a825,stroke-width:2px
+    style V4 fill:#fff9c4,stroke:#f9a825,stroke-width:2px
+    style V3 fill:#ffccbc,stroke:#e64a19,stroke-width:2px
+    style F62 fill:#c8e6c9,stroke:#43a047,stroke-width:2px
+    style F52 fill:#ffccbc,stroke:#e64a19,stroke-width:2px
+    style F32 fill:#ffccbc,stroke:#e64a19,stroke-width:2px
+```
+
+**Nitro v6 (2024 年以降)**
+- 完全な RDMA Read/Write サポート
+- 代表的なインスタンス: p6-b200.48xlarge (NVIDIA B200 GPU)、m8i.48xlarge、c8i.48xlarge
+- EFAv4 ネットワーキングをサポート
+
+**Nitro v5 (2023 年)**
+- RDMA Read は全面サポート、RDMA Write は一部非対応
+- 代表的なインスタンス: p5en.48xlarge (NVIDIA H200 GPU)、trn2.48xlarge (AWS Trainium2)
+- EFAv3 ネットワーキングをサポート
+
+**Nitro v4 (2021-2022 年)**
+- 多くのインスタンスで RDMA Read/Write をサポート
+- 代表的なインスタンス: p5.48xlarge (NVIDIA H100 GPU)、c6a.48xlarge、m6i.32xlarge
+- 分散学習やHPCワークロードで広く使用される世代
+
+**Nitro v3 (2019-2020 年)**
+- 基本的に RDMA Read/Write は非対応
+- 例外: p4d.24xlarge (NVIDIA A100 GPU) と dl1.24xlarge は RDMA Read に対応
+- GPU-direct RDMA サポートには Linux kernel と NVIDIA ドライバーの互換性問題が存在
+
+### インスタンスタイプ別対応状況
+
+**HPC 特化型インスタンス**
+- hpc7g.16xlarge (Nitro v5、AWS Graviton3E): RDMA Read のみ
+- hpc7a.96xlarge (Nitro v4、AMD EPYC): RDMA Read/Write
+- hpc6a.48xlarge (Nitro v4、AMD EPYC): RDMA Read/Write
+
+**GPU インスタンス (機械学習向け)**
+- p6 シリーズ (Nitro v6、NVIDIA B200/GB200): 完全な RDMA サポート
+- p5en.48xlarge (Nitro v5、NVIDIA H200): RDMA Read のみ
+- p5.48xlarge (Nitro v4、NVIDIA H100): RDMA Read/Write
+- p4d.24xlarge (Nitro v3、NVIDIA A100): RDMA Read のみ
+
+**汎用インスタンス**
+- m8i, c8i, r8i シリーズ (Nitro v6): 完全な RDMA サポート
+- m7i, c7i, r7i シリーズ (Nitro v4): 一部 RDMA Read のみ
+- m6i, c6i, r6i シリーズ (Nitro v4): RDMA Read/Write
+
+### Linux Kernel と NVIDIA ドライバーの互換性
+
+Nitro v3 世代のインスタンス (特に P4d) で GPU-direct RDMA を使用する場合、Linux kernel と NVIDIA ドライバーの互換性に注意が必要です。
+
+**互換性の問題**
+- Linux kernel 4.14.326、5.4.257、5.10.195 以降で、クローズドソース NVIDIA ドライバーと EFA の組み合わせに問題が発生
+- GPU メモリ情報の取得に失敗し、ノード間通信が停止する事象が報告されています
+
+**解決策**
+- NVIDIA OpenRM (オープンソース) ドライバーと EFA 1.29.0 以降を使用
+- OpenRM は Turing、Ampere、Hopper 以降の GPU (P4、P5、P6) でサポート
+- P3、P2、G3、G2 インスタンスは OpenRM 非対応のため、カスタム AMI が必要
+
+## パフォーマンス特性
+
+### ベンチマーク結果
+
+EFA は以下の性能指標を達成しています ([ソース](https://aws.amazon.com/blogs/hpc/in-the-search-for-performance-theres-more-than-one-way-to-build-a-network/))。
+
+**レイテンシー改善**
+- P99.9 テールレイテンシー: 従来比 85% 削減
+- 従来 TCP: 数ミリ秒レベル → EFA/SRD: 数十マイクロ秒レベル
+- サブミリ秒レベルのハードウェア再送制御
+
+**スループット向上**
+- 単一 TCP フロー: 25 Gbps を達成 (ENA Express 使用時)
+- マルチパスによる帯域幅集約: 最大 64 パス並列利用
+- p5en.48xlarge: 3,200 Gbps の集約ネットワーク帯域幅
+
+**CPU オーバーヘッド**
+- ホスト CPU 負荷: 1% 未満 ([ソース](https://www.ernestchiang.com/en/notes/general/aws-srd-scalable-reliable-datagram/))
+- ハードウェアベースのネットワークプロトコル処理
+- 決定論的なパフォーマンス (OS スケジューリングによるジッター排除)
+
+### ユースケース別効果
+
+**HPC ワークロード**
+- 気象シミュレーション、分子動力学、流体力学 (CFD) などで顕著な効果
+- MPI Allreduce や MPI_Barrier などの集団通信操作の高速化
+- クラスター全体のスケーラビリティ向上
+
+**分散機械学習**
+- NCCL を使用したマルチノード GPU 間通信の最適化
+- Data Parallel、Model Parallel、Pipeline Parallel の効率化
+- 大規模言語モデル (LLM) 訓練における通信ボトルネック解消
+
+## 制約事項と考慮点
+
+### ネットワーク制約
+
+**Availability Zone 間制約**
+- EFA トラフィックは単一 Availability Zone (AZ) 内に限定されます
+- 複数 AZ にまたがる通信には通常の IP トラフィック (ENA デバイス) を使用
+- これは SRD プロトコルがルーティング不可能な設計であるため
+
+**インスタンスタイプ間制約**
+- P4d/P4de/DL1 インスタンスと他のインスタンスタイプ間の EFA トラフィックは現在非サポート
+- 同一クラスター内では同じ世代・タイプのインスタンスを使用することを推奨
+
+### アプリケーション要件
+
+**MPI サポート**
+- Open MPI 4.1 以降
+- Intel MPI 2019 Update 5 以降
+- MVAPICH も対応 (バージョン要確認)
+
+**NCCL サポート**
+- NCCL 2.4.2 以降
+- AWS による最適化版 NCCL プラグインの利用を推奨
+
+**その他のライブラリ**
+- AWS Neuron SDK 2.3 以降 (AWS Trainium/Inferentia 使用時)
+- Libfabric 1.7.0 以降
+
+### OS サポート
+
+EFA は主要な Linux ディストリビューションをサポートします。
+
+**Intel/AMD (x86_64)**
+- Amazon Linux 2023、Amazon Linux 2
+- RHEL 8/9、Rocky Linux 8/9
+- Ubuntu 22.04/24.04
+- Debian 11/12
+- SUSE Linux Enterprise 15 SP2 以降
+
+**AWS Graviton (arm64)**
+- 上記と同様の Linux ディストリビューションをサポート
+- ただし OpenSUSE Leap は x86_64 のみ
+
+**Windows サポート**
+- EFA デバイスは AWS Cloud Digital Interface (CDI) SDK ベースのアプリケーションでのみサポート
+- 通常のアプリケーションでは ENA デバイスとして動作
+
+## まとめ
+
+AWS Elastic Fabric Adapter は、クラウド環境における HPC および AI/ML ワークロードの通信性能を劇的に向上させる技術です。独自開発の SRD プロトコル、Kernel Bypass アーキテクチャ、GPU-direct RDMA サポート、AWS Nitro System のハードウェアオフロードにより、オンプレミスの専用クラスターに匹敵する性能を実現しています。
+
+**技術的な要点**
+- Out-of-order パケット配信により head-of-line blocking を回避
+- 最大 64 パスの動的マルチパスルーティング
+- サブミリ秒レベルのハードウェア再送制御
+- P99.9 テールレイテンシーの 85% 削減
+- CPU オーバーヘッド 1% 未満
+
+**実装時の考慮点**
+- Nitro バージョンによる RDMA Read/Write サポートの違い
+- Linux kernel と NVIDIA ドライバーの互換性 (特に Nitro v3)
+- Availability Zone 内に限定される EFA トラフィック
+- インスタンスタイプの選択と世代の統一
+
+EFA は追加費用なしで利用可能であり、適切なインスタンスタイプを選択することで、クラウドにおける大規模計算ワークロードの実現可能性を大きく広げています。
+
+## 参考文献
+
+- [AWS Documentation: Elastic Fabric Adapter](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/efa.html)
+- [AWS Blog: In the search for performance](https://aws.amazon.com/blogs/hpc/in-the-search-for-performance-theres-more-than-one-way-to-build-a-network/)
+- [Ernest Chiang: AWS SRD (Scalable Reliable Datagram)](https://www.ernestchiang.com/en/notes/general/aws-srd-scalable-reliable-datagram/)
+- [Ivan Pepelnjak: A Quick Look at AWS Scalable Reliable Datagram Protocol](https://blog.ipspace.net/2022/12/quick-look-aws-srd/)
+- [IEEE: A Cloud-Optimized Transport Protocol for Elastic and Scalable HPC](https://ieeexplore.ieee.org/document/9167399)
+::::
+
 ::::details AI インフラストラクチャの現状と技術動向
 
 https://speakerdeck.com/markunet/aiinhurawokao-eru
