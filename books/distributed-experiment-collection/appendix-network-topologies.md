@@ -6,8 +6,7 @@ topics: ["aws", "sagemaker", "hyperpod", "ai", "ml"]
 free: false
 ---
 
-::::details
-# Rail-Optimized Clos Topology -- 入門: AI クラスタ向けネットワーク設計の革新
+::::details Rail-Optimized Clos Topology -- 入門: AI クラスタ向けネットワーク設計の革新
 
 ## 概要
 
