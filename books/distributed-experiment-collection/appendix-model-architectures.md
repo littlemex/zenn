@@ -3,10 +3,10 @@ title: "Appendix: Model Architectures"
 emoji: "🔧"
 type: "tech" # tech: 技術記事 / idea: アイデア
 topics: ["aws", "sagemaker", "hyperpod", "distributed", "infrastructure"]
-free: true
+free: false
 ---
 
-::::details MoE で All-to-All 通信が必要になる理由 -- 視覚的理解
+::::details MoE で All-to-All 通信が必要になる理由
 
 ## 概要
 
@@ -17,38 +17,19 @@ Mixture-of-Experts（MoE）モデルにおいて All-to-All 通信が必要に�
 ### Dense モデルの動作
 
 ```mermaid
-flowchart TB
-    subgraph DenseModel["Dense モデル従来型"]
-        Input[入力トークン<br/>猫が好きです]
-        
-        subgraph GPU1[GPU_1]
-            FFN1[Feed_Forward_Network<br/>全パラメータ]
-        end
-        
-        subgraph GPU2[GPU_2]  
-            FFN2[Feed_Forward_Network<br/>全パラメータ複製]
-        end
-        
-        subgraph GPU3[GPU_3]
-            FFN3[Feed_Forward_Network<br/>全パラメータ複製]
-        end
-        
-        Input --> FFN1
-        Input --> FFN2  
-        Input --> FFN3
-        
-        FFN1 --> Output1[出力1]
-        FFN2 --> Output2[出力2]
-        FFN3 --> Output3[出力3]
-    end
+flowchart LR
+    Input[入力トークン] --> GPU1[GPU_1<br/>FFN]
+    Input --> GPU2[GPU_2<br/>FFN]
+    Input --> GPU3[GPU_3<br/>FFN]
     
-    style Input fill:#e1f5ff,stroke:#333,stroke-width:2px
-    style FFN1 fill:#fff4e1,stroke:#333,stroke-width:2px
-    style FFN2 fill:#fff4e1,stroke:#333,stroke-width:2px
-    style FFN3 fill:#fff4e1,stroke:#333,stroke-width:2px
-    style Output1 fill:#f0fff4,stroke:#333,stroke-width:2px
-    style Output2 fill:#f0fff4,stroke:#333,stroke-width:2px
-    style Output3 fill:#f0fff4,stroke:#333,stroke-width:2px
+    GPU1 --> Out1[出力]
+    GPU2 --> Out2[出力]
+    GPU3 --> Out3[出力]
+    
+    style Input fill:#e1f5ff
+    style GPU1 fill:#fff4e1
+    style GPU2 fill:#fff4e1
+    style GPU3 fill:#fff4e1
 ```
 
 **特徴**
@@ -60,46 +41,21 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    subgraph MoEModel[MoE_モデル_Expert_Parallelism]
-        Input[入力トークン<br/>猫が好きです]
-        
-        subgraph Router[ゲーティングネットワーク]
-            Gate[Router<br/>各トークンを最適な<br/>エキスパートに振り分け]
-        end
-        
-        Input --> Gate
-        
-        subgraph GPU1[GPU_1]
-            Expert1[Expert_1<br/>動物関連特化]
-        end
-        
-        subgraph GPU2[GPU_2]  
-            Expert2[Expert_2<br/>文法関連特化]
-        end
-        
-        subgraph GPU3[GPU_3]
-            Expert3[Expert_3<br/>感情表現特化]
-        end
-        
-        Gate -.->|猫| Expert1
-        Gate -.->|が| Expert2
-        Gate -.->|好き| Expert3
-        Gate -.->|です| Expert2
-        
-        Expert1 --> Combine[結果の統合]
-        Expert2 --> Combine
-        Expert3 --> Combine
-        
-        Combine --> Output[最終出力]
-    end
+    Input[入力トークン] --> Router[Router]
     
-    style Input fill:#e1f5ff,stroke:#333,stroke-width:2px
-    style Gate fill:#ffe1e1,stroke:#333,stroke-width:2px
-    style Expert1 fill:#d4ffd4,stroke:#333,stroke-width:2px
-    style Expert2 fill:#ffd4ff,stroke:#333,stroke-width:2px
-    style Expert3 fill:#ffffd4,stroke:#333,stroke-width:2px
-    style Combine fill:#f0fff4,stroke:#333,stroke-width:2px
-    style Output fill:#e8f4f8,stroke:#333,stroke-width:2px
+    Router -.->|猫| E1[GPU_1<br/>Expert_1]
+    Router -.->|が| E2[GPU_2<br/>Expert_2]
+    Router -.->|好き| E3[GPU_3<br/>Expert_3]
+    
+    E1 --> Combine[統合]
+    E2 --> Combine
+    E3 --> Combine
+    Combine --> Output[出力]
+    
+    style Router fill:#ffe1e1
+    style E1 fill:#d4ffd4
+    style E2 fill:#ffd4ff
+    style E3 fill:#ffffd4
 ```
 
 **特徴**
