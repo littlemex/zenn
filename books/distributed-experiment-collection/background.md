@@ -96,7 +96,12 @@ GPU を単純に増やせば増やすほど学習時間が単純計算で短縮�
 :::message alert
 必ずしもパラメータ数の大きいモデルの方が性能が良いわけではありません。以下のサイトにモデルの Intelligence、speed、price などの情報が掲載されており、参考情報として有用かと思います。
 :::
+
 https://artificialanalysis.ai/
+
+日本語LLMまとめ、も日本語 LLM の一覧を知っておく上で有用です。
+
+https://llm-jp.github.io/awesome-japanese-llm/
 
 :::message
 皆さんのよくご存知の OpenAI、Anthropic、Google などのプロバイダから提供されるいわゆるプロプライエタリモデルは情報が公開されていないケースが多いため表からは除外しています。また、Llama 2 および Llama 3 の GPU 時間は公式に公開されていない推定値です。
