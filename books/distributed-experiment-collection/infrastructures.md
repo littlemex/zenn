@@ -135,11 +135,11 @@ graph TB
             P5[P5 インスタンス<br/>NVIDIA H100<br/>8x 80GB GPU]
             
             subgraph P6e["P6e UltraServer<br/>72 GPU"]
-                GB200[GB200<br/>13.3TB メモリ]
-                GB300[GB300<br/>約20TB メモリ]
+                GB200[GB200<br/>13.4TB メモリ]
+                GB300[GB300<br/>約 20TB メモリ]
             end
             
-            Trn3[Trn3 UltraServer<br/>AWS Trainium3<br/>最大144チップ]
+            Trn3[Trn3 UltraServer<br/>AWS Trainium3<br/>最大 144チップ]
         end
         
         subgraph Network["ネットワーク"]
@@ -197,7 +197,7 @@ graph TB
 |------|-----------|------------|------------|------|
 | **1.0** | P4d (A100) | 数千GPU | 400Gbps EFA | 初代大規模クラスター |
 | **2.0** | P5 (H100) | 20,000 GPU | 3,200Gbps EFA | NVLink 強化 |
-| **3.0** | Trn3, P6e (GB200/GB300) | 100万チップ | 28.8Tbps EFA | 前世代の 10 倍スケール |
+| **3.0** | Trn3, P6e (GB200/GB300) | 100 万チップ | 28.8Tbps EFA | 前世代の 10 倍スケール |
 
 ::::details 図の用語説明
 ## コンピュートインスタンス
@@ -283,9 +283,9 @@ UltraClustes のコンピュートインスタンスには NVIDIA GPU、Trainium
 | P5.48xlarge | H100 (8) | 640GB | 8x3.8TB NVMe | 3,200Gbps | NVLink 4.0, 80GB/GPU |
 | P5e.48xlarge | H200 (8) | 1,128GB | 8x3.8TB NVMe | 3,200Gbps | NVLink 4.0, 141GB/GPU |
 | P5en.48xlarge | H200 (8) | 1,128GB | 8x3.8TB NVMe | 3,200Gbps | Intel CPU, 141GB/GPU |
-| P6-B200.48xlarge | B200 (8) | 1,432GB | - | 3,200Gbps | 179GB/GPU |
-| P6-B300.48xlarge | B300 (8) | 2,148GB | - | 6,400Gbps | 268GB/GPU, EFA 2倍 |
-| P6e-GB200 (UltraServer) | GB200 (72) | 13.3TB | - | 28.8Tbps | NVLink-C2C, 185GB/GPU |
+| P6-B200.48xlarge | B200 (8) | 1,440GB | - | 3,200Gbps | 179GB/GPU |
+| P6-B300.48xlarge | B300 (8) | 2,144GB | - | 6,400Gbps | 268GB/GPU, EFA 2倍 |
+| P6e-GB200 (UltraServer) | GB200 (72) | 13.4TB | - | 28.8Tbps | NVLink-C2C, 185GB/GPU |
 | P6e-GB300 (UltraServer) | GB300 (72) | ~20TB | - | 28.8Tbps | NVLink-C2C, ~278GB/GPU |
 ::::
 
@@ -300,7 +300,7 @@ NVIDIA GPU は世代ごとに **Compute Capability**（計算能力レベル）�
 | **A100** | 8.0 | Ampere | FP64 Tensor Core、構造化スパース |
 | **H100** | 9.0 | Hopper | Transformer Engine (FP8)、Thread Block Clusters |
 | **H200** | 9.0 | Hopper | H100 と同じ、メモリ容量・帯域幅強化 |
-| **B200/B300** | 10.0 | Blackwell | FP4 サポート、第5世代 Tensor Core |
+| **B200/B300** | 10.0 | Blackwell | FP4 サポート、第 5 世代 Tensor Core |
 
 新しい世代ほど、LLM や Transformer モデルに最適化された機能が追加されています。
 
@@ -326,9 +326,9 @@ https://www.nvidia.com/ja-jp/technologies/
 
 **EFA 帯域幅**
 - P4d: 400Gbps
-- P5/P5e/P5en/P6-B200: 3,200Gbps（8倍）
-- P6-B300: 6,400Gbps（16倍）
-- P6e UltraServer: 28.8Tbps（72倍）
+- P5/P5e/P5en/P6-B200: 3,200Gbps（8 倍）
+- P6-B300: 6,400Gbps（16 倍）
+- P6e UltraServer: 28.8Tbps（72 倍）
 
 大規模クラスター（64ノード以上）では、高帯域幅が学習効率に大きく影響します。
 
@@ -353,9 +353,9 @@ https://www.nvidia.com/ja-jp/technologies/
 |------------------|-----------------|-----------|----------|--------------|------|
 | Trn1.32xlarge | Trainium (16) | 512GB | - | 800Gbps (8x100Gbps) | 32GB/chip |
 | Trn1n.32xlarge | Trainium (16) | 512GB | - | 1,600Gbps (16x100Gbps) | EFA 2倍、ネットワーク強化版 |
-| Trn2.48xlarge | Trainium2 (16) | 8,192GB | - | 3,200Gbps (16x200Gbps) | 512GB/chip、Trn1 の16倍メモリ |
+| Trn2.48xlarge | Trainium2 (16) | 8,192GB | - | 3,200Gbps (16x200Gbps) | 512GB/chip、Trn1 の 16 倍メモリ |
 | Trn2u.48xlarge | Trainium2 (16) | 8,192GB | - | 3,200Gbps (16x200Gbps) | Trn2 の別バリアント |
-| Trn3 UltraServer | Trainium3 (最大144) | - | - | EFA v3 (3.2Tbps推定) | NeuronLink-v4 (2TB/s per chip)NeuronSwitch-v1 (368TB/s total) |
+| Trn3 UltraServer | Trainium3 (最大 144) | - | - | EFA v3 (3.2Tbps推定) | NeuronLink-v4 (2TB/s per chip)NeuronSwitch-v1 (368TB/s total) |
 ::::
 
 ## ネットワーク
@@ -620,10 +620,10 @@ graph TB
 | EFA 世代 | 帯域幅 | 対応インスタンス | 特徴 |
 |---------|--------|----------------|------|
 | EFA v1 | 400 Gbps | P4d (A100) | 初代 EFA |
-| EFA v2 | 3,200 Gbps | P5/P5e/P5en (H100/H200) | 8倍の帯域幅 |
+| EFA v2 | 3,200 Gbps | P5/P5e/P5en (H100/H200) | 8 倍の帯域幅 |
 | EFA v3 | 3,200 Gbps | Trn3 (Trainium3) | Trainium 最適化 |
 | EFA v4 | 3,200 Gbps | P6-B200 (B200) | 標準帯域幅 |
-| EFA v4 | 6,400 Gbps | P6-B300 (B300) | 2倍帯域幅 |
+| EFA v4 | 6,400 Gbps | P6-B300 (B300) | 2 倍帯域幅 |
 | EFA v4 | 28.8 Tbps | P6e-GB200/GB300 (NVL72) | UltraServer 専用 |
 
 ## GPUDirect RDMA の役割
