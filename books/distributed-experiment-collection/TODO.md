@@ -6,11 +6,15 @@
 - DP/PP, ZeRO あたり
 - scaling inf on EKS
 - Slurm
-- 
+- Intelligent-Tiering ストレージクラス（2025年5月）
+- EFA 対応の強化（2024年11月）、GPUDirect Storage (GDS) の完全サポート、ENA Express による約 30% のレイテンシ削減
+- Unsloth
+
+https://huggingface.co/spaces/HuggingFaceTB/smol-training-playbook
 
 
 Infos
-
+- https://zenn.dev/tosshi/scraps/8839cb8949b692
 - https://zenn.dev/tosshi/scraps/1772f3a0e0f3c1
 - https://zenn.dev/turing_motors/articles/04eed10b0aafe9
 - https://zenn.dev/turing_motors/articles/81cf3128b22c63
@@ -23,7 +27,12 @@ Infos
 - https://zenn.dev/turing_motors/articles/257850090fc961
 - https://zenn.dev/turing_motors/articles/f5f19f875bd8ba
 - https://zenn.dev/turing_motors/articles/5b56edb7da1d30
-- 
+- https://speakerdeck.com/odashi/llm-jp-3-and-beyond-training-large-language-models
+- https://cafe-dc.com/network/aws-builds-separate-cabinet-to-bypass-nvidia-networking-hardware/
+- https://jax-ml.github.io/scaling-book
+- https://arxiv.org/pdf/2510.20171
+- https://github.com/uccl-project/uccl
+-
 
 update
 
