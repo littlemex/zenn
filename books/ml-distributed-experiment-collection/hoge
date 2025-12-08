@@ -1,0 +1,222 @@
+## AWS AI プラットフォームの選択肢
+
+
+
+### 注意事項
+
+
+
+## re:Invent 2025 主要アップデート
+
+2025年11月～12月の AWS re:Invent で発表された、大規模 AI/ML インフラストラクチャに関する主要なアップデートを整理します。
+
+### ハードウェア・インフラストラクチャ
+
+#### 1. Trn3 UltraServer（一般提供開始）
+
+**発表日**: 2025年12月2日
+
+**主要改善**:
+- Trainium2 比で計算性能4.4倍、エネルギー効率4倍
+- メモリ帯域幅4倍、レイテンシ1/4
+- EC2 UltraClusters 3.0 で最大100万チップ接続可能（前世代の10倍）
+
+**実測パフォーマンス**（OpenAI GPT-OSS モデル）:
+- チップあたりのスループット: 3倍向上
+- 応答時間: 4倍高速化
+
+**参考**: [AWS ブログ記事](https://www.aboutamazon.com/news/aws/trainium-3-ultraserver-faster-ai-training-lower-cost)
+
+
+
+
+
+
+### 推論の新機能
+
+#### 11. EAGLE Speculative Decoding
+
+**発表日**: 2025年11月
+
+**主要機能**:
+- モデル自身の隠れ層表現を利用した複数トークン並列予測
+- 外部 draft モデル不要
+- EAGLE 2 と EAGLE 3 の両方をサポート
+
+**対応モデル**:
+- EAGLE 3: LlamaForCausalLM、Qwen3ForCausalLM、GptOssForCausalLM など
+- EAGLE 2: Qwen3NextForCausalLM
+
+**効果**（Qwen3-32B、ml.p5.48xlarge）:
+- スループット: **2.5倍向上**（No EAGLE 比）
+- TTFT（Time to First Token）: 20-40%短縮
+- TPOT（Time Per Output Token）: 56-63%短縮
+
+**参考**: [AWS ブログ](https://aws.amazon.com/jp/blogs/machine-learning/amazon-sagemaker-ai-introduces-eagle-based-adaptive-speculative-decoding-to-accelerate-generative-ai-inference/)
+
+#### 12. Bidirectional Streaming
+
+**発表日**: 2025年11月
+
+**主要機能**:
+- HTTP/2 と WebSocket による双方向ストリーミング
+- 単一の永続的接続でリアルタイムにデータが流れる
+- 60秒ごとの ping/pong によるヘルスモニタリング
+
+**用途**:
+- 音声テキスト変換
+- 音声エージェント
+- リアルタイム翻訳
+
+**効果**:
+- ネットワークオーバーヘッド削減（単一接続）
+- レイテンシー低減（リアルタイム処理）
+- 音声認識の応答性向上
+
+**参考**: [AWS ブログ](https://aws.amazon.com/jp/blogs/machine-learning/introducing-bidirectional-streaming-for-real-time-inference-on-amazon-sagemaker-ai/)
+
+#### 13. Flexible Training Plans for Inference Endpoints
+
+**発表日**: 2025年11月26日
+
+**主要機能**:
+- 推論エンドポイント用の GPU 容量事前予約
+- 計画的な評価や本番ピーク時の容量保証
+- 自動プロビジョニング
+
+**効果**:
+- モデル評価サイクルの予測可能性向上
+- 本番ピーク時の安定したパフォーマンス
+- インフラ管理の工数削減（数週間→自動）
+
+**参考**: [AWS 発表](https://aws.amazon.com/jp/about-aws/whats-new/2025/11/sagemaker-ai-flexible-training-plans-inference/)
+
+### その他の重要発表
+
+#### 14. Amazon EKS Capabilities
+
+**発表日**: 2025年12月
+
+**提供内容**:
+- **Argo CD**: GitOps による継続的デプロイメント
+- **ACK（AWS Controllers for Kubernetes）**: K8s から AWS リソースを管理
+- **KRO（Kube Resource Orchestrator）**: 複雑なリソースの抽象化
+
+**特徴**:
+- フルマネージド（EKS サービス所有アカウントで実行）
+- 自動アップグレード
+- IAM Identity Center との統合
+
+**料金**: 使用分のみ課金、前払い・最低料金なし
+
+**参考**: [AWS ブログ](https://aws.amazon.com/jp/blogs/aws/announcing-amazon-eks-capabilities-for-workload-orchestration-and-cloud-resource-management/)
+
+#### 16. Serverless Customization in SageMaker AI
+
+**発表日**: 2025年12月
+
+**主要機能**:
+- サーバーレスモデルカスタマイズ（インフラ管理不要）
+- Supervised Fine-Tuning、DPO、RLVR、RLAIF をサポート
+- モデルカスタマイズを数ヶ月から数日に短縮
+
+**対応モデル**: Amazon Nova、DeepSeek、GPT-OSS、Llama、Qwen など
+
+**参考**: [AWS ブログ](https://aws.amazon.com/jp/blogs/aws/new-serverless-customization-in-amazon-sagemaker-ai-accelerates-model-fine-tuning/)
+
+## スケールと制約の理解
+
+大規模 AI/ML ワークロードを計画する際、複数のレベルで制約が存在することを理解する必要があります。
+
+### 制約の階層構造
+
+```mermaid
+graph TB
+    subgraph Constraints["制約の階層"]
+        direction TB
+        
+        Instance[インスタンスレベル<br/>━━━━━━━━━━<br/>P5: 8 GPU 固定<br/>P6e: 72 GPU 固定<br/>Trn3: 最大144チップ]
+        
+        UltraCluster[UltraClusters レベル<br/>━━━━━━━━━━<br/>物理的最大スケール<br/>3.0: 100万チップ]
+        
+        Platform[プラットフォームレベル<br/>━━━━━━━━━━<br/>HyperPod: 数千ノード<br/>ParallelCluster: 設定次第]
+        
+        Quota[AWS サービスクォータ<br/>━━━━━━━━━━<br/>実質的な制約<br/>デフォルト: 0〜数台<br/>要事前申請]
+    end
+    
+    Instance --> UltraCluster
+    UltraCluster --> Platform
+    Platform --> Quota
+    
+    style Instance fill:#e1f5ff
+    style UltraCluster fill:#fff4e1
+    style Platform fill:#f0fff4
+    style Quota fill:#ffe1e1
+```
+
+### 通信パターンとモデル並列化への影響
+
+この帯域幅の非対称性は、分散訓練の並列化戦略に直接影響します。
+
+```mermaid
+graph TB
+    subgraph Parallel["並列化手法と配置戦略"]
+        direction TB
+        
+        subgraph TP["Tensor Parallel（TP）"]
+            TPDesc[層内で重みを分割<br/>━━━━━━━━━━<br/>・頻繁な通信が必要<br/>・各 forward/backward で通信<br/>・**Local に配置すべき**]
+        end
+        
+        subgraph PP["Pipeline Parallel（PP）"]
+            PPDesc[層ごとに分割<br/>━━━━━━━━━━<br/>・層の境界で通信<br/>・Micro-batch でパイプライン化<br/>・**Global でも許容可能**]
+        end
+        
+        subgraph DP["Data Parallel（DP）"]
+            DPDesc[データを分割<br/>━━━━━━━━━━<br/>・勾配同期のみ<br/>・各イテレーション後に 1 回<br/>・**Global で問題なし**]
+        end
+    end
+    
+    subgraph Placement["推奨配置"]
+        direction LR
+        Local[Local<br/>━━━━━━━━<br/>NVLink<br/>900GB/s<br/><br/>TP を配置]
+        
+        Global[Global<br/>━━━━━━━━<br/>EFA<br/>400GB/s<br/><br/>PP, DP を配置]
+    end
+    
+    TP -.推奨.-> Local
+    PP -.推奨.-> Global
+    DP -.推奨.-> Global
+    
+    style TP fill:#ffe1e1
+    style PP fill:#fff4e1
+    style DP fill:#e1f5ff
+    style Local fill:#d4ffd4
+    style Global fill:#ffd4ff
+```
+
+**実用的なガイドライン**
+
+**小規模モデル（～70B、8 GPU 以内）**:
+- 単一ノード内で TP のみで完結
+- Local 帯域幅を最大限活用
+
+**中規模モデル（～405B、64 GPU 程度）**:
+- ノード内: TP（8-way）
+- ノード間: PP（8 ノード）
+- Global 帯域幅への負荷を最小化
+
+**大規模モデル（1T～、数百ノード）**:
+- TP: ノード内（Local）
+- PP: ノード間（Global）
+- DP: 最外層（Global、帯域幅要求が最も低い）
+- 3D Parallelism（TP+PP+DP）の組み合わせで最適化
+
+**通信量の比較**
+
+| 並列化 | 通信頻度 | 通信量（Llama 70B 例） | 帯域幅要求 |
+|--------|---------|----------------------|----------|
+| **TP** | forward/backward ごと | 数十 GB/iteration | ⭐⭐⭐ 非常に高い |
+| **PP** | 層の境界 | 数 GB/micro-batch | ⭐⭐ 中程度 |
+| **DP** | iteration 終了時 | 140GB/iteration | ⭐ 低い（頻度が少ない） |
+
+この設計により、最も通信量の多い TP を高速な Local に、通信頻度の低い DP を Global に配置することで、全体の効率を最大化します。
