@@ -1,16 +1,7 @@
----
-title: "分散学習のためのインフラストラクチャ要件"
-emoji: "🔧"
-type: "tech" # tech: 技術記事 / idea: アイデア
-topics: ["aws", "sagemaker", "hyperpod", "distributed", "infrastructure"]
-free: true
----
 
-**本章では、大規模基盤モデルの分散学習を実現するために必要なインフラストラクチャ要件と、主要な並列処理手法について整理します。各並列処理手法の特性を理解し、GPU メモリ制約やネットワーク帯域幅などの物理的制約から、最適な設定値を決定する方法を解説します。**
 
 https://zenn.dev/turing_motors/articles/0e6e2baf72ebbc
 
----
 
 # 分散学習における並列処理手法の概要
 
@@ -512,3 +503,16 @@ AWS の P5 インスタンス (8x H100 80GB) では、以下の構成が推奨�
 4. **2D/3D Parallel**: 複数の並列化手法を組み合わせ、AWS UltraClusters の高速ネットワークを最大限に活用。
 
 次章では、これらの並列処理手法を実際に HyperPod 上で実装し、動作確認を行います。具体的なコード例とともに、HyperPod の設定方法、ジョブの投入方法、モニタリング方法を解説します。
+
+## まとめ
+
+https://aws.amazon.com/jp/blogs/news/beyond-accelerators-lessons-from-building-foundation-models-on-aws-with-japans-geniac-program/
+
+ここまでの解説でなかなかに難易度の高くあまり目にしない技術を分散学習インフラストラクチャでは適用していることがわかりましたね。次章では今回解説したインフラストラクチャを統制するコントロールレイヤについて整理します。
+
+::::details AI インフラ事例
+
+https://speakerdeck.com/markunet/aiinhurawokao-eru
+
+このスライドは AI インフラストラクチャの全体感を把握するのに非常に有用です。
+::::
