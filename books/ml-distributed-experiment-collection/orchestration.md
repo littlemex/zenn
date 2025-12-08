@@ -171,7 +171,7 @@ Slurm は大規模な GPU クラスタでも複数のユーザーが効率的に
 ### Slurm のアーキテクチャ
 
 
-![arch](/images/books/distributed-experiment-collection/arch.gif)
+![arch](/images/books/ml-distributed-experiment-collection/arch.gif)
 
 > https://slurm.schedmd.com/overview.html より引用
 
