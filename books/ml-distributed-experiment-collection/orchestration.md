@@ -170,7 +170,6 @@ Slurm は大規模な GPU クラスタでも複数のユーザーが効率的に
 
 ### Slurm のアーキテクチャ
 
-
 ![arch](/images/books/ml-distributed-experiment-collection/arch.gif)
 
 > https://slurm.schedmd.com/overview.html より引用
@@ -261,42 +260,347 @@ PartitionName=batch Nodes=lx[0041-9999] MaxTime=UNLIMITED MaxNodes=4096
 
 ## Kubernetes
 
-Kubernetes は、コンテナ化されたアプリケーションのデプロイ、スケーリング、管理を自動化するオープンソースのコンテナオーケストレーションプラットフォームです。Google が開発し、現在は Cloud Native Computing Foundation (CNCF) が管理しています。Kubernetes は、コンテナベースのワークロードに対するデファクトスタンダードとして、多様な業界で広く採用されています。
+Kubernetes は、ご存知の方も多いかと思いますが、コンテナ化されたアプリケーションのデプロイ、スケーリング、管理を自動化するオープンソースのコンテナオーケストレーションプラットフォームです。ここでは特に細かく説明しませんが、コンテナベースであること、宣言的な設定が可能であること、コンテナ障害検知・再スケジューリングのセルフヒーリング（k8s コアコンセプトの Reconciliation Loop による宣言的設定へのリソースの追従性）、などが特徴的です。
 
-分散学習の文脈において、Kubernetes は特に **レジリエンス（回復力）と耐障害性** で優れています。Kubernetes のセルフヒーリング機能により、ハードウェア障害やソフトウェアエラーが発生した場合でも、自動的にコンテナを再起動し、障害ノードから健全なノードへワークロードを移行します。この特性は、数日から数週間にわたる長期的な学習ジョブにおいて、ダウンタイムを最小化する上で重要です。
+## Slurm と Kubernetes の使い分け
 
-:::message alert
-Slurm にレジリエンスと耐障害性がないというわけではありません。
+:::message
+Point! どちらかに優劣があるものではなくユースケースで選択
 :::
 
-### Kubernetes の主要な特徴
+それぞれの違いについて考察してみます。Slurm は HPC で十分な実績を持つバッチ処理システムであり、決定論的なスケジューリングとオーバーヘッドの低い学習処理を実行します。一方で Kubernetes はクラウドネイティブな動的オーケストレーターであり、そもそもは密結合ワークロードのバッチ処理を意識した存在ではありません。一方でクラウドネイティブかつオープンなスタンスから Kubernetes は AI/ML のプラットフォーム周りのエコシステムとの親和性が高いです。
 
-**セルフヒーリング**: コンテナの障害を自動的に検知し、再起動や再スケジューリングを実行します。ヘルスチェック (liveness probe, readiness probe) により、アプリケーションレベルの問題も検出できます。
+Google の 130,000 ノードクラスターの[実験成功ブログ](https://cloud.google.com/blog/products/containers-kubernetes/how-we-built-a-130000-node-gke-cluster/?hl=en)、Slurm の TOP 500 での採用から考えるとクラスターのノード規模はほとんどのケースで考慮する必要がない程度には十分なサイズまで拡張が可能でしょう。オーケストレーターの仕様上は上限がない場合でも、それをマネージドとして提供する Amazon EKS、AWS ParallelCluster、Amazon SageMaker HyperPod などのクォータ制限は別で存在するため、自分たちの実現したいクラスター規模を満たせるのか、インフラストラクチャの構成やトポロジーはどのようなものに対応・最適化しているのか、などの考慮が必要でしょう。Amazon EKS は [AWS ブログ](https://aws.amazon.com/jp/blogs/news/under-the-hood-amazon-eks-ultra-scale-clusters/)で最大 10 万ノードまで対応していると言及されています。
 
-**宣言的な設定**: ユーザーは望ましいシステムの状態を YAML または JSON で定義し、Kubernetes がその状態を維持します。設定の変更や更新も宣言的に行えるため、インフラストラクチャのバージョン管理が容易です。
+いくつかのユースケースで使い分けを考えてみましょう。
 
-**サービスディスカバリーとロードバランシング**: Pod (Kubernetes の最小デプロイ単位) に対する安定した IP アドレスと DNS 名を提供し、複数の Pod 間でトラフィックを自動的に分散します。分散学習では、トレーニングジョブの各ワーカーが互いを発見し、通信する仕組みとして利用されます。
+::::details 使い分けの検討
+:::message alert
+個人的な勝手な考えなのであくまで参考程度で読んでください。
+:::
+:::message
+**考慮ポイント**
+- [ ] **Point 1**: 分散学習・推論、どちらのワークロードを対象とするのかを考慮
+- [ ] **Point 2**: Kubernetes のキャッチアップコストを考慮
+- [ ] **Point 3**: インフラストラクチャがオンプレかクラウド利用か
+- [ ] **Point 4**: コンテナ統合
+:::
 
-**水平スケーリング**: CPU 使用率やメモリ使用量に基づいて、Pod の数を自動的に増減します (Horizontal Pod Autoscaler)。Cluster Autoscaler と組み合わせることで、ノード自体の追加・削除も自動化できます。
+大規模基盤モデルの学習のためだけに利用するのであれば、第一の選択肢は Slurm だと思います。比較的キャッチアップコストが低く構築も容易であることから導入・運用・キャッチアップコストが低く、決定論的なスケジューリングと密結合ワークロードでの実績があり、デフォルト状態で十分に学習のための管理機能が揃っています。特にオンプレミスの場合は GPU サーバー台数が固定であり、Kubernetes の強みとする動的ノード追加や多様なインスタンスを使い分けるといったニーズは少ないため、Kubernetes を使う強い意義はあまりないように感じます。ただし、予備学習や動作確認、軽量な GPU 処理が必要な場合には開発環境として研究者ごとにある程度 GPU 数がスケールする環境を与えたいケースがあります。このようなケースにおいてはクラスターのノードサイズが可変の方が嬉しいケースもあり、Kubernetes の動的ノード追加や GPU Time-Slicing/MIG などの GPU の柔軟な共有が簡易に適用できることは魅力的かもしれません。
 
-**ローリングアップデートとロールバック**: ダウンタイムなしでアプリケーションを更新し、問題が発生した場合は以前のバージョンにロールバックできます。
+大規模基盤モデルの推論のために利用する、もしくは、学習と推論を同一の環境でユーザーに提供するような場合はどうでしょうか。推論の場合は、多様なモデルをサービングする可能性があり、必要とされる GPU サーバーの種類、Spot/Ondemand などの購入タイプの違い、リクエスト不可に応じたオートスケーリング、コンテナ利用、などを考慮すると Kubernetes 一択です。クラウドの場合は、Amazon SageMaker AI の推論エンドポイントなども選択肢に入ってきます。例えば、夜間は学習バッチを回し、昼間の営業時間のみ推論が必要、といったワークロードであれば Kubernetes を利用してリソースアロケーションを夜間と昼間で柔軟に変更するような使い方をすることができ、このようなケースでは Kubernetes も選択肢になるでしょう。
+
+:::message alert
+コンテナをどうしても利用したい場合、Kubernetes は当然問題なく利用できますが、Slurm については注意が必要なため後述します。
+:::
+::::
+
+:::message alert
+Docker と Slurm は相性が悪い
+:::
+
+ということを Slurm 選定時には配慮する必要があります。
+
+::::details 重要: Docker と Slurm のプロセス制御問題
+## 問題の本質
+
+:::message alert
+Slurm は Docker daemon が異常終了しても検知できず、コンテナを正常に終了できない。
+:::
+
+```mermaid
+graph TB
+    subgraph Problem["Docker + Slurm の問題構造"]
+        Slurm[Slurm slurmctld<br/>ジョブ管理]
+        Client[docker CLI<br/>Slurm から呼び出し]
+        Daemon[Docker Daemon<br/>root 権限で常駐]
+        Container[コンテナプロセス<br/>実際のジョブ]
+        
+        Slurm -->|プロセス起動| Client
+        Client -->|REST API| Daemon
+        Daemon -->|fork/exec| Container
+        
+        Container -.死亡通知?.-> Daemon
+        Daemon -.通知なし.-> Slurm
+        
+        Note1[プロセスツリーが分離<br/>Slurm が直接管理できない]
+    end
+    
+    style Problem fill:#ffe1e1
+    style Note1 fill:#ff9999
+    style Container fill:#ffcccc
+```
+
+### 問題ポイント
+
+1. **プロセスツリーの分離**
+   - Slurm は `docker run` コマンドを実行
+   - 実際のコンテナは Docker daemon の子プロセスで Slurm のプロセスツリーに含まれない
+
+2. **状態通知の欠如**
+   - コンテナがクラッシュしても Slurm に直接通知されない
+   - Docker daemon が異常終了しても検知困難
+
+3. **ゾンビプロセスのリスク**
+   - Slurm がジョブを kill しても、Docker daemon が生きていればコンテナは残る
+
+## Slurm OCI サポートの制限
+
+Slurm 公式ドキュメントから、この問題への対処法が明記されています。1. create/start: Slurm がコンテナの状態を常時ポーリングで確認、2. run: コンテナプロセスが直接 Slurm の子プロセスになる、の二種類の解決策があり、run 方式が推奨される。ポーリングの場合、ジョブ内で CPU リソースを消費し、ポーリング頻度によってコンテナ終了検知が遅れる可能性がある。
+
+## Enroot による根本的解決
+
+```mermaid
+graph TB
+    subgraph Solution["Enroot + Slurm の解決策"]
+        Slurm2[Slurm slurmctld<br/>ジョブ管理]
+        Enroot[enroot コマンド<br/>ユーザー権限]
+        Process[コンテナプロセス<br/>通常の Linux プロセス]
+        
+        Slurm2 -->|直接実行| Enroot
+        Enroot -->|exec| Process
+        
+        Process -->|終了ステータス| Slurm2
+        Process -->|シグナル受信| Slurm2
+        
+        Note2[プロセスツリーが一体<br/>Slurm が直接管理可能]
+    end
+    
+    style Solution fill:#d4ffd4
+    style Note2 fill:#99ff99
+    style Process fill:#ccffcc
+```
+
+### Enroot の設計原則
+
+:::message
+**[公式ドキュメント](https://instinct.docs.amd.com/projects/container-toolkit/en/release-1.1.x/container-runtime/enroot-pyxis-installation.html)からの重要な記述**:
+> "With Enroot, users can convert Docker images into a simple **unpacked filesystem tree** and run containers **as a regular Linux process**."
+:::
+
+つまり、
+- **デーモンレス**: 常駐プロセス不要
+- **直接実行**: Slurm が fork/exec で直接起動
+- **通常のプロセス**: 特殊な仮想化なし
+
+まとめると、
+
+| 項目 | Docker + Slurm | Enroot + Slurm |
+|------|---------------|----------------|
+| **プロセス制御** | 間接的（daemon 経由） | 直接的（親子関係） |
+| **終了検知** | ポーリング必要 | 即座に検知 |
+| **シグナル伝播** | 複雑 | 直接伝播 |
+| **ゾンビ化リスク** | 高い | 低い |
+| **リソースリーク** | 発生しやすい | 発生しにくい |
+| **root 権限** | 必要（daemon） | 不要 |
+
+:::message
+**[公式ドキュメント](https://github.com/NVIDIA/enroot)の記述**
+> "Little to no isolation (__no performance overhead__, simplifies HPC deployments)"
+
+さらに、性能オーバーヘッドはほぼゼロと NVIDIA から発表されています。
+:::
+
+## Pyxis の役割
+
+Pyxis は Slurm SPANK プラグインとして、Enroot を Slurm に統合します。
+
+**重要な機能**:
+1. **排他的 GPU 割り当て**: 各ジョブに専用の GPU デバイスファイルを付与
+2. **自動クリーンアップ**: ジョブ終了時に確実にリソースを解放
+3. **プロセスツリー管理**: Slurm のジョブ制御に完全統合
+
+---
+
+## 実践的な影響
+
+### Docker を使った場合の実際の問題例
+
+```bash
+# ユーザーがジョブを投入
+$ sbatch --container-image=myimage:latest myjob.sh
+
+# バックグラウンドで...
+# 1. Slurm が docker run を実行
+# 2. Docker daemon がコンテナを起動
+# 3. コンテナがクラッシュ
+# 4. Docker daemon は動作中
+# 5. Slurm はジョブが「実行中」と認識し続ける
+# 6. リソースがリークし、ゾンビジョブ化
+```
+
+### Enroot を使った場合の正常動作
+
+```bash
+# ユーザーがジョブを投入
+$ sbatch --container-image=myimage.sqsh myjob.sh
+
+# バックグラウンドで...
+# 1. Pyxis が Enroot を呼び出し
+# 2. Enroot がコンテナを直接起動（Slurm の子プロセス）
+# 3. コンテナがクラッシュ
+# 4. 終了シグナルが即座に Slurm に伝播
+# 5. Slurm がジョブを「失敗」として記録
+# 6. リソースが確実に解放される
+```
+
+---
+
+## まとめ
+
+ご指摘の通り、**Docker のデーモンアーキテクチャは Slurm のジョブ制御と根本的に相性が悪い**です。Enroot はこの問題を以下の方法で解決しています。
+
+1. **デーモンレス設計**: プロセスツリーの一体化
+2. **直接実行**: Slurm が親プロセスとして管理
+3. **シグナル伝播**: 終了・異常を即座に検知
+4. **確実なクリーンアップ**: ゾンビ化・リーク防止
+
+この技術的優位性が、**HPC 環境で Enroot + Pyxis が Docker より推奨される最大の理由**です。
+::::
+
+::::details Slurm における推奨コンテナ技術
+
+Slurm を用いた大規模学習でコンテナを利用したい場合、
+
+:::message alert
+**Docker ではなく** Pyxis/Enroot もしくは Apptainer でコンテナ利用できます。
+:::
+
+## 技術的な違いの詳細
+
+```mermaid
+graph TB
+    subgraph Docker["Docker"]
+        direction TB
+        DockerClient[docker CLI]
+        DockerDaemon[Docker Daemon<br/>root 権限で常駐]
+        Containerd[containerd]
+        Runc[runc]
+        
+        DockerClient -->|REST API| DockerDaemon
+        DockerDaemon --> Containerd
+        Containerd --> Runc
+    end
+    
+    subgraph Apptainer["Apptainer"]
+        direction TB
+        ApptainerCLI[apptainer CLI<br/>singularity → apptainer<br/>2021年に改名]
+        ApptainerRuntime[Apptainer Runtime<br/>ユーザー権限]
+        
+        ApptainerCLI --> ApptainerRuntime
+    end
+    
+    subgraph EnrootPyxis["Enroot + Pyxis"]
+        direction TB
+        Slurm[Slurm<br/>sbatch/srun]
+        Pyxis[Pyxis Plugin<br/>Slurm SPANK]
+        Enroot[Enroot<br/>軽量ランタイム]
+        
+        Slurm --> Pyxis
+        Pyxis --> Enroot
+    end
+    
+    style Docker fill:#e1f5ff
+    style Apptainer fill:#ffe1e1
+    style EnrootPyxis fill:#d4ffd4
+```
+
+*図: 各コンテナ技術のアーキテクチャ比較*
+
+
+## 詳細比較表
+
+| 特性 | Docker | Apptainer | Enroot | Enroot + Pyxis |
+|------|--------|----------------------|--------|----------------|
+| **デーモンプロセス** | 必要 | 不要 | 不要 | 不要 |
+| **root 権限** | 必要（rootless 可） | 不要 | 不要 | 不要 |
+| **Slurm 統合** | 複雑 | 可能 | 手動 | ネイティブ |
+| **GPU 分離** | 手動設定 | 手動設定 | 自動 | 自動（排他的） |
+| **イメージ形式** | Docker | SIF（独自）+ Docker 互換 | Squashfs | Squashfs |
+| **ストレージ形式** | レイヤー型 | 単一ファイル | 展開型ファイルツリー | 展開型ファイルツリー |
+| **マルチノード MPI** | 複雑 | 対応 | 対応 | ネイティブ対応 |
+| **開発元** | Docker, Inc. | Linux Foundation | NVIDIA | NVIDIA |
+| **主な用途** | 汎用 | HPC | HPC/AI | HPC/AI on Slurm |
+
+
+### GPU 分離の違い
+
+**Docker**
+- GPU アクセスは `--gpus` フラグで制御
+- 複数ジョブが同じ GPU にアクセス可能（手動管理必要）
+
+**Singularity**
+- `--nv` フラグで NVIDIA GPU サポート
+- GPU 分離は手動設定が必要
+
+**Enroot + Pyxis**
+- 各ジョブに排他的な GPU デバイスファイルを自動割り当て
+- 他のジョブが誤って同じ GPU にアクセスすることを防止
+- Slurm の GRES（Generic Resource Scheduling）と完全統合
+
+### 性能オーバーヘッド
+
+**Docker の問題点**
+- デーモンプロセスが常駐（メモリ消費）
+- ストレージドライバーのレイヤー処理（I/O オーバーヘッド）
+- ネットワーク仮想化（レイテンシ増加）
+
+**Enroot の最適化**
+- Docker イメージを展開型ファイルシステムに変換
+- デーモンレス（プロセスとして直接実行）
+- ホストネットワークを直接使用
+
+**実測データ**
+- Enroot: ネイティブ実行とほぼ同等（オーバーヘッド < 1%）
+- Singularity: 軽微なオーバーヘッド（1-3%）
+- Docker: 中程度のオーバーヘッド（5-10%）
+
+---
+
+## 使い分けガイド
+
+### Docker を選ぶべき場合
+- Kubernetes 環境
+- 開発・テスト環境
+- マイクロサービスアーキテクチャ
+- CI/CD パイプライン
+
+### Singularity/Apptainer を選ぶべき場合
+- 既存の HPC クラスター（Slurm 以外も含む）
+- セキュリティ要件が厳しい環境
+- 大学・研究機関（広く採用されている）
+- Docker からの移行が容易
+
+### Enroot + Pyxis を選ぶべき場合
+- Slurm 環境での本番運用
+- GPU ワークロードの大規模実行
+- 最小オーバーヘッドが必要
+- マルチノード MPI ジョブ
+- **AWS ParallelCluster や SageMaker HyperPod (Slurm)**
+
+---
+
+## AWS での実装
+
+**AWS ParallelCluster**
+- Enroot + Pyxis のインストールをサポート
+- カスタム AMI または PostInstall スクリプトで設定
+
+**Amazon SageMaker HyperPod (Slurm)**
+- Enroot + Pyxis が推奨されるコンテナ技術
+- GPU 分離と Slurm 統合が自動設定
+
+
+
+::::
 
 ### 分散学習における Kubernetes の利点
-
-分散学習において、Kubernetes は以下の利点を提供します。
-
-**コンテナによる環境の再現性**: Docker コンテナに学習環境をパッケージ化することで、開発環境と本番環境の差異を排除し、依存関係の管理を簡素化します。
-
-**マルチテナント対応**: Namespace による論理的な分離と RBAC (Role-Based Access Control) により、複数のチームやプロジェクトが同一クラスタを安全に共有できます。
-
-**エコシステムとの統合**: Kubernetes エコシステムには、モニタリング (Prometheus, Grafana)、ロギング (Fluentd, Elasticsearch)、CI/CD (Argo CD, Flux) など、豊富なツールが揃っています。これらを組み合わせることで、包括的な ML プラットフォームを構築できます。
 
 **スケジューリングの柔軟性**: Node Selector, Node Affinity, Taints and Tolerations などの機能により、GPU の種類やノードの特性に基づいて Pod を適切なノードに配置できます。
 
 **ジョブリソースの管理**: Kubernetes の Job および CronJob リソースにより、バッチ処理やスケジュールされたタスクを管理できます。分散学習では、Kubeflow Training Operator や PyTorch Elastic などのオペレーターが、Kubernetes のネイティブリソースとして学習ジョブを管理します。
 
 Kubernetes 自体は汎用的なコンテナオーケストレーターであり、ML 固有の機能は限定的です。しかし、Kubeflow, Ray, MLflow などの ML プラットフォームと組み合わせることで、モデル学習からデプロイまでの一貫したワークフローを構築できます。AWS では、Amazon EKS (Elastic Kubernetes Service) および Amazon SageMaker HyperPod (EKS 版) が、Kubernetes ベースの分散学習環境を提供します。
-
 
 
 

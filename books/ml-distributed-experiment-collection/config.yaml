@@ -1,4 +1,4 @@
-title: "Distributed Training/Inference - Experiment Collection"
+title: "ML Distributed Training/Inference - Experiment Collection"
 summary: "分散学習・推論関連の実験集です。"
 topics: ["AWS", "SageMaker Hyperpod", "Distributed Training", "Distributed Inference"]
 published: false
