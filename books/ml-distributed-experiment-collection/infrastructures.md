@@ -73,7 +73,7 @@ graph TB
 
 ## Amazon EC2 UltraClusters
 
-![](/images/books/distributed-experiment-collection/ec2-ultraclusters.png)
+![](/images/books/ml-distributed-experiment-collection/ec2-ultraclusters.png)
 
 *図: [Amazon EC2 UltraClusters](https://aws.amazon.com/ec2/ultraclusters/)* の構成
 
