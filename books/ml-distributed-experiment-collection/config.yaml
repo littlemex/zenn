@@ -8,6 +8,7 @@ chapters:
   - background
   - infrastructures
   - orchestration
+  - aws-parallelcluster-tutorial
 #  - appendix-optimizer
 #  - appendix-vast-data-checkpoint-analysis
 #  - appendix-network-topologies

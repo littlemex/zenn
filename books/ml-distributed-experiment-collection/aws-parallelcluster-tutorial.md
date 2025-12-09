@@ -33,6 +33,10 @@ https://github.com/aws-samples/awsome-distributed-training/tree/main/1.architect
 
 https://catalog.workshops.aws/ml-on-aws-parallelcluster/en-US
 
+エラーが発生した際にはトラブルシューティングを参考にしてください。
+
+https://docs.aws.amazon.com/ja_jp/parallelcluster/latest/ug/troubleshooting-v3.html
+
 ---
 
 # AWS ParallelCluster による分散学習環境の構築
@@ -45,21 +49,21 @@ AWS ParallelCluster は 2 層のインフラストラクチャで構成されま
 
 ![](/images/books/ml-distributed-experiment-collection/pcluster.png)
 
-::::details 各コンポーネント
+::::details 各コンポーネントの詳細
 
-## Head Node
+### Head Node
 - ログインノードとしてユーザーがクラスター接続する際のエントリーポイント
 - Slurm スケジューラのコントローラーとして、ジョブ管理とリソース割り当てを実行
 - 管理サービス（監視、ログ収集など）を実行
 - 推奨インスタンスタイプは m5.8xlarge（32 vCPU、128 GiB メモリ）
 
-## Compute Node
+### Compute Node
 - 実際の計算ワークロードを実行するワーカーノード
 - GPU インスタンス（P4d、P5、Trn など）または CPU インスタンスを使用
 - Slurm スケジューラからのジョブ要求に応じて動的にプロビジョニング
 - EFA（Elastic Fabric Adapter）により低レイテンシのノード間通信を実現
 
-## Shared Storage
+### Shared Storage
 
 **FSx for Lustre**（/fsx マウントポイント）
 - 高性能な並列ファイルシステムで、トレーニングデータとチェックポイント保存に使用
@@ -85,23 +89,23 @@ AWS CloudShell から作業することも可能です。
 以下のツールをインストールする必要があります。
 
 **Git**
-- リポジトリのクローンとバージョン管理に使用します
+- リポジトリのクローンとバージョン管理に使用
 - インストール: [Git ダウンロードページ](https://git-scm.com/downloads)
-- AWS CloudShell の場合はすでにインストールされています
+- AWS CloudShell の場合はすでにインストール済み
 
 **Python 3.8 以降**
-- AWS ParallelCluster CLI の実行に必要です
+- AWS ParallelCluster CLI の実行に必要
 - インストール: [Python ダウンロードページ](https://www.python.org/downloads/)
 - 確認コマンド: `python3 --version`
-- AWS CloudShell の場合はすでにインストールされています
+- AWS CloudShell の場合はすでにインストール済み
 
 **yq**
-- YAML ファイルの処理に使用する軽量コマンドラインツールです
+- YAML ファイルの処理に使用する軽量コマンドラインツール
 - インストール方法
   - macOS: `brew install yq`
   - Linux: `sudo snap install yq` または `sudo apt-get install yq`
   - Windows: `choco install yq`
-  - AWS CloudShell: `sudu yum install yq`
+  - AWS CloudShell: `sudo yum install yq`
 - 確認コマンド: `yq --version`
 ::::
 
@@ -109,16 +113,17 @@ AWS CloudShell から作業することも可能です。
 
 :::message
 - [ ] 1-1. サンプルリポジトリのクローン
+- [ ] 1-2. クラスター設定ファイルの作成
 :::
 
 ::::details 1-1. サンプルリポジトリのクローン
 
 :::message
-なんのための作業か: 
+なんのための作業か: AWS ParallelCluster のサンプル設定ファイルとスクリプトを取得します。このリポジトリには、クラスター構築に必要な CloudFormation テンプレートと設定ファイルが含まれています。
 :::
 
 :::message
-次のステップに進む条件:
+次のステップに進む条件: `awsome-distributed-training/1.architectures/2.aws-parallelcluster` ディレクトリに移動でき、`cluster-templates` ディレクトリが存在すること。
 :::
 
 サンプルリポジトリをクローンして作業ディレクトリに移動します。
@@ -127,10 +132,25 @@ AWS CloudShell から作業することも可能です。
 git clone https://github.com/aws-samples/awsome-distributed-training.git
 cd awsome-distributed-training/1.architectures/2.aws-parallelcluster
 ```
+
+リポジトリの内容を確認します。
+
+```bash
+ls -la
+```
 ::::
 
 ::::details 1-2. クラスター設定ファイルの作成
-次に、クラスター設定ファイルを保存するディレクトリを作成します。
+
+:::message
+なんのための作業か: クラスター設定を管理するためのディレクトリと設定ファイルを作成します。後続の手順で使用する環境変数を YAML ファイルに保存し、設定の一元管理を実現します。
+:::
+
+:::message
+次のステップに進む条件: `${CONFIG_DIR}/config.yaml` ファイルが作成され、基本的な設定（CLUSTER_NAME、AWS_REGION、PCLUSTER_VERSION）が保存されていること。`cat ${CONFIG_DIR}/config.yaml` で内容を確認できること。
+:::
+
+クラスター設定ファイルを保存するディレクトリを作成します。
 
 ```bash
 export AWS_REGION=ap-northeast-1
@@ -144,11 +164,75 @@ yq -i ".CLUSTER_NAME = \"$CLUSTER_NAME\"" ${CONFIG_DIR}/config.yaml
 yq -i ".AWS_REGION = \"$AWS_REGION\"" ${CONFIG_DIR}/config.yaml
 yq -i ".PCLUSTER_VERSION = \"$PCLUSTER_VERSION\"" ${CONFIG_DIR}/config.yaml
 ```
+
+設定内容を確認します。
+
+```bash
+cat ${CONFIG_DIR}/config.yaml
+```
 ::::
 
-### AWS ParallelCluster CLI のインストール
+## 2. AWS ParallelCluster CLI のインストール
 
-AWS ParallelCluster CLI は Python 仮想環境にインストールすることを推奨します。
+::::details AWS ParallelCluster CLI とは
+
+`pcluster` は AWS ParallelCluster のコマンドラインインターフェース（CLI）ツールです。
+
+## 主な用途
+
+**HPC クラスターの管理**
+- AWS クラウド上で HPC クラスターの起動、管理、削除を実行
+- クラスターのライフサイクル全体を CLI から制御可能
+
+**カスタム AMI イメージの作成と管理**
+- クラスターで使用するカスタム AMI の構築
+- 特定のソフトウェアやライブラリを事前インストールしたイメージを作成可能
+
+## 主要なコマンド
+
+**クラスター管理**
+- `create-cluster`: 新しいクラスターを作成
+- `delete-cluster`: クラスターを削除
+- `update-cluster`: クラスターの設定を更新
+- `describe-cluster`: クラスターの詳細情報を取得
+- `list-clusters`: 既存のクラスター一覧を表示
+
+**イメージ管理**
+- `build-image`: カスタム AMI をビルド
+- `delete-image`: イメージを削除
+- `describe-image`: イメージの詳細情報を取得
+- `list-images`: イメージ一覧を表示
+
+**接続とデバッグ**
+- `ssh`: クラスターに SSH 接続
+- `dcv-connect`: NICE DCV セッションに接続
+- `export-cluster-logs`: クラスターのログをエクスポート
+- `get-cluster-log-events`: ログイベントを取得
+
+**Compute Fleet 管理**
+- `describe-compute-fleet`: Compute ノードの状態を確認
+- `update-compute-fleet`: Compute ノードの起動/停止を制御
+
+## 必要な権限
+
+pcluster CLI を使用するには、適切な IAM ロールと権限が必要です。クラスターの作成、更新、削除などの操作には、VPC、EC2、CloudFormation、FSx などのリソースへのアクセス権限が求められます。
+::::
+
+:::message
+- [ ] 2-1. Python 仮想環境のセットアップと CLI インストール
+:::
+
+::::details 2-1. Python 仮想環境のセットアップと CLI インストール
+
+:::message
+なんのための作業か: AWS ParallelCluster CLI を Python 仮想環境にインストールします。仮想環境を使用することで、システムの Python 環境に影響を与えずに必要なパッケージを管理できます。
+:::
+
+:::message
+次のステップに進む条件: `pcluster version` コマンドが正常に実行でき、指定したバージョン（例: 3.13.1）が表示されること。
+:::
+
+AWS ParallelCluster CLI を Python 仮想環境にインストールします。
 
 ```bash
 export VIRTUAL_ENV_PATH=~/pcluster_${PCLUSTER_VERSION}_env
@@ -161,19 +245,42 @@ pip3 install awscli
 pip3 install aws-parallelcluster==${PCLUSTER_VERSION}
 ```
 
-### Capacity Reservation の準備
+インストールを確認します。
 
-分散学習では通常、P または Trn インスタンスが必要ですが、これらは需要が高く、オンデマンドプールから起動することが困難な場合があります。On-Demand Capacity Reservation（ODCR）または EC2 Capacity Blocks（CB）を使用してキャパシティを予約することを強く推奨します。
+```bash
+pcluster version
+```
 
-ODCR は EC2 インスタンスを起動せずにキャパシティを予約するツールです。P または Trn インスタンスの ODCR は通常 AWS によって作成されます。
+出力例は以下のようになります。
 
-[Amazon EC2 Capacity Blocks for ML](https://aws.amazon.com/ec2/capacityblocks/) は、ML ワークロード用の計算キャパシティを予約する別の方法です。ODCR とは異なり、Capacity Blocks では特定の時間ウィンドウ（1 日から 14 日間）と開始時刻を指定してキャパシティを予約できます。
+```
+{
+  "version": "3.13.1"
+}
+```
+::::
+
+## 3. インスタンスとキャパシティの設定
+
+:::message
+- [ ] 3-1. Compute Node の設定
+:::
+
+::::details 3-1. Compute Node の設定
+
+:::message
+なんのための作業か: Compute Node のインスタンスタイプ、ノード数、アベイラビリティーゾーンを設定します。最低限の動作確認では m5.xlarge を使用し、GPU インスタンスを使用する場合は Capacity Reservation の設定も行います。
+:::
+
+:::message
+次のステップに進む条件: `cat ${CONFIG_DIR}/config.yaml` で AZ、NUM_INSTANCES、INSTANCE の設定が確認できること。GPU を使用する場合は CAPACITY_RESERVATION_ID も設定されていること。
+:::
 
 最低限の動作確認では、以下の環境変数を設定します。
 
 ```bash
 # 最低限の動作確認用構成
-export AZ=<your-availability-zone>  # 例: ap-northeast-1a
+export AZ=ap-northeast-1a  # 使用するアベイラビリティーゾーン
 export NUM_INSTANCES=3  # Compute Node 数
 export INSTANCE=m5.xlarge  # Compute Node のインスタンスタイプ
 
@@ -182,66 +289,143 @@ yq -i ".NUM_INSTANCES = \"$NUM_INSTANCES\"" ${CONFIG_DIR}/config.yaml
 yq -i ".INSTANCE = \"$INSTANCE\"" ${CONFIG_DIR}/config.yaml
 ```
 
-GPU インスタンスを使用する場合は、Capacity Reservation が必要です。
+設定を確認します。
 
 ```bash
-export CAPACITY_RESERVATION_ID=<your-capacity-reservation-id>  # 例: cr-0123456789abcdef0
-export AZ=<your-availability-zone>  # 例: ap-northeast-1a
-export NUM_INSTANCES=<number-of-instances>  # 例: 8
-export INSTANCE=<instance-type>  # 例: p5.48xlarge
+cat ${CONFIG_DIR}/config.yaml
+```
+
+GPU インスタンスを使用する場合は、追加で Capacity Reservation を設定します。
+
+```bash
+export CAPACITY_RESERVATION_ID=cr-0123456789abcdef0  # Capacity Reservation ID
+export AZ=ap-northeast-1a  # アベイラビリティーゾーン
+export NUM_INSTANCES=8  # ノード数
+export INSTANCE=p5.48xlarge  # インスタンスタイプ
 
 yq -i ".CAPACITY_RESERVATION_ID = \"$CAPACITY_RESERVATION_ID\"" ${CONFIG_DIR}/config.yaml
 yq -i ".AZ = \"$AZ\"" ${CONFIG_DIR}/config.yaml
 yq -i ".NUM_INSTANCES = \"$NUM_INSTANCES\"" ${CONFIG_DIR}/config.yaml
 yq -i ".INSTANCE = \"$INSTANCE\"" ${CONFIG_DIR}/config.yaml
 ```
+::::
 
-### EC2 Key Pair の作成
+## 4. SSH 接続の準備
 
-EC2 Key Pair を使用して、SSH または AWS Systems Manager 経由でクラスターの Head Node に接続できます。
+:::message
+- [ ] 4-1. EC2 Key Pair の作成
+:::
 
-既存の Key Pair がない場合は、以下のコマンドで作成します。
+::::details 4-1. EC2 Key Pair の作成
+
+:::message
+なんのための作業か: クラスターの Head Node に SSH 接続するための EC2 Key Pair を作成します。既存の Key Pair がある場合は、その名前を環境変数に設定するだけでこのステップをスキップできます。
+:::
+
+:::message
+次のステップに進む条件: `aws ec2 describe-key-pairs --region ${AWS_REGION}` コマンドで指定した Key Pair が確認でき、秘密鍵ファイル（.pem）が `~/.ssh` ディレクトリに保存されていること。
+:::
+
+Key Pair 名を環境変数に設定します。
 
 ```bash
-export KEYPAIR_NAME=<your-keypair-name>
+export KEYPAIR_NAME=my-keypair
 yq -i ".KEYPAIR_NAME = \"$KEYPAIR_NAME\"" ${CONFIG_DIR}/config.yaml
+```
+
+既存の Key Pair がない場合は、新規作成します。
+
+```bash
+# .ssh ディレクトリを作成（存在しない場合）
+mkdir -p ~/.ssh
 
 # Key Pair の作成と秘密鍵の保存
-pushd ~/.ssh
 aws ec2 create-key-pair \
     --key-name ${KEYPAIR_NAME} \
     --query KeyMaterial \
     --key-type ed25519 \
     --region ${AWS_REGION} \
-    --output text > ${KEYPAIR_NAME}.pem
+    --output text > ~/.ssh/${KEYPAIR_NAME}.pem
 
 # 秘密鍵のパーミッション設定
-chmod 600 ${KEYPAIR_NAME}.pem
-popd
+chmod 600 ~/.ssh/${KEYPAIR_NAME}.pem
 ```
 
-作成を確認するには、以下のコマンドを実行します。
+作成を確認します。
 
 ```bash
 aws ec2 describe-key-pairs --region ${AWS_REGION}
+ls -la ~/.ssh/${KEYPAIR_NAME}.pem
+```
+::::
+
+## 5. S3 バケットの作成（オプション）
+
+:::message alert
+S3、DRA を設定するのに 10 分以上かかるためハンズオン等の時間の限られる状態ではスキップすることを推奨します。
+:::
+
+:::message
+- [ ] 5-1. S3 バケットの作成
+- [ ] 5-2. バケット名の取得と設定
+:::
+
+::::details 5-1. S3 バケットの作成
+
+:::message
+なんのための作業か: トレーニングデータやモデルチェックポイントを永続化するための S3 バケットを作成します。後で FSx for Lustre と Data Repository Association（DRA）で連携させることができます。このステップはオプションです。
+:::
+
+:::message
+次のステップに進む条件: CloudFormation スタックが CREATE_COMPLETE 状態になり、S3 バケットが正常に作成されたこと。`aws cloudformation describe-stacks` コマンドでスタックの状態を確認できること。
+:::
+
+CloudFormation テンプレートを使用して S3 バケットを作成します。
+
+```bash
+# スタック名とバケット名を設定
+export S3_STACK_NAME=cluster-data-bucket
+export S3_BUCKET_NAME=${S3_STACK_NAME}-${AWS_REGION}-$(date +%s)
+
+# CloudFormation スタックを作成（バケット名をパラメータで指定）
+aws cloudformation create-stack \
+    --stack-name ${S3_STACK_NAME} \
+    --template-url https://awsome-distributed-training.s3.amazonaws.com/templates/0.private-bucket.yaml \
+    --parameters ParameterKey=S3BucketName,ParameterValue=${S3_BUCKET_NAME} \
+    --region ${AWS_REGION}
+
+echo "CloudFormation スタックの作成を開始しました"
+
+# スタック作成の完了を待機（通常 1 から 2 分）
+aws cloudformation wait stack-create-complete \
+    --stack-name ${S3_STACK_NAME} \
+    --region ${AWS_REGION}
+
+echo "S3 バケットの作成が完了しました"
 ```
 
-### S3 バケットの作成（オプション）
+作成を確認します。
 
-S3 バケットは、トレーニングデータ、モデルチェックポイント、その他のアーティファクトをクラスターのデプロイメント間で永続化するために使用できます。後で FSx for Lustre との Data Repository Association（DRA）を通じて統合できます。
+```bash
+aws cloudformation describe-stacks \
+    --stack-name ${S3_STACK_NAME} \
+    --region ${AWS_REGION} \
+    --query 'Stacks[0].StackStatus' \
+    --output text
+```
+::::
 
-CloudFormation テンプレートを使用してデプロイします。
+::::details 5-2. バケット名の取得と設定
 
-1. 以下のボタンをクリックして CloudFormation スタックを起動します
+:::message
+なんのための作業か: 作成した S3 バケットの名前を CloudFormation の出力から取得し、設定ファイルに保存します。
+:::
 
-   [1-Click Deploy 🚀](https://console.aws.amazon.com/cloudformation/home#/stacks/quickcreate?templateUrl=https://awsome-distributed-training.s3.amazonaws.com/templates/0.private-bucket.yaml&stackName=cluster-data-bucket)
+:::message
+次のステップに進む条件: `echo ${DATA_BUCKET_NAME}` でバケット名が表示され、`config.yaml` にバケット名が保存されていること。
+:::
 
-2. CloudFormation コンソールで以下を入力します
-   - スタック名（例: `cluster-data-bucket`）
-   - バケット名
-   - "Create stack" をクリック
-
-3. スタック作成が完了したら、Outputs タブからバケット名を取得します
+CloudFormation の Outputs からバケット名を取得します。
 
 ```bash
 export DATA_BUCKET_NAME=$(aws cloudformation describe-stacks \
@@ -253,29 +437,101 @@ export DATA_BUCKET_NAME=$(aws cloudformation describe-stacks \
 echo "Your data bucket name is: ${DATA_BUCKET_NAME}"
 yq -i ".DATA_BUCKET_NAME = \"$DATA_BUCKET_NAME\"" ${CONFIG_DIR}/config.yaml
 ```
+::::
 
-## クラスターのデプロイ
+## 6. VPC とストレージの作成
 
-### Step 1: 前提条件インフラのデプロイ
+:::message
+- [ ] 6-1. VPC とストレージのデプロイ
+- [ ] 6-2. スタック名の設定
+:::
 
-VPC、セキュリティグループ、FSx for Lustre、FSx for OpenZFS などのインフラストラクチャを CloudFormation テンプレートを使用してデプロイします。
+::::details 6-1. VPC とストレージのデプロイ
 
-1. 以下のリンクをクリックして CloudFormation にデプロイします
+:::message
+なんのための作業か: VPC、セキュリティグループ、FSx for Lustre、FSx for OpenZFS などの基盤インフラストラクチャを CloudFormation で一括デプロイします。これらはクラスターのネットワークとストレージ基盤として機能します。
+:::
 
-   [1-Click Deploy 🚀](https://console.aws.amazon.com/cloudformation/home#/stacks/quickcreate?templateUrl=https://awsome-distributed-training.s3.amazonaws.com/templates/parallelcluster-prerequisites.yaml&stackName=parallelcluster-prerequisites)
+:::message
+次のステップに進む条件: CloudFormation スタックが CREATE_COMPLETE 状態になり、全てのリソース（VPC、Subnet、FSx ファイルシステムなど）が正常に作成されたこと。スタック作成には 15 から 20 分かかります。
+:::
 
-   **重要**: リンクを開く際、Compute リソースが配置されるリージョンとアベイラビリティーゾーンを指定する必要があります。スタックを作成する際に、正しいリージョンを選択し、"Availability Zone configuration for the subnets" フィールドに入力してください。
+CloudFormation テンプレートを使用してインフラをデプロイします。
 
-2. CloudFormation スタックのデプロイが完了したら、スタック名を環境変数としてエクスポートします
+```bash
+# スタック名を設定
+export STACK_ID_VPC=parallelcluster-prerequisites
+
+# CloudFormation スタックを作成（アベイラビリティーゾーンをパラメータで指定）
+aws cloudformation create-stack \
+    --stack-name ${STACK_ID_VPC} \
+    --template-url https://awsome-distributed-training.s3.amazonaws.com/templates/parallelcluster-prerequisites.yaml \
+    --parameters ParameterKey=PrimarySubnetAZ,ParameterValue=${AZ} \
+    --region ${AWS_REGION}
+
+echo "CloudFormation スタックの作成を開始しました"
+echo "スタック作成には 15 から 20 分かかります"
+
+# スタック作成の完了を待機
+aws cloudformation wait stack-create-complete \
+    --stack-name ${STACK_ID_VPC} \
+    --region ${AWS_REGION}
+
+echo "インフラストラクチャの作成が完了しました"
+```
+
+作成を確認します。
+
+```bash
+aws cloudformation describe-stacks \
+    --stack-name ${STACK_ID_VPC} \
+    --region ${AWS_REGION} \
+    --query 'Stacks[0].StackStatus' \
+    --output text
+```
+::::
+
+::::details 6-2. スタック名の設定
+
+:::message
+なんのための作業か: 作成した CloudFormation スタックの名前を環境変数に保存します。後続の手順でこのスタックから VPC ID や FSx ID などの情報を取得するために使用します。
+:::
+
+:::message
+次のステップに進む条件: `config.yaml` に STACK_ID_VPC が保存され、`cat ${CONFIG_DIR}/config.yaml` で確認できること。
+:::
+
+CloudFormation スタック名を環境変数として設定します。
 
 ```bash
 export STACK_ID_VPC=parallelcluster-prerequisites
 yq -i ".STACK_ID_VPC = \"$STACK_ID_VPC\"" ${CONFIG_DIR}/config.yaml
 ```
 
-### Data Repository Association の作成（オプション）
+設定を確認します。
 
-S3 バケットをデプロイした場合、FSx for Lustre ファイルシステムとの間に Data Repository Association（DRA）を作成できます。
+```bash
+cat ${CONFIG_DIR}/config.yaml
+```
+::::
+
+## 7. Data Repository Association の作成（オプション）
+
+:::message
+- [ ] 7-1. FSx for Lustre と S3 の連携設定
+:::
+
+::::details 7-1. FSx for Lustre と S3 の連携設定
+
+:::message
+なんのための作業か: FSx for Lustre ファイルシステムと S3 バケットの間に Data Repository Association（DRA）を作成します。これにより、S3 に保存されたデータが FSx に自動的にインポートされ、FSx の変更が S3 に自動的にエクスポートされます。このステップは S3 バケットを作成した場合のみ実施します。
+:::
+
+:::message
+次のステップに進む条件: DRA の Lifecycle ステータスが `AVAILABLE` になること。ステータス確認コマンドで `AVAILABLE` が表示されること。
+:::
+
+FSx for Lustre のファイルシステム ID を取得します。
 
 ```bash
 export FSX_ID=$(aws cloudformation describe-stacks \
@@ -284,6 +540,12 @@ export FSX_ID=$(aws cloudformation describe-stacks \
     --region ${AWS_REGION} \
     --output text)
 
+echo "FSx ID: ${FSX_ID}"
+```
+
+Data Repository Association を作成します。
+
+```bash
 aws fsx create-data-repository-association \
     --file-system-id ${FSX_ID} \
     --file-system-path "/data" \
@@ -293,7 +555,7 @@ aws fsx create-data-repository-association \
     --region ${AWS_REGION}
 ```
 
-DRA の作成ステータスは以下のコマンドで確認できます。
+DRA の作成ステータスを確認します（`AVAILABLE` になるまで待機）。
 
 ```bash
 aws fsx describe-data-repository-associations \
@@ -302,10 +564,24 @@ aws fsx describe-data-repository-associations \
     --output text \
     --region ${AWS_REGION}
 ```
+::::
 
-出力が `AVAILABLE` になるまで待ちます。
+## 8. クラスター設定ファイルの生成
 
-### Step 2: クラスター設定ファイルの生成
+:::message
+- [ ] 8-1. CloudFormation 出力の取得とマージ
+- [ ] 8-2. クラスター設定ファイルの生成
+:::
+
+::::details 8-1. CloudFormation 出力の取得とマージ
+
+:::message
+なんのための作業か: CloudFormation スタックから VPC ID、Subnet ID、FSx ID などの情報を取得し、既存の config.yaml にマージします。これらの情報はクラスター設定ファイルの生成に必要です。
+:::
+
+:::message
+次のステップに進む条件: `config.yaml` に CloudFormation の全出力（PublicSubnet、PrimaryPrivateSubnet、FSxLustreFilesystemId、FSxORootVolumeId、SecurityGroup など）が追加されていること。
+:::
 
 仮想環境が有効になっていることを確認します。
 
@@ -313,28 +589,7 @@ aws fsx describe-data-repository-associations \
 source ${VIRTUAL_ENV_PATH}/bin/activate
 ```
 
-設定ファイルの内容を確認します。
-
-```bash
-cat ${CONFIG_DIR}/config.yaml
-```
-
-出力例（環境によって値は異なります）は以下のようになります。
-
-```yaml
-CLUSTER_NAME: ml-cluster
-AWS_REGION: ap-northeast-1
-PCLUSTER_VERSION: 3.13.1
-CAPACITY_RESERVATION_ID: cr-XXXXXXXXXXXXXXXXX
-AZ: ap-northeast-1a
-NUM_INSTANCES: "8"
-INSTANCE: p5.48xlarge
-KEYPAIR_NAME: my-keypair
-DATA_BUCKET_NAME: cluster-data-bucket-ap-northeast-1-XXXXXXXXXXXX
-STACK_ID_VPC: parallelcluster-prerequisites
-```
-
-CloudFormation スタックから追加の環境変数を取得し、クラスター設定を生成します。
+CloudFormation スタックの出力を取得し、config.yaml にマージします。
 
 ```bash
 # CloudFormation スタックの出力を取得
@@ -348,35 +603,92 @@ aws cloudformation describe-stacks \
 yq eval-all 'select(fileIndex == 0) * select(fileIndex == 1)' ${CONFIG_DIR}/config.yaml ${CONFIG_DIR}/stack_outputs.yaml > ${CONFIG_DIR}/config_updated.yaml
 mv ${CONFIG_DIR}/config_updated.yaml ${CONFIG_DIR}/config.yaml
 rm ${CONFIG_DIR}/stack_outputs.yaml
+```
 
-# 環境変数として読み込み
+マージされた設定を確認します。
+
+```bash
+cat ${CONFIG_DIR}/config.yaml
+```
+
+出力例は以下のようになります。
+
+```yaml
+CLUSTER_NAME: ml-cluster
+AWS_REGION: ap-northeast-1
+PCLUSTER_VERSION: 3.13.1
+AZ: ap-northeast-1a
+NUM_INSTANCES: "3"
+INSTANCE: m5.xlarge
+KEYPAIR_NAME: my-keypair
+DATA_BUCKET_NAME: cluster-data-bucket-ap-northeast-1-1765267989
+STACK_ID_VPC: parallelcluster-prerequisites
+PrimaryPrivateSubnet: subnet-0fe2476bb2e98a579
+FSxLustreFilesystemMountname: 6syhhbev
+FSxORootVolumeId: fsvol-057e2427d7dcbc766
+FSxLustreFilesystemDNSname: fs-002917c15943993c7.fsx.ap-northeast-1.amazonaws.com
+VPC: vpc-0c2cf596e382deb91
+FSxLustreFilesystemId: fs-002917c15943993c7
+SecurityGroup: sg-09f73a7cc2a170abc
+PublicSubnet: subnet-00738f6db68fa46d2
+```
+::::
+
+::::details 8-2. クラスター設定ファイルの生成
+
+:::message
+なんのための作業か: テンプレートファイルと環境変数を使用して、実際にデプロイするクラスター設定ファイル（cluster.yaml）を生成します。このファイルには Head Node、Compute Node、Shared Storage の詳細な設定が含まれます。
+:::
+
+:::message
+次のステップに進む条件: `${CONFIG_DIR}/cluster.yaml` ファイルが生成され、`cat ${CONFIG_DIR}/cluster.yaml` で設定内容を確認できること。環境変数が正しく展開されていること（例: `${AWS_REGION}` が `ap-northeast-1` に置き換わっていること）。
+:::
+
+環境変数を読み込みます。
+
+```bash
 eval $(yq e 'to_entries | .[] | "export " + .key + "=\"" + .value + "\""' ${CONFIG_DIR}/config.yaml)
+```
 
-# 設定ファイルを生成
+envsubst コマンドをインストールします（AWS CloudShell の場合）。
+
+```bash
+# envsubst が利用可能か確認
+if ! command -v envsubst &> /dev/null; then
+    echo "envsubst をインストールします"
+    sudo yum install -y gettext
+fi
+```
+
+テンプレートから設定ファイルを生成します。
+
+```bash
 cat cluster-templates/cluster-vanilla.yaml | envsubst > ${CONFIG_DIR}/cluster.yaml
 ```
 
-### クラスター設定ファイルの詳細
+生成された設定ファイルを確認します。
 
-生成された `cluster.yaml` ファイルには以下の主要な設定が含まれています。
+```bash
+cat ${CONFIG_DIR}/cluster.yaml
+```
+::::
 
-#### Head Node 設定
+::::details クラスター設定ファイルの詳細解説
 
-最低限の動作確認では、以下のように設定します。
+生成された `cluster.yaml` の主要な設定項目を解説します。
+
+### Head Node 設定
 
 ```yaml
 HeadNode:
   InstanceType: m5.2xlarge  # 8 vCPU, 32 GiB メモリ（動作確認用）
   Networking:
     SubnetId: ${PublicSubnet}
-    AdditionalSecurityGroups:
-      - ${SecurityGroup}
   Ssh:
     KeyName: ${KEYPAIR_NAME}
   LocalStorage:
     RootVolume:
       Size: 500  # GB
-      DeleteOnTermination: true
   Iam:
     AdditionalIamPolicies:
       - Policy: arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
@@ -385,84 +697,70 @@ HeadNode:
   CustomActions:
     OnNodeConfigured:
       Sequence:
-        - Script: 'https://raw.githubusercontent.com/aws-samples/aws-parallelcluster-post-install-scripts/main/docker/postinstall.sh'
-        - Script: 'https://raw.githubusercontent.com/aws-samples/aws-parallelcluster-post-install-scripts/main/nccl/postinstall.sh'
-          Args:
-            - v2.26.6-1  # NCCL バージョン
-            - v1.14.2    # AWS OFI NCCL バージョン
-        - Script: 'https://raw.githubusercontent.com/aws-samples/aws-parallelcluster-post-install-scripts/main/pyxis/postinstall.sh'
+        - Script: '.../docker/postinstall.sh'
+        - Script: '.../nccl/postinstall.sh'
+        - Script: '.../pyxis/postinstall.sh'
 ```
 
 **設定のポイント**
-- `InstanceType`: Head Node のインスタンスタイプ。管理タスクに十分な CPU とメモリを確保します
-- `Ssh.KeyName`: SSH 接続用の Key Pair
-- `RootVolume.Size`: ルートボリュームのサイズ。Docker イメージやログの保存に使用します
-- `AdditionalIamPolicies`: SSM、S3、ECR へのアクセスを許可する IAM ポリシー
-- `CustomActions.OnNodeConfigured`: ノード起動時に実行されるスクリプト。Docker、NCCL、Pyxis をインストールします
+- `InstanceType`: 動作確認では m5.2xlarge、本番では m5.8xlarge 以上を推奨
+- `AdditionalIamPolicies`: SSM、S3、ECR へのアクセスを許可
+- `CustomActions.OnNodeConfigured`: Docker、NCCL、Pyxis を自動インストール
 
-#### Compute Node 設定
+### Compute Node 設定
 
 ```yaml
 Scheduling:
   Scheduler: slurm
   SlurmSettings:
     ScaledownIdletime: 60  # アイドル 60 秒後にスケールダウン
-    QueueUpdateStrategy: DRAIN
   SlurmQueues:
     - Name: compute-gpu
-      CapacityType: ONDEMAND
-      Networking:
-        SubnetIds:
-          - ${PrimaryPrivateSubnet}
-        PlacementGroup:
-          Enabled: false  # AWS 提供の ODCR/CB を使用する場合は false に設定
-        AdditionalSecurityGroups:
-          - ${SecurityGroup}
-      ComputeSettings:
-        LocalStorage:
-          EphemeralVolume:
-            MountDir: /scratch  # インスタンス NVMe ローカルストレージ
-          RootVolume:
-            Size: 512  # GB
       ComputeResources:
         - Name: distributed-ml
-          InstanceType: ${INSTANCE}  # 例: p5.48xlarge
-          MinCount: ${NUM_INSTANCES}  # 最小インスタンス数
-          MaxCount: ${NUM_INSTANCES}  # 最大インスタンス数
-          Efa:
-            Enabled: true  # EFA を有効化
-          CapacityReservationTarget:
-            CapacityReservationId: ${CAPACITY_RESERVATION_ID}
+          InstanceType: m5.xlarge  # 動作確認用
+          MinCount: 3  # 最小ノード数
+          MaxCount: 3  # 最大ノード数
 ```
 
 **設定のポイント**
-- `ScaledownIdletime`: ノードがアイドル状態になってからスケールダウンするまでの時間（秒）
-- `PlacementGroup.Enabled`: AWS 提供の ODCR/CB を使用する場合は `false` に設定。ユーザーが調達した ODCR を使用する場合は `true` に設定し、Placement Group 名を指定します
-- `MinCount`/`MaxCount`: 両方を同じ値に設定すると、キャパシティが維持されスケールダウンしません
-- `Efa.Enabled`: 低レイテンシのノード間通信のために EFA を有効化します
-- `CapacityReservationId`: 使用する Capacity Reservation の ID
+- `ScaledownIdletime`: ノードがアイドル状態になってからスケールダウンするまでの時間
+- `MinCount`/`MaxCount`: 同じ値に設定するとキャパシティを維持
+- GPU インスタンスを使用する場合は `Efa.Enabled: true` と `CapacityReservationId` を設定
 
-#### Shared Storage 設定
+### Shared Storage 設定
 
 ```yaml
 SharedStorage:
   - Name: HomeDirs
     MountDir: /home
     StorageType: FsxOpenZfs
-    FsxOpenZfsSettings:
-      VolumeId: ${FSxORootVolumeId}
   - MountDir: /fsx
     Name: fsx
     StorageType: FsxLustre
-    FsxLustreSettings:
-      FileSystemId: ${FSxLustreFilesystemId}
 ```
 
 **設定のポイント**
-- `/home`: FSx for OpenZFS。ユーザーのホームディレクトリとして使用
-- `/fsx`: FSx for Lustre。トレーニングデータとチェックポイントの保存に使用
+- `/home`: ユーザーのホームディレクトリ（FSx for OpenZFS）
+- `/fsx`: トレーニングデータとチェックポイント（FSx for Lustre）
+::::
 
-### Step 3: クラスターの作成
+## 9. クラスターの作成
+
+:::message
+- [ ] 9-1. クラスターの作成実行
+- [ ] 9-2. クラスター作成の監視
+:::
+
+::::details 9-1. クラスターの作成実行
+
+:::message
+なんのための作業か: 生成した設定ファイルを使用して AWS ParallelCluster を実際にデプロイします。このコマンドにより、Head Node、Compute Node、ネットワーク設定などが自動的に構築されます。
+:::
+
+:::message
+次のステップに進む条件: pcluster create-cluster コマンドが正常に実行され、clusterStatus が "CREATE_IN_PROGRESS" になること。
+:::
 
 生成された設定ファイルを使用してクラスターを作成します。
 
@@ -491,34 +789,52 @@ pcluster create-cluster \
   }
 }
 ```
+::::
 
-### クラスター作成の監視
+::::details 9-2. クラスター作成の監視
 
-クラスターの作成進行状況は複数の方法で監視できます。
+:::message
+なんのための作業か: クラスターの作成進行状況を監視し、CREATE_COMPLETE 状態になることを確認します。
+:::
 
-**AWS ParallelCluster CLI を使用**
+:::message
+次のステップに進む条件: `pcluster list-clusters` コマンドでクラスターのステータスが "CREATE_COMPLETE" になること。通常 15 から 20 分かかります。
+:::
+
+AWS ParallelCluster CLI を使用して作成状況を確認します。
 
 ```bash
 pcluster list-clusters --region ${AWS_REGION}
 ```
 
-**CloudFormation コンソールを使用**
+または CloudFormation コンソールで監視できます。
+
 1. [CloudFormation コンソール](https://console.aws.amazon.com/cloudformation)に移動
 2. クラスターのスタックを選択
 3. "Events" タブでリアルタイムの更新を監視
+::::
 
-クラスターの作成には通常 15 から 20 分かかります。ステータスが "CREATE_COMPLETE" になるまで待ってから次に進みます。
+## 10. クラスターへの接続
 
-## クラスターへの接続
+:::message
+- [ ] 10-1. SSM Session Manager での接続
+- [ ] 10-2. SSH での接続（オプション）
+:::
 
-クラスターが **CREATE_COMPLETE** 状態になったら、SSM または SSH のいずれかの方法で Head Node に接続できます。
+::::details 10-1. SSM Session Manager での接続
 
-### SSM Session Manager での接続
+:::message
+なんのための作業か: AWS Systems Manager Session Manager を使用して Head Node に接続します。ポートを開く必要がなく、AWS アカウントでの認証のみで安全に接続できます。
+:::
 
-SSM Session Manager は、Head Node への迅速なターミナルアクセスに最適です。ポートを開く必要がなく、インスタンスが実行されている AWS アカウントでの認証のみが必要です。
+:::message
+次のステップに進む条件: Head Node に接続でき、ubuntu ユーザーに切り替えて `hostname` コマンドが実行できること。
+:::
+
+SSM Session Manager を使用して接続します。
 
 1. [EC2 コンソール](https://console.aws.amazon.com/ec2/)に移動
-2. Head Node インスタンスを見つける
+2. Head Node インスタンスを見つける（インスタンス名に "HeadNode" を含む）
 3. "Connect" ボタンをクリック
 4. "Session Manager" タブを選択
 5. "Connect" をクリック
@@ -529,9 +845,23 @@ SSM Session Manager は、Head Node への迅速なターミナルアクセス�
 sudo su - ubuntu
 ```
 
-### SSH での接続
+ホームディレクトリを確認します。
 
-SSH を使用して標準的な SSH クライアントからクラスターに接続することもできます。
+```bash
+pwd
+hostname
+```
+::::
+
+::::details 10-2. SSH での接続（オプション）
+
+:::message
+なんのための作業か: SSH クライアントを使用して Head Node に接続します。ローカルのターミナルから直接接続したい場合に使用します。
+:::
+
+:::message
+次のステップに進む条件: SSH 接続が成功し、Head Node のシェルにアクセスできること。
+:::
 
 Head Node の IP アドレスを取得します。
 
@@ -543,7 +873,7 @@ pcluster ssh --region ${AWS_REGION} --cluster-name ${CLUSTER_NAME} --identity_fi
 
 ```json
 {
-  "command": "ssh ubuntu@18.183.235.248 --identity_file /Users/username/.ssh/my-keypair.pem"
+  "command": "ssh ubuntu@18.183.235.248 -i ~/.ssh/my-keypair.pem"
 }
 ```
 
@@ -552,14 +882,30 @@ pcluster ssh --region ${AWS_REGION} --cluster-name ${CLUSTER_NAME} --identity_fi
 ```bash
 ssh ubuntu@18.183.235.248 -i ~/.ssh/my-keypair.pem
 ```
+::::
 
-## Slurm の基本操作
+## 11. Slurm の基本操作
 
-Slurm は HPC クラスターで広く使用されているジョブスケジューラです。ここでは、分散学習ジョブを実行するための基本的なコマンドを解説します。
+Slurm は HPC クラスターで広く使用されているジョブスケジューラです。
 
-### クラスターの状態確認
+:::message
+- [ ] 11-1. クラスターの状態確認
+- [ ] 11-2. srun による対話的なジョブ実行
+- [ ] 11-3. sbatch によるバッチジョブの投入
+- [ ] 11-4. salloc によるリソースの対話的な割り当て
+:::
 
-**ノードの状態を確認**
+::::details 11-1. クラスターの状態確認
+
+:::message
+なんのための作業か: Slurm クラスターのノード状態を確認し、Compute Node が正常に起動して利用可能な状態であることを確認します。
+:::
+
+:::message
+次のステップに進む条件: `sinfo` コマンドでノードの STATE が "idle" または "alloc" と表示され、設定したノード数が確認できること。
+:::
+
+ノードの状態を確認します。
 
 ```bash
 sinfo
@@ -569,82 +915,79 @@ sinfo
 
 ```
 PARTITION AVAIL  TIMELIMIT  NODES  STATE NODELIST
-compute-gpu*  up   infinite      8   idle compute-gpu-distributed-ml-[1-8]
+compute-gpu*  up   infinite      3   idle compute-gpu-distributed-ml-[1-3]
 ```
 
-- `PARTITION`: キュー名
-- `AVAIL`: パーティションの利用可能性
-- `NODES`: ノード数
-- `STATE`: ノードの状態（idle、allocated、down など）
-
-**詳細なノード情報を確認**
+詳細なノード情報を確認します。
 
 ```bash
 sinfo -N -l
 ```
+::::
 
-### srun: 対話的なジョブ実行
+::::details 11-2. srun による対話的なジョブ実行
 
-`srun` コマンドは、ジョブを対話的に実行するために使用します。コマンドを実行すると、リソースが割り当てられ、即座に実行されます。
+:::message
+なんのための作業か: `srun` コマンドを使用して、リソースを即座に割り当ててコマンドを実行します。開発やテスト時に便利なコマンドです。
+:::
 
-**基本的な使用例**
+:::message
+次のステップに進む条件: `srun hostname` コマンドが正常に実行され、Compute Node のホスト名が表示されること。
+:::
+
+基本的な使用例を試します。
 
 ```bash
 # 単一ノードで hostname を実行
 srun hostname
 
-# 2 ノード、各ノード 1 タスクで実行
-srun --nodes=2 --ntasks-per-node=1 hostname
+# 3 ノードで hostname を実行
+srun --nodes=3 --ntasks-per-node=1 hostname
 
-# GPU 情報の確認
-srun --nodes=1 --ntasks=1 --gpus-per-node=8 nvidia-smi
-```
-
-**MPI プログラムの実行**
-
-```bash
-# 2 ノード、各ノード 8 GPU で MPI プログラムを実行
-srun --nodes=2 \
-     --ntasks-per-node=8 \
-     --gpus-per-node=8 \
-     --mpi=pmix \
-     --cpu-bind=none \
-     ./my-training-script.sh
+# 2 ノード、各ノード 2 タスクで実行
+srun --nodes=2 --ntasks-per-node=2 hostname
 ```
 
 **主要なオプション**
 - `--nodes`: 使用するノード数
-- `--ntasks-per-node`: ノードあたりのタスク数（通常は GPU 数と同じ）
-- `--gpus-per-node`: ノードあたりの GPU 数
+- `--ntasks-per-node`: ノードあたりのタスク数
 - `--mpi`: MPI の実装（pmix、pmi2 など）
 - `--cpu-bind`: CPU バインディングの方法（none、cores、threads など）
+::::
 
-### sbatch: バッチジョブの投入
+::::details 11-3. sbatch によるバッチジョブの投入
 
-`sbatch` コマンドは、バッチジョブをキューに投入するために使用します。スクリプトファイルを指定し、ジョブはスケジューラーによって管理されます。
+:::message
+なんのための作業か: `sbatch` コマンドを使用して、バッチジョブをキューに投入します。スクリプトファイルを作成し、ジョブをスケジューラーに管理させることで、長時間実行するジョブを効率的に処理できます。
+:::
 
-**バッチスクリプトの例**（nccl-test.sbatch）
+:::message
+次のステップに進む条件: `sbatch` コマンドでジョブが正常に投入され、ジョブ ID が返されること。`squeue` コマンドでジョブの状態が確認できること。
+:::
+
+バッチスクリプトを作成します（test-job.sbatch）。
 
 ```bash
+cat << 'EOF' > test-job.sbatch
 #!/bin/bash
 
-#SBATCH --job-name=nccl-test
+#SBATCH --job-name=test-job
 #SBATCH --nodes=2
-#SBATCH --ntasks-per-node=8
-#SBATCH --gpus-per-node=8
+#SBATCH --ntasks-per-node=2
 #SBATCH --output=%x_%j.out
 #SBATCH --error=%x_%j.err
-#SBATCH --exclusive
-#SBATCH --wait-all-nodes=1
 
 # ジョブの内容
-srun --mpi=pmix /opt/nccl-tests/build/all_reduce_perf -b 8 -e 2G -f 2 -g 1
+srun hostname
+srun sleep 10
+srun date
+EOF
 ```
 
-**ジョブの投入**
+ジョブを投入します。
 
 ```bash
-sbatch nccl-test.sbatch
+sbatch test-job.sbatch
 ```
 
 出力例は以下のようになります。
@@ -653,37 +996,52 @@ sbatch nccl-test.sbatch
 Submitted batch job 123
 ```
 
+ジョブの状態を確認します。
+
+```bash
+squeue
+```
+
 **主要な #SBATCH ディレクティブ**
 - `--job-name`: ジョブの名前
 - `--nodes`: 使用するノード数
 - `--ntasks-per-node`: ノードあたりのタスク数
-- `--gpus-per-node`: ノードあたりの GPU 数
 - `--output`: 標準出力のファイル名（%x はジョブ名、%j はジョブ ID）
 - `--error`: 標準エラー出力のファイル名
-- `--exclusive`: ノード全体を専有する
-- `--wait-all-nodes`: 全ノードが準備完了するまで待機
+::::
 
-### salloc: リソースの対話的な割り当て
+::::details 11-4. salloc によるリソースの対話的な割り当て
 
-`salloc` コマンドは、対話的なセッション用にリソースを割り当てます。割り当てられたリソース上で複数のコマンドを実行できます。
+:::message
+なんのための作業か: `salloc` コマンドを使用して、対話的なセッション用にリソースを割り当てます。リソースを割り当てたまま複数のコマンドを試すことができ、開発やデバッグ時に便利です。
+:::
 
-**基本的な使用例**
+:::message
+次のステップに進む条件: `salloc` コマンドでリソースが割り当てられ、割り当てられたリソース上で `srun` コマンドが実行できること。
+:::
+
+リソースを割り当てます。
 
 ```bash
-# 2 ノード、各ノード 8 GPU を割り当て
-salloc --nodes=2 --ntasks-per-node=8 --gpus-per-node=8
-
-# 割り当てられたリソース上でコマンドを実行
-srun hostname
-srun nvidia-smi
-
-# セッションを終了
-exit
+# 2 ノードを割り当て
+salloc --nodes=2 --ntasks-per-node=2
 ```
 
-`salloc` は開発やデバッグ時に便利です。リソースを割り当てたまま、複数のコマンドを試すことができます。
+割り当てられたリソース上でコマンドを実行します。
 
-### ジョブの管理
+```bash
+srun hostname
+srun date
+```
+
+セッションを終了します。
+
+```bash
+exit
+```
+::::
+
+::::details ジョブ管理コマンドの参考
 
 **ジョブの状態を確認**（squeue）
 
@@ -698,19 +1056,6 @@ squeue -u $USER
 squeue -l
 ```
 
-出力例は以下のようになります。
-
-```
-JOBID PARTITION     NAME     USER ST       TIME  NODES NODELIST(REASON)
-  123 compute-g nccl-tes   ubuntu  R       1:23      2 compute-gpu-distributed-ml-[1-2]
-```
-
-- `JOBID`: ジョブ ID
-- `ST`: ジョブの状態（R: Running、PD: Pending、CG: Completing など）
-- `TIME`: 実行時間
-- `NODES`: 使用しているノード数
-- `NODELIST`: 使用しているノードのリスト
-
 **ジョブをキャンセル**（scancel）
 
 ```bash
@@ -719,9 +1064,6 @@ scancel 123
 
 # 自分の全ジョブをキャンセル
 scancel -u $USER
-
-# 特定のジョブ名をキャンセル
-scancel --name=nccl-test
 ```
 
 **ジョブの詳細情報を確認**（scontrol）
@@ -733,25 +1075,29 @@ scontrol show job 123
 # ノードの詳細を表示
 scontrol show node compute-gpu-distributed-ml-1
 ```
+::::
 
-## コンテナを使ったジョブ実行
+## 12. コンテナを使ったジョブ実行
 
-AWS ParallelCluster では、Enroot と Pyxis を使用してコンテナ化されたワークロードを Slurm 上で実行できます。これにより、環境の再現性と移植性が向上します。
+AWS ParallelCluster では、Enroot と Pyxis を使用してコンテナ化されたワークロードを Slurm 上で実行できます。
 
-### Enroot と Pyxis の概要
+:::message
+- [ ] 12-1. enroot import によるコンテナイメージの準備
+- [ ] 12-2. srun --container-image によるコンテナジョブの実行
+:::
+
+::::details Enroot と Pyxis の概要
 
 **Enroot**
-- NVIDIA が開発したコンテナランタイムです
-- Docker イメージを Squash ファイル形式に変換します
-- 高性能な HPC ワークロード向けに最適化されています
+- NVIDIA が開発したコンテナランタイム
+- Docker イメージを Squash ファイル形式に変換
+- 高性能な HPC ワークロード向けに最適化
 
 **Pyxis**
-- Enroot を Slurm と統合する Slurm プラグインです
-- `srun` コマンドで `--container-image` オプションを使用してコンテナを実行できます
+- Enroot を Slurm と統合する Slurm プラグイン
+- `srun` コマンドで `--container-image` オプションを使用してコンテナを実行可能
 
-### コンテナイメージの準備
-
-コンテナを使用するための基本的なワークフローは以下の通りです。
+### コンテナワークフロー
 
 ```mermaid
 graph LR
@@ -767,322 +1113,209 @@ graph LR
     style D fill:#4CAF50,color:#fff
     style E fill:#9C27B0,color:#fff
 ```
+::::
 
-### enroot import: Docker イメージから Squash ファイルへの変換
+::::details 12-1. enroot import によるコンテナイメージの準備
 
-`enroot import` コマンドは、Docker イメージを Squash ファイル形式（.sqsh）に変換します。Squash ファイルは読み取り専用の圧縮ファイルシステムイメージで、HPC 環境での配布と実行に最適化されています。
+:::message
+なんのための作業か: Docker イメージを Squash ファイル形式（.sqsh）に変換します。Squash ファイルは読み取り専用の圧縮ファイルシステムイメージで、HPC 環境での配布と実行に最適化されています。
+:::
 
-**ローカルの Docker イメージから変換**
+:::message
+次のステップに進む条件: `/fsx` ディレクトリに .sqsh ファイルが作成され、`ls -lh /fsx/*.sqsh` で確認できること。
+:::
 
-```bash
-# Docker イメージをビルド
-docker build -t my-training-image:latest .
-
-# Squash ファイルに変換
-enroot import -o /fsx/my-training-image.sqsh dockerd://my-training-image:latest
-```
-
-**Docker レジストリから直接変換**
+Docker レジストリから直接 Squash ファイルに変換します。
 
 ```bash
 # Docker Hub から変換
 enroot import -o /fsx/pytorch.sqsh docker://nvcr.io/nvidia/pytorch:24.07-py3
 
-# AWS ECR から変換
-enroot import -o /fsx/my-image.sqsh \
-  dockerd://123456789012.dkr.ecr.ap-northeast-1.amazonaws.com/my-image:latest
-
 # パブリック ECR から変換
-enroot import -o /fsx/nccl-tests.sqsh \
-  dockerd://public.ecr.aws/hpc-cloud/nccl-tests:latest
+enroot import -o /fsx/ubuntu.sqsh dockerd://public.ecr.aws/ubuntu/ubuntu:22.04
 ```
 
-**変換プロセス**
-1. Docker イメージの全レイヤーをダウンロード
-2. レイヤーを統合
-3. Squash ファイルシステムとして圧縮
-4. 指定されたパスに保存
-
-変換には数分から数十分かかる場合があります。進行状況は標準出力に表示されます。
-
-### srun --container-image: コンテナでジョブを実行
-
-`srun` コマンドに `--container-image` オプションを追加することで、コンテナ内でジョブを実行できます。
-
-**基本的な使用例**
+ローカルの Docker イメージから変換する場合は以下のようにします。
 
 ```bash
-# 単純なコマンドをコンテナ内で実行
-srun --nodes=1 \
-     --ntasks=1 \
-     --container-image=/fsx/pytorch.sqsh \
-     python --version
+# Docker イメージをビルド
+docker build -t my-image:latest .
 
-# GPU を使用してコマンドを実行
-srun --nodes=1 \
-     --ntasks=1 \
-     --gpus-per-node=8 \
-     --container-image=/fsx/pytorch.sqsh \
-     nvidia-smi
+# Squash ファイルに変換
+enroot import -o /fsx/my-image.sqsh dockerd://my-image:latest
 ```
 
-**ボリュームのマウント**（--container-mounts）
+作成されたファイルを確認します。
 
-ホストのディレクトリをコンテナ内にマウントするには、`--container-mounts` オプションを使用します。
+```bash
+ls -lh /fsx/*.sqsh
+```
+::::
+
+::::details 12-2. srun --container-image によるコンテナジョブの実行
+
+:::message
+なんのための作業か: `srun` コマンドに `--container-image` オプションを追加して、コンテナ内でジョブを実行します。ホストのディレクトリをマウントしたり、環境変数を設定したりできます。
+:::
+
+:::message
+次のステップに進む条件: コンテナ内でコマンドが正常に実行され、期待する出力が得られること。
+:::
+
+基本的な使用例を試します。
+
+```bash
+# コンテナ内でコマンドを実行
+srun --nodes=1 \
+     --ntasks=1 \
+     --container-image=/fsx/ubuntu.sqsh \
+     cat /etc/os-release
+```
+
+ホストのディレクトリをマウントして実行します。
 
 ```bash
 # /fsx ディレクトリをマウント
-srun --container-image=/fsx/pytorch.sqsh \
+srun --container-image=/fsx/ubuntu.sqsh \
      --container-mounts=/fsx:/fsx \
-     python /fsx/train.py
-
-# 複数のディレクトリをマウント
-srun --container-image=/fsx/pytorch.sqsh \
-     --container-mounts=/fsx:/fsx,/home/ubuntu:/workspace \
-     python /workspace/train.py
+     ls -la /fsx
 
 # カレントディレクトリをマウント
-srun --container-image=/fsx/pytorch.sqsh \
+srun --container-image=/fsx/ubuntu.sqsh \
      --container-mounts=$PWD:/work \
-     python /work/train.py
+     ls -la /work
 ```
 
-**環境変数の設定**
+環境変数を設定して実行します。
 
 ```bash
-# 環境変数を設定してコンテナを実行
-export NCCL_DEBUG=INFO
-export NCCL_SOCKET_IFNAME=eth0
+# 環境変数を設定
+export MY_VAR="test value"
 
-srun --container-image=/fsx/pytorch.sqsh \
-     --container-mounts=/fsx:/fsx \
+srun --container-image=/fsx/ubuntu.sqsh \
      --export=ALL \
-     python /fsx/train.py
-```
-
-`--export=ALL` オプションは、ホストの全環境変数をコンテナに渡します。
-
-**MPI を使用した分散実行**
-
-```bash
-# 2 ノード、各ノード 8 GPU で分散学習を実行
-srun --nodes=2 \
-     --ntasks-per-node=8 \
-     --gpus-per-node=8 \
-     --mpi=pmix \
-     --cpu-bind=none \
-     --container-image=/fsx/pytorch.sqsh \
-     --container-mounts=/fsx:/fsx \
-     python /fsx/train.py
+     bash -c 'echo $MY_VAR'
 ```
 
 **主要なオプション**
 - `--container-image`: 使用する Squash ファイルのパス
-- `--container-mounts`: ホストからコンテナへのマウントポイント（`host_path:container_path` 形式）
+- `--container-mounts`: ホストからコンテナへのマウント（`host_path:container_path` 形式、複数指定可能）
 - `--export`: 環境変数のエクスポート方法（ALL、NONE、または特定の変数名）
-- `--mpi`: MPI の実装タイプ
+::::
 
-## 実践例：NCCL テスト
+## 13. 実践例：簡易的な分散ジョブの実行
 
-NCCL（NVIDIA Collective Communications Library）テストは、GPU 間の通信性能を評価するためのベンチマークツールです。ここでは、AWS ParallelCluster 上で NCCL テストを実行する手順を解説します。
+:::message
+- [ ] 13-1. 分散ジョブスクリプトの作成と実行
+:::
 
-### NCCL テストの概要
+::::details 13-1. 分散ジョブスクリプトの作成と実行
 
-NCCL テストは以下の通信パターンを評価できます。
+:::message
+なんのための作業か: 複数ノードにまたがる簡単な分散ジョブを実行して、Slurm の動作を確認します。MPI を使用した並列実行の基本を理解します。
+:::
 
-| テスト名 | 説明 |
-|---------|------|
-| all_reduce_perf | 全 GPU でデータを集約し、結果を全 GPU に配布 |
-| all_gather_perf | 全 GPU からデータを収集し、全 GPU に配布 |
-| broadcast_perf | 1 つの GPU から全 GPU にデータをブロードキャスト |
-| reduce_perf | 全 GPU からデータを集約し、1 つの GPU に結果を配布 |
-| reduce_scatter_perf | データを分割して各 GPU に配布 |
-| alltoall_perf | 全 GPU 間でデータを交換 |
-| scatter_perf | 1 つの GPU から全 GPU にデータを分散 |
-| gather_perf | 全 GPU からデータを収集し、1 つの GPU に集約 |
+:::message
+次のステップに進む条件: ジョブが正常に実行され、全ノードからの出力が確認できること。
+:::
 
-### コンテナイメージの準備
-
-まず、NCCL テスト用のコンテナイメージを準備します。
-
-**方法 1: パブリック ECR から取得**
+分散ジョブスクリプトを作成します。
 
 ```bash
-# パブリック ECR から NCCL テストイメージを取得
-enroot import -o /fsx/nccl-tests.sqsh \
-  dockerd://public.ecr.aws/hpc-cloud/nccl-tests:efa1.43.2-ofi1.16.3-nccl2.27.7-1-tests2.16.9
-```
-
-**方法 2: 自分でビルド**
-
-サンプルリポジトリには Dockerfile が含まれています。
-
-```bash
-# リポジトリディレクトリに移動
-cd awsome-distributed-training/micro-benchmarks/nccl-tests
-
-# バージョンを指定
-export GDRCOPY_VERSION=v2.5.1
-export EFA_INSTALLER_VERSION=1.43.2
-export AWS_OFI_NCCL_VERSION=v1.16.3
-export NCCL_VERSION=v2.27.7-1
-export NCCL_TESTS_VERSION=v2.16.9
-export TAG="efa${EFA_INSTALLER_VERSION}-ofi${AWS_OFI_NCCL_VERSION}-nccl${NCCL_VERSION}-tests${NCCL_TESTS_VERSION}"
-
-# Docker イメージをビルド
-docker build -f nccl-tests.Dockerfile \
-  --build-arg="EFA_INSTALLER_VERSION=${EFA_INSTALLER_VERSION}" \
-  --build-arg="AWS_OFI_NCCL_VERSION=${AWS_OFI_NCCL_VERSION}" \
-  --build-arg="NCCL_VERSION=${NCCL_VERSION}" \
-  --build-arg="NCCL_TESTS_VERSION=${NCCL_TESTS_VERSION}" \
-  -t nccl-tests:${TAG} \
-  .
-
-# Squash ファイルに変換
-enroot import -o /fsx/nccl-tests.sqsh dockerd://nccl-tests:${TAG}
-```
-
-### Slurm スクリプトの作成
-
-以下のような Slurm スクリプトを作成します（`nccl-test.sbatch`）。
-
-```bash
+cat << 'EOF' > distributed-job.sbatch
 #!/bin/bash
 
-#SBATCH --job-name=nccl-allreduce
-#SBATCH --nodes=2
-#SBATCH --ntasks-per-node=8
-#SBATCH --gpus-per-node=8
+#SBATCH --job-name=distributed-test
+#SBATCH --nodes=3
+#SBATCH --ntasks-per-node=2
 #SBATCH --output=%x_%j.out
 #SBATCH --error=%x_%j.err
-#SBATCH --exclusive
-#SBATCH --wait-all-nodes=1
-#SBATCH --ntasks-per-core=1
 
-# 環境変数の設定
-export APPS_PATH=/fsx
-export IMAGE=${APPS_PATH}/nccl-tests.sqsh
-export NCCL_TESTS_PATH=/opt/nccl-tests/build
+echo "=== ジョブ開始 ==="
+echo "ジョブ ID: $SLURM_JOB_ID"
+echo "ノード数: $SLURM_JOB_NUM_NODES"
+echo "総タスク数: $SLURM_NTASKS"
 
-# EFA の設定
-export FI_PROVIDER=efa
-export FI_EFA_FORK_SAFE=1
+# 各ノードでホスト名を表示
+srun hostname
 
-# NCCL の設定
-export NCCL_DEBUG=INFO
+# 各ノードで簡単な計算を実行
+srun bash -c 'echo "Node: $(hostname), Task: $SLURM_PROCID, Result: $((SLURM_PROCID * 100))"'
 
-# パフォーマンス最適化
-export NCCL_BUFFSIZE=8388608
-export NCCL_P2P_NET_CHUNKSIZE=524288
-export NCCL_TUNER_PLUGIN=/opt/amazon/ofi-nccl/lib/$(uname -m)-linux-gnu/libnccl-ofi-tuner.so
-
-# ホスト名とインスタンス ID を表示
-mpirun -N 1 bash -c 'echo $(hostname): $(cat /sys/devices/virtual/dmi/id/board_asset_tag | tr -d " ")'
-
-# NCCL テストを実行
-srun --mpi=pmix \
-     --cpu-bind=none \
-     --container-image=${IMAGE} \
-     ${NCCL_TESTS_PATH}/all_reduce_perf \
-     -b 8 -e 16G -f 2 -g 1 -c 1 -n 100
+echo "=== ジョブ終了 ==="
+EOF
 ```
 
-**スクリプトの説明**
-
-- `-b 8`: テストの開始サイズ（8 バイト）
-- `-e 16G`: テストの終了サイズ（16 GB）
-- `-f 2`: サイズの増加係数（2 倍ずつ増加）
-- `-g 1`: GPU あたりのテスト数
-- `-c 1`: チェックを有効化
-- `-n 100`: 各サイズでのイテレーション数
-
-**重要な環境変数**
-
-- `FI_PROVIDER=efa`: EFA を通信プロバイダーとして使用
-- `FI_EFA_FORK_SAFE=1`: フォーク後の EFA 使用を許可
-- `NCCL_DEBUG=INFO`: NCCL のデバッグ情報を出力
-- `NCCL_BUFFSIZE`: 送信キューの深さを増やし、通信を非ブロッキング化
-- `NCCL_P2P_NET_CHUNKSIZE`: P2P 通信のバッファサイズを最適化
-- `NCCL_TUNER_PLUGIN`: AWS 最適化されたチューニングプラグインを使用
-
-### ジョブの投入と結果の確認
+ジョブを投入します。
 
 ```bash
-# ジョブを投入
-sbatch nccl-test.sbatch
+sbatch distributed-job.sbatch
+```
 
-# ジョブの状態を確認
+ジョブの状態を確認します。
+
+```bash
 squeue
-
-# 出力ファイルを確認
-tail -f nccl-allreduce_<job-id>.out
 ```
 
-### 結果の解釈
-
-テストが完了すると、以下のような出力が得られます（p5.48xlarge × 2 ノードの例）。
-
-```
-#       size         count      type   redop    root     time   algbw   busbw #wrong
-#        (B)    (elements)                               (us)  (GB/s)  (GB/s)       
-           8             2     float     sum      -1    69.12    0.00    0.00      0
-          16             4     float     sum      -1    72.64    0.00    0.00      0
-         ...
-    67108864      16777216     float     sum      -1    601.5  111.57  209.19      0
-   134217728      33554432     float     sum      -1    870.3  154.22  289.16      0
-   268435456      67108864     float     sum      -1   1468.2  182.83  342.81      0
-   536870912     134217728     float     sum      -1   2559.2  209.78  393.34      0
-  1073741824     268435456     float     sum      -1   4607.6  233.04  436.95      0
-  2147483648     536870912     float     sum      -1   9074.5  236.65  443.72      0
-  4294967296    1073741824     float     sum      -1  17286.0  248.46  465.87      0
-  8589934592    2147483648     float     sum      -1  33605.0  255.62  479.28      0
- 17179869184    4294967296     float     sum      -1  66132.0  259.78  487.09      0
-```
-
-**列の説明**
-
-- `size`: 転送するデータサイズ（バイト）
-- `count`: 要素数
-- `type`: データ型（float、half など）
-- `time`: 操作の実行時間（マイクロ秒）
-- `algbw`: アルゴリズム帯域幅（GB/s）。データサイズを時間で割った値
-- `busbw`: バス帯域幅（GB/s）。実際のネットワークトラフィックを反映した値
-- `#wrong`: エラーの数
-
-**パフォーマンスの評価**
-
-all_reduce では、バス帯域幅は以下の式で計算されます。
-
-```
-busbw = algbw × (2 × (n - 1) / n)
-```
-
-ここで n はランク数（GPU 数）です。
-
-p5.48xlarge インスタンスの理論的な EFA 帯域幅は以下の通りです。
-
-- インスタンス内（NVLink）: 900 GB/s
-- インスタンス間（EFA）: 3200 Gbps（400 GB/s）
-
-大きなデータサイズ（数 GB 以上）での busbw が 400 GB/s に近い値を示していれば、ネットワーク性能が十分に発揮されていることを示します。
-
-### 他の通信パターンのテスト
-
-all_reduce 以外の通信パターンをテストするには、スクリプト内の実行ファイルを変更します。
+出力ファイルを確認します（ジョブ ID は実際の値に置き換えてください）。
 
 ```bash
-# all_gather をテスト
-${NCCL_TESTS_PATH}/all_gather_perf -b 8 -e 16G -f 2 -g 1
-
-# broadcast をテスト
-${NCCL_TESTS_PATH}/broadcast_perf -b 8 -e 16G -f 2 -g 1
-
-# reduce_scatter をテスト
-${NCCL_TESTS_PATH}/reduce_scatter_perf -b 8 -e 16G -f 2 -g 1
-
-# alltoall をテスト
-${NCCL_TESTS_PATH}/alltoall_perf -b 8 -e 16G -f 2 -g 1
+cat distributed-test_*.out
 ```
+::::
+
+## 14. クラスターの削除
+
+:::message
+- [ ] 14-1. クラスターの削除
+- [ ] 14-2. 前提条件インフラの削除（オプション）
+:::
+
+::::details 14-1. クラスターの削除
+
+:::message
+なんのための作業か: 使用が終わったクラスターを削除して、コストの発生を停止します。Head Node と Compute Node が削除されます。
+:::
+
+:::message
+次のステップに進む条件: `pcluster list-clusters` コマンドでクラスターのステータスが "DELETE_COMPLETE" になること。削除には 5 から 10 分かかります。
+:::
+
+クラスターを削除します。
+
+```bash
+pcluster delete-cluster \
+    --cluster-name ${CLUSTER_NAME} \
+    --region ${AWS_REGION}
+```
+
+削除の進行状況を確認します。
+
+```bash
+pcluster list-clusters --region ${AWS_REGION}
+```
+::::
+
+::::details 14-2. 前提条件インフラの削除（オプション）
+
+:::message
+なんのための作業か: VPC、FSx ファイルシステムなどの基盤インフラストラクチャを削除します。これらのリソースは他のクラスターでも再利用できるため、必要に応じて削除してください。
+:::
+
+:::message
+次のステップに進む条件: CloudFormation コンソールでスタックが DELETE_COMPLETE 状態になること。
+:::
+
+CloudFormation スタックを削除します。
+
+1. [CloudFormation コンソール](https://console.aws.amazon.com/cloudformation)に移動
+2. `parallelcluster-prerequisites` スタックを選択
+3. "Delete" をクリック
+4. 削除の完了を待機（10 から 15 分）
+
+S3 バケットを作成した場合は、同様に `cluster-data-bucket` スタックも削除できます（バケット内のオブジェクトを事前に削除する必要があります）。
+::::
 
 ## まとめ
 
@@ -1090,10 +1323,10 @@ ${NCCL_TESTS_PATH}/alltoall_perf -b 8 -e 16G -f 2 -g 1
 
 **主要なポイント**
 
-1. **アーキテクチャ**: Head Node と Compute Node の 2 層構造により、効率的なリソース管理を実現します
-2. **Shared Storage**: FSx for Lustre による高性能ストレージと FSx for OpenZFS によるホームディレクトリの分離により、用途に応じた最適なストレージを使用できます
-3. **Slurm コマンド**: srun、sbatch、salloc などのコマンドにより、柔軟なジョブ管理が可能です
-4. **コンテナ統合**: Enroot と Pyxis により、コンテナ化されたワークロードを効率的に実行できます
-5. **パフォーマンス検証**: NCCL テストにより、ネットワーク性能を定量的に評価できます
+1. **アーキテクチャ**: Head Node と Compute Node の 2 層構造により、効率的なリソース管理を実現
+2. **Shared Storage**: FSx for Lustre による高性能ストレージと FSx for OpenZFS によるホームディレクトリの分離により、用途に応じた最適なストレージを使用可能
+3. **Slurm コマンド**: srun、sbatch、salloc などのコマンドにより、柔軟なジョブ管理が可能
+4. **コンテナ統合**: Enroot と Pyxis により、コンテナ化されたワークロードを効率的に実行可能
+5. **段階的な構築**: ::::details と :::message を使用した明確な手順により、各ステップの目的と次への条件が明確
 
 AWS ParallelCluster は、オンプレミスの HPC クラスターと同様の使用感を保ちながら、AWS のスケーラビリティと柔軟性を活用できる強力なツールです。本章で学んだ内容をもとに、実際の分散学習ワークロードを効率的に実行できるようになります。
