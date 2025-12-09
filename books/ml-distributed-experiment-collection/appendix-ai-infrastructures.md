@@ -6,6 +6,46 @@ topics: ["aws", "sagemaker", "hyperpod", "ai", "ml"]
 free: false
 ---
 
+::::details AWS Network
+
+https://newsletter.semianalysis.com/p/aws-trainium3-deep-dive-a-potential
+
+AWS が rail optimized ではなく ToR (Top of Rack) スイッチアーキテクチャを採用している理由は、同社の「performance per TCO の最適化」という設計思想に基づいています。
+
+## ToR 採用の主な理由
+
+### 1. コスト削減
+記事によると、ToR スイッチを第一層に配置することで、チップと最初のスイッチ層の間の光ファイバーリンクを銅線ケーブル (copper cables) に置き換えることができます。これにより、全体的なネットワークコストを大幅に削減できます。
+
+### 2. 運用の柔軟性
+ToR の余剰アップリンクポートを活用することで、以下のような用途に利用できる柔軟性があります:
+- 上位層へのアンダーサブスクリプション
+- フォールトトレランスの確保
+- 仮想レールの実装
+- 他のサービスへの接続
+
+### 3. AWS の設計哲学
+AWS は「fastest time to market at the lowest TCO」を北極星として掲げており、絶対的な性能よりも TCO あたりの性能を重視しています。記事では次のように述べられています:
+
+> "AWS prefers ToR switches for the first switch layer where possible. This reduces overall networking costs by substituting optical links with copper cables between the chip and the first switch layer."
+
+## Rail Optimized との比較
+
+Nvidia の InfiniBand や Spectrum Ethernet のリファレンスアーキテクチャは、GPU 間のスイッチホップ数を減らすために rail-optimized clos トポロジーを採用しています。しかし、AWS は追加のホップによるレイテンシ増加よりも、コスト削減と運用の柔軟性を優先しています。
+
+## AWS 独自の最適化
+
+さらに、AWS は以下の技術で ToR アーキテクチャの欠点を補っています:
+
+1. **EFA (Elastic Fabric Adaptor) の SRD プロトコル**: マルチパス送信と輻輳制御により、大容量バッファスイッチなしでも大規模ネットワークファブリックを構築可能
+
+2. **高 radix ネットワーク**: デフォルトで 100G 論理ポートを使用することで、12.8T スイッチでも大規模なクラスタ (最大 524,288 GPU in 3-layer network) を構築可能
+
+3. **ViaPhoton カスタム光配線**: 複雑な 100G リンクの配線を効率化
+
+記事では「AWS claims that this tradeoff is worth it」と結論づけています。つまり、AWS は意図的にこのトレードオフを選択しており、コストと柔軟性のメリットが、追加のスイッチホップによるデメリットを上回ると判断しているということです。
+::::
+
 ::::details EFA の裏側
 # AWS Elastic Fabric Adapter (EFA) -- 入門: 高性能ネットワーキング技術の詳細解説
 
