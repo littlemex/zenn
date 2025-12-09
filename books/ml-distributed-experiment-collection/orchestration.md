@@ -486,7 +486,7 @@ ParallelCluster はセルフマネージドであり、以下の点に注意が�
 
 AWS は Slurm/Kubernetes をオーケストレーターとした 4 つのソリューションを提供しており、用途に応じた選択が可能です。Amazon SageMaker HyperPod は Slurm 版と EKS 版の両方を提供し、自動ヘルスモニタリング、自動リカバリー、Checkpointless Training によるリカバリー時間の 80% 削減など、フルマネージドの利点を活かした機能を備えています。特に EKS 版は MIG サポート、Spot インスタンス対応、Managed Tiered KV Cache による推論最適化など、クラウドネイティブな機能が充実しています。AWS ParallelCluster は従来の HPC ワークロード向けにセルフマネージドな柔軟性を提供し、Amazon EKS は汎用的なコンテナオーケストレーションとして位置づけられます。
 
-次章では AWS ParallelCluster のシンプルなハンズオンを実施し、その次の章で Amazon SageMaker HyperPod について紹介します。
+次章では AWS ParallelCluster のシンプルなハンズオンを実施します。
 
 ## FAQ
 
