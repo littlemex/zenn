@@ -41,7 +41,7 @@ https://docs.aws.amazon.com/ja_jp/parallelcluster/latest/ug/troubleshooting-v3.h
 
 # AWS ParallelCluster による分散学習環境の構築
 
-本章では、AWS ParallelCluster 環境の構築方法を解説します。本章では最低限の動作確認を目的とした構成を紹介します（Head Node: m5.2xlarge、Compute Node: m5.xlarge × 3 台）。実際の分散学習では GPU インスタンス（p5.48xlarge など）を使用し、より大規模な構成が必要になります。
+本章では、AWS ParallelCluster 環境の構築方法を解説します。本章では最低限の動作確認を目的とした構成を紹介します（Head Node: c5.9xlarge、Compute Node: c5n.9xlarge × 3 台）。実際の分散学習では GPU インスタンス（p5.48xlarge など）を使用し、より大規模な構成が必要になります。
 
 ## アーキテクチャ概要
 
@@ -263,13 +263,44 @@ pcluster version
 ## 3. インスタンスとキャパシティの設定
 
 :::message
-- [ ] 3-1. Compute Node の設定
+- [ ] 3-1. Head Node と Compute Node の設定
 :::
 
-::::details 3-1. Compute Node の設定
+::::details 3-1. Head Node と Compute Node の設定
 
 :::message
-なんのための作業か: Compute Node のインスタンスタイプ、ノード数、アベイラビリティーゾーンを設定します。最低限の動作確認では m5.xlarge を使用し、GPU インスタンスを使用する場合は Capacity Reservation の設定も行います。
+なんのための作業か: Head Node と Compute Node のインスタンスタイプ、ノード数、アベイラビリティーゾーンを設定します。分散学習では EFA（Elastic Fabric Adapter）を使用した低レイテンシ通信が重要なため、Compute Node には EFA 対応インスタンスを選択する必要があります。
+:::
+
+:::message alert
+**EFA 対応インスタンスの選択について**
+
+AWS ParallelCluster で分散学習を行う場合、ノード間の低レイテンシ通信のために EFA（Elastic Fabric Adapter）の使用を強く推奨します。
+
+**EFA 対応インスタンスの確認方法**
+
+以下のコマンドで EFA 対応インスタンスの一覧を確認できます。
+
+```bash
+aws ec2 describe-instance-types \
+    --region ${AWS_REGION} \
+    --filters Name=network-info.efa-supported,Values=true \
+    --query "InstanceTypes[*].[InstanceType]" \
+    --output text | sort
+```
+
+**主要な EFA 対応インスタンスファミリー**
+- GPU インスタンス: p4d、p4de、p5、trn1、trn1n
+- CPU インスタンス: c5n、c6i（大型サイズ）、c6in、c7i（大型サイズ）、m6i（大型サイズ）、r6i（大型サイズ）、hpc7a
+
+**対応 OS とカーネル要件**
+- Amazon Linux 2、Ubuntu 18.04/20.04/22.04、RHEL 7.6 以降、CentOS 7.6 以降
+- カーネル 3.10 以降（推奨: 4.14 以降）
+- 詳細は [EFA 公式ドキュメント](https://docs.aws.amazon.com/ja_jp/AWSEC2/latest/UserGuide/efa.html)を参照
+
+**注意事項**
+- EFA 非対応のインスタンスを選択した場合、クラスター作成時にエラーが発生します
+- 動作確認用には c5n.9xlarge（36 vCPU、96 GiB メモリ）、本番では p5.48xlarge などの GPU インスタンスを推奨
 :::
 
 :::message
@@ -281,10 +312,12 @@ pcluster version
 ```bash
 # 最低限の動作確認用構成
 export AZ=ap-northeast-1a  # 使用するアベイラビリティーゾーン
+export HEAD_NODE_INSTANCE_TYPE=c5.9xlarge  # Head Node のインスタンスタイプ
 export NUM_INSTANCES=3  # Compute Node 数
-export INSTANCE=m5.xlarge  # Compute Node のインスタンスタイプ
+export INSTANCE=c5n.9xlarge  # Compute Node のインスタンスタイプ（EFA 対応）
 
 yq -i ".AZ = \"$AZ\"" ${CONFIG_DIR}/config.yaml
+yq -i ".HEAD_NODE_INSTANCE_TYPE = \"$HEAD_NODE_INSTANCE_TYPE\"" ${CONFIG_DIR}/config.yaml
 yq -i ".NUM_INSTANCES = \"$NUM_INSTANCES\"" ${CONFIG_DIR}/config.yaml
 yq -i ".INSTANCE = \"$INSTANCE\"" ${CONFIG_DIR}/config.yaml
 ```
@@ -300,11 +333,13 @@ GPU インスタンスを使用する場合は、追加で Capacity Reservation 
 ```bash
 export CAPACITY_RESERVATION_ID=cr-0123456789abcdef0  # Capacity Reservation ID
 export AZ=ap-northeast-1a  # アベイラビリティーゾーン
+export HEAD_NODE_INSTANCE_TYPE=c5n.9xlarge  # Head Node のインスタンスタイプ（より大きいサイズ推奨）
 export NUM_INSTANCES=8  # ノード数
-export INSTANCE=p5.48xlarge  # インスタンスタイプ
+export INSTANCE=p5.48xlarge  # Compute Node のインスタンスタイプ（EFA 対応）
 
 yq -i ".CAPACITY_RESERVATION_ID = \"$CAPACITY_RESERVATION_ID\"" ${CONFIG_DIR}/config.yaml
 yq -i ".AZ = \"$AZ\"" ${CONFIG_DIR}/config.yaml
+yq -i ".HEAD_NODE_INSTANCE_TYPE = \"$HEAD_NODE_INSTANCE_TYPE\"" ${CONFIG_DIR}/config.yaml
 yq -i ".NUM_INSTANCES = \"$NUM_INSTANCES\"" ${CONFIG_DIR}/config.yaml
 yq -i ".INSTANCE = \"$INSTANCE\"" ${CONFIG_DIR}/config.yaml
 ```
@@ -579,6 +614,25 @@ aws fsx describe-data-repository-associations \
 なんのための作業か: CloudFormation スタックから VPC ID、Subnet ID、FSx ID などの情報を取得し、既存の config.yaml にマージします。これらの情報はクラスター設定ファイルの生成に必要です。
 :::
 
+:::message alert
+**設定ファイルの再利用について**
+
+このステップで作成される `config.yaml` には、インフラストラクチャ（VPC、FSx など）とクラスター設定（インスタンスタイプ、リージョンなど）の全ての情報が含まれます。
+
+**一度このファイルを作成すれば、以下の状況で再利用できます**
+- 同じインフラストラクチャで異なる設定のクラスターを作成する場合
+- クラスターを削除して再度作成する場合
+- インスタンスタイプやノード数など、一部の設定のみを変更する場合
+
+**再利用時の手順**
+1. 仮想環境を有効化: `source ${VIRTUAL_ENV_PATH}/bin/activate`
+2. 環境変数を読み込み: `eval $(yq e 'to_entries | .[] | "export " + .key + "=\"" + .value + "\""' ${CONFIG_DIR}/config.yaml)`
+3. 必要に応じて環境変数を変更（例: `export NUM_INSTANCES=5`）
+4. セクション 8-2 以降の手順を実行
+
+これにより、インフラストラクチャの再構築をスキップして、クラスター設定のみを効率的に更新できます。
+:::
+
 :::message
 次のステップに進む条件: `config.yaml` に CloudFormation の全出力（PublicSubnet、PrimaryPrivateSubnet、FSxLustreFilesystemId、FSxORootVolumeId、SecurityGroup など）が追加されていること。
 :::
@@ -619,7 +673,7 @@ AWS_REGION: ap-northeast-1
 PCLUSTER_VERSION: 3.13.1
 AZ: ap-northeast-1a
 NUM_INSTANCES: "3"
-INSTANCE: m5.xlarge
+INSTANCE: c5n.9xlarge
 KEYPAIR_NAME: my-keypair
 DATA_BUCKET_NAME: cluster-data-bucket-ap-northeast-1-1765267989
 STACK_ID_VPC: parallelcluster-prerequisites
@@ -631,6 +685,7 @@ VPC: vpc-0c2cf596e382deb91
 FSxLustreFilesystemId: fs-002917c15943993c7
 SecurityGroup: sg-09f73a7cc2a170abc
 PublicSubnet: subnet-00738f6db68fa46d2
+HEAD_NODE_INSTANCE_TYPE: c5n.large
 ```
 ::::
 
@@ -664,6 +719,18 @@ fi
 
 ```bash
 cat cluster-templates/cluster-vanilla.yaml | envsubst > ${CONFIG_DIR}/cluster.yaml
+
+# Head Node のインスタンスタイプを設定
+if [ -n "${HEAD_NODE_INSTANCE_TYPE}" ]; then
+    echo "Head Node のインスタンスタイプを ${HEAD_NODE_INSTANCE_TYPE} に設定します"
+    yq eval ".HeadNode.InstanceType = \"${HEAD_NODE_INSTANCE_TYPE}\"" -i ${CONFIG_DIR}/cluster.yaml
+fi
+
+# CAPACITY_RESERVATION_ID が設定されていない場合は CapacityReservationTarget を削除
+if [ -z "${CAPACITY_RESERVATION_ID}" ]; then
+    echo "Capacity Reservation が設定されていないため、CapacityReservationTarget セクションを削除します"
+    yq eval 'del(.Scheduling.SlurmQueues[].ComputeResources[].CapacityReservationTarget)' -i ${CONFIG_DIR}/cluster.yaml
+fi
 ```
 
 生成された設定ファイルを確認します。
@@ -681,7 +748,7 @@ cat ${CONFIG_DIR}/cluster.yaml
 
 ```yaml
 HeadNode:
-  InstanceType: m5.2xlarge  # 8 vCPU, 32 GiB メモリ（動作確認用）
+  InstanceType: c5.9xlarge  # 36 vCPU, 72 GiB メモリ（動作確認用）
   Networking:
     SubnetId: ${PublicSubnet}
   Ssh:
@@ -703,7 +770,7 @@ HeadNode:
 ```
 
 **設定のポイント**
-- `InstanceType`: 動作確認では m5.2xlarge、本番では m5.8xlarge 以上を推奨
+- `InstanceType`: 動作確認では c5.9xlarge（36 vCPU、72 GiB メモリ）を推奨。c5n.large などの小さいインスタンスでは、CustomActions のスクリプト実行時にタイムアウトする可能性があります
 - `AdditionalIamPolicies`: SSM、S3、ECR へのアクセスを許可
 - `CustomActions.OnNodeConfigured`: Docker、NCCL、Pyxis を自動インストール
 
@@ -718,15 +785,18 @@ Scheduling:
     - Name: compute-gpu
       ComputeResources:
         - Name: distributed-ml
-          InstanceType: m5.xlarge  # 動作確認用
+          InstanceType: c5n.9xlarge  # 動作確認用（EFA 対応）
           MinCount: 3  # 最小ノード数
           MaxCount: 3  # 最大ノード数
+          Efa:
+            Enabled: true  # EFA を有効化
 ```
 
 **設定のポイント**
 - `ScaledownIdletime`: ノードがアイドル状態になってからスケールダウンするまでの時間
 - `MinCount`/`MaxCount`: 同じ値に設定するとキャパシティを維持
-- GPU インスタンスを使用する場合は `Efa.Enabled: true` と `CapacityReservationId` を設定
+- `Efa.Enabled`: EFA 対応インスタンスでは true に設定して低レイテンシ通信を有効化
+- GPU インスタンスを使用する場合は `CapacityReservationId` も設定
 
 ### Shared Storage 設定
 
@@ -805,6 +875,28 @@ AWS ParallelCluster CLI を使用して作成状況を確認します。
 
 ```bash
 pcluster list-clusters --region ${AWS_REGION}
+```
+
+```bash
+(pcluster_3.13.1_env) 2.aws-parallelcluster $ pcluster list-clusters --region ${AWS_REGION}
+/home/cloudshell-user/pcluster_3.13.1_env/lib/python3.9/site-packages/pcluster/api/controllers/common.py:20: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.
+  from pkg_resources import packaging
+
+{
+  "clusters": [
+    {
+      "clusterName": "ml-cluster",
+      "cloudformationStackStatus": "CREATE_IN_PROGRESS",
+      "cloudformationStackArn": "arn:aws:cloudformation:ap-northeast-1:XXXXXXXXX:stack/ml-cluster/531f6f90-d4df-11f0-80fa-062c6da0463d",
+      "region": "ap-northeast-1",
+      "version": "3.13.1",
+      "clusterStatus": "CREATE_IN_PROGRESS",
+      "scheduler": {
+        "type": "slurm"
+      }
+    }
+  ]
+}
 ```
 
 または CloudFormation コンソールで監視できます。
