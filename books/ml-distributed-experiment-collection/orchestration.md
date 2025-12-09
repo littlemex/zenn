@@ -346,7 +346,7 @@ graph TB
 
 ## Slurm OCI サポートの制限
 
-Slurm 公式ドキュメントから、この問題への対処法が明記されています。1. create/start: Slurm がコンテナの状態を常時ポーリングで確認、2. run: コンテナプロセスが直接 Slurm の子プロセスになる、の二種類の解決策があり、run 方式が推奨される。ポーリングの場合、ジョブ内で CPU リソースを消費し、ポーリング頻度によってコンテナ終了検知が遅れる可能性がある。
+Slurm 公式ドキュメントから、この問題への対処法が明記されています。1. create/start: Slurm がコンテナの状態を常時ポーリングで確認、2. run: コンテナプロセスが直接 Slurm の子プロセスになる、の二種類の解決策があり、run 方式が推奨される。ポーリングの場合、ジョブ内で CPU リソースを消費し、ポーリング頻度によってコンテナ終了検知が遅れる可能性があります。
 
 ## Enroot による根本的解決
 
@@ -403,33 +403,18 @@ graph TB
 
 ## Pyxis の役割
 
-Pyxis は Slurm SPANK プラグインとして、Enroot を Slurm に統合します。
+:::message
+Slurm SPANK は Slurm のプラグインシステムで、Slurm のジョブライフサイクルの特定のポイントで追加の処理を実行できる仕組み
+:::
 
-**重要な機能**:
+Slurm SPANK はわかりやすく説明すると Kubernetes の Hooks と類似の概念ですが、実装レベルはコンテナレベルではなくジョブレベルです。**Pyxis は Slurm SPANK プラグイン**として、Enroot を Slurm に統合します。
+
+**重要な機能**
 1. **排他的 GPU 割り当て**: 各ジョブに専用の GPU デバイスファイルを付与
 2. **自動クリーンアップ**: ジョブ終了時に確実にリソースを解放
 3. **プロセスツリー管理**: Slurm のジョブ制御に完全統合
 
----
-
-## 実践的な影響
-
-### Docker を使った場合の実際の問題例
-
-```bash
-# ユーザーがジョブを投入
-$ sbatch --container-image=myimage:latest myjob.sh
-
-# バックグラウンドで...
-# 1. Slurm が docker run を実行
-# 2. Docker daemon がコンテナを起動
-# 3. コンテナがクラッシュ
-# 4. Docker daemon は動作中
-# 5. Slurm はジョブが「実行中」と認識し続ける
-# 6. リソースがリークし、ゾンビジョブ化
-```
-
-### Enroot を使った場合の正常動作
+## Enroot + Pyxis を使った場合の動作
 
 ```bash
 # ユーザーがジョブを投入
@@ -444,484 +429,127 @@ $ sbatch --container-image=myimage.sqsh myjob.sh
 # 6. リソースが確実に解放される
 ```
 
----
+:::message
+Apptainer という Enroot + Pyxis と類似の仕組みも存在
+:::
+::::
+
+## AWS での Slurm/Kubernetes ソリューション
+
+:::message
+AWS ソリューションと AWS サービスが混在しているのでソリューションと呼称します。
+:::
+
+AWS は、Slurm と Kubernetes の両方をベースとしたソリューションを提供しています。
+
+### 4 つのソリューション比較
+
+以下の表は、各ソリューションの主要な特徴を比較したものです。
+
+| 項目 | HyperPod (Slurm) | HyperPod (EKS) | AWS ParallelCluster | Amazon EKS |
+|------|-----------------|----------------|-----------------|-----|
+| **オーケストレーター** | Slurm | Kubernetes | Slurm/SGE/Torque | Kubernetes |
+| **管理レベル** | フルマネージド | フルマネージド | セルフマネージド | マネージド K8s |
+| **自動リカバリー** | ✅ 自動 | ✅ 自動 | ❌ 手動 | ❌ 手動 |
+| **ヘルスモニタリング** | GPU/EFA/Storage | GPU/EFA/Storage | 基本的な死活監視 | カスタム実装 |
+| **Spot インスタンス** | ❌ 未対応 | ✅ 自動管理 | 手動設定 | 手動設定 |
+| **MIG サポート** | ❌ 未対応 | ✅ 自動管理 | 手動設定 | 手動設定 |
+| **主な用途** | 長期間 ML 訓練 | コンテナベース ML | HPC/バッチ処理 | 汎用コンテナ |
+
+AWS Parallel Cluster のみ本章で紹介し、Amazon SageMaker HyperPod はまるまる一章使って解説します。プレーンな Amazon EKS であえて学習環境を構築するニーズは少ないため割愛します。この他にも AWS Parallel Computing Service(AWS PCS) というフルマネージドで Slurm を利用できるサービスがあり、クラスター管理をマネージドにできますが、マネージドであるが故にクラスター作成数や Slurm 設定のカスタマイズ性などに制限があります。大規模基盤モデル開発においては研究用途としてどのようなカスタマイズが入るのかわからないこと、サービス提供するわけではないのでテンプレートさえ用意してしまえばマネージドの必然性が低いことなどを考えると個人の意見ですが大規模基盤モデル開発においては AWS Parallel Cluster を利用する方針で良いのではないかと思います。
+
+## AWS ParallelCluster
+
+AWS ParallelCluster は、HPC 向けのクラスター管理ツールで、CloudFormation による自動デプロイを提供します。HPC ワークロードや研究機関での利用に最適化されています。
+
+![](/images/books/ml-distributed-experiment-collection/pcluster.png)
+
+::::details 主要な特徴
+## 特徴
+**複数のジョブスケジューラーサポート**: Slurm, SGE (Sun Grid Engine), Torque をサポートします。既存の HPC 環境からの移行が容易です。
+**CloudFormation による自動デプロイ**: インフラストラクチャをコードとして管理し、一貫性のあるクラスタ環境を構築できます。設定ファイル (YAML) でクラスタの構成を定義し、コマンド一つでデプロイできます。
+**カスタム AMI とスクリプト**: カスタム Amazon Machine Image (AMI) や起動スクリプトにより、環境を柔軟にカスタマイズできます。特定のソフトウェアやライブラリをプリインストールしたイメージを作成できます。
+**[Auto Scaling](https://docs.aws.amazon.com/parallelcluster/latest/ug/what-is-aws-parallelcluster.html)**: ジョブの負荷に応じて計算ノードを自動的に追加・削除し、コストを最適化します。アイドル状態のノードは自動的にシャットダウンされます。
+
+## 制約と考慮事項
+
+ParallelCluster はセルフマネージドであり、以下の点に注意が必要です。
+
+**自動リカバリー**: EC2 ヘルスチェックに基づく基本的な自動リカバリーが実装されています。ノード障害を検知すると自動的にドレイン処理を行い、ジョブ完了後に新しいノードへ置換します。
+**ヘルスチェック**: ノード死活監視は自動的に行われ、有効化すれば ParallelCluster 3.6.0 以降では、[DCGM Level 2](https://docs.nvidia.com/datacenter/dcgm/latest/user-guide/dcgm-diagnostics.html) による GPU ヘルスチェック機能が利用可能
+**ML 特化機能の限定**: HyperPod のような ML 特化の機能 (Checkpointless Training, Elastic Training など) は提供されません。
+::::
 
 ## まとめ
 
-ご指摘の通り、**Docker のデーモンアーキテクチャは Slurm のジョブ制御と根本的に相性が悪い**です。Enroot はこの問題を以下の方法で解決しています。
+大規模基盤モデル学習のインフラオーケストレーションには、Slurm と Kubernetes という 2 つの主要な選択肢があることを紹介しました。そしてそれらの選択の判断基準を示しました。ただし Slurm でコンテナを利用する場合は、Docker との相性問題に注意が必要であり、Enroot と Pyxis の組み合わせによる解決策が推奨されます。
 
-1. **デーモンレス設計**: プロセスツリーの一体化
-2. **直接実行**: Slurm が親プロセスとして管理
-3. **シグナル伝播**: 終了・異常を即座に検知
-4. **確実なクリーンアップ**: ゾンビ化・リーク防止
+AWS は Slurm/Kubernetes をオーケストレーターとした 4 つのソリューションを提供しており、用途に応じた選択が可能です。Amazon SageMaker HyperPod は Slurm 版と EKS 版の両方を提供し、自動ヘルスモニタリング、自動リカバリー、Checkpointless Training によるリカバリー時間の 80% 削減など、フルマネージドの利点を活かした機能を備えています。特に EKS 版は MIG サポート、Spot インスタンス対応、Managed Tiered KV Cache による推論最適化など、クラウドネイティブな機能が充実しています。AWS ParallelCluster は従来の HPC ワークロード向けにセルフマネージドな柔軟性を提供し、Amazon EKS は汎用的なコンテナオーケストレーションとして位置づけられます。
 
-この技術的優位性が、**HPC 環境で Enroot + Pyxis が Docker より推奨される最大の理由**です。
-::::
+次章では AWS ParallelCluster のシンプルなハンズオンを実施し、その次の章で Amazon SageMaker HyperPod について紹介します。
 
-::::details Slurm における推奨コンテナ技術
+## FAQ
 
-Slurm を用いた大規模学習でコンテナを利用したい場合、
-
-:::message alert
-**Docker ではなく** Pyxis/Enroot もしくは Apptainer でコンテナ利用できます。
+::::details AWS ParallelCluster FAQ
+:::message
+https://aws.amazon.com/jp/hpc/faqs/#aws-parallelcluster
+FAQ は日本語翻訳ですので変更の可能性があります。公式ページを確認ください。
 :::
 
-## 技術的な違いの詳細
+### なぜ AWS ParallelCluster を使用すべきですか？
+AWS でセルフマネージド HPC クラスターを実行および運用したい場合は、AWS ParallelCluster を使用すべきです。AWS ParallelCluster を使用して、HPC アプリケーションのテスト環境を構築したり、クラウドで HPC インフラストラクチャを構築するための出発点として使用したりできます。
 
-```mermaid
-graph TB
-    subgraph Docker["Docker"]
-        direction TB
-        DockerClient[docker CLI]
-        DockerDaemon[Docker Daemon<br/>root 権限で常駐]
-        Containerd[containerd]
-        Runc[runc]
-        
-        DockerClient -->|REST API| DockerDaemon
-        DockerDaemon --> Containerd
-        Containerd --> Runc
-    end
-    
-    subgraph Apptainer["Apptainer"]
-        direction TB
-        ApptainerCLI[apptainer CLI<br/>singularity → apptainer<br/>2021年に改名]
-        ApptainerRuntime[Apptainer Runtime<br/>ユーザー権限]
-        
-        ApptainerCLI --> ApptainerRuntime
-    end
-    
-    subgraph EnrootPyxis["Enroot + Pyxis"]
-        direction TB
-        Slurm[Slurm<br/>sbatch/srun]
-        Pyxis[Pyxis Plugin<br/>Slurm SPANK]
-        Enroot[Enroot<br/>軽量ランタイム]
-        
-        Slurm --> Pyxis
-        Pyxis --> Enroot
-    end
-    
-    style Docker fill:#e1f5ff
-    style Apptainer fill:#ffe1e1
-    style EnrootPyxis fill:#d4ffd4
-```
+### AWS ParallelCluster を使用することで恩恵を受けるアプリケーションのタイプは何ですか？
+MPI アプリケーションや NCCL を使用する機械学習アプリケーションなど、クラウド内で使い慣れたクラスターのような環境を必要とするハイパフォーマンスコンピューティングアプリケーションが、AWS ParallelCluster から最も恩恵を受ける可能性が高いです。
 
-*図: 各コンテナ技術のアーキテクチャ比較*
+### AWS ParallelCluster は他の AWS サービスとどのように関連/連携しますか？
+AWS ParallelCluster は、完全マネージド型の AWS バッチスケジューラーである AWS Batch と統合されています。AWS Batch は、リソースプロビジョニングという追加の利点を備えた、オンプレミスのバッチスケジューラーの「クラウドネイティブ」な代替と考えることができます。
 
+AWS ParallelCluster はまた、HPC クラスターのノード間で低レイテンシーのネットワーキングを必要とするアプリケーション向けの Elastic Fabric Adapter（EFA） とも統合されています。AWS ParallelCluster は、コンピューティングワークロード向けのスケーラブルなストレージを備えた高性能ファイルシステムである Amazon FSx for Lustre、および Amazon Elastic File System とも統合されています。
 
-## 詳細比較表
+### AWS ParallelCluster がクラスターを構築する際に何を作成しますか？
+AWS ParallelCluster は、ビルドと制御のためのヘッドノード、コンピュートインスタンスのクラスター、共有ファイルシステム、バッチスケジューラーをプロビジョニングします。カスタムのプレインストールおよびポストインストールブートストラップアクションを使用して、ユースケースを拡張およびカスタマイズすることもできます。
 
-| 特性 | Docker | Apptainer | Enroot | Enroot + Pyxis |
-|------|--------|----------------------|--------|----------------|
-| **デーモンプロセス** | 必要 | 不要 | 不要 | 不要 |
-| **root 権限** | 必要（rootless 可） | 不要 | 不要 | 不要 |
-| **Slurm 統合** | 複雑 | 可能 | 手動 | ネイティブ |
-| **GPU 分離** | 手動設定 | 手動設定 | 自動 | 自動（排他的） |
-| **イメージ形式** | Docker | SIF（独自）+ Docker 互換 | Squashfs | Squashfs |
-| **ストレージ形式** | レイヤー型 | 単一ファイル | 展開型ファイルツリー | 展開型ファイルツリー |
-| **マルチノード MPI** | 複雑 | 対応 | 対応 | ネイティブ対応 |
-| **開発元** | Docker, Inc. | Linux Foundation | NVIDIA | NVIDIA |
-| **主な用途** | 汎用 | HPC | HPC/AI | HPC/AI on Slurm |
+### AWS ParallelCluster ではどのバッチスケジューラーが動作しますか？
+AWS ParallelCluster は、AWS の完全マネージド型クラウドネイティブバッチスケジューラーである AWS Batch をサポートし、SLURM とも互換性があります。
 
+### AWS ParallelCluster ではどの Linux ディストリビューションがサポートされていますか？
+AWS ParallelCluster は現在、Amazon Linux 2、Ubuntu 18.04、CentOS 7、CentOS 8 と互換性があります。AWS ParallelCluster は、使用できるデフォルトの AMI のリスト（互換性のある Linux ディストリビューションごとにリージョンごとに 1 つ）を提供します。GovCloud および China パーティションでは、Linux ディストリビューションの可用性がより制限されていることに注意してください。https://docs.aws.amazon.com/parallelcluster/latest/ug/cluster-definition.html#base-os で AWS ParallelCluster ユーザーガイドを確認することで、ディストリビューションの互換性について詳しく知ることができます。
 
-### GPU 分離の違い
+さらに、クラスターが Amazon Linux 上で実行されている間、Python と AWS ParallelCluster パッケージのダウンロードが可能な任意のコンピューターから、AWS ParallelCluster コマンドラインツールを実行してクラスターを作成および管理できます。
 
-**Docker**
-- GPU アクセスは `--gpus` フラグで制御
-- 複数ジョブが同じ GPU にアクセス可能（手動管理必要）
+### AWS ParallelCluster で独自の AMI を使用できますか？
+AWS ParallelCluster AMI をカスタマイズする方法は 3 つあります。既存の AWS ParallelCluster AMI を取得して変更するか、既存のカスタマイズされた AMI を取得してその上に AWS ParallelCluster に必要な変更を適用するか、実行時に独自のカスタム AMI を使用できます。詳細については、https://aws-parallelcluster.readthedocs.io/en/latest/tutorials/02_ami_customization.html をご覧ください。
 
-**Singularity**
-- `--nv` フラグで NVIDIA GPU サポート
-- GPU 分離は手動設定が必要
+### AWS ParallelCluster は Windows をサポートしていますか？
+AWS ParallelCluster は Windows クラスターの構築をサポートしていません。ただし、Windows マシン上で AWS ParallelCluster コマンドラインツールを実行することはできます。詳細については、https://docs.aws.amazon.com/parallelcluster/latest/ug/install-windows.html をご覧ください。
 
-**Enroot + Pyxis**
-- 各ジョブに排他的な GPU デバイスファイルを自動割り当て
-- 他のジョブが誤って同じ GPU にアクセスすることを防止
-- Slurm の GRES（Generic Resource Scheduling）と完全統合
+### AWS ParallelCluster はリザーブドインスタンスとスポットインスタンスをサポートしていますか？
+はい。AWS ParallelCluster は、オンデマンド、リザーブド、スポットインスタンスをサポートしています。スポットインスタンスで行われた作業は中断される可能性があることに注意してください。スポットインスタンスは、フォールトトレラントで柔軟なアプリケーションにのみ使用することをお勧めします。
 
-### 性能オーバーヘッド
+### クラスターのコンピュートノードに複数のインスタンスタイプを持つことができますか？
+はい。複数のキューを持つことができ、キューごとに複数のインスタンスを持つことができます。
 
-**Docker の問題点**
-- デーモンプロセスが常駐（メモリ消費）
-- ストレージドライバーのレイヤー処理（I/O オーバーヘッド）
-- ネットワーク仮想化（レイテンシ増加）
+### AWS ParallelCluster でどの程度の大きさのクラスターを構築できますか？
+AWS ParallelCluster で構築できるクラスターのサイズに組み込みの制限はありません。ただし、アカウントに存在するインスタンス制限など、考慮すべきいくつかの制約があります。一部のインスタンスタイプでは、デフォルトの制限が予想される HPC クラスターサイズよりも小さい場合があり、クラスターを構築する前に制限引き上げリクエストが必要になります。EC2 の制限の詳細については、https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-resource-limits.html を参照してください。
 
-**Enroot の最適化**
-- Docker イメージを展開型ファイルシステムに変換
-- デーモンレス（プロセスとして直接実行）
-- ホストネットワークを直接使用
+### AWS ParallelCluster はプレースメントグループの使用をサポートしていますか？
+はい。AWS ParallelCluster はデフォルトでプレースメントグループを使用しませんが、既存のプレースメントグループを AWS ParallelCluster に提供するか、AWS ParallelCluster が起動時に新しいプレースメントグループを作成できるようにすることで有効にできます。クラスター全体またはコンピュートノードのみがプレースメントグループを使用するように構成することもできます。詳細については、https://cfncluster.readthedocs.io/en/latest/configuration.html#placement-group を参照してください。
 
-**実測データ**
-- Enroot: ネイティブ実行とほぼ同等（オーバーヘッド < 1%）
-- Singularity: 軽微なオーバーヘッド（1-3%）
-- Docker: 中程度のオーバーヘッド（5-10%）
+### AWS ParallelCluster ではどのような共有ストレージを使用できますか？
+デフォルトでは、AWS ParallelCluster は、クラスターのマスターノードに接続され、Network File System（NFS） を介してクラスターのコンピュートノードにエクスポートされる 15 GB の Elastic Block Storage（EBS） の外部ボリュームを自動的に構成します。EBS ストレージの構成については、https://docs.aws.amazon.com/parallelcluster/latest/ug/ebs-section.html で詳細を確認できます。この共有ストレージのボリュームは、ニーズに合わせて構成できます。
 
----
+AWS ParallelCluster は、Amazon Elastic File System（EFS）、RAID、Amazon FSx for Lustre ファイルシステムとも互換性があります。AWS ParallelCluster を、ジョブ入力のソースまたはジョブ出力の宛先として Amazon S3 オブジェクトストレージで構成することも可能です。これらすべてのストレージオプションを AWS ParallelCluster で構成する方法の詳細については、https://docs.aws.amazon.com/parallelcluster/latest/ug/configuration.html をご覧ください。
 
-## 使い分けガイド
+### AWS ParallelCluster のコストはいくらですか？
+AWS ParallelCluster は追加料金なしで利用でき、アプリケーションの実行に必要な AWS リソースに対してのみ支払います。
 
-### Docker を選ぶべき場合
-- Kubernetes 環境
-- 開発・テスト環境
-- マイクロサービスアーキテクチャ
-- CI/CD パイプライン
+### AWS ParallelCluster はどのリージョンで利用できますか？
+AWS ParallelCluster は以下のリージョンで利用できます：米国東部（バージニア北部）、米国東部（オハイオ）、米国西部（北カリフォルニア）、米国西部（オレゴン）、欧州（ストックホルム）、欧州（パリ）、欧州（ロンドン）、欧州（フランクフルト）、欧州（アイルランド）、欧州（ミラノ）、アフリカ（ケープタウン）、中東（バーレーン）、アジアパシフィック（ムンバイ）、アジアパシフィック（ソウル）、アジアパシフィック（東京）、アジアパシフィック（シンガポール）、アジアパシフィック（シドニー）、アジアパシフィック（香港）、AWS GovCloud（US-Gov-East）、AWS GovCloud（US-Gov-West）、中国（北京）、中国（寧夏）。
 
-### Singularity/Apptainer を選ぶべき場合
-- 既存の HPC クラスター（Slurm 以外も含む）
-- セキュリティ要件が厳しい環境
-- 大学・研究機関（広く採用されている）
-- Docker からの移行が容易
+### AWS ParallelCluster はどのようにサポートされていますか？
+EC2 インスタンスとバッチスケジューラーの必要なメンテナンス、セキュリティパッチ適用、ユーザー管理、MPIトラブルシューティングを含む、クラスターの運用はお客様の責任となります。AWS ParallelCluster のサポートは、リソースの構築と　AWS Batch 統合に関連する問題に限定されます。AWS Batch スケジューラーの問題は、AWS Batch サービスチームによってサポートされます。他の非 AWS スケジューラーに関する質問は、それぞれのサポートコミュニティに向けてください。AWS ParallelCluster のデフォルト AMI の代わりにカスタム AMI を使用する場合、AWS ParallelCluster はカスタム AMI の使用に関連する OS の問題をサポートしないことに注意してください。
 
-### Enroot + Pyxis を選ぶべき場合
-- Slurm 環境での本番運用
-- GPU ワークロードの大規模実行
-- 最小オーバーヘッドが必要
-- マルチノード MPI ジョブ
-- **AWS ParallelCluster や SageMaker HyperPod (Slurm)**
-
----
-
-## AWS での実装
-
-**AWS ParallelCluster**
-- Enroot + Pyxis のインストールをサポート
-- カスタム AMI または PostInstall スクリプトで設定
-
-**Amazon SageMaker HyperPod (Slurm)**
-- Enroot + Pyxis が推奨されるコンテナ技術
-- GPU 分離と Slurm 統合が自動設定
-
-
-
+### AWS ParallelCluster はどのようにリリースされますか？
+AWS ParallelCluster は、Python Package Index（PyPI）を介してリリースされ、pip 経由でインストールできます。AWS ParallelCluster のソースコードは、GitHub の Amazon Web Services でホストされています：https://github.com/aws/aws-parallelcluster 。
 ::::
-
-### 分散学習における Kubernetes の利点
-
-**スケジューリングの柔軟性**: Node Selector, Node Affinity, Taints and Tolerations などの機能により、GPU の種類やノードの特性に基づいて Pod を適切なノードに配置できます。
-
-**ジョブリソースの管理**: Kubernetes の Job および CronJob リソースにより、バッチ処理やスケジュールされたタスクを管理できます。分散学習では、Kubeflow Training Operator や PyTorch Elastic などのオペレーターが、Kubernetes のネイティブリソースとして学習ジョブを管理します。
-
-Kubernetes 自体は汎用的なコンテナオーケストレーターであり、ML 固有の機能は限定的です。しかし、Kubeflow, Ray, MLflow などの ML プラットフォームと組み合わせることで、モデル学習からデプロイまでの一貫したワークフローを構築できます。AWS では、Amazon EKS (Elastic Kubernetes Service) および Amazon SageMaker HyperPod (EKS 版) が、Kubernetes ベースの分散学習環境を提供します。
-
-
-
-
-
-
-
-## Kubernetes
-
-説明書いてもらえるかな。kubernetes の強みも書いて欲しいな。おそらくレジリエンシーとして障害復旧が強いと思う。
-
-kubernetes 自体は言わずもがなでよく使われてもいるので細かい話は割愛。
-
-## AWS での Slurm/kubernetes を用いた分散学習環境の概要
-
-概要を紹介
-
-### [Amazon Sagemaker HyperPod](https://docs.aws.amazon.com/ja_jp/sagemaker/latest/dg/sagemaker-hyperpod.html)
-
-Slurm/kubernetes どちらにも対応
-
-便利機能多数(slurm/k8s どちらの機能かは明確に書いて)
-
-以下を中身を見てhyperpod に関連するアップデート機能をまとめて
-- https://aws.amazon.com/jp/blogs/machine-learning/accelerate-your-model-training-with-managed-tiered-checkpointing-on-amazon-sagemaker-hyperpod/
-- https://aws.amazon.com/jp/blogs/machine-learning/amazon-sagemaker-hyperpod-launches-model-deployments-to-accelerate-the-generative-ai-model-development-lifecycle/
-- https://zenn.dev/tosshi/scraps/f9b72d35baa5bd
-
-### AWS Parallel Cluster
-
-### Amazon EKS
-
-軽く触れるだけ、基本自分で頑張ることになる、どうしてもオンプレとAWSでGPUリソースを併用したい、などがあればこの選択肢
-
-## オーケストレーションソリューションに求められること
-
-- slurm/k8s をマネージドで提供
-- 障害の検知と復旧
-  - https://docs.nvidia.com/datacenter/dcgm/latest/user-guide/dcgm-diagnostics.html#run-levels-and-tests この内容の対応、::::details で説明して
-- 前章の infrastructures.md で紹介したインフラストラクチャとの簡易な統合
-
-## 比較
-
-それぞれの能力について比較、できることできないこと、DCGM のレベルなど
-
-## 手を動かす
-
-https://github.com/aws-samples/awsome-distributed-training 全般でこれを利用するのが良い
-
-https://github.com/aws-samples/awsome-distributed-training/tree/main/1.architectures/2.aws-parallelcluster PCluster
-
-https://github.com/aws/sagemaker-hyperpod-recipes 上の awsome との違いを知りたい
-
-https://catalog.workshops.aws/ml-on-aws-parallelcluster/en-US Parallel Cluster はこれ
-
-https://catalog.workshops.aws/sagemaker-hyperpod/en-US Workshop としてはこれもある hyperpod 
-https://catalog.us-east-1.prod.workshops.aws/workshops/eef64d11-5673-4fb1-b047-4cebdde81eb9/en-US これも
-
-## エラー発生率
-
-https://developer.nvidia.com/blog/ensuring-reliable-model-training-on-nvidia-dgx-cloud/ この内容からめっちゃ壊れるので検知と自動リペアの仕組みは必須ということを説明したい
-
-
-
-
----- 以降は参考情報なので参考にした後は消して良いです
-
-
-EC2 UltraClusters 上で大規模 AI/ML ワークロードを実行するには、適切なオーケストレーション・管理プラットフォームを選択する必要があります。AWS は以下の4つの主要な選択肢を提供しています。
-
-```mermaid
-graph TB
-    subgraph Platform["AWS AI プラットフォーム"]
-        direction TB
-        
-        ParallelCluster[AWS ParallelCluster<br/>━━━━━━━━━━━━<br/>HPC向けクラスター管理<br/>Slurm, SGE, Torque<br/>CloudFormation]
-        
-        HyperPodSlurm[SageMaker HyperPod<br/>Slurm版<br/>━━━━━━━━━━━━<br/>マネージドML訓練<br/>自動リカバリー<br/>ヘルスモニタリング]
-        
-        HyperPodEKS[SageMaker HyperPod<br/>EKS版<br/>━━━━━━━━━━━━<br/>Kubernetes管理<br/>Karpenter, MIG対応<br/>Spot対応]
-        
-        EKS[Amazon EKS<br/>━━━━━━━━━━━━<br/>マネージドKubernetes<br/>EKS Capabilities<br/>汎用オーケストレーション]
-    end
-    
-    subgraph Infrastructure["EC2 UltraClusters"]
-        GPU[GPU: P5, P6e]
-        Trainium[Trainium: Trn3]
-        Network[Network: EFA, NVLink]
-        Storage[Storage: S3, FSx, EBS]
-    end
-    
-    ParallelCluster --> Infrastructure
-    HyperPodSlurm --> Infrastructure
-    HyperPodEKS --> Infrastructure
-    EKS --> Infrastructure
-    
-    style Platform fill:#e1f5ff
-    style Infrastructure fill:#f0fff4
-    style ParallelCluster fill:#ffd4d4
-    style HyperPodSlurm fill:#d4ffd4
-    style HyperPodEKS fill:#d4d4ff
-    style EKS fill:#ffffd4
-```
-
-### 比較表
-
-| プラットフォーム | オーケストレーター | 管理レベル | 自動リカバリー | 主な用途 | Spot対応 |
-|----------------|------------------|-----------|--------------|---------|---------|
-| **ParallelCluster** | Slurm, SGE, Torque | セルフマネージド | 手動 | HPC、バッチ処理 | 手動設定 |
-| **HyperPod (Slurm)** | Slurm | フルマネージド | 自動 | 長期間ML訓練 | ❌ |
-| **HyperPod (EKS)** | Kubernetes | フルマネージド | 自動 | コンテナベースML | ✅ 自動 |
-| **EKS** | Kubernetes | マネージドK8s | 手動 | 汎用コンテナ | 手動設定 |
-
-### 1. AWS ParallelCluster
-
-**概要**: HPC（High Performance Computing）向けのクラスター管理ツールで、従来の HPC ワークロードや研究機関での利用に最適です。
-
-**特徴**:
-- CloudFormation による自動デプロイ
-- Slurm, SGE, Torque などの HPC ジョブスケジューラーをサポート
-- カスタム AMI、スクリプトによる柔軟な環境構築
-- コスト最適化のための Auto Scaling
-
-**適用ケース**:
-- 従来の HPC ワークロード（分子動力学、気象シミュレーションなど）
-- 研究機関での大規模計算
-- オンプレミス HPC からのリフト&シフト
-
-**制約**:
-- ノード障害時のリカバリーは手動
-- ヘルスチェックは基本的な死活監視のみ
-- ML 特化の最適化は限定的
-
-### 2. Amazon SageMaker HyperPod（Slurm版）
-
-**概要**: Slurm をジョブスケジューラーとして使用する、フルマネージドの ML 訓練プラットフォームです。
-
-**特徴**:
-- **自動ノードリカバリー**: ハードウェア障害を検出し、自動的にノードを交換
-- **ヘルスモニタリング**: GPU、ネットワーク、ストレージの包括的な監視
-- **自動ジョブ再開**: チェックポイントから自動的に訓練を再開
-- **Slurm 統合**: 既存の Slurm スクリプトをそのまま使用可能
-
-**適用ケース**:
-- 数週間から数ヶ月にわたる大規模基盤モデル訓練
-- Slurm に慣れたチームでの利用
-- 高い信頼性が求められる本番環境
-
-**新機能（re:Invent 2025）**:
-- **Checkpointless Training**: リカバリー時間を80%以上削減
-- **Elastic Training**: リソース可用性に基づく自動スケーリング
-- **Programmatic Node Operations**: API による再起動・交換
-
-### 3. Amazon SageMaker HyperPod（EKS版）
-
-**概要**: Kubernetes（EKS）をオーケストレーターとして使用する、最も柔軟で現代的なマネージド ML プラットフォームです。
-
-**特徴**:
-- **Kubernetes ネイティブ**: 標準的な K8s API、kubectl、Helm を使用
-- **Karpenter 統合**: ワークロードに応じた自動スケーリング
-- **コンテナベース**: Docker コンテナによる環境の再現性
-- **マルチテナント**: Namespace による分離、RBAC
-
-**適用ケース**:
-- コンテナベースの ML ワークフロー
-- CI/CD パイプラインとの統合
-- マイクロサービス的なアプローチ
-- 複数チームでのリソース共有
-
-**新機能（re:Invent 2025）**:
-- **MIG（Multi-Instance GPU）サポート**: 1 GPU を最大7パーティションに分割
-- **Spot Instances サポート**: 最大90%のコスト削減
-- **Custom Kubernetes Labels & Taints**: 柔軟な Pod スケジューリング
-- **Managed Tiered KV Cache**: 推論レイテンシ40%削減、スループット25%向上
-
-### 4. Amazon EKS（スタンドアロン）
-
-**概要**: AWS のマネージド Kubernetes サービスで、汎用的なコンテナオーケストレーションに使用されます。
-
-**特徴**:
-- **標準 Kubernetes**: アップストリーム K8s との完全な互換性
-- **EKS Capabilities**（2025年12月発表）: Argo CD, ACK, KRO の統合
-- **柔軟性**: あらゆるコンテナワークロードに対応
-- **エコシステム**: Kubernetes エコシステムのツールを活用
-
-**適用ケース**:
-- ML 以外のワークロードも含む統合プラットフォーム
-- 既存の Kubernetes 環境からの移行
-- カスタマイズ性を最大限に活用したい場合
-
-**EKS Capabilities**（2025年12月発表）:
-- **Argo CD**: GitOps による継続的デプロイメント
-- **ACK（AWS Controllers for Kubernetes）**: K8s から AWS リソースを管理
-- **KRO（Kube Resource Orchestrator）**: 複雑なリソースの抽象化
-
-### プラットフォーム選択のガイドライン
-
-```mermaid
-graph TD
-    Start[大規模AI/MLワークロード] --> Q1{既存のSlurm<br/>スクリプトあり?}
-    
-    Q1 -->|Yes| Q2{自動リカバリー<br/>必要?}
-    Q1 -->|No| Q3{Kubernetes<br/>使用したい?}
-    
-    Q2 -->|Yes| HyperPodSlurm[HyperPod Slurm版]
-    Q2 -->|No| ParallelCluster[ParallelCluster]
-    
-    Q3 -->|Yes| Q4{ML特化機能<br/>必要?}
-    Q3 -->|No| ParallelCluster
-    
-    Q4 -->|Yes| HyperPodEKS[HyperPod EKS版]
-    Q4 -->|No| EKS[Amazon EKS]
-    
-    style Start fill:#e1f5ff
-    style HyperPodSlurm fill:#d4ffd4
-    style ParallelCluster fill:#ffd4d4
-    style HyperPodEKS fill:#d4d4ff
-    style EKS fill:#ffffd4
-```
-
-**選択基準**:
-
-1. **既存のワークフロー**: Slurm スクリプトがあれば HyperPod Slurm、Kubernetes 経験があれば HyperPod EKS
-2. **管理レベル**: フルマネージドを求めるなら HyperPod、柔軟性を求めるなら ParallelCluster や EKS
-3. **コスト**: Spot インスタンスを活用したいなら HyperPod EKS
-4. **スケール**: 数万 GPU のスケールには HyperPod
-5. **統合**: 既存の AWS サービスとの統合には ACK を含む EKS Capabilities
-
-## プラットフォーム別インスタンス対応表
-
-各プラットフォームで利用可能なインスタンスタイプを整理します。
-
-| インスタンスタイプ | ParallelCluster | HyperPod (Slurm) | HyperPod (EKS) | EKS |
-|------------------|----------------|------------------|----------------|-----|
-| **P5 (H100)** | ✅ | ✅ | ✅ | ✅ |
-| **P6e-GB200** | ✅ | ✅ | ✅ | ✅ |
-| **P6e-GB300** | ✅ | ✅ | ✅ | ✅ |
-| **P4d (A100)** | ✅ | ✅ | ✅ | ✅ |
-| **Trn1 (Trainium)** | ✅ | ✅ | ✅ | ✅ |
-| **Trn2 (Trainium2)** | ✅ | ✅ | ✅ | ✅ |
-| **Trn3 (Trainium3)** | ✅ | ✅ | ✅ | ✅ |
-| **Inf2 (Inferentia2)** | ✅ | ✅ | ✅ | ✅ |
-| **Spot インスタンス** | 手動設定 | ❌ | ✅ 自動 | 手動設定 |
-| **MIG 分割** | 手動設定 | ❌ | ✅ 自動 | 手動設定 |
-
-- **ParallelCluster**: すべてのインスタンスタイプをサポートしますが、Spot や MIG は手動設定が必要
-- **HyperPod (Slurm)**: 現在 Spot と MIG は未サポート（将来的にサポート予定の可能性）
-- **HyperPod (EKS)**: Spot と MIG を完全サポートし、自動管理機能を提供
-- **EKS**: すべてのインスタンスをサポートしますが、Spot や MIG の管理は自前で実装
-
-#### 7. Elastic Training
-
-**発表日**: 2025年12月
-
-**主要機能**:
-- リソース可用性に基づく自動スケーリング
-- アイドル状態の容量を自動的に活用
-- 高優先度ワークロード（推論など）のピーク時は自動縮小
-- トレーニング品質を維持しながらスケーリング
-
-**仕組み**:
-- HyperPod トレーニングオペレーターが Kubernetes と統合
-- Pod ライフサイクル、ノード可用性、リソーススケジューラーを監視
-- データ並列レプリカの追加・削除によるスケーリング
-- グローバルバッチサイズを保持、学習率を適応
-
-**効果**:
-- クラスタ使用率の最大化
-- 週あたり数時間のエンジニアリング時間を節約
-
-**参考**: [AWS ブログ](https://aws.amazon.com/jp/blogs/aws/introducing-checkpointless-and-elastic-training-on-amazon-sagemaker-hyperpod/)
-
-
-#### 8. Custom Kubernetes Labels & Taints
-
-**発表日**: 2025年11月26日
-
-**主要機能**:
-- インスタンスグループレベルでラベルとテイントを設定
-- ノードライフサイクル全体で自動維持
-- 最大50ラベル、50テイントまで指定可能
-
-**効果**:
-- GPU リソースの保護（NoSchedule テイントで明示的な Toleration を持つジョブのみ実行）
-- デバイスプラグイン統合の簡素化（EFA、NVIDIA GPU オペレーターなど）
-- 手動再適用作業の完全排除
-
-**参考**: [AWS 発表](https://aws.amazon.com/jp/about-aws/whats-new/2025/11/amazon-sagemaker-hyperpod-kubernetes/)
-
-#### 9. Programmatic Node Operations
-
-**発表日**: 2025年11月26日
-
-**新 API**:
-- **BatchRebootClusterNodes**: 最大25ノードを一度に再起動
-- **BatchReplaceClusterNodes**: 最大25ノードを新ハードウェアに交換
-
-**主要機能**:
-- オーケストレータ非依存（Slurm、EKS 両対応）
-- 既存のオーケストレータ固有方法と併用可能
-- 進捗状況の監視が可能
-
-**効果**:
-- 大規模復旧シナリオの効率的な管理
-- ダウンタイムの削減
-- 一貫した復旧オペレーション
-
-**参考**: [AWS 発表](https://aws.amazon.com/jp/about-aws/whats-new/2025/11/amazon-sagemaker-hyperpod-programmatic-node-reboot-replacement/)
-
-#### 10. Managed Tiered KV Cache & Intelligent Routing
-
-**発表日**: 2025年11月26日
-
-**主要機能**:
-- 2層アーキテクチャ（L1: ローカル CPU メモリ、L2: 分散ストレージ）
-- AWS-native 分散階層ストレージ（テラバイト規模）
-- 3つのルーティング戦略: Prefix-aware、KV-aware、Round-robin
-
-**効果**:
-- レイテンシ: 最大**40%削減**
-- スループット: **25%向上**
-- コスト: **25%削減**
-
-**参考**: [AWS 発表](https://aws.amazon.com/jp/about-aws/whats-new/2025/11/sagemaker-hyperpod-managed-tiered-kv-cache/)
