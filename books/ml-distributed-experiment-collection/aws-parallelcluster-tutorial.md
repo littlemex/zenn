@@ -273,6 +273,20 @@ pcluster version
 :::
 
 :::message alert
+**Head Node のインスタンスサイズについて**
+
+Head Node では、クラスター起動時に以下の処理が実行されます。
+- Chef レシピの実行とシステム設定
+- Docker、NCCL、Pyxis などの CustomActions スクリプトの実行
+- Slurm コントローラーの初期化
+
+**重要な注意事項**
+- c5n.large (2 vCPU, 5.25 GiB) のような小さいインスタンスでは、これらの処理に時間がかかり CloudFormation の WaitCondition（デフォルト 35 分）がタイムアウトする可能性があります
+- **推奨インスタンスサイズ**: 動作確認では c5.9xlarge (36 vCPU, 72 GiB) 以上、本番環境では c5n.18xlarge または m5.24xlarge など、より大きいインスタンスを使用してください
+- 小さいインスタンスを使用する場合は、CustomActions の数を減らすか、カスタム AMI を事前に構築して起動時間を短縮することを検討してください
+:::
+
+:::message alert
 **EFA 対応インスタンスの選択について**
 
 AWS ParallelCluster で分散学習を行う場合、ノード間の低レイテンシ通信のために EFA（Elastic Fabric Adapter）の使用を強く推奨します。
@@ -1304,7 +1318,7 @@ srun --container-image=/fsx/ubuntu.sqsh \
 ::::details 13-1. 分散ジョブスクリプトの作成と実行
 
 :::message
-なんのための作業か: 複数ノードにまたがる簡単な分散ジョブを実行して、Slurm の動作を確認します。MPI を使用した並列実行の基本を理解します。
+なんのための作業か: 複数ノードにまたがる簡単な分散ジョブを実行して、Slurm の動作を確認します。このスクリプトでは、3 ノードに対して各ノード 2 タスク（合計 6 タスク）を並列実行し、分散環境でのタスク割り当てとノード間通信の基本を理解します。
 :::
 
 :::message
@@ -1338,10 +1352,35 @@ echo "=== ジョブ終了 ==="
 EOF
 ```
 
+**スクリプトの動作説明**
+
+このスクリプトは以下の動作を実行します。
+
+1. **リソース割り当て**（#SBATCH ディレクティブ）
+   - `--nodes=3`: 3 つの Compute Node を割り当て
+   - `--ntasks-per-node=2`: 各ノードで 2 つのタスクを並列実行（合計 6 タスク）
+   - `--output=%x_%j.out`: 標準出力を `distributed-test_<ジョブID>.out` に保存
+   - `--error=%x_%j.err`: エラー出力を `distributed-test_<ジョブID>.err` に保存
+
+2. **ジョブ情報の表示**
+   - `SLURM_JOB_ID`: Slurm が割り当てたジョブの一意な ID
+   - `SLURM_JOB_NUM_NODES`: このジョブで使用しているノード数（3）
+   - `SLURM_NTASKS`: 総タスク数（6 = 3 ノード × 2 タスク/ノード）
+
+3. **分散実行のテスト**
+   - `srun hostname`: 各タスクが実行されているノードのホスト名を表示
+   - `srun bash -c '...'`: 各タスクで `SLURM_PROCID`（タスク ID: 0-5）を使用した計算を実行
+
 ジョブを投入します。
 
 ```bash
 sbatch distributed-job.sbatch
+```
+
+出力例は以下のようになります。
+
+```bash
+Submitted batch job 1
 ```
 
 ジョブの状態を確認します。
@@ -1350,11 +1389,53 @@ sbatch distributed-job.sbatch
 squeue
 ```
 
-出力ファイルを確認します（ジョブ ID は実際の値に置き換えてください）。
+実行中の場合は以下のように表示されます。
+
+```
+JOBID PARTITION     NAME     USER ST       TIME  NODES NODELIST(REASON)
+    1 compute-g distribu   ubuntu  R       0:05      3 compute-gpu-distributed-ml-[1-3]
+```
+
+**状態の意味**
+- `R` (Running): 実行中
+- `PD` (Pending): 待機中（リソースが利用可能になるまで）
+- `CG` (Completing): 完了処理中
+
+ジョブが完了したら、出力ファイルを確認します。
 
 ```bash
-cat distributed-test_*.out
+cat distributed-test_1.out
 ```
+
+**出力例と解釈**
+
+```
+=== ジョブ開始 ===
+ジョブ ID: 1
+ノード数: 3
+総タスク数: 6
+compute-gpu-distributed-ml-1
+compute-gpu-distributed-ml-1
+compute-gpu-distributed-ml-2
+compute-gpu-distributed-ml-2
+compute-gpu-distributed-ml-3
+compute-gpu-distributed-ml-3
+Node: compute-gpu-distributed-ml-1, Task: 0, Result: 0
+Node: compute-gpu-distributed-ml-1, Task: 1, Result: 100
+Node: compute-gpu-distributed-ml-2, Task: 2, Result: 200
+Node: compute-gpu-distributed-ml-2, Task: 3, Result: 300
+Node: compute-gpu-distributed-ml-3, Task: 4, Result: 400
+Node: compute-gpu-distributed-ml-3, Task: 5, Result: 500
+=== ジョブ終了 ===
+```
+
+**出力の解釈**
+
+1. **ホスト名の出力**: 各ノードから 2 回ずつホスト名が表示され、3 ノード × 2 タスク = 6 行の出力を確認
+2. **タスク ID と計算結果**: 各タスクに 0 から 5 の ID（`SLURM_PROCID`）が割り当てられ、それぞれが独立して計算を実行
+3. **ノード分散**: タスク 0-1 がノード 1、タスク 2-3 がノード 2、タスク 4-5 がノード 3 で実行され、タスクが均等に分散されていることを確認
+
+このように、Slurm は自動的にタスクをノードに分散し、各タスクに一意な ID を割り当てて並列実行を管理します。実際の分散学習では、この仕組みを使用して各ノードが異なるデータバッチを処理したり、モデルの異なる部分を計算したりします。
 ::::
 
 ## 14. クラスターの削除
@@ -1411,14 +1492,6 @@ S3 バケットを作成した場合は、同様に `cluster-data-bucket` スタ
 
 ## まとめ
 
-本章では、AWS ParallelCluster を使用した分散学習環境の構築と運用方法について解説しました。
+本章では、AWS ParallelCluster 環境のハンズオンを提供しました。基本的な Head Node、Compute Node のアーキテクチャ、FSx for Lustre によるストレージレイヤの理解、Slurm コマンドの利用方法やコンテナ統合、などを実際に試せるようにしました。AWS ParallelCluster は、オンプレミスの HPC クラスターと同様の使用感を保ちながら、AWS のスケーラビリティと柔軟性を活用できる強力なツールです。
 
-**主要なポイント**
-
-1. **アーキテクチャ**: Head Node と Compute Node の 2 層構造により、効率的なリソース管理を実現
-2. **Shared Storage**: FSx for Lustre による高性能ストレージと FSx for OpenZFS によるホームディレクトリの分離により、用途に応じた最適なストレージを使用可能
-3. **Slurm コマンド**: srun、sbatch、salloc などのコマンドにより、柔軟なジョブ管理が可能
-4. **コンテナ統合**: Enroot と Pyxis により、コンテナ化されたワークロードを効率的に実行可能
-5. **段階的な構築**: ::::details と :::message を使用した明確な手順により、各ステップの目的と次への条件が明確
-
-AWS ParallelCluster は、オンプレミスの HPC クラスターと同様の使用感を保ちながら、AWS のスケーラビリティと柔軟性を活用できる強力なツールです。本章で学んだ内容をもとに、実際の分散学習ワークロードを効率的に実行できるようになります。
+次章では大規模基盤モデル学習のレジリエンシーの重要性について解説します。
