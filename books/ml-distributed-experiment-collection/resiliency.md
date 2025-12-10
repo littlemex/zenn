@@ -1,5 +1,5 @@
 ---
-title: "レジリエンシー -- 大規模基盤モデル学習における障害対策の重要性"
+title: "大規模基盤モデル学習におけるレジリエンシーの重要性"
 emoji: "🎶"
 type: "tech" # tech: 技術記事 / idea: アイデア
 topics: ["aws", "sagemaker", "hyperpod", "distributed", "infrastructure"]
@@ -33,8 +33,6 @@ free: true
 
 ## スケールと障害頻度の関係
 
-::::details スケールに伴う避けられない障害
-
 GPU クラスターのスケールが大きくなるほど、障害の発生頻度は線形に増加します。[単一の H100 GPU が平均 50,000 時間（約 6 年）に 1 回障害を起こす](https://epoch.ai/blog/hardware-failures-wont-limit-ai-scaling)と仮定した場合、クラスター全体の平均障害間隔（MTBF）はクラスター内の GPU 数に反比例します。
 
 | クラスター規模 | 平均障害間隔 (MTBF) | 1 日あたりの障害回数 |
@@ -48,14 +46,14 @@ GPU クラスターのスケールが大きくなるほど、障害の発生頻�
 
 この計算から明らかなように、[100,000 GPU のクラスターでは 30 分ごとに、1,000,000 GPU のクラスターではわずか 3 分ごとに何らかの GPU 障害が発生](https://epoch.ai/blog/hardware-failures-wont-limit-ai-scaling)します。数週間から数ヶ月にわたる大規模学習では、障害への対応メカニズムなしに学習を完了することは事実上不可能です。
 
-:::message
-障害検出と自動復旧は、大規模学習における必須要件となっています。
+:::message alert
+障害検出と自動復旧は、大規模な GPU クラスターにおける必須要件となっています。
 :::
-::::
 
-## Meta Llama 3 405B の実際の障害データ
-
-::::details 54 日間の学習で記録された 419 回の中断
+::::details Meta Llama 3 405B の実際の障害データ
+:::message
+54 日間の学習で記録された 419 回の中断
+:::
 
 [Meta が公開した Llama 3 405B モデルの学習データ](https://www.datacenterdynamics.com/en/news/meta-report-details-hundreds-of-gpu-and-hbm3-related-interruptions-to-llama-3-training-run/)は、大規模学習における障害の現実を示す貴重な資料です。
 
@@ -92,9 +90,39 @@ GPU クラスターのスケールが大きくなるほど、障害の発生頻�
 この高度な自動化により、[Meta は 419 回の中断のうち 416 回を自動処理し、90% 以上の効果的な学習時間を維持](https://www.datacenterdynamics.com/en/news/meta-report-details-hundreds-of-gpu-and-hbm3-related-interruptions-to-llama-3-training-run/)できました。手動介入に依存していた場合、研究者は 3 時間ごとに発生する障害に対応する必要があり、これは現実的ではありません。
 ::::
 
-## ダウンタイムの構成と最適化
 
-::::details 研究者視点でのダウンタイム分析
+::::details 3 つのエラーカテゴリー
+
+[NVIDIA の分析](https://developer.nvidia.com/blog/ensuring-reliable-model-training-on-nvidia-dgx-cloud/)によると、研究者が遭遇するエラーは大きく 3 つのカテゴリーに分類されます。
+
+## 1. 即座のクラッシュ (Immediate Crashes)
+
+**原因**: BIOS、電源、熱問題、訂正不可能な ECC エラー、サイレントデータ破損による NaN の発生、ネットワークの不安定性など、ハードウェアの根本的な障害に起因します。
+
+**影響**: 学習が即座に停止し、再起動が必要となります。
+
+## 2. 通信ライブラリのハング (Communication Hangs)
+
+**症状**: PyTorch の NCCL watch dog エラーや [Transformer Engine](https://github.com/NVIDIA/TransformerEngine) の通信ハングとして現れます。
+
+**原因**: ファイルシステムからのデータ転送やネットワークを介したテンソル（勾配や中間アクティベーション）の転送における複雑な依存関係にあります。
+
+**影響**: システム全体が応答しなくなり、タイムアウトまで待機が必要となります。
+
+:::message
+ライブラリとアプリケーション内での堅牢なフォールトトレランス、封じ込め、早期検出メカニズムが重要です。
+:::
+
+## 3. 速度低下 (Speed Regressions)
+
+**一時的な速度低下**: ネットワークやストレージの一時的な問題、温度変動による GPU のクロック調整によって発生します。[Meta の学習では、日中の温度変動により 1-2% のスループット変動が観測](https://www.tomshardware.com/tech-industry/artificial-intelligence/faulty-nvidia-h100-gpus-and-hbm3-memory-caused-half-of-the-failures-during-llama-3-training-one-failure-every-three-hours-for-metas-16384-gpu-training-cluster)されました。
+
+**持続的なボトルネック**: 大規模クラスター内の特定の GPU が常に遅い状態（ストラグラー）にあることで発生します。このようなストラグラー GPU は、数千の他の GPU に影響を及ぼし、全体の学習速度を低下させます。
+
+これらの障害は、研究者の視点からは突然の中断または大幅な速度低下として現れます。単一のエラーメッセージだけでは真の原因を特定するのは困難であり、複数のテレメトリソースを相関分析することで、検出と復旧の速度と精度を向上できます。
+::::
+
+## ダウンタイムの構成と最適化
 
 [NVIDIA の研究](https://developer.nvidia.com/blog/ensuring-reliable-model-training-on-nvidia-dgx-cloud/)によると、学習における実際のダウンタイムは複数の要素から構成されます。従来の MFU（Model FLOPS Utilization）や MTTF（Mean Time To Failure）といったメトリクスは、ハードウェアの利用効率や平均故障間隔に焦点を当てており、研究者が実際に経験する学習の中断やそれに伴う時間的コストを十分に反映していません。
 
@@ -121,44 +149,9 @@ Downtime = Checkpoint Overhead + ErrorCount × (Detection Time + Recovery Time)
 ### Llama 3 405B の実績
 
 Llama 3 405B の学習では、[約 2.5 秒かけてチェックポイントを保存し、これを 4 分ごとに実行](https://www.datacenterdynamics.com/en/news/meta-report-details-hundreds-of-gpu-and-hbm3-related-interruptions-to-llama-3-training-run/)しました。[Epoch AI の分析](https://epoch.ai/blog/hardware-failures-wont-limit-ai-scaling)による数学的最適化により、[チェックポイントと障害復旧による時間損失は全学習時間の約 2.1% に抑えられました](https://epoch.ai/blog/hardware-failures-wont-limit-ai-scaling)。
-::::
 
-## 障害のタイプと検出の課題
-
-::::details 研究者が遭遇する 3 つのエラーカテゴリー
-
-[NVIDIA の分析](https://developer.nvidia.com/blog/ensuring-reliable-model-training-on-nvidia-dgx-cloud/)によると、研究者が遭遇するエラーは大きく 3 つのカテゴリーに分類されます。
-
-### 1. 即座のクラッシュ (Immediate Crashes)
-
-**原因**: BIOS、電源、熱問題、訂正不可能な ECC エラー、サイレントデータ破損による NaN の発生、ネットワークの不安定性など、ハードウェアの根本的な障害に起因します。
-
-**影響**: 学習が即座に停止し、再起動が必要となります。
-
-### 2. 通信ライブラリのハング (Communication Hangs)
-
-**症状**: PyTorch の NCCL watch dog エラーや [Transformer Engine](https://github.com/NVIDIA/TransformerEngine) の通信ハングとして現れます。
-
-**原因**: ファイルシステムからのデータ転送やネットワークを介したテンソル（勾配や中間アクティベーション）の転送における複雑な依存関係にあります。
-
-**影響**: システム全体が応答しなくなり、タイムアウトまで待機が必要となります。
-
-:::message
-ライブラリとアプリケーション内での堅牢なフォールトトレランス、封じ込め、早期検出メカニズムが重要です。
-:::
-
-### 3. 速度低下 (Speed Regressions)
-
-**一時的な速度低下**: ネットワークやストレージの一時的な問題、温度変動による GPU のクロック調整によって発生します。[Meta の学習では、日中の温度変動により 1-2% のスループット変動が観測](https://www.tomshardware.com/tech-industry/artificial-intelligence/faulty-nvidia-h100-gpus-and-hbm3-memory-caused-half-of-the-failures-during-llama-3-training-one-failure-every-three-hours-for-metas-16384-gpu-training-cluster)されました。
-
-**持続的なボトルネック**: 大規模クラスター内の特定の GPU が常に遅い状態（ストラグラー）にあることで発生します。このようなストラグラー GPU は、数千の他の GPU に影響を及ぼし、全体の学習速度を低下させます。
-
-これらの障害は、研究者の視点からは突然の中断または大幅な速度低下として現れます。単一のエラーメッセージだけでは真の原因を特定するのは困難であり、複数のテレメトリソースを相関分析することで、検出と復旧の速度と精度を向上できます。
-::::
 
 ## DCGM による階層的な障害検出
-
-::::details DCGM の 4 つの Run Level
 
 [NVIDIA Data Center GPU Manager (DCGM)](https://developer.nvidia.com/dcgm) は、GPU クラスターの健全性を監視し、障害を早期に検出するためのフレームワークです。DCGM Diagnostics は [4 つの Run Level](https://docs.nvidia.com/datacenter/dcgm/latest/user-guide/dcgm-diagnostics.html#run-levels-and-tests) を提供し、それぞれ異なる深さと所要時間でシステムを検証します。
 
@@ -171,205 +164,106 @@ Llama 3 405B の学習では、[約 2.5 秒かけてチェックポイントを�
 
 *出典: [DCGM Diagnostics Documentation](https://docs.nvidia.com/datacenter/dcgm/latest/user-guide/dcgm-diagnostics.html#run-levels-and-tests)*
 
-### Level 1 (Quick) - 基本的な健全性確認
+::::details Level 概要
+## Level 1 (Quick) - 基本的な健全性確認
 
 このレベルでは、CUDA や NVML ライブラリの確認、PCIe リンクの基本チェック、GPU メモリエラーのチェックが実行されます。ノード起動時やジョブ実行前の健全性確認として使用され、定期的なヘルスチェックにも適しています。
 
-### Level 2 (Medium) - 拡張検証
+## Level 2 (Medium) - 拡張検証
 
 Level 1 の全てのテストに加えて、メモリ帯域幅の測定、GPU の基本的な計算テスト、PCIe 帯域幅の測定が実行されます。ジョブ失敗時のエピローグチェックや定期的な詳細チェックに使用され、より包括的なシステム検証を提供します。
 
-### Level 3 (Long) - ハードウェア診断
+## Level 3 (Long) - ハードウェア診断
 
 Level 1 と Level 2 の全てのテストに加えて、GPU コアへのストレステスト、電力制限のテスト、メモリへの負荷テスト、NVLink 接続のテストが実行されます。GPU 障害が疑われる時や、管理者による詳細調査、メンテナンス時の包括的チェックに使用されます。
 
-### Level 4 (Extended) - 徹底診断
+## Level 4 (Extended) - 徹底診断
 
 Level 1 から Level 3 の全てのテストに加えて、より長時間のストレステスト、断続的な負荷を与えるパルステスト、電力配分の詳細テストが実行されます。RMA（返品承認）前の最終検証や、原因不明の障害の徹底調査、新規ハードウェアの受け入れテストに使用されます。
 ::::
 
 ## 統合テレメトリによる根本原因の特定
 
-::::details 3 層のテレメトリと相関分析
+大規模な GPU クラスターでは、障害の根本原因を迅速に特定するために、クラスター、ノード、アプリケーションという 3 つの層からテレメトリデータを収集し、これらを相関分析することが不可欠です。[NVIDIA の研究](https://developer.nvidia.com/blog/ensuring-reliable-model-training-on-nvidia-dgx-cloud/)によると、単一の層からのデータだけでは真の原因を見極めることは困難であり、複数の視点から総合的に分析することで、検出と復旧の速度と精度を大幅に向上できます。
 
-大規模な GPU クラスターでは、クラスター、ノード、アプリケーションという 3 つの層からテレメトリデータを収集し、これらを相関分析することで根本原因を迅速に特定できます。
+この統合的なアプローチにより、研究者と運用チームは共通のシステム動作と障害パターンの理解を共有できます。研究者は自身のコードの問題なのか、インフラの問題なのかを迅速に判断でき、運用チームは効果的な対策を講じることができます。
 
-### 1. クラスターテレメトリ
+::::details クラスターテレメトリ：インフラ全体の監視
 
-ストレージサーバーのメタデータ操作や読み書き操作、ネットワークスイッチの状態を監視します。これが重要なのは、1 つのノードの障害が通信呼び出しや破損した勾配の伝播、ストレージシステムの過負荷を通じて他のノードに波及する可能性があるためです。
+クラスターレベルでは、ストレージサーバーのメタデータ操作や読み書き操作、ネットワークスイッチの状態を監視します。この層の監視が重要なのは、1 つのノードの障害が、通信呼び出しの失敗、破損した勾配の伝播、ストレージシステムの過負荷を通じて、他のノードに波及する可能性があるためです。
 
-例えば、単一のジョブが過剰なメタデータ操作を生成してストレージノードを圧迫すると、他のジョブやノードがパフォーマンス問題に直面する可能性があります。
+ストレージに関しては、単一のジョブが過剰なメタデータ操作を生成してストレージノードを圧迫すると、そのストレージを共有する他のジョブやノードがパフォーマンス問題に直面することがあります。ネットワークに関しては、スイッチレベルでの輻輳や帯域幅の飽和を監視することが不可欠です。大規模な分散学習では、All-Reduce などの Collective Communication により、特定のスイッチやリンクに膨大なトラフィックが集中します。この際、ネットワークの輻輳が発生すると、通信のレイテンシが増大し、クラスター全体の学習速度が低下します。さらに、パケットロスやリトランスミッションが発生すると、NCCL のタイムアウトやハングにつながる可能性があります。
 
-### 2. ノードテレメトリ
+クラスター全体の視点から監視することで、こうした連鎖的な影響を早期に検出し、問題の拡大を防ぐことができます。特に、ネットワークトポロジーにおけるボトルネックやホットスポットを特定することで、トラフィックパターンの最適化やノード配置の改善につなげることができます。
+::::
 
-**プロログスクリプト（ジョブ開始前）**
-- ハードウェア状態の検証
-- ソフトウェア依存関係の確認
-- 環境の設定
-- **実行される DCGM レベル**: Level 1（クイックチェック）
+::::details ノードテレメトリ：ライフサイクル全体の追跡
 
-**定期的なヘルスチェック（実行中）**
-- GPU、CPU、メモリ、ネットワーク、ストレージ、サービスの監視
-- **実行される DCGM レベル**: 継続的な監視
+ノードレベルのテレメトリは、ジョブのライフサイクル全体を通じて収集されます。ジョブ開始前には**プロログスクリプト**が実行され、ハードウェア状態の検証、ソフトウェア依存関係の確認、環境の設定を行います。この段階では [DCGM](https://developer.nvidia.com/dcgm) Level 1 による迅速な健全性確認が実施され、基本的な動作を保証します。
 
-**エピローグスクリプト（ジョブ終了後/障害時）**
-- リソースの解放、ログの保存、システムのクリーン状態への復元
-- **実行される DCGM レベル**: Level 2（拡張検証）
+ジョブ実行中は、GPU、CPU、メモリ、ネットワーク、ストレージ、サービスの継続的な監視が行われます。これらのメトリクスをリアルタイムで追跡することで、問題の早期検出が可能となり、後続のデバッグ時間を大幅に削減できます。温度異常、メモリエラー、ネットワークの遅延など、学習の進行を妨げる可能性のある兆候を即座に捉えることができます。
+
+ジョブ終了時または障害発生時には**エピローグスクリプト**が実行され、リソースの解放、ログの保存、システムのクリーン状態への復元を行います。この段階では DCGM Level 2 により、より詳細な診断が実施され、障害の原因特定を支援します。
 
 :::message
 問題の早期検出により後続のデバッグ時間を削減し、全体的な信頼性を向上させます。
 :::
+::::
 
-### 3. アプリケーションログ
+::::details アプリケーションログ：最も直接的な情報源
 
-重要な制御ポイント、不変条件、進捗の測定、システムエラーとパフォーマンスパターンに関する情報を提供します。これらのログは、中央リポジトリの履歴データと相関分析することで、ストラグラー、ハング、断続的または再発する障害を判断するための最も強力なシグナルとなります。
+アプリケーションログは、学習プロセスの内部状態に関する最も直接的な情報源です。重要な制御ポイント、不変条件、進捗の測定、システムエラーとパフォーマンスパターンに関する情報を提供します。これらのログを中央リポジトリの履歴データと相関分析することで、ストラグラー、ハング、断続的または再発する障害を判断するための最も強力なシグナルとなります。
 
-**相関分析の例**
+相関分析により、障害の性質を正確に判断できます。例えば、同じ NaN エラーが異なる物理ノードで同じイテレーションとランクに決定論的に現れる場合、これはアプリケーションコードのバグである可能性が高いと判断できます。一方、特定のノードで繰り返し発生する同じエラーは、そのノードの深刻なハードウェア障害を示唆します。このような分析により、無駄な調査時間を削減し、適切な対応を迅速に実施できます。
+::::
 
-同じ NaN エラーが異なる物理ノードで同じイテレーションとランクに決定論的に現れる場合、これはアプリケーションエラーの可能性が高いと判断できます。一方、特定のノードで繰り返し発生する同じエラーは、深刻なハードウェア障害を示唆します。
+::::details ジョブ内外の分析：統合的な相関分析
 
-### ジョブ内外の分析
+テレメトリ分析は、単一ジョブ内だけでなく、複数ジョブにまたがる視点からも実施されます。これにより、クラスター、ノード、アプリケーションの3つの層すべてのデータを統合して、より深い洞察を得ることができます。
 
-**ジョブ内分析 (Intra-job)**: 単一ジョブ内でのパターン認識、リアルタイムのストラグラー検出、即座の復旧判断
+## ジョブ内分析（Intra-job）
 
-**ジョブ間分析 (Inter-job)**: 複数ジョブにわたる障害パターンの特定、再発する問題の予防的な対策、ハードウェアの経年劣化の追跡
+単一ジョブ内でのパターン認識、リアルタイムのストラグラー検出、即座の復旧判断を行います。これにより、実行中のジョブにおける問題を迅速に特定し、影響を最小限に抑えることができます。
+
+例えば、特定のノードのアプリケーションログが遅延を示し、同時にそのノードのテレメトリが高温を示している場合、熱スロットリングが原因であると即座に判断できます。また、ネットワークテレメトリが特定のスイッチでの輻輳を示し、複数のノードで通信エラーが発生している場合、インフラレベルの問題として切り分けることができます。
+
+## ジョブ間分析（Inter-job）
+
+複数ジョブにわたる障害パターンの特定、再発する問題の予防的な対策、ハードウェアの経年劣化の追跡を行います。特定のノードが複数のジョブで問題を引き起こしている場合、そのノードを予防的にメンテナンスに回すことで、将来の障害を防ぐことができます。
+
+例えば、ある GPU が複数のジョブで同様のメモリエラーを報告している場合、ハードウェアの劣化が進行していると判断し、交換を計画できます。また、特定のストレージパターンが複数のジョブでボトルネックとなっている場合、ストレージ構成の見直しや、ジョブスケジューリングの最適化につなげることができます。
 
 :::message
-このような相関分析により、研究者と運用チームは共通のシステム動作と障害パターンの理解を共有できます。
+このような統合的な相関分析により、研究者と運用チームは共通のシステム動作と障害パターンの理解を共有できます。
 :::
 ::::
 
 ## 自動化の重要性
 
-::::details Meta の実績：416/419 回を自動処理
+Meta Llama 3 405B モデルの学習では、54 日間で [419 回の予期しない中断](https://www.datacenterdynamics.com/en/news/meta-report-details-hundreds-of-gpu-and-hbm3-related-interruptions-to-llama-3-training-run/)が発生しました。驚くべきことに、このうち重大な手動介入が必要だったのはわずか3回のみです。[残りの 416 回は自動化システムにより処理](https://www.datacenterdynamics.com/en/news/meta-report-details-hundreds-of-gpu-and-hbm3-related-interruptions-to-llama-3-training-run/)され、これが [90% 以上の効果的な学習時間を維持](https://www.datacenterdynamics.com/en/news/meta-report-details-hundreds-of-gpu-and-hbm3-related-interruptions-to-llama-3-training-run/)する鍵となりました。
 
-Meta の Llama 3 学習において、[419 回の予期しない中断のうち重大な手動介入が必要だったのはわずか 3 回のみ](https://www.datacenterdynamics.com/en/news/meta-report-details-hundreds-of-gpu-and-hbm3-related-interruptions-to-llama-3-training-run/)でした。[残りの 416 回は自動化により処理](https://www.datacenterdynamics.com/en/news/meta-report-details-hundreds-of-gpu-and-hbm3-related-interruptions-to-llama-3-training-run/)され、これが [90% 以上の効果的な学習時間を維持](https://www.datacenterdynamics.com/en/news/meta-report-details-hundreds-of-gpu-and-hbm3-related-interruptions-to-llama-3-training-run/)する鍵となりました。
+自動化がなければ、研究者は 24 時間体制でジョブを監視し、平均 3 時間ごとに発生する障害に手動で対応する必要があります。スケールが増加するにつれてシステムの組み合わせ的複雑性も増大し、[100,000 GPU のクラスターでは 30 分ごとに、1,000,000 GPU のクラスターではわずか 3 分ごとに障害が発生](https://epoch.ai/blog/hardware-failures-wont-limit-ai-scaling)します。このような頻度では、手動対応は物理的に不可能であり、自動化は大規模学習の必須要件となっています。
 
-### 自動化システムの構成
+::::details 自動化システムの構成と動作フロー
 
-**障害検出**
-- DCGM による継続的な GPU 監視
-- [PyTorch NCCL Flight Recorder](https://pytorch.org/docs/stable/distributed.html#torch.distributed.distributed_c10d.Flight) によるハングの診断
-- ストラグラー検出ツールによる遅延 GPU の特定
+この高度な自動化は、障害の検出から復旧、そして通知まで、シームレスに連携する 3 つの主要コンポーネントで構成されています。
 
-**自動復旧**
-- 問題ノードの自動除外
-- チェックポイントからの自動再起動
-- ジョブの再統合
+## 障害検出
 
-**通知と推奨**
-- 運用チームと研究者への自動アラート
-- 根本原因の分析と推奨事項の提示
-- 可視化されたダッシュボード
+複数のツールが協調してシステムの異常を監視します。[DCGM](https://developer.nvidia.com/dcgm) による継続的な GPU 監視により、ハードウェアレベルの問題を早期に捉えます。[PyTorch NCCL Flight Recorder](https://docs.pytorch.org/tutorials/unstable/flight_recorder_tutorial.html) は、通信ライブラリのハングや通信障害の診断に特化しており、分散学習特有の問題を迅速に特定します。さらに、ストラグラー検出ツールにより、クラスター内で異常に遅い GPU を特定し、全体のパフォーマンスを低下させる原因を早期に発見します。
+
+## 自動復旧
+
+障害が検出されると、自動復旧メカニズムが直ちに起動します。問題が特定されたノードは自動的にクラスターから除外され、健全なノードのみで学習が継続されます。システムは最後に保存されたチェックポイントから自動的に再起動し、失われた進捗を最小限に抑えます。問題が解決されたノードは、適切な検証を経てジョブに再統合され、クラスターの計算リソースを最大限に活用します。
+
+## 通知と推奨
+
+障害が発生すると、運用チームと研究者へ自動アラートが送信され、問題の性質と推奨される対応が提示されます。収集された複数層のテレメトリデータから根本原因が分析され、具体的な推奨事項とともに報告されます。可視化されたダッシュボードにより、システム全体の状態、障害の履歴、復旧の進捗を一目で把握できます。
 
 :::message alert
-自動化がなければ、研究者は 24 時間体制でジョブを監視し、3 時間ごとに発生する障害に手動で対応する必要があります。これは研究者の本来の目的であるモデル開発や科学の進歩から時間を奪い、開発サイクル全体を遅延させます。
-:::
-
-スケールが増加するにつれて、システムの組み合わせ的複雑性も増大し、問題をさらに悪化させます。自動化は大規模学習の必須要件です。
-::::
-
-## チェックポイント戦略
-
-::::details 数学的最適化と GPU メモリチェックポイント
-
-チェックポイントの頻度は、計算オーバーヘッドと障害時の失われる進捗の間でバランスを取る必要があります。
-
-### 最適なチェックポイント間隔の導出
-
-[Epoch AI の分析](https://epoch.ai/blog/hardware-failures-wont-limit-ai-scaling)による数学的モデルにより、最適なチェックポイント間隔は、チェックポイントの保存時間、GPU 数、GPU あたりの障害率から導出できます。
-
-**Llama 3 405B の例**
-- [チェックポイント時間: 2.5 秒](https://www.datacenterdynamics.com/en/news/meta-report-details-hundreds-of-gpu-and-hbm3-related-interruptions-to-llama-3-training-run/)
-- [最適なチェックポイント間隔: 約 4 分](https://epoch.ai/blog/hardware-failures-wont-limit-ai-scaling)
-- [全学習時間に占めるオーバーヘッド: 約 2.1%](https://epoch.ai/blog/hardware-failures-wont-limit-ai-scaling)
-
-### ストレージベースのボトルネック
-
-従来のストレージベースのチェックポイントでは、GPU 数が増加するとストレージ帯域幅がボトルネックになる可能性があります。[Meta の学習では、オプティマイザ状態を書き込む際のストレージ帯域幅は 2TB/s に制限](https://epoch.ai/blog/hardware-failures-wont-limit-ai-scaling)されていました。復旧時にはデータ並列学習により複数の GPU が部分的に重複するオプティマイザ状態を読み取る必要があるため、さらに高い帯域幅が要求されます。
-
-### GPU メモリチェックポイント
-
-この問題に対する代替手法として、他の GPU のメモリにチェックポイントを分散保存する [GPU メモリチェックポイント](https://epoch.ai/blog/hardware-failures-wont-limit-ai-scaling)が注目されています。
-
-**特徴**
-- Google DeepMind の Gemini でも使用
-- ストレージ帯域幅の制約を回避
-- より高速なチェックポイントと復旧を実現
-
-**実装方法**
-- [通常 3 から 4 つのレプリカを GPU メモリに保持](https://epoch.ai/blog/hardware-failures-wont-limit-ai-scaling)
-- バッファとして予備ノードを準備
-- ピア GPU メモリからの直接読み取りによる高速な復旧
-
-:::message
-GPU 数が非常に大きい場合は、GPU メモリチェックポイントの採用を検討することで、ストレージのボトルネックを回避できます。
+自動化により、研究者はシステムの保守ではなく、本来の目的であるモデル開発と科学の進歩に集中できます。[Meta の実績](https://www.datacenterdynamics.com/en/news/meta-report-details-hundreds-of-gpu-and-hbm3-related-interruptions-to-llama-3-training-run/)が示すように、適切に設計された自動化システムにより、ほぼすべての障害を人間の介入なしに処理できます。
 :::
 ::::
-
-## レジリエンシー戦略の実装
-
-::::details 多層的なアプローチ
-
-大規模学習でダウンタイムを最小化するには、多層的なアプローチが必要です。
-
-### 継続的な監視と階層的な診断
-
-ノード起動時には DCGM Level 1 によるクイックチェックを実行し、システムが基本的に動作していることを確認します。学習実行中は、GPU の温度、電力、メモリエラーをリアルタイムで監視し、アプリケーションログから進捗とエラーパターンを追跡します。
-
-### 障害発生時の対応フロー
-
-1. **Level 2 エピローグチェック**: 障害の詳細を確認
-2. **障害特定成功**: 自動復旧プロセスへ（問題ノード除外、再起動）
-3. **障害特定失敗**: Level 3 詳細診断へ
-4. **原因不明**: Level 4 徹底診断へ
-5. **最終手段**: 手動介入（収集されたテレメトリでトラブルシューティング時間を大幅削減）
-
-### プロアクティブな対策
-
-**定期診断**
-- 定期的な Level 2 または Level 3 診断
-- 障害予兆のある GPU を事前に特定し交換
-
-**環境最適化**
-- 温度や電力の最適化
-- ストラグラー検出ツールによる遅延 GPU の早期発見
-
-**チェックポイント最適化**
-- 数学的最適化により間隔を決定
-- 可能であればストレージ帯域幅を拡張
-- GPU メモリチェックポイントの採用検討
-
-:::message
-[Meta の実績が示すように、419 回の中断のうち 416 回を自動化で処理](https://www.datacenterdynamics.com/en/news/meta-report-details-hundreds-of-gpu-and-hbm3-related-interruptions-to-llama-3-training-run/)することで、研究者は学習に集中できます。
-:::
-::::
-
-## NVIDIA DGX Cloud の実証成果
-
-::::details 2K-10K GPU で達成した <1% ダウンタイム
-
-[NVIDIA DGX Cloud](https://www.nvidia.com/en-us/data-center/dgx-cloud) では、統合テレメトリと自動化技術により、[2K から 10K GPU 規模のトレーニングで 1% 未満のハードウェアダウンタイムを達成](https://developer.nvidia.com/blog/ensuring-reliable-model-training-on-nvidia-dgx-cloud/)しました。この成果は 2024 年から 2025 年にかけての [Nemotron モデルファミリー](https://blogs.nvidia.com/blog/nemotron-model-families/)の学習で実証されています。
-
-### 成功要因
-
-**高速な障害検出**: 複数のテレメトリソースの相関分析により、根本原因を迅速に特定
-
-**自動復旧**: 問題ノードの自動除外と再起動による迅速な復旧プロセス
-
-**プロアクティブな監視**: 問題が深刻化する前に検出し、予防的に対処
-
-**情報共有**: 運用チームと研究者が共通のシステム動作と障害パターンを理解
-
-### 相互的な情報の流れ
-
-このアプローチにより、研究者はインフラストラクチャデータを活用してデバッグを改善でき、一方で運用チームはアプリケーションのインサイトを使用してシステムの自動化を改善し、ハードウェアダウンタイムを削減できます。
-
-:::message
-この相互的な情報の流れが、エンドツーエンドのレジリエンシーを実現する鍵となっています。
-:::
-::::
-
 
 ## まとめ
 
@@ -386,14 +280,6 @@ GPU 数が非常に大きい場合は、GPU メモリチェックポイントの
 :::message
 適切なレジリエンシー戦略なしに、数百万 GPU 規模の学習は実現できません。高い GPU 稼働率を維持することは重要ですが、それ以上に重要なのは、研究者がモデルの開発と科学の進歩に集中できる環境を提供することです。
 :::
-
-## 参考資料
-
-- [Ensuring Reliable Model Training on NVIDIA DGX Cloud](https://developer.nvidia.com/blog/ensuring-reliable-model-training-on-nvidia-dgx-cloud/) (NVIDIA, 2025)
-- [Meta report details hundreds of GPU and HBM3 related interruptions to Llama 3 training run](https://www.datacenterdynamics.com/en/news/meta-report-details-hundreds-of-gpu-and-hbm3-related-interruptions-to-llama-3-training-run/) (Data Center Dynamics, 2024)
-- [Faulty Nvidia H100 GPUs and HBM3 memory caused half of the failures during Llama 3 training](https://www.tomshardware.com/tech-industry/artificial-intelligence/faulty-nvidia-h100-gpus-and-hbm3-memory-caused-half-of-the-failures-during-llama-3-training-one-failure-every-three-hours-for-metas-16384-gpu-training-cluster) (Tom's Hardware, 2024)
-- [Hardware failures won't limit AI scaling](https://epoch.ai/blog/hardware-failures-wont-limit-ai-scaling) (Epoch AI, 2024)
-- [DCGM Diagnostics — NVIDIA DCGM Documentation](https://docs.nvidia.com/datacenter/dcgm/latest/user-guide/dcgm-diagnostics.html) (NVIDIA)
 
 ## コラム
 
@@ -451,4 +337,37 @@ CPU と GPU の動作特性を比較すると、重要な技術的相違点が�
 このように、ハードウェアエンジニアは何十年にもわたり、パリティから RAS、マスクレイアウト設計、プロセス技術の改善に至るまで、涙ぐましい努力を重ねて信頼性を向上させてきました。Meta のデータが示すように、CPU の障害率は GPU の 100 分の 1 以下という水準です。しかし、このハードウェアレベルでの膨大な努力にもかかわらず、大規模システムでは障害を完全に排除することはできません。
 
 したがって、私たち大規模学習システムの利用者には、ハードウェアの努力を理解した上で、ソフトウェア側でのレジリエンシー対策を実装する責任があります。ハードウェアの対策により個々のコンポーネントの障害率は最小化されていますが、それでもなお発生する障害に対して、DCGM のような監視ツール、統合テレメトリによる根本原因の迅速な特定、自動復旧メカニズム、そして適切なチェックポイント戦略により、システム全体の可用性を維持する必要があります。ハードウェアとソフトウェアの両面からの包括的なアプローチこそが、数十万から数百万の演算ユニットを使用する大規模学習を実現可能にする鍵となります。
+::::
+
+
+::::details チェックポイント
+
+チェックポイントの頻度は、計算オーバーヘッドと障害時の失われる進捗の間でバランスを取る必要があります。
+
+## 最適なチェックポイント間隔の導出
+
+[Epoch AI の分析](https://epoch.ai/blog/hardware-failures-wont-limit-ai-scaling)による数学的モデルにより、最適なチェックポイント間隔は、チェックポイントの保存時間、GPU 数、GPU あたりの障害率から導出できます。
+
+**Llama 3 405B の例**
+- [チェックポイント時間: 2.5 秒](https://www.datacenterdynamics.com/en/news/meta-report-details-hundreds-of-gpu-and-hbm3-related-interruptions-to-llama-3-training-run/)
+- [最適なチェックポイント間隔: 約 4 分](https://epoch.ai/blog/hardware-failures-wont-limit-ai-scaling)
+- [全学習時間に占めるオーバーヘッド: 約 2.1%](https://epoch.ai/blog/hardware-failures-wont-limit-ai-scaling)
+
+## ストレージベースのボトルネック
+
+従来のストレージベースのチェックポイントでは、GPU 数が増加するとストレージ帯域幅がボトルネックになる可能性があります。[Meta の学習では、オプティマイザ状態を書き込む際のストレージ帯域幅は 2TB/s に制限](https://epoch.ai/blog/hardware-failures-wont-limit-ai-scaling)されていました。復旧時にはデータ並列学習により複数の GPU が部分的に重複するオプティマイザ状態を読み取る必要があるため、さらに高い帯域幅が要求されます。この問題に対する代替手法として、他の GPU のメモリにチェックポイントを分散保存する [GPU メモリチェックポイント](https://epoch.ai/blog/hardware-failures-wont-limit-ai-scaling)が注目されています。
+
+**特徴**
+- Google DeepMind の Gemini でも使用
+- ストレージ帯域幅の制約を回避
+- より高速なチェックポイントと復旧を実現
+
+**実装方法**
+- [通常 3 から 4 つのレプリカを GPU メモリに保持](https://epoch.ai/blog/hardware-failures-wont-limit-ai-scaling)
+- バッファとして予備ノードを準備
+- ピア GPU メモリからの直接読み取りによる高速な復旧
+
+:::message
+GPU 数が非常に大きい場合は、GPU メモリチェックポイントの採用を検討することで、ストレージのボトルネックを回避できます。
+:::
 ::::
