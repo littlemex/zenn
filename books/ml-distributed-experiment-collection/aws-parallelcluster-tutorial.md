@@ -21,15 +21,17 @@ free: true
 :::
 ::::
 
-**本章では AWS ParallelCluster を実際に試してみましょう。以下のリポジトリをマスターとして説明に一部補足を加えて実施します。**
+**本章では AWS ParallelCluster を実際に試してみましょう。以下のリポジトリをマスターとして説明に一部日本語の補足を加えて実施します。**
 
 :::message
-実装が変更される可能性があるため必要に応じてリポジトリの README を確認ください
+実装が変更される可能性があるため必要に応じてリポジトリの README を確認ください。
 :::
+
+以下のリポジトリやワークショップも AWS Principle WW Solutions Architect,GenAI, Keita Watanabe さんのチームが作成されています。
 
 https://github.com/aws-samples/awsome-distributed-training/tree/main/1.architectures/2.aws-parallelcluster
 
-英語に抵抗がない方は以下のワークショップもおすすめです。
+英語に抵抗がない方は以下のワークショップがおすすめです。
 
 https://catalog.workshops.aws/ml-on-aws-parallelcluster/en-US
 

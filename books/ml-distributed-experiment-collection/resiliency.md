@@ -21,6 +21,10 @@ free: true
 :::
 ::::
 
+---
+
+AWS Principle WW Solutions Architect,GenAI, Keita Watanabe さんの [Scalable Infrastructure for Large-Scale AI Training with AWS Sagemaker Hyperpod](https://speakerdeck.com/keitaw/scalable-infrastructure-for-large-scale-ai-training-with-aws-sagemaker-hyperpod-at-singapore-ai-hour) 資料の流れを参照しながら初学者向けに情報を整理します。
+
 # 大規模基盤モデル学習における障害率
 
 大規模な GPU クラスターで基盤モデルを学習する際、ハードウェアやソフトウェアの障害は避けられない現実です。本章では、実際の学習で発生する障害の頻度とその影響、そしてレジリエンシーの重要性について解説します。
