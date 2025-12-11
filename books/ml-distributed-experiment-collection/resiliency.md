@@ -21,6 +21,8 @@ free: true
 :::
 ::::
 
+**本章では大規模基盤モデルのレジリエンシーについて整理します。**
+
 ---
 
 AWS Principle WW Solutions Architect,GenAI, Keita Watanabe さんの [Scalable Infrastructure for Large-Scale AI Training with AWS Sagemaker Hyperpod](https://speakerdeck.com/keitaw/scalable-infrastructure-for-large-scale-ai-training-with-aws-sagemaker-hyperpod-at-singapore-ai-hour) 資料の流れを参照しながら初学者向けに情報を整理します。
