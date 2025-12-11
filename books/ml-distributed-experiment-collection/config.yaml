@@ -5,11 +5,13 @@ published: false
 price: 4000 # 有料の場合200〜5000
 # 本に含めるチャプターを順番に並べましょう
 chapters:
+  - review
   - background
   - infrastructures
   - orchestration
   - aws-parallelcluster-tutorial
   - resiliency
+#  - amazon-sagemaker-hyperpod
 #  - appendix-optimizer
 #  - appendix-vast-data-checkpoint-analysis
 #  - appendix-network-topologies
