@@ -9,6 +9,7 @@
 - Intelligent-Tiering ストレージクラス（2025年5月）
 - EFA 対応の強化（2024年11月）、GPUDirect Storage (GDS) の完全サポート、ENA Express による約 30% のレイテンシ削減
 - Unsloth
+- SRD の話
 
 - 分散学習においては、Slurm は前章でモデル学習の並列処理手法を適用したジョブを効率的にスケジューリングし、GPU リソースを最大限に活用します。Slurm のジョブスクリプトでは、必要な GPU 数、ノード数、実行時間などを指定し、Slurm がリソースが利用可能になった時点でジョブを実行します。Slurm と並列処理手法の連携方法については別途並列処理手法の章で解説します。
 
@@ -40,3 +41,6 @@ Infos
 update
 
 - https://aws.amazon.com/jp/blogs/machine-learning/accelerate-your-model-training-with-managed-tiered-checkpointing-on-amazon-sagemaker-hyperpod/
+- https://aws.amazon.com/jp/blogs/machine-learning/checkpointless-training-on-amazon-sagemaker-hyperpod-production-scale-training-with-faster-fault-recovery/
+- https://aws.amazon.com/jp/blogs/machine-learning/adaptive-infrastructure-for-foundation-model-training-with-elastic-training-on-sagemaker-hyperpod/
+- 
