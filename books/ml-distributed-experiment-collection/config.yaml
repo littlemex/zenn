@@ -11,7 +11,7 @@ chapters:
   - orchestration
   - aws-parallelcluster-tutorial
   - resiliency
-  - amazon-sagemaker-hyperpod
+  - amazon-sagemaker-hyperpod-resiliency
 #  - appendix-optimizer
 #  - appendix-vast-data-checkpoint-analysis
 #  - appendix-network-topologies
