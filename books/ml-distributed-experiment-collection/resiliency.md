@@ -34,7 +34,7 @@ AWS Principle WW Solutions Architect,GenAI, Keita Watanabe さんの [Scalable I
 :::
 
 大規模な GPU クラスターで基盤モデルを学習する際、ハードウェアやソフトウェアの障害は避けられない現実です。本章では、実際の学習で発生する障害の頻度とその影響、そしてレジリエンシーの重要性について解説します。
-s
+
 :::message alert
 **重要な事実**
 
