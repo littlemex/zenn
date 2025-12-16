@@ -333,6 +333,62 @@ Slurm クラスターでは、EKS の Deep Health Checks のような統合さ�
 これらのテストは、クラスターのセットアップ時や定期的なメンテナンス時に実行することで、ハードウェアの健全性を確認できます。
 ::::
 
+::::details 診断テストの自動実行
+
+Slurm クラスターでは、診断テストを手動実行するだけでなく、自動的に実行する仕組みを構築できます。主な方法として、Slurm の Prolog/Epilog 機能、LBNL NHC（Node Health Check）、cron による定期実行の 3 つがあります。
+
+### Slurm Prolog/Epilog による自動実行
+
+[Slurm の Prolog/Epilog 機能](https://slurm.schedmd.com/prolog_epilog.html)を使用すると、ジョブの開始前や終了後に自動的にスクリプトを実行できます。`slurm.conf` に以下のように設定します。
+
+```bash
+# ジョブ開始前にヘルスチェックを実行
+Prolog=/etc/slurm/prolog.d/health_check.sh
+
+# ジョブ終了後にヘルスチェックを実行
+Epilog=/etc/slurm/epilog.d/health_check.sh
+```
+
+Prolog スクリプトで非ゼロを返すとノードが自動的にドレイン状態になります。ただし、Prolog/Epilog スクリプトは可能な限り短時間で実行する必要があります。長時間実行するとジョブスケジューリングに影響するため、軽量なチェックに限定することを推奨します。
+
+### LBNL NHC による定期実行
+
+[LBNL NHC](https://github.com/mej/nhc) は、Slurm と統合して定期的なヘルスチェックを実行する専用ツールです。`slurm.conf` に以下を追加することで有効化できます。
+
+```bash
+HealthCheckProgram=/usr/sbin/nhc
+HealthCheckInterval=600       # 10 分ごとに実行
+HealthCheckNodeState=ANY,CYCLE  # 全ノードで実行（順次）
+```
+
+NHC の設定ファイル（`/etc/nhc/nhc.conf`）でチェック項目を定義します。
+
+```bash
+# 基本的なシステムチェック
+* || check_hw_cpuinfo 2 8 8
+* || check_hw_physmem 1TB 2TB
+* || check_ps_service -u root -S nvidia-persistenced
+
+# カスタムチェック（DCGM 診断など）
+* || check_cmd_output -m "0 errors" dcgmi diag -r 1
+
+# ネットワークチェック
+* || check_hw_eth efa0
+```
+
+NHC はモジュール形式で拡張可能で、`/etc/nhc/scripts/` に独自のチェックスクリプトを追加できます。異常検出時には自動的にノードをドレイン状態にし、問題を syslog に記録します。
+
+### 推奨アプローチ
+
+HyperPod Slurm クラスターでは、以下の組み合わせを推奨します。
+
+- **LBNL NHC** を使用した定期ヘルスチェック（10～30 分間隔）で基本的な健全性を監視
+- **Epilog** でジョブ終了後に軽量なチェックを実行してジョブ実行による影響を検証
+- より詳細な NCCL テストなどの負荷が高い診断は、定期メンテナンスウィンドウで手動実行
+
+この構成により、HyperPod の Automatic Node Recovery と組み合わせて、包括的なクラスター健全性管理を実現できます。
+::::
+
 ## Automatic Node Recovery と Auto-Resume
 
 [Slurm クラスターでは、Automatic Node Recovery と auto-resume 機能が連携](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-resiliency-slurm-auto-resume.html)します。
@@ -345,9 +401,11 @@ Slurm クラスターでは、EKS の Deep Health Checks のような統合さ�
 4. `--auto-resume=1` フラグ付きのジョブは最後のチェックポイントから自動再開
 5. auto-resume なしのジョブは手動再送信が必要
 
-**重要**: [Slurm で auto-resume 使用時は常にノードを交換](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-resiliency-slurm-auto-resume.html)し、リブートは実行しません。
+:::message alert
+[Slurm で auto-resume 使用時は常にノードを交換](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-resiliency-slurm-auto-resume.html)し、リブートは実行しません。
+:::
 
-### Auto-Resume の使用方法
+::::details Auto-Resume の使用方法
 
 ```bash
 # srun の例
@@ -357,16 +415,7 @@ srun --auto-resume=1 train_script.sh
 salloc -N 2 --exclusive
 srun --auto-resume=1 train_script.sh
 ```
-
-### 制約事項と注意点
-
-**GRES (Generic Resources) の制約**: [GRES が付加されたノードでは、Slurm は通常ノード割り当ての変更を許可しない](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-resiliency-slurm-auto-resume.html)ため、HyperPod auto-resume は障害ジョブを自動的に再キューし、最初から再起動します。
-
-**Auto-Resume のスコープ**: auto-resume は [`--auto-resume=1` を指定した srun コマンドの現在のジョブステップ](https://slurm.schedmd.com/job_launch.html#step_allocation)でのみ動作します。リソース割り当て内の他の srun コマンドには適用されません。
-
-**環境の一貫性**: ノード交換後、[環境を一貫して設定する必要](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-resiliency-slurm-auto-resume.html)があります。依存関係のインストールや仮想環境のアクティベーションをスクリプト化する必要があります。
-
-**$SLURM_JOB_NODELIST の注意**: [auto-resume 後は値が古くなる可能性](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-resiliency-slurm-auto-resume.html)があるため使用せず、`scontrol show jobid` で現在のノードリストを動的に取得します。
+::::
 
 ## 手動操作
 
@@ -403,45 +452,31 @@ scontrol update NodeName=<node-name> State=RESUME
 **交換を検討する場合**
 - ハードウェア障害が検出された
 - 複数回のリブートでも問題が解決しない
-- Deep Health Checks（EKS のみ）で重大な問題が報告された
 ::::
 
 ## Observability
 
-[Slurm クラスターでは、Amazon Managed Service for Prometheus と Amazon Managed Grafana を手動で統合](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-cluster-observability-slurm.html)してクラスターリソースの Observability を実現します。
-
-### 手動セットアップ
-
-EKS の One-Click Observability とは異なり、Slurm クラスターでは以下の手動セットアップが必要です。
+EKS の One-Click Observability とは異なり、Slurm クラスターでは以下の手動セットアップが必要です。[Slurm クラスターでは、Amazon Managed Service for Prometheus と Amazon Managed Grafana を手動で統合](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-cluster-observability-slurm.html)してクラスターリソースの Observability を実現します。
 
 1. **メトリクスエクスポーターパッケージのインストール**: [クラスター上にメトリクスエクスポーターをインストール](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-cluster-observability-slurm-install-exporters.html)
 2. **Prometheus の設定**: Amazon Managed Service for Prometheus workspace との接続を設定
 3. **Grafana workspace の設定**: [Amazon Managed Grafana workspace を作成し、Prometheus をデータソースとして追加](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-cluster-observability-slurm-managed-grafana-ws.html)
 
-### Slurm Metrics
-
+:::message
+**Slurm Metrics**
 [Slurm 固有のメトリクス](https://docs.aws.amazon.com/sagemaker/latest/dg/smcluster-slurm-metrics.html)が利用可能で、ジョブキューの状態、ノードの利用率、パーティション情報などを追跡できます。
+:::
 
 ## 共通機能
 
-### SageMaker Managed MLflow
+**SageMaker Managed MLflow**
 
-EKS と Slurm の両方で、SageMaker Managed MLflow を使用して実験のトラッキング、モデルの管理、デプロイメントワークフローを実行できます。
+EKS と Slurm の両方で、SageMaker Managed MLflow を使用して実験のトラッキング、モデルの管理、デプロイメントワークフローを実行できます。2025/12 まではインスタンスが起動する形で MLflow を利用できましたが、完全マネージドで MLflow が利用できるようになったことは重要なアップデートです。
 
-### SSM による直接アクセス
+**SSM による直接アクセス**
 
-EKS と同様に、Slurm クラスターでも SSM Session Manager を使用してノードに直接アクセスできます。これにより、詳細なトラブルシューティングと検証が可能になります。
-
-### マルチ AZ サポート
-
-Slurm クラスターでも、複数の AZ にわたるクラスター構成をサポートし、インフラレベルのレジリエンシーを提供します。
+SSM Session Manager を使用してノードに直接アクセスできます。これにより、詳細なトラブルシューティングと検証が可能になります。
 
 # まとめ
 
-Amazon SageMaker HyperPod は、Slurm と Amazon EKS の 2 つのオーケストレーションオプションを通じて、大規模な機械学習ワークロードのためのレジリエントなクラスター管理を提供します。
-
-**EKS の特徴**は、One-Click Observability、Deep Health Checks、CloudWatch Container Insights などの高度な統合機能により、運用開始までの時間を短縮し、包括的な監視とトラブルシューティングを実現することです。Kubernetes Labels と Taints による柔軟なノード管理、Task Governance による詳細なリソース追跡も提供します。
-
-**Slurm の特徴**は、auto-resume 機能により、チェックポイントからのジョブの自動再開を実現し、障害からの復旧を効率化することです。HPC 分野で広く使用されている Slurm の豊富な機能とエコシステムを活用できます。
-
-両オーケストレーションとも、Health Monitoring Agent による継続的な監視、Automatic Node Recovery による自動復旧、SSM による直接アクセス、マルチ AZ サポートなどの重要なレジリエンシー機能を共有しています。オーケストレーションの選択は、チームの専門知識、ワークロードの特性、運用要件に基づいて行うべきです。
+Amazon SageMaker HyperPod は、Slurm と Amazon EKS の 2 つのオーケストレーションオプションを通じて、大規模な機械学習ワークロードのためのレジリエントなクラスター管理を提供します。EKS と Slurm の選択の考え方についてはすでに解説した通りです。どちらも大分類レベルでは必要な機能をカバーしていることがわかると思います。ネイティブの kubernetes と異なり Hyperpod の EKS オーケストレーションでは上述したような大規模基盤モデルの学習・推論を効率化する多様な機能を有しており、次章以降で解説するレジリエンシー以外の機能も含めてチームの専門知識、ワークロードの特性、運用要件に基づいてどちらを利用するのか検討するのが良いでしょう。
