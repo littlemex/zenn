@@ -222,8 +222,9 @@ Quick Setup では、Controller、Login、Worker の3 つのインスタンス�
 :::message
 - [ ] 1. SSM Session Manager プラグインのインストール
 - [ ] 2. クラスター情報の取得
-- [ ] 3. SSH 接続の設定
-- [ ] 4. クラスターへの接続
+- [ ] 3. easy_ssh.sh スクリプトによる自動設定
+- [ ] 4. 接続確認
+- [ ] 5. FSx for Lustre の確認
 :::
 
 ::::details 1. SSM Session Manager プラグインのインストール
@@ -277,63 +278,207 @@ session-manager-plugin --version
 ::::details 2. クラスター情報の取得
 
 :::message
-なんのための作業か: SSH 接続に必要なクラスター ID、インスタンス ID、ノードグループ名を取得します。
+なんのための作業か: SSH 接続に必要なクラスター ID、インスタンス ID、ノードグループ名を取得し、環境変数ファイルとして保存します。
 :::
 
 :::message
-次のステップに進む条件: クラスター ID とインスタンス ID が正常に取得できること。
+次のステップに進む条件: `hyperpod-cluster.env` ファイルが作成され、必要な環境変数がすべて含まれていること。
 :::
 
-クラスター ARN からクラスター ID を取得します。
+以下のコマンドを実行して、クラスター情報を自動取得するスクリプトを作成し実行します。
 
 ```bash
-aws sagemaker describe-cluster --cluster-name cpu-slurm-cluster --region us-east-1 --query 'ClusterArn' --output text
+# スクリプトを作成
+cat > get-hyperpod-info.sh << 'SCRIPT_EOF'
+#!/bin/bash
+
+# HyperPod クラスター情報取得スクリプト
+# 使用方法: ./get-hyperpod-info.sh <クラスター名> [リージョン]
+
+set -e
+
+# 引数チェック
+if [ $# -lt 1 ]; then
+    echo "使用方法: $0 <クラスター名> [リージョン]"
+    echo "例: $0 cpu-slurm-cluster us-east-1"
+    exit 1
+fi
+
+CLUSTER_NAME=$1
+REGION=${2:-us-east-1}
+OUTPUT_FILE="hyperpod-cluster.env"
+
+echo "クラスター情報を取得しています..."
+echo "クラスター名: $CLUSTER_NAME"
+echo "リージョン: $REGION"
+echo ""
+
+# クラスター情報を取得
+CLUSTER_ARN=$(aws sagemaker describe-cluster \
+    --cluster-name "$CLUSTER_NAME" \
+    --region "$REGION" \
+    --query 'ClusterArn' \
+    --output text 2>/dev/null)
+
+if [ -z "$CLUSTER_ARN" ] || [ "$CLUSTER_ARN" == "None" ]; then
+    echo "エラー: クラスター '$CLUSTER_NAME' が見つかりません"
+    echo "既存のクラスターを確認してください:"
+    echo "  aws sagemaker list-clusters --region $REGION"
+    exit 1
+fi
+
+# クラスター ID を抽出
+CLUSTER_ID=$(echo "$CLUSTER_ARN" | awk -F/ '{print $NF}')
+
+echo "✓ クラスター ARN: $CLUSTER_ARN"
+echo "✓ クラスター ID: $CLUSTER_ID"
+echo ""
+
+# ノード情報を取得
+echo "ノード情報を取得しています..."
+NODES_JSON=$(aws sagemaker list-cluster-nodes \
+    --cluster-name "$CLUSTER_NAME" \
+    --region "$REGION" \
+    2>/dev/null)
+
+if [ -z "$NODES_JSON" ]; then
+    echo "エラー: ノード情報の取得に失敗しました"
+    exit 1
+fi
+
+# Controller ノード情報を取得
+CONTROLLER_INSTANCE_ID=$(echo "$NODES_JSON" | jq -r '.ClusterNodeSummaries[] | select(.InstanceGroupName | test("controller"; "i")) | .InstanceId' | head -n 1)
+CONTROLLER_GROUP_NAME=$(echo "$NODES_JSON" | jq -r '.ClusterNodeSummaries[] | select(.InstanceGroupName | test("controller"; "i")) | .InstanceGroupName' | head -n 1)
+
+# Login ノード情報を取得（存在する場合）
+LOGIN_INSTANCE_ID=$(echo "$NODES_JSON" | jq -r '.ClusterNodeSummaries[] | select(.InstanceGroupName | test("login"; "i")) | .InstanceId' | head -n 1)
+LOGIN_GROUP_NAME=$(echo "$NODES_JSON" | jq -r '.ClusterNodeSummaries[] | select(.InstanceGroupName | test("login"; "i")) | .InstanceGroupName' | head -n 1)
+
+# Worker ノード情報を取得（最初の1つ）
+WORKER_INSTANCE_ID=$(echo "$NODES_JSON" | jq -r '.ClusterNodeSummaries[] | select(.InstanceGroupName | test("worker"; "i")) | .InstanceId' | head -n 1)
+WORKER_GROUP_NAME=$(echo "$NODES_JSON" | jq -r '.ClusterNodeSummaries[] | select(.InstanceGroupName | test("worker"; "i")) | .InstanceGroupName' | head -n 1)
+
+echo "✓ Controller: $CONTROLLER_GROUP_NAME ($CONTROLLER_INSTANCE_ID)"
+if [ -n "$LOGIN_INSTANCE_ID" ] && [ "$LOGIN_INSTANCE_ID" != "null" ]; then
+    echo "✓ Login: $LOGIN_GROUP_NAME ($LOGIN_INSTANCE_ID)"
+fi
+if [ -n "$WORKER_INSTANCE_ID" ] && [ "$WORKER_INSTANCE_ID" != "null" ]; then
+    echo "✓ Worker: $WORKER_GROUP_NAME ($WORKER_INSTANCE_ID)"
+fi
+echo ""
+
+# 環境変数ファイルを作成
+cat > "$OUTPUT_FILE" << ENV_EOF
+# HyperPod Cluster 環境変数
+# 生成日時: $(date)
+# クラスター名: $CLUSTER_NAME
+
+export HYPERPOD_CLUSTER_NAME="$CLUSTER_NAME"
+export HYPERPOD_REGION="$REGION"
+export HYPERPOD_CLUSTER_ARN="$CLUSTER_ARN"
+export HYPERPOD_CLUSTER_ID="$CLUSTER_ID"
+export HYPERPOD_CONTROLLER_INSTANCE_ID="$CONTROLLER_INSTANCE_ID"
+export HYPERPOD_CONTROLLER_GROUP_NAME="$CONTROLLER_GROUP_NAME"
+ENV_EOF
+
+# Login ノードの情報を追加（存在する場合）
+if [ -n "$LOGIN_INSTANCE_ID" ] && [ "$LOGIN_INSTANCE_ID" != "null" ]; then
+    cat >> "$OUTPUT_FILE" << ENV_EOF
+export HYPERPOD_LOGIN_INSTANCE_ID="$LOGIN_INSTANCE_ID"
+export HYPERPOD_LOGIN_GROUP_NAME="$LOGIN_GROUP_NAME"
+ENV_EOF
+fi
+
+# Worker ノードの情報を追加（存在する場合）
+if [ -n "$WORKER_INSTANCE_ID" ] && [ "$WORKER_INSTANCE_ID" != "null" ]; then
+    cat >> "$OUTPUT_FILE" << ENV_EOF
+export HYPERPOD_WORKER_INSTANCE_ID="$WORKER_INSTANCE_ID"
+export HYPERPOD_WORKER_GROUP_NAME="$WORKER_GROUP_NAME"
+ENV_EOF
+fi
+
+echo "✅ クラスター情報を $OUTPUT_FILE に保存しました"
+echo ""
+echo "環境変数を読み込むには:"
+echo "  source $OUTPUT_FILE"
+echo ""
+echo "読み込み後、以下のように使用できます:"
+echo "  echo \$HYPERPOD_CLUSTER_ID"
+echo "  echo \$HYPERPOD_CONTROLLER_INSTANCE_ID"
+SCRIPT_EOF
+
+# スクリプトに実行権限を付与
+chmod +x get-hyperpod-info.sh
+
+# スクリプトを実行（クラスター名を実際の名前に変更してください）
+./get-hyperpod-info.sh cpu-slurm-cluster us-east-1
+
+# 環境変数を読み込む
+source hyperpod-cluster.env
+
+# 確認
+echo "環境変数が読み込まれました:"
+echo "  HYPERPOD_CLUSTER_NAME: $HYPERPOD_CLUSTER_NAME"
+echo "  HYPERPOD_CLUSTER_ID: $HYPERPOD_CLUSTER_ID"
+echo "  HYPERPOD_CONTROLLER_INSTANCE_ID: $HYPERPOD_CONTROLLER_INSTANCE_ID"
 ```
 
 出力例は以下のようになります。
 
 ```
-arn:aws:sagemaker:us-east-1:123456789012:cluster/q2vei6nzqldz
+クラスター情報を取得しています...
+クラスター名: cpu-slurm-cluster
+リージョン: us-east-1
+
+✓ クラスター ARN: arn:aws:sagemaker:us-east-1:776010787911:cluster/abc123def456
+✓ クラスター ID: abc123def456
+
+ノード情報を取得しています...
+✓ Controller: my-controller-group (i-0123456789abcdef0)
+✓ Login: my-login-group (i-0fedcba9876543210)
+✓ Worker: worker-group-1 (i-0abcdef123456789a)
+
+✅ クラスター情報を hyperpod-cluster.env に保存しました
+
+環境変数を読み込むには:
+  source hyperpod-cluster.env
+
+読み込み後、以下のように使用できます:
+  echo $HYPERPOD_CLUSTER_ID
+  echo $HYPERPOD_CONTROLLER_INSTANCE_ID
 ```
 
-クラスター ID は ARN の最後の部分（`q2vei6nzqldz`）です。
-
-次に、インスタンス ID とノードグループ名を取得します。
+作成された `hyperpod-cluster.env` ファイルの内容例は以下のようになります。
 
 ```bash
-aws sagemaker list-cluster-nodes --cluster-name my-hyperpod-cluster
+# HyperPod Cluster 環境変数
+# 生成日時: Wed Dec 18 15:30:00 UTC 2024
+# クラスター名: cpu-slurm-cluster
+
+export HYPERPOD_CLUSTER_NAME="cpu-slurm-cluster"
+export HYPERPOD_REGION="us-east-1"
+export HYPERPOD_CLUSTER_ARN="arn:aws:sagemaker:us-east-1:776010787911:cluster/abc123def456"
+export HYPERPOD_CLUSTER_ID="abc123def456"
+export HYPERPOD_CONTROLLER_INSTANCE_ID="i-0123456789abcdef0"
+export HYPERPOD_CONTROLLER_GROUP_NAME="my-controller-group"
+export HYPERPOD_LOGIN_INSTANCE_ID="i-0fedcba9876543210"
+export HYPERPOD_LOGIN_GROUP_NAME="my-login-group"
+export HYPERPOD_WORKER_INSTANCE_ID="i-0abcdef123456789a"
+export HYPERPOD_WORKER_GROUP_NAME="worker-group-1"
 ```
-
-出力例は以下のようになります。
-
-```json
-{
-    "ClusterNodeSummaries": [
-        {
-            "InstanceGroupName": "controller-machine",
-            "InstanceId": "i-08982ccd4b6b34eb1",
-            "InstanceType": "ml.c5.xlarge",
-            "LaunchTime": "2024-12-16T10:00:00.000Z",
-            "InstanceStatus": {
-                "Status": "Running"
-            }
-        }
-    ]
-}
-```
-
-接続に必要な情報をメモします。この例では、クラスター ID が `q2vei6nzqldz`、ノードグループ名が `controller-machine`、インスタンス ID が `i-08982ccd4b6b34eb1` となります。
 ::::
 
 ::::details 3. easy_ssh.sh スクリプトによる自動設定
 
 :::message
-なんのための作業か: SSH 接続を簡単に設定するため、自動化スクリプトを使用します。このスクリプトは SSH 設定ファイルの作成と公開鍵の追加を自動的に行います。
+なんのための作業か: SSH 接続を簡単に設定するため、自動化スクリプトを使用してクラスター接続します。このスクリプトは SSH 設定ファイルの作成と公開鍵の追加を自動的に行います。
 :::
 
 :::message
-次のステップに進む条件: スクリプトが正常に実行され、`~/.ssh/config` にクラスターの設定が追加されること。
+次のステップに進む条件: スクリプトが正常に実行され、`~/.ssh/config` にクラスターの設定が追加され、クラスター接続されること。
 :::
+
+前のステップで作成した環境変数を使用して、SSH 設定を自動化します。
 
 easy_ssh.sh スクリプトをダウンロードします。
 
@@ -348,18 +493,20 @@ SSH キーペアを生成します（既にある場合はスキップ）。
 ssh-keygen -t rsa -b 4096 -f "$HOME/.ssh/id_rsa" -N ""
 ```
 
-スクリプトを実行します。
+環境変数を使用してスクリプトを実行します。
 
 ```bash
-./easy-ssh.sh -c controller-machine my-hyperpod-cluster
-```
+# 環境変数が読み込まれていることを確認
+source hyperpod-cluster.env
 
-スクリプトは、クラスター情報の自動取得、`~/.ssh/config` への設定追加、そして SSH 公開鍵のクラスターへの追加を自動的に実行します。
+# Controller グループ名を使用してスクリプトを実行
+./easy-ssh.sh -c $HYPERPOD_CONTROLLER_GROUP_NAME $HYPERPOD_CLUSTER_NAME
+```
 
 プロンプトが表示されたら、両方とも `yes` と回答します。
 
 ```
-Would you like to add my-hyperpod-cluster to ~/.ssh/config (yes/no)?
+Would you like to add cpu-slurm-cluster to ~/.ssh/config (yes/no)?
 > yes
 
 Do you want to add your SSH public key ~/.ssh/id_rsa.pub to the cluster (yes/no)?
@@ -369,45 +516,51 @@ Do you want to add your SSH public key ~/.ssh/id_rsa.pub to the cluster (yes/no)
 出力例は以下のようになります。
 
 ```
-     🚀 HyperPod Cluster Easy SSH Script! 🚀
+./easy-ssh.sh -c $HYPERPOD_CONTROLLER_GROUP_NAME $HYPERPOD_CLUSTER_NAME
 
-Cluster id: q2vei6nzqldz
-Instance id: i-08982ccd4b6b34eb1
-Node Group: controller-machine
+=================================================
 
-✅ adding my-hyperpod-cluster to ~/.ssh/config
-✅ Your SSH public key ~/.ssh/id_rsa.pub has been added to the cluster.
+==== 🚀 HyperPod Cluster Easy SSH Script! 🚀 ====
+
+
+=================================================
+Cluster id: 7isg1upszym4
+Instance id: i-0becf575c2a093233
+Node Group: controller
+SSH User: ubuntu
+grep: /home/coder/.ssh/config: No such file or directory
+Would you like to add cpu-slurm-cluster to ~/.ssh/config (yes/no)?
+> yes
+✅ adding cpu-slurm-cluster to ~/.ssh/config:
+2. Do you want to add your SSH public key ~/.ssh/id_rsa.pub to user ubuntu on the cluster (yes/no)?
+> yes
+Adding ... ssh-rsa XXXXXX= coder@current-work
+
+Starting session with SessionId: i-0390229058244a214-6d3giy7urclrt3vaepnaip2i3x
+
+
+Exiting session with sessionId: i-0390229058244a214-6d3giy7urclrt3vaepnaip2i3x.
+
+✅ Your SSH public key ~/.ssh/id_rsa.pub has been added to user ubuntu on the cluster.
 
 Now you can run:
-$ ssh my-hyperpod-cluster
+
+$ ssh cpu-slurm-cluster
+
+Starting session with SessionId: i-0390229058244a214-yd6d3nz5ajyclrj3rh4evhqqge
+#
 ```
 ::::
 
-::::details 4. クラスターへの接続
+::::details 4. 接続確認
 
 :::message
-なんのための作業か: 設定した SSH 接続を使用してクラスターに接続し、動作を確認します。
+なんのための作業か: SSH 接続後の動作を確認します。
 :::
 
 :::message
 次のステップに進む条件: SSH 接続が成功し、クラスターのシェルプロンプトが表示されること。
 :::
-
-SSH でクラスターに接続します。
-
-```bash
-ssh my-hyperpod-cluster
-```
-
-接続が成功すると、ubuntu ユーザーとしてログインします。
-
-```
-Welcome to Ubuntu 20.04.6 LTS (GNU/Linux 5.15.0-1052-aws x86_64)
-
-ubuntu@ip-10-1-4-244:~$
-```
-
-クラスター情報を確認します。
 
 ```bash
 hostname
@@ -417,32 +570,13 @@ whoami
 出力例は以下のようになります。
 
 ```
-ip-10-1-4-244
-ubuntu
+ip-10-4-109-244
+root
 ```
-::::
 
-## Slurm の基本操作
+クラスターに接続したら、Slurm コマンドを使用してみましょう。
 
-クラスターに接続したら、Slurm コマンドを使用してジョブを管理できます。
-
-:::message
-- [ ] 1. クラスターの状態確認
-- [ ] 2. 簡単なジョブの実行
-- [ ] 3. FSx for Lustre の確認
-:::
-
-::::details 1. クラスターの状態確認
-
-:::message
-なんのための作業か: Slurm クラスターのノード状態を確認し、Worker Node が正常に起動して利用可能な状態であることを確認します。
-:::
-
-:::message
-次のステップに進む条件: `sinfo` コマンドでノードの STATE が "idle" または "alloc" と表示され、設定したノード数が確認できること。
-:::
-
-Slurm のノード状態を確認します。
+**Slurm のノード状態を確認します。**
 
 ```bash
 sinfo
@@ -451,11 +585,12 @@ sinfo
 出力例は以下のようになります。
 
 ```
-PARTITION AVAIL  TIMELIMIT  NODES  STATE NODELIST
-compute*      up   infinite      2   idle worker-group-1-[1-2]
+PARTITION     AVAIL  TIMELIMIT  NODES  STATE NODELIST
+dev*             up   infinite      2   idle ip-10-4-33-25,ip-10-4-198-29
+ml.c5.4xlarge    up   infinite      2   idle ip-10-4-33-25,ip-10-4-198-29
 ```
 
-詳細なノード情報を確認します。
+**詳細なノード情報を確認します。**
 
 ```bash
 sinfo -N -l
@@ -464,23 +599,15 @@ sinfo -N -l
 出力例は以下のようになります。
 
 ```
-NODELIST          NODES PARTITION       STATE CPUS    S:C:T MEMORY TMP_DISK WEIGHT AVAIL_FE REASON
-worker-group-1-1      1  compute*        idle   36   36:1:1 192000        0      1   (null) none
-worker-group-1-2      1  compute*        idle   36   36:1:1 192000        0      1   (null) none
+Thu Dec 18 15:50:47 2025
+NODELIST        NODES     PARTITION       STATE CPUS    S:C:T MEMORY TMP_DISK WEIGHT AVAIL_FE REASON              
+ip-10-4-33-25       1          dev*        idle 16      1:8:2  32768        0      1   (null) none                
+ip-10-4-33-25       1 ml.c5.4xlarge        idle 16      1:8:2  32768        0      1   (null) none                
+ip-10-4-198-29      1          dev*        idle 16      1:8:2  32768        0      1   (null) none                
+ip-10-4-198-29      1 ml.c5.4xlarge        idle 16      1:8:2  32768        0      1   (null) none  
 ```
-::::
 
-::::details 2. 簡単なジョブの実行
-
-:::message
-なんのための作業か: Slurm を使用して簡単なジョブを実行し、クラスターが正常に動作していることを確認します。
-:::
-
-:::message
-次のステップに進む条件: ジョブが正常に実行され、全ノードからの出力が確認できること。
-:::
-
-`srun` コマンドで簡単なジョブを実行します。
+**`srun` コマンドで簡単なジョブを実行します。**
 
 ```bash
 srun hostname
@@ -489,10 +616,10 @@ srun hostname
 出力例は以下のようになります。
 
 ```
-ip-10-1-52-212
+ip-10-4-33-25
 ```
 
-複数ノードで実行します。
+**複数ノードでジョブを実行します。**
 
 ```bash
 srun --nodes=2 --ntasks-per-node=1 hostname
@@ -501,54 +628,14 @@ srun --nodes=2 --ntasks-per-node=1 hostname
 出力例は以下のようになります。
 
 ```
-ip-10-1-52-212
-ip-10-1-90-199
+ip-10-4-33-25
+ip-10-4-198-29
 ```
 
 バッチジョブを作成して実行します。
-
-```bash
-cat << 'EOF' > test-job.sbatch
-#!/bin/bash
-
-#SBATCH --job-name=test-job
-#SBATCH --nodes=2
-#SBATCH --ntasks-per-node=2
-#SBATCH --output=%x_%j.out
-#SBATCH --error=%x_%j.err
-
-echo "=== ジョブ開始 ==="
-echo "ジョブ ID: $SLURM_JOB_ID"
-echo "ノード数: $SLURM_JOB_NUM_NODES"
-echo "総タスク数: $SLURM_NTASKS"
-
-srun hostname
-srun date
-
-echo "=== ジョブ終了 ==="
-EOF
-```
-
-ジョブを投入します。
-
-```bash
-sbatch test-job.sbatch
-```
-
-ジョブの状態を確認します。
-
-```bash
-squeue
-```
-
-ジョブが完了したら、出力ファイルを確認します。
-
-```bash
-cat test-job_*.out
-```
 ::::
 
-::::details 3. FSx for Lustre の確認
+::::details 5. FSx for Lustre の確認
 
 :::message
 なんのための作業か: FSx for Lustre ファイルシステムが正常にマウントされ、読み書きができることを確認します。
@@ -567,7 +654,7 @@ df -h | grep fsx
 出力例は以下のようになります。
 
 ```
-10.1.71.197@tcp:/oyuutbev  1.2T  5.5G  1.2T   1% /fsx
+10.4.212.16@tcp:/c2rqdamv  1.2T   29M  1.2T   1% /fsx
 ```
 
 FSx ディレクトリに移動します。
@@ -577,23 +664,12 @@ cd /fsx
 ls -la
 ```
 
-テストファイルを作成します。
-
-```bash
-echo "Hello FSx for Lustre" > /fsx/test.txt
-cat /fsx/test.txt
 ```
-
-出力例は以下のようになります。
-
-```
-Hello FSx for Lustre
-```
-
-テストファイルを削除します。
-
-```bash
-rm /fsx/test.txt
+total 102
+drwxr-xr-x  6 root   root   33280 Dec 18 14:41 .
+drwxr-xr-x 20 root   root    4096 Dec 18 14:38 ..
+drwxrwxrwt  2 root   root   33280 Dec 18 14:41 enroot
+drwxr-x---  7 ubuntu ubuntu 33280 Nov 14 21:26 ubuntu
 ```
 ::::
 
@@ -601,7 +677,6 @@ rm /fsx/test.txt
 
 :::message
 - [ ] 1. クラスターの削除実行
-- [ ] 2. 削除の完了確認
 :::
 
 ::::details 1. クラスターの削除実行
@@ -614,56 +689,9 @@ rm /fsx/test.txt
 次のステップに進む条件: クラスター削除コマンドが正常に実行され、削除プロセスが開始されること。
 :::
 
-AWS CLI を使用してクラスターを削除します。
-
-```bash
-aws sagemaker delete-cluster --cluster-name my-hyperpod-cluster
-```
-
-または、AWS コンソールから削除できます。
-
-1. [SageMaker HyperPod コンソール](https://console.aws.amazon.com/sagemaker/home#/cluster-management)にアクセス
-2. 削除するクラスターを選択
-3. 「Actions」→「Delete」をクリック
-4. 確認ダイアログで「Delete」をクリック
-::::
-
-::::details 2. 削除の完了確認
-
-:::message
-なんのための作業か: クラスターの削除が完了したことを確認します。削除には 5 から 10 分かかります。
-:::
-
-:::message
-次のステップに進む条件: クラスター一覧からクラスターが削除されるか、ステータスが「DELETE_COMPLETE」になること。
-:::
-
-削除の進行状況を確認します。
-
-```bash
-aws sagemaker describe-cluster --cluster-name my-hyperpod-cluster
-```
-
-クラスターが削除されると、以下のエラーが返されます。
-
-```
-An error occurred (ResourceNotFound) when calling the DescribeCluster operation: 
-Could not find cluster 'arn:aws:sagemaker:ap-northeast-1:123456789012:cluster/my-hyperpod-cluster'
-```
-
-:::message
-**Quick Setup で作成されたリソースについて**
-
-Quick Setup で自動作成された VPC とサブネット、FSx for Lustre ファイルシステム、セキュリティグループといったリソースは、クラスター削除後も残る場合があります。
-
-これらのリソースを削除する場合は、まず FSx コンソールで FSx for Lustre ファイルシステムを削除し、次に VPC コンソールで VPC を削除します。VPC を削除すると、関連するサブネット、ルートテーブル、インターネットゲートウェイも自動的に削除されます。削除前に、他のリソースがこれらを使用していないことを確認してください。
-:::
+AWS CLI や Amazon SageMaker AI のコンソール、CloudFormation ページから削除することができます。
 ::::
 
 ## まとめ
 
-本章では、Amazon SageMaker HyperPod を Slurm オーケストレーションで実際に構築する手順を解説しました。Quick Setup を使用することで、複雑な設定を行うことなく、約 20 分でクラスターを起動できました。
-
-本章で学んだ内容として、Quick Setup と AWS CLI の違いと選択基準、Quick Setup による簡単なクラスター作成、SSM Session Manager を使用した安全な接続、Slurm の基本操作とジョブ管理、そして FSx for Lustre の確認と使用方法について実践的に習得しました。
-
-次章以降では、より高度な機能として、レジリエンシー、チェックポイント管理、動的なノード管理、オブザーバビリティなどについて解説します。
+本章では、Amazon SageMaker HyperPod を Slurm オーケストレーションで実際に構築する手順を解説しました。Quick Setup を使用することで、複雑な設定を行うことなく、約 20 分でクラスターを起動できました。起動したクラスターに SSM Session Manager を使用して安全に接続し、Slurm の基本操作とジョブ管理、そして FSx for Lustre の確認と使用方法について確認しました。通常であれば構築に関する知識習得や実際の構築作業に数週間を要してもおかしくありませんが、AWS のベストプラクティスに沿った Slurm 環境を数十分で作成することができるのは非常に魅力的ですね。
