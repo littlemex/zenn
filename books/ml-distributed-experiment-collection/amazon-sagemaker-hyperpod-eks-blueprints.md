@@ -1,1 +1,0 @@
-https://awslabs.github.io/ai-on-sagemaker-hyperpod/docs/category/eks-blueprints

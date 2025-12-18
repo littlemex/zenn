@@ -24,7 +24,7 @@ free: true
 本章では Amazon SageMaker HyperPod を Slurm オーケストレーションオプションで実際に試してみましょう。以下の AI on SageMaker HyperPod ページを参考に、日本語での説明と補足を加えて Getting Started を実施します。
 
 :::message
-実装が変更される可能性があるため必要に応じて公式ドキュメントを確認ください。
+実装が変更される可能性があるため必要に応じて公式ドキュメントを確認ください。細かな権限設定などの方法も記載されているので本資料と合わせて確認すると良いです。
 :::
 
 https://awslabs.github.io/ai-on-sagemaker-hyperpod/docs/getting-started/orchestrated-by-slurm
@@ -276,6 +276,10 @@ session-manager-plugin --version
 ::::
 
 ::::details 2. クラスター情報の取得
+
+:::message alert
+SSM を通じて HyperPod クラスターにアクセスするには IAM 権限設定が必要です。[こちら](https://awslabs.github.io/ai-on-sagemaker-hyperpod/docs/getting-started/orchestrated-by-slurm/ssh-into-hyperpod)を確認してください。
+:::
 
 :::message
 なんのための作業か: SSH 接続に必要なクラスター ID、インスタンス ID、ノードグループ名を取得し、環境変数ファイルとして保存します。
