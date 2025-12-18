@@ -13,7 +13,7 @@ chapters:
   - resiliency
   - amazon-sagemaker-hyperpod-resiliency
   - amazon-sagemaker-hyperpod-slurm-tutorial
-  - multi-gpu-processing-approaches
+  # - multi-gpu-processing-approaches
 #  - appendix-optimizer
 #  - appendix-vast-data-checkpoint-analysis
 #  - appendix-network-topologies
