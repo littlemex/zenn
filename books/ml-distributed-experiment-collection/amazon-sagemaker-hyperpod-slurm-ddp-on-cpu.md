@@ -181,13 +181,13 @@ graph TB
             P5[Layer 78 weight<br/>4096×4096]
         end
         
-        subgraph "Bucket 1 (25MB)"
+        subgraph "Bucket 1 (25MiB)"
             P1 --> B1[Flatten and Concatenate]
             P2 --> B1
             P3 --> B1
         end
         
-        subgraph "Bucket 2 (25MB)"
+        subgraph "Bucket 2 (25MiB)"
             P4 --> B2[Flatten and Concatenate]
             P5 --> B2
         end
@@ -207,7 +207,7 @@ graph TB
     style AR2 fill:#2d6b35,color:#fff
 ```
 
-バケット化では、複数パラメータの勾配を一つの大きなテンソルにまとめてから All-Reduce を実行します。[PyTorch のデフォルトバケットサイズは 25MB](https://skrohit.github.io/posts/Notes_on_DDP/#-gradient-bucketing) に設定されており、この設定は多くの場合で良好なパフォーマンスを示します。バケットサイズは DDP コンストラクタの `bucket_cap_mb` パラメータで調整可能です。
+バケット化では、複数パラメータの勾配を一つの大きなテンソルにまとめてから All-Reduce を実行します。[PyTorch のデフォルトバケットサイズは 25MiB](https://docs.pytorch.org/docs/stable/generated/torch.nn.parallel.DistributedDataParallel.html) に設定されており、この設定は多くの場合で良好なパフォーマンスを示します。バケットサイズは DDP コンストラクタの `bucket_cap_mb` パラメータで調整可能です。
 
 通信回数の削減により、レイテンシーによるオーバーヘッドが大幅に減少します。例えば 32,000 個のパラメータを 500 個バケットにまとめれば、通信回数は 1/64 になります。大きなテンソルでは GPU 間の帯域幅を効率的に活用でき、通信と計算のオーバーラップも実装しやすくなります。
 
@@ -410,7 +410,15 @@ GPU を使用したい場合は、Worker を `ml.g5.xlarge` などに変更し�
 
 リポジトリには 2 つの異なる実行方法が用意されています。それぞれの方法にはメリットとデメリットがあり、用途に応じて選択できます。
 
-::::details リポジトリのクローン
+:::message
+- [ ] 1. リポジトリのクローンと準備
+- [ ] 2. トレーニングスクリプトの確認
+- [ ] 3. 実行方法の選択
+  - [ ] 3-A. 方法 1: Conda 環境での実行
+  - [ ] 3-B. 方法 2: Enroot コンテナでの実行
+:::
+
+::::details 1. リポジトリのクローンと準備
 :::message
 なんのための作業か: DDP トレーニングコードと Slurm ジョブスクリプトを取得します。AWS の分散トレーニングサンプルリポジトリには、Slurm 向けに最適化された PyTorch DDP サンプルが含まれています。
 :::
@@ -459,7 +467,7 @@ ls -la slurm/
 ```
 ::::
 
-::::details トレーニングスクリプトの確認
+::::details 2. トレーニングスクリプトの確認
 
 :::message
 なんのための作業か: DDP トレーニングを実行する Python スクリプトの内容を理解します。
@@ -522,7 +530,7 @@ class Trainer:
 **argparse による引数処理**: コマンドライン引数でエポック数、チェックポイント間隔、バッチサイズを指定できます。
 ::::
 
-::::details 方法 1: Conda 環境での実行
+::::details 3-A. 方法 1: Conda 環境での実行
 
 :::message
 なんのための作業か: Conda 仮想環境を使用して、コンテナを介さずに直接トレーニングを実行します。この方法はシンプルで、デバッグが容易です。
@@ -531,6 +539,92 @@ class Trainer:
 :::message
 次のステップに進む条件: Conda 環境が作成され、ジョブが正常に投入できること。
 :::
+
+```mermaid
+graph TB
+    subgraph "User"
+        USER[ユーザー]
+    end
+    
+    subgraph "Slurm Controller"
+        SBATCH[sbatch<br/>1.conda-train.sbatch]
+        SCHED[Slurm Scheduler]
+    end
+    
+    subgraph "Node 0"
+        SRUN0[srun]
+        CONDA0[Conda 環境<br/>pt_cpu]
+        TORCH0[torchrun]
+        
+        subgraph "Worker Processes"
+            P0[RANK 0<br/>ddp.py]
+            P1[RANK 1<br/>ddp.py]
+            P2[RANK 2<br/>ddp.py]
+            P3[RANK 3<br/>ddp.py]
+        end
+    end
+    
+    subgraph "Node 1"
+        SRUN1[srun]
+        CONDA1[Conda 環境<br/>pt_cpu]
+        TORCH1[torchrun]
+        
+        subgraph "Worker Processes "
+            P4[RANK 4<br/>ddp.py]
+            P5[RANK 5<br/>ddp.py]
+            P6[RANK 6<br/>ddp.py]
+            P7[RANK 7<br/>ddp.py]
+        end
+    end
+    
+    subgraph "Coordination"
+        RDZV[C10d Rendezvous]
+    end
+    
+    USER -->|投入| SBATCH
+    SBATCH --> SCHED
+    SCHED --> SRUN0
+    SCHED --> SRUN1
+    SRUN0 --> CONDA0
+    SRUN1 --> CONDA1
+    CONDA0 --> TORCH0
+    CONDA1 --> TORCH1
+    TORCH0 --> P0
+    TORCH0 --> P1
+    TORCH0 --> P2
+    TORCH0 --> P3
+    TORCH1 --> P4
+    TORCH1 --> P5
+    TORCH1 --> P6
+    TORCH1 --> P7
+    P0 --> RDZV
+    P1 --> RDZV
+    P2 --> RDZV
+    P3 --> RDZV
+    P4 --> RDZV
+    P5 --> RDZV
+    P6 --> RDZV
+    P7 --> RDZV
+    
+    style USER fill:#4a5986,color:#fff
+    style SBATCH fill:#2d5986,color:#fff
+    style SCHED fill:#2d5986,color:#fff
+    style SRUN0 fill:#2d6b35,color:#fff
+    style SRUN1 fill:#2d6b35,color:#fff
+    style CONDA0 fill:#6b4513,color:#fff
+    style CONDA1 fill:#6b4513,color:#fff
+    style TORCH0 fill:#8b4513,color:#fff
+    style TORCH1 fill:#8b4513,color:#fff
+    style RDZV fill:#4a6b35,color:#fff
+    style P0 fill:#5a7a96,color:#fff
+    style P1 fill:#5a7a96,color:#fff
+    style P2 fill:#5a7a96,color:#fff
+    style P3 fill:#5a7a96,color:#fff
+    style P4 fill:#5a7a96,color:#fff
+    style P5 fill:#5a7a96,color:#fff
+    style P6 fill:#5a7a96,color:#fff
+    style P7 fill:#5a7a96,color:#fff
+```
 
 :::message alert
 **Anaconda Terms of Service について**
@@ -595,32 +689,160 @@ sbatch 1.conda-train.sbatch
 `1.conda-train.sbatch` は、作成した Conda 環境の `torchrun` を使用して `ddp.py` を実行します。このスクリプトは以下のように動作します。
 
 各ノードで `srun` を通じて `./pt_cpu/bin/torchrun` を起動します。torchrun は環境変数（MASTER_ADDR、MASTER_PORT など）を自動設定し、各ノードで指定された数のプロセスを起動します。各プロセスは親ディレクトリの `ddp.py` を実行し、環境変数から RANK や LOCAL_RANK を取得して DDP トレーニングを開始します。
-
-**メリット**
-- コンテナイメージのビルドが不要
-- 設定がシンプル（ToS 同意後）
-- デバッグが容易
-- 環境のカスタマイズが柔軟
-
-**デメリット**
-- 初回セットアップ時に ToS への同意が必要
-- 環境の再現性がコンテナより劣る
-- 依存関係の管理が必要
 ::::
 
-::::details 方法 2: Enroot コンテナでの実行
+::::details 3-B. 方法 2: Enroot コンテナでの実行
 
 :::message
-なんのための作業か: Enroot コンテナを使用してトレーニングを実行します。Enroot は NVIDIA が開発した HPC 向けの軽量コンテナランタイムで、Slurm との統合に最適化されています。この方法は環境の完全な再現性を提供します。
+なんのための作業か: Enroot コンテナを使用してトレーニングを実行します。Enroot は HPC 環境向けの軽量コンテナランタイムで、環境の完全な再現性を提供します。
 :::
 
 :::message
-次のステップに進む条件: Enroot イメージが作成され、コンテナ経由でジョブが正常に実行できること。
+次のステップに進む条件: Pyxis が設定されており、Enroot イメージが作成され、コンテナ経由でジョブが正常に実行できること。
 :::
 
-**Enroot とは**
+:::message alert
+**Quick Setup での制限と Pyxis の手動設定**
 
-Enroot は NVIDIA が開発した軽量コンテナランタイムです。Docker のような従来のコンテナとは異なり、HPC 環境に特化して設計されています。デーモンプロセスが不要で、非特権ユーザーでも実行でき、Slurm の Pyxis プラグインを通じてシームレスに統合されます。過度な隔離を排除しながらファイルシステム分離を維持するため、パフォーマンスオーバーヘッドが最小限です。
+Quick Setup で作成した HyperPod クラスターでは、Worker ノードで Pyxis プラグインが正しく設定されていない場合があります。Pyxis は Slurm で Enroot コンテナを実行するために必要な [SPANK プラグイン](https://github.com/NVIDIA/pyxis)です。
+
+Pyxis が Worker ノードで動作するか確認してください：
+
+```bash
+# sbatch スクリプト内でテスト
+cat > test-pyxis.sbatch << 'EOF'
+#!/bin/bash
+#SBATCH --nodes=1
+#SBATCH --output=test_%j.out
+srun --container-image=alpine:latest echo "Pyxis works"
+EOF
+
+sbatch test-pyxis.sbatch
+cat test_*.out
+```
+
+エラーが表示される場合、以下の手順で Pyxis を手動設定します。
+:::
+
+**ステップ 0: Pyxis の手動設定（Quick Setup の場合のみ）**
+
+Quick Setup では Worker ノードの `plugstack.conf` が設定されていないため、手動で設定する必要があります。
+
+```bash
+# 1. Worker ノードで /etc/slurm ディレクトリを作成
+srun --nodes=2 sudo mkdir -p /etc/slurm
+
+# 2. plugstack.conf のシンボリックリンクを作成
+srun --nodes=2 sudo ln -sf /usr/local/share/pyxis/pyxis.conf /etc/slurm/plugstack.conf
+
+# 3. sbatch_support を有効化
+srun --nodes=2 sudo bash -c 'echo "required /usr/local/lib/slurm/spank_pyxis.so sbatch_support=1" > /usr/local/share/pyxis/pyxis.conf'
+
+# 4. Worker ノードで slurmd を再起動
+srun --nodes=2 sudo systemctl restart slurmd
+
+# 5. 確認
+scontrol show config | grep PlugStackConfig
+# PlugStackConfig = /etc/slurm/plugstack.conf と表示されるはず
+```
+
+:::message
+**Custom Setup での推奨設定方法**
+
+本番環境では、[Awsome Distributed Training リポジトリ](https://github.com/aws-samples/awsome-distributed-training/tree/main/1.architectures/5.sagemaker-hyperpod/LifecycleScripts/base-config)のライフサイクルスクリプトを使用してクラスター作成時に Pyxis を自動設定することを推奨します。`config.py` で `enable_docker_enroot_pyxis = True` を設定すると、クラスター作成時に自動的に Pyxis が設定されます。詳細は別章で扱います。
+:::
+
+```mermaid
+graph TB
+    subgraph "User"
+        USER[ユーザー]
+    end
+    
+    subgraph "Slurm Controller"
+        SBATCH[sbatch<br/>3.container-train.sbatch]
+        SCHED[Slurm Scheduler]
+    end
+    
+    subgraph "Node 0"
+        SRUN0[srun<br/>Pyxis 有効]
+        PYXIS0[Pyxis Plugin]
+        ENROOT0[Enroot Container<br/>pytorch.sqsh]
+        TORCH0[torchrun]
+        
+        subgraph "Worker Processes"
+            P0[RANK 0<br/>ddp.py]
+            P1[RANK 1<br/>ddp.py]
+            P2[RANK 2<br/>ddp.py]
+            P3[RANK 3<br/>ddp.py]
+        end
+    end
+    
+    subgraph "Node 1"
+        SRUN1[srun<br/>Pyxis 有効]
+        PYXIS1[Pyxis Plugin]
+        ENROOT1[Enroot Container<br/>pytorch.sqsh]
+        TORCH1[torchrun]
+        
+        subgraph "Worker Processes "
+            P4[RANK 4<br/>ddp.py]
+            P5[RANK 5<br/>ddp.py]
+            P6[RANK 6<br/>ddp.py]
+            P7[RANK 7<br/>ddp.py]
+        end
+    end
+    
+    subgraph "Coordination"
+        RDZV[C10d Rendezvous]
+    end
+    
+    USER -->|投入| SBATCH
+    SBATCH --> SCHED
+    SCHED --> SRUN0
+    SCHED --> SRUN1
+    SRUN0 --> PYXIS0
+    SRUN1 --> PYXIS1
+    PYXIS0 --> ENROOT0
+    PYXIS1 --> ENROOT1
+    ENROOT0 --> TORCH0
+    ENROOT1 --> TORCH1
+    TORCH0 --> P0
+    TORCH0 --> P1
+    TORCH0 --> P2
+    TORCH0 --> P3
+    TORCH1 --> P4
+    TORCH1 --> P5
+    TORCH1 --> P6
+    TORCH1 --> P7
+    P0 --> RDZV
+    P1 --> RDZV
+    P2 --> RDZV
+    P3 --> RDZV
+    P4 --> RDZV
+    P5 --> RDZV
+    P6 --> RDZV
+    P7 --> RDZV
+    
+    style USER fill:#4a5986,color:#fff
+    style SBATCH fill:#2d5986,color:#fff
+    style SCHED fill:#2d5986,color:#fff
+    style SRUN0 fill:#2d6b35,color:#fff
+    style SRUN1 fill:#2d6b35,color:#fff
+    style PYXIS0 fill:#8b4513,color:#fff
+    style PYXIS1 fill:#8b4513,color:#fff
+    style ENROOT0 fill:#6b4513,color:#fff
+    style ENROOT1 fill:#6b4513,color:#fff
+    style TORCH0 fill:#a0522d,color:#fff
+    style TORCH1 fill:#a0522d,color:#fff
+    style RDZV fill:#4a6b35,color:#fff
+    style P0 fill:#5a7a96,color:#fff
+    style P1 fill:#5a7a96,color:#fff
+    style P2 fill:#5a7a96,color:#fff
+    style P3 fill:#5a7a96,color:#fff
+    style P4 fill:#5a7a96,color:#fff
+    style P5 fill:#5a7a96,color:#fff
+    style P6 fill:#5a7a96,color:#fff
+    style P7 fill:#5a7a96,color:#fff
+```
 
 **ステップ 1: Enroot イメージの作成**
 
@@ -640,23 +862,19 @@ sbatch 3.container-train.sbatch
 `3.container-train.sbatch` は、Pyxis プラグインを通じて Enroot コンテナ内でトレーニングを実行します。このスクリプトは以下のように動作します。
 
 Slurm の `--container-image` オプションで Enroot イメージを指定し、必要な環境変数とボリュームマウントを設定します。Pyxis プラグインが Enroot を呼び出し、各ノードでコンテナを起動します。コンテナ内で `torchrun` が実行され、DDP トレーニングが開始されます。
-
-**メリット**
-- 環境の完全な再現性
-- 依存関係がコンテナに含まれる
-- HyperPod での推奨方法
-- Slurm との統合が最適化されている
-
-**デメリット**
-- イメージの作成とビルドに時間がかかる
-- Enroot と Pyxis の理解が必要
 ::::
 
 ## トレーニングジョブの実行
 
 選択した実行方法（Conda または Enroot）に応じてジョブを投入します。
 
-::::details ジョブの投入
+:::message
+- [ ] 4. ジョブの投入
+- [ ] 5. ジョブの監視
+- [ ] 6. 結果の確認
+:::
+
+::::details 4. ジョブの投入
 
 :::message
 なんのための作業か: 選択した方法で Slurm ジョブスクリプトを投入し、DDP トレーニングを開始します。
@@ -664,6 +882,40 @@ Slurm の `--container-image` オプションで Enroot イメージを指定し
 
 :::message
 次のステップに進む条件: `sbatch` コマンドが正常に実行され、ジョブ ID が返されること。
+:::
+
+:::message alert
+**エポック数の設定について**
+
+デフォルトの sbatch ファイルでは、エポック数が 5000000 に設定されており、動作確認には長すぎます。動作確認の場合は、sbatch ファイルを編集してエポック数を 100 から 500 程度に変更することを推奨します。
+
+**編集方法（Conda 環境の場合）**
+
+```bash
+# sbatch ファイルを編集
+cd ~/awsome-distributed-training/3.test_cases/pytorch/cpu-ddp/slurm
+vi 1.conda-train.sbatch
+
+# 最後の行を以下のように変更
+# 変更前: $(dirname "$PWD")/ddp.py 5000000 10
+# 変更後: $(dirname "$PWD")/ddp.py 500 10
+```
+
+この変更により、総エポック数が 500、チェックポイント保存間隔が 10 エポックごとになります。
+
+ddp.py の引数は以下の順序です：
+- 第1引数: total_epochs（総エポック数）
+- 第2引数: save_every（チェックポイント保存間隔）
+
+**スナップショットからの再開について**
+
+ddp.py は `./snapshot.pt` が存在する場合、自動的にそこから再開します。前回のトレーニングを途中で停止した場合、次回のジョブは保存されたエポック数から続行されます。クリーンな状態から実行したい場合は、スナップショットを削除してください。
+
+```bash
+# スナップショットを削除してクリーンな状態から実行
+cd ~/awsome-distributed-training/3.test_cases/pytorch/cpu-ddp
+rm -f snapshot.pt
+```
 :::
 
 **Conda 環境を使用する場合**
@@ -674,6 +926,10 @@ sbatch slurm/1.conda-train.sbatch
 ```
 
 **Enroot コンテナを使用する場合**
+
+:::message alert
+Enroot コンテナを使用する場合も、`3.container-train.sbatch` ファイルの最後の行でエポック数を調整できます。動作確認の場合は 100 程度に変更することを推奨します。
+:::
 
 ```bash
 cd ~/awsome-distributed-training/3.test_cases/pytorch/cpu-ddp
@@ -689,7 +945,7 @@ Submitted batch job 123
 このジョブ ID を記録しておきます。
 ::::
 
-::::details ジョブの監視
+::::details 5. ジョブの監視
 
 :::message
 なんのための作業か: ジョブの状態を確認し、トレーニングの進行状況を監視します。
@@ -802,7 +1058,7 @@ UserWarning: Failed to initialize NumPy: No module named 'numpy'
 
 **チェックポイントの保存**
 
-エポック 0、10、20... のように 10 エポックごとに `Epoch X | Training snapshot saved at ./snapshot.pt` というメッセージが表示されます。複数の RANK から同じメッセージが出力されていますが、実際には各 RANK が独立してスナップショットを保存しています。本来は RANK 0 のみから保存すべきですが、このサンプルコードでは全 RANK が保存する実装になっています。
+エポック 0、10、20... のように 10 エポックごとに `Epoch X | Training snapshot saved at ./snapshot.pt` というメッセージが表示されます。複数の RANK から同じメッセージが出力されていますが、実際には各 RANK が独立してスナップショットを保存しています。
 
 **実効バッチサイズ**
 
@@ -819,7 +1075,7 @@ grep -E "RANK [4-7]" logs/cpu-ddp-conda_4.out
 ```
 ::::
 
-::::details 結果の確認
+::::details 6. 結果の確認
 
 :::message
 なんのための作業か: トレーニングが正常に完了したことを確認し、結果を検証します。
@@ -829,30 +1085,11 @@ grep -E "RANK [4-7]" logs/cpu-ddp-conda_4.out
 次のステップに進む条件: ジョブが完了し、エラーがないこと。両方のランクが同期してトレーニングを実行したことが確認できること。
 :::
 
-ジョブの完了を確認します。
+ジョブの完了を確認します。logs/cpu-ddp-container_xx.out のようなファイルが作成されるのでログを確認して正常終了したかどうか確認しましょう。
 
 ```bash
 squeue
 # 何も表示されなければジョブは完了
-```
-
-ログファイル全体を確認します。
-
-```bash
-cat /fsx/logs/pytorch-ddp_123.out
-```
-
-正常に完了した場合、以下のような情報が表示されます。
-
-- 両方のランク（0 と 1）が初期化されたこと
-- 各エポックで両方のランクがトレーニングを実行したこと
-- Loss が減少していること
-- エラーなく完了したこと
-
-チェックポイントが保存されている場合は、それも確認します。
-
-```bash
-ls -la /fsx/checkpoints/
 ```
 ::::
 
@@ -933,104 +1170,100 @@ dist.init_process_group(backend='gloo')
 # その後でモデルを DDP でラップ
 model = DDP(model)
 ```
-::::
 
-## パフォーマンスの確認
+**問題 6: "Permission denied: ddp.py"**
 
-::::details スケーラビリティの検証
+sbatch ファイルを編集してジョブを実行すると、以下のエラーが発生する場合があります。
 
-DDP の効果を確認するために、異なるノード数でトレーニング時間を比較します。
+```
+/fsx/ubuntu/awsome-distributed-training/3.test_cases/pytorch/cpu-ddp/ddp.py: Permission denied
+```
 
-**1 ノード（1 GPU/CPU）の場合**
+原因は ddp.py に実行権限が設定されていないためです。
+
+解決方法は、実行権限を付与します。
 
 ```bash
-# ジョブスクリプトで --nodes=1 に変更
-sbatch ddp_train.sbatch
+cd ~/awsome-distributed-training/3.test_cases/pytorch/cpu-ddp
+chmod +x ddp.py
+
+# 確認
+ls -la ddp.py
+# -rwxr-xr-x のように x が表示されれば実行権限が設定されている
 ```
 
-**2 ノード（2 GPU/CPU）の場合**
+**問題 7: "torchrun: error: the following arguments are required: training_script"**
+
+sbatch ファイルを編集した際に、torchrun が以下のエラーを出力する場合があります。
+
+```
+torchrun: error: the following arguments are required: training_script, training_script_args
+```
+
+原因は sbatch ファイル内のパス指定やスクリプト引数の記述に問題があるためです。
+
+解決方法として、以下を確認します。
 
 ```bash
-# ジョブスクリプトで --nodes=2 に変更
-sbatch ddp_train.sbatch
+# slurm/ ディレクトリから sbatch を実行していることを確認
+cd ~/awsome-distributed-training/3.test_cases/pytorch/cpu-ddp/slurm
+
+# sbatch ファイルの最後の行を確認
+# 正しい形式: $(dirname "$PWD")/ddp.py 100 10
+# $(dirname "$PWD") は /path/to/cpu-ddp を返す
 ```
 
-理想的には、2 ノードで約 2 倍の高速化が期待できます。実際には通信オーバーヘッドにより 1.7 から 1.9 倍程度になることが多いです。
+パス指定が正しく、ddp.py に実行権限があることを確認してから再度ジョブを投入します。
 
-**スループットの計算**
+**問題 8: "srun: unrecognized option '--container-image'" (sbatch スクリプト内のみ)**
 
-ログから各エポックの時間を測定し、以下の式でスループットを計算します。
+sbatch スクリプトから Enroot コンテナを使用しようとすると、以下のエラーが発生する場合があります。
 
 ```
-スループット = (バッチサイズ × ステップ数) / 経過時間
+srun: unrecognized option '--container-image'
 ```
 
-ノード数を増やした際にスループットが線形に増加すれば、DDP が効率的に動作していることを示します。
+対話的シェルでは `srun --container-image=alpine:latest echo "test"` が動作するのに、sbatch スクリプト内では失敗します。
+
+原因は Quick Setup で作成した HyperPod クラスターの Worker ノードで `plugstack.conf` が設定されていないためです。確認方法は以下の通りです：
+
+```bash
+# Worker ノードで確認
+srun --nodes=1 bash -c "
+  scontrol show config | grep PlugStackConfig
+  ls -la /etc/slurm/plugstack.conf 2>&1
+"
+# PlugStackConfig = (null) または plugstack.conf が存在しない場合、設定されていない
+```
+
+[Pyxis](https://github.com/NVIDIA/pyxis) は SPANK プラグインとして動作し、`plugstack.conf` で Slurm に登録する必要があります。Quick Setup では Worker ノードにこの設定がデフォルトで行われていません。
+
+解決方法は、Worker ノードで `plugstack.conf` を設定し、`sbatch_support=1` を有効にします：
+
+```bash
+# 1. Worker ノードで /etc/slurm ディレクトリを作成
+srun --nodes=2 sudo mkdir -p /etc/slurm
+
+# 2. plugstack.conf のシンボリックリンクを作成
+srun --nodes=2 sudo ln -sf /usr/local/share/pyxis/pyxis.conf /etc/slurm/plugstack.conf
+
+# 3. sbatch_support を有効化
+srun --nodes=2 sudo bash -c 'echo "required /usr/local/lib/slurm/spank_pyxis.so sbatch_support=1" > /usr/local/share/pyxis/pyxis.conf'
+
+# 4. Worker ノードで slurmd を再起動
+srun --nodes=2 sudo systemctl restart slurmd
+```
+
+本番環境では、[Awsome Distributed Training リポジトリ](https://github.com/aws-samples/awsome-distributed-training/tree/main/1.architectures/5.sagemaker-hyperpod/LifecycleScripts/base-config)のライフサイクルスクリプトを使用し、Custom Setup でクラスターを作成することで、Pyxis を自動設定できます。詳細は [HyperPod ライフサイクルスクリプトのベストプラクティス](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-lifecycle-best-practices-slurm.html)を参照してください。
 ::::
-
----
 
 # まとめ
 
-本章では、PyTorch Distributed Data Parallel（DDP）の内部動作を詳しく学び、Amazon SageMaker HyperPod の Slurm 環境で実際に実装しました。
+本章では、PyTorch DDP について整理し、Amazon SageMaker HyperPod の Slurm 環境で実際に動作を確認しました。より詳細な情報については PyTorch 公式の DDP チュートリアルを参考にしてみてください。
 
 
-
-FSDP は DDP の勾配同期メカニズムを拡張し、パラメータと optimizer state も分散します。Megatron-LM は DDP の Data Parallelism に Tensor Parallelism を組み合わせます。DeepSpeed は DDP の通信パターンを基礎として ZeRO 最適化を実装しています。
-
-これらの高度な手法を理解するためには、DDP で学ぶ勾配同期、通信パターン、バケット化といった概念が不可欠です。
-
-::::details マルチ GPU 処理手法の詳細
-
-DDP を含む様々な並列化手法の詳細については、[マルチ GPU 処理手法の整理](./multi-gpu-processing-approaches.md)を参照してください。この章では以下のトピックを詳しく解説しています。
-
-- Data Parallelism、Pipeline Parallelism、Tensor Parallelism の比較
-- ZeRO（Zero Redundancy Optimizer）の詳細
-- FSDP、DeepSpeed、Megatron-LM の特徴
-- フレームワーク選択のガイドライン
-- 学習手法（事前学習、SFT、DPO）とフレームワークの対応
-
-DDP の理解を深めた後、より高度な手法を学ぶ際の参考にしてください。
-::::
-
-
-## 学んだこと
-
-**DDP の基本原理**
-
-各 GPU がモデル全体のコピーを保持し、異なるデータで並列にトレーニングを実行します。All-Reduce 操作により勾配を同期し、全 GPU が同じパラメータ更新を行います。
-
-**最適化技術**
-
-勾配バケット化により通信回数を削減し、レイテンシーのオーバーヘッドを最小化します。通信と計算のオーバーラップにより、GPU の稼働率を最大化します。Ring All-Reduce により、数百から数千 GPU へのスケーラビリティを実現します。
-
-**実装スキル**
-
-PyTorch の標準 API を使用した DDP の実装方法を習得しました。Slurm を使用したマルチノードトレーニングの実行方法を学びました。トラブルシューティングとパフォーマンス検証の手法を理解しました。
-
-## 次のステップ
-
-DDP の基礎を理解したら、以下のトピックに進むことをお勧めします。
-
-**より高度な並列化手法**
-
-[マルチ GPU 処理手法の整理](./multi-gpu-processing-approaches.md)で、FSDP、Megatron-LM、DeepSpeed などの advanced な手法を学習できます。大規模モデル（70B+ パラメータ）のトレーニングには、これらの手法が必要になります。
-
-**HyperPod の高度な機能**
-
-レジリエンシーとチェックポイント管理については [HyperPod Part 2](./hp-part2-checkpoint.md) を参照してください。動的キャパシティ管理については [HyperPod Part 3](./hp-part3-dynamic.md) を参照してください。オブザーバビリティについては [HyperPod Part 4](./hp-part4-observability.md) を参照してください。
-
-**GPU を使用した実践**
-
-本章では CPU を使用しましたが、実際の大規模トレーニングでは GPU が必要です。`ml.g5.xlarge` や `ml.p5.48xlarge` などの GPU インスタンスを使用し、NCCL バックエンドで同様のトレーニングを実行してください。
-
-DDP は分散学習の基礎技術であり、これをマスターすることで、より高度な手法への道が開けます。
-
-## 参考資料
-
-### PyTorch 公式 DDP チュートリアルシリーズ
-
-PyTorch は DDP の学習のための包括的なビデオチュートリアルシリーズを提供しています。本書では [PyTorch DDP 公式チュートリアル](./pytorch-ddp.md)で日本語による詳細な解説を行っています。
+::::details PyTorch 公式 DDP チュートリアルシリーズ
+PyTorch は DDP の学習のための包括的なビデオチュートリアルシリーズを提供しています。
 
 **公式チュートリアルリンク**
 - [Introduction](https://docs.pytorch.org/tutorials/beginner/ddp_series_intro.html): シリーズの概要
@@ -1040,32 +1273,136 @@ PyTorch は DDP の学習のための包括的なビデオチュートリアル�
 - [Multi-Node training](https://docs.pytorch.org/tutorials/intermediate/ddp_series_multinode.html): マルチノードトレーニング
 - [minGPT Training](https://docs.pytorch.org/tutorials/intermediate/ddp_series_minGPT.html): 実践的な GPT モデルのトレーニング例
 - [GitHub: DDP Tutorial Series](https://github.com/pytorch/examples/tree/main/distributed/ddp-tutorial-series): コード例
+::::
 
-### torchrun について
+::::details コラム: torchrun について
 
-本章では Slurm の `srun` を使用しましたが、PyTorch には `torchrun` というユーティリティも用意されています。torchrun は分散トレーニングの設定を自動化し、以下の機能を提供します。
-
-**自動化される設定**
-- 環境変数（RANK、WORLD_SIZE、LOCAL_RANK など）の自動設定
-- プロセスの起動と管理
-- 複数マシンでの実行時の調整
-
-**耐障害性**
-- 障害発生時に全プロセスを自動的に終了し再起動
-- 最後に保存されたスナップショットから学習を再開
-- モデル状態、エポック数、optimizer state などを保存して継続性を確保
-
-**エラスティックトレーニング**
-- ノードの動的な追加・削除をサポート
-- メンバーシップ変更時に自動的にプロセスを再起動
-
-**使用例**
-```bash
-# 従来の方法（mp.spawn）
-python script.py
-
-# torchrun を使用
-torchrun --standalone --nproc_per_node=4 script.py
+```mermaid
+graph TB
+    subgraph "User"
+        USER[ユーザー]
+    end
+    
+    subgraph "Slurm Controller"
+        SBATCH[sbatch コマンド<br/>1.conda-train.sbatch]
+        SCHED[Slurm Scheduler]
+    end
+    
+    subgraph "Node 0"
+        SRUN0[srun<br/>プロセス起動]
+        TORCH0[torchrun<br/>Elastic Operator]
+        
+        subgraph "Worker Processes - Node 0"
+            P0[RANK 0<br/>ddp.py]
+            P1[RANK 1<br/>ddp.py]
+            P2[RANK 2<br/>ddp.py]
+            P3[RANK 3<br/>ddp.py]
+        end
+    end
+    
+    subgraph "Node 1"
+        SRUN1[srun<br/>プロセス起動]
+        TORCH1[torchrun<br/>Elastic Operator]
+        
+        subgraph "Worker Processes - Node 1"
+            P4[RANK 4<br/>ddp.py]
+            P5[RANK 5<br/>ddp.py]
+            P6[RANK 6<br/>ddp.py]
+            P7[RANK 7<br/>ddp.py]
+        end
+    end
+    
+    subgraph "Rendezvous"
+        RDZV[C10d Rendezvous<br/>プロセス調整]
+    end
+    
+    subgraph "Training Execution"
+        DDP[DDP による<br/>分散トレーニング]
+    end
+    
+    USER -->|ジョブ投入| SBATCH
+    SBATCH --> SCHED
+    SCHED -->|ノードに割り当て| SRUN0
+    SCHED -->|ノードに割り当て| SRUN1
+    
+    SRUN0 -->|起動| TORCH0
+    SRUN1 -->|起動| TORCH1
+    
+    TORCH0 -->|環境変数設定<br/>プロセス生成| P0
+    TORCH0 -->|環境変数設定<br/>プロセス生成| P1
+    TORCH0 -->|環境変数設定<br/>プロセス生成| P2
+    TORCH0 -->|環境変数設定<br/>プロセス生成| P3
+    
+    TORCH1 -->|環境変数設定<br/>プロセス生成| P4
+    TORCH1 -->|環境変数設定<br/>プロセス生成| P5
+    TORCH1 -->|環境変数設定<br/>プロセス生成| P6
+    TORCH1 -->|環境変数設定<br/>プロセス生成| P7
+    
+    P0 --> RDZV
+    P1 --> RDZV
+    P2 --> RDZV
+    P3 --> RDZV
+    P4 --> RDZV
+    P5 --> RDZV
+    P6 --> RDZV
+    P7 --> RDZV
+    
+    RDZV -->|全プロセス同期完了| DDP
+    
+    style USER fill:#4a5986,color:#fff
+    style SBATCH fill:#2d5986,color:#fff
+    style SCHED fill:#2d5986,color:#fff
+    style SRUN0 fill:#2d6b35,color:#fff
+    style SRUN1 fill:#2d6b35,color:#fff
+    style TORCH0 fill:#8b4513,color:#fff
+    style TORCH1 fill:#8b4513,color:#fff
+    style RDZV fill:#6b4513,color:#fff
+    style DDP fill:#4a6b35,color:#fff
+    style P0 fill:#5a7a96,color:#fff
+    style P1 fill:#5a7a96,color:#fff
+    style P2 fill:#5a7a96,color:#fff
+    style P3 fill:#5a7a96,color:#fff
+    style P4 fill:#5a7a96,color:#fff
+    style P5 fill:#5a7a96,color:#fff
+    style P6 fill:#5a7a96,color:#fff
+    style P7 fill:#5a7a96,color:#fff
 ```
 
-詳細は [Fault Tolerance チュートリアル](https://docs.pytorch.org/tutorials/beginner/ddp_series_fault_tolerance.html)を参照してください。
+[torchrun](https://pytorch.org/docs/stable/elastic/run.html) は、PyTorch が提供する起動ユーティリティで、`torch.distributed.run` モジュールへの Python コンソールスクリプトとして実装されています。
+
+従来の PyTorch 分散トレーニングでは、`torch.multiprocessing.spawn` を使用してプロセスを起動し、環境変数（RANK、WORLD_SIZE など）を手動で設定する必要がありました。torchrun はこれらの煩雑な設定を自動化し、単一ノードとマルチノードの両方で統一されたインターフェースを提供します。スクリプトに `mp.spawn` 呼び出しを記述する必要がなくなり、通常の `main()` 関数を持つスクリプトをそのまま分散実行できます。
+
+torchrun の重要な機能の一つが耐障害性です。分散トレーニングでは、単一プロセスの障害がジョブ全体を停止させる可能性があります。torchrun は障害を検出すると、全てのプロセスを終了し、最後に保存されたスナップショットから自動的に再開します。[Fault Tolerance チュートリアル](https://pytorch.org/tutorials/beginner/ddp_series_fault_tolerance.html)では、この機能の詳細な実装方法が解説されています。スナップショットにはモデルの state だけでなく、エポック数、optimizer の state、その他のトレーニング継続に必要な情報を含めることができます。
+
+エラスティックトレーニングも torchrun の特徴です。トレーニング中にノードが追加または削除された場合、torchrun は自動的に全プロセスを再起動し、新しい RANK と WORLD_SIZE を割り当てます。これにより、計算リソースを動的にスケールさせることが可能になります。[PyTorch Elastic のドキュメント](https://pytorch.org/docs/stable/distributed.elastic.html)では、最小ノード数と最大ノード数を指定する `--nnodes=1:4` のような構文が説明されています。
+
+本章の HyperPod 環境では、Slurm の `srun` を通じて torchrun を起動しています。`1.conda-train.sbatch` では、各ノードで `srun` が torchrun プロセスを開始し、torchrun が rendezvous を通じて全ノードのプロセスを調整します。この構成により、Slurm のジョブ管理機能と torchrun の分散トレーニング機能を組み合わせることができます。
+
+torchrun を使用する際の基本的なコマンド構文は以下の通りです。
+
+```bash
+# 単一ノード、マルチ GPU
+torchrun --standalone --nproc_per_node=4 script.py
+
+# マルチノード（固定サイズ）
+torchrun \
+    --nnodes=2 \
+    --nproc_per_node=4 \
+    --rdzv_id=job123 \
+    --rdzv_backend=c10d \
+    --rdzv_endpoint=node1:29400 \
+    script.py
+
+# エラスティック（1-4 ノード）
+torchrun \
+    --nnodes=1:4 \
+    --nproc_per_node=4 \
+    --max_restarts=3 \
+    --rdzv_id=job123 \
+    --rdzv_backend=c10d \
+    --rdzv_endpoint=node1:29400 \
+    script.py
+```
+
+詳細な使用方法とオプションについては、[torchrun 公式ドキュメント](https://pytorch.org/docs/stable/elastic/run.html)および [DDP チュートリアルシリーズ](https://pytorch.org/tutorials/beginner/ddp_series_intro.html)を参照してください。
+::::
