@@ -13,6 +13,8 @@
 - PC --rollback-on-failure false を Cluster 作成時につけると、作成に時間がかかりすぎた際に、再実行できるようになる。
 - https://github.com/aws-samples/awsome-distributed-training/のサンプルリストの整理
 
+- https://github.com/deepnote/deepnote deepnote 使って sagemaker studio notebook できる？
+
 
 - 分散学習においては、Slurm は前章でモデル学習の並列処理手法を適用したジョブを効率的にスケジューリングし、GPU リソースを最大限に活用します。Slurm のジョブスクリプトでは、必要な GPU 数、ノード数、実行時間などを指定し、Slurm がリソースが利用可能になった時点でジョブを実行します。Slurm と並列処理手法の連携方法については別途並列処理手法の章で解説します。
 
@@ -54,8 +56,19 @@ update
 
 
 - https://github.com/NVIDIA-NeMo/Megatron-Bridge
+- Memory 効率テクニック: https://blog.dailydoseofds.com/p/a-memory-efficient-technique-to-train
+
+# FT
+- https://blog.dailydoseofds.com/p/step-by-step-guide-to-fine-tune-qwen3
+- FT 手法: https://blog.dailydoseofds.com/p/5-llm-fine-tuning-techniques-250
+- https://blog.dailydoseofds.com/p/top-4-llm-fine-tuning-frameworks
+
+- precision: https://blog.dailydoseofds.com/p/train-neural-nets-4-6x-faster
 
 
-inference
+# inference
 
 - https://speakerdeck.com/aztecher/distributed-inference-serving-vllm-lmcache-nixl-and-llm-d
+- MoE: https://blog.dailydoseofds.com/p/regular-ml-inference-vs-llm-inference
+
+- ONNX: https://blog.dailydoseofds.com/p/model-development-and-optimization-f78
