@@ -31,23 +31,41 @@ free: true
 
 # PyTorch DDP の理解
 
-本章では、まず DDP とはそもそも何か、そして PyTorch DDP の仕組みを詳しく整理し、その後 Amazon SageMaker HyperPod の Slurm 環境で実際に CPU インスタンスでトレーニングを実行します。
+本章では、Data Parallelism とは何か、そして PyTorch DDP の仕組みを詳しく整理し、その後 Amazon SageMaker HyperPod の Slurm 環境で実際に CPU インスタンスでトレーニングを実行します。
 
-まず理解すべき重要な点は、PyTorch でビルドされたモデルは、デフォルトでは単一の GPU でのみトレーニングされるということです。複数の GPU が利用可能であっても、PyTorch は自動的にはそれらを活用しません。
+大規模基盤モデルの学習には、分散学習が不可欠です。その理由は大きく 2 つあります。メモリ制約の対策のためにマルチ GPU にモデルを分割する必要性についてはすでに解説しました。もう一つの理由は学習速度です。Llama 3 70B を 1.4 兆トークンで学習するには、H100 GPU 1 台で約 19 年かかる計算量が必要です。これを現実的な期間で完了させるには、数千台の GPU を並列動作させる必要があります。これらの複合的な要求によってマルチ GPU での学習が必須です。
 
-大規模基盤モデルの学習には、分散学習が不可欠です。その理由は大きく 2 つあります。メモリ制約の対策のためにマルチ GPU にモデルを分割する必要性についてはすでに解説しました。もう一つの理由は学習速度です。Llama 3 70B を 1.4 兆トークンで学習するには、H100 GPU 1 台で約 19 年かかる計算量（588 エクサ FLOP）が必要です。これを現実的な期間（数週間から数ヶ月）で完了させるには、数千台の GPU を並列動作させる必要があります。これらの複合的な要求によってマルチ GPU での学習が必須です。
+しかし PyTorch でビルドされたモデルは、デフォルトでは単一の GPU でのみトレーニングされ、複数の GPU が利用可能であっても、PyTorch は自動的にはそれらを活用しません。
 
-## DDP の位置づけ
+## Data Parallelism と DDP の関係
 
-DDP は、主に**学習速度の向上**を目的とした並列化手法です。各 GPU がモデル全体のコピーを保持するため、モデルが単一 GPU のメモリに収まる規模（BF16 精度で 7B から 13B パラメータ程度）で有効です。複数 GPU で異なるデータバッチを並列処理することで、実効的なバッチサイズを増やし、学習を高速化します。
+まず、Data Parallelism と DDP (DistributedDataParallel) の関係を明確にします。
 
-## DDP の仕組み
+**Data Parallelism** は、複数のデバイスで並列学習を実現するための**並列化の手法・概念**です。データを分割して複数の GPU やノードで並列処理するというアプローチ全般を指します。各デバイスがモデルの完全なコピーを保持し、異なるデータバッチで学習するという基本原理を表します。
 
-DDP では、利用可能なデータを小さなバッチに分割し、各バッチを個別の GPU で処理します。各 GPU からの更新結果は集約され、モデルパラメータの更新に使用されます。
+**DDP (DistributedDataParallel)** は、この Data Parallelism という概念を PyTorch で実現するための**具体的な実装・モジュール**です。`torch.nn.parallel.DistributedDataParallel` クラスとして提供され、勾配バケット化、通信オーバーラップ、Ring All-Reduce などの最適化を含む高性能な実装となっています。
 
-同様に Data Parallelism では、各 GPU が「ミニサーバー」として機能し、データの一部を処理してローカルでモデルパラメータを更新します。これらのローカル更新が結合されてグローバルモデルが更新されます。このデータの並列処理により、トレーニングプロセスが高速化されるだけでなく、分散環境でのリソースの効率的な使用が可能になります。
+PyTorch には Data Parallelism を実現する複数の実装があり、古い DataParallel (DP) クラス、推奨される DistributedDataParallel (DDP) クラス、さらに発展した FSDP などが存在します。全て Data Parallelism という概念に基づいていますが、実装方法と性能が異なります。
 
-主な違いは、Federated Learning ではローカルデータセットに直接アクセスできないのに対し、Data Parallelism ではデータに直接アクセス可能な点です。このアプローチにより、モデルトレーニングの効率が向上し、単一の GPU やマシンでは不可能な規模の大規模データセットや複雑なモデルの処理が可能になります。
+## DDP の基本的な仕組み
+
+DDP は、データを分割して複数の GPU で並列処理することで、トレーニングを高速化します。以下の 3 つのステップで動作します。
+
+:::details ステップ 1: モデルのレプリケーション
+トレーニング開始時、モデル全体が各 GPU にコピーされます。GPU が 4 台あれば、同じモデルが 4 つ存在することになります。各 GPU は独自のモデルコピーを持ちますが、全て同じパラメータで開始します。
+::::
+
+::::details ステップ 2: データの分散処理
+トレーニングデータは [DistributedSampler](https://docs.pytorch.org/docs/stable/data.html) によって自動的に分割されます。例えば 128 サンプルのデータがあり、4 GPU を使用する場合、各 GPU は 32 サンプルずつ処理します。GPU 0 はサンプル 0-31、GPU 1 はサンプル 32-63、というように異なるデータを処理します。
+
+各 GPU は自分に割り当てられたデータで独立に Forward Pass と Backward Pass を実行します。この時点では GPU 間の通信は発生しません。
+::::
+
+::::details ステップ 3: 勾配の同期とパラメータ更新
+各 GPU が勾配を計算し終えたら、All-Reduce という操作で全 GPU の勾配を平均化します。これにより、4 つの GPU が計算した勾配が 1 つに統合されます。平均化された勾配を使って、各 GPU が同じパラメータ更新を行います。この結果、次のイテレーションでも全ての GPU が同じモデルパラメータを持つことが保証されます。
+::::
+
+このプロセス全体により、単一 GPU でバッチサイズ 128 を使用するのと同等の効果が得られますが、4 GPU の計算能力を活用するため、トレーニング時間は約 1/4 に短縮されます。
 
 ```mermaid
 graph TB
@@ -58,6 +76,7 @@ graph TB
             M0 --> F0[Forward Pass]
             D0 --> F0
             F0 --> G0[Gradients 0]
+            U0
         end
         
         subgraph GPU1["GPU 1"]
@@ -66,6 +85,7 @@ graph TB
             M1 --> F1[Forward Pass]
             D1 --> F1
             F1 --> G1[Gradients 1]
+            U1
         end
         
         subgraph GPU2["GPU 2"]
@@ -74,6 +94,7 @@ graph TB
             M2 --> F2[Forward Pass]
             D2 --> F2
             F2 --> G2[Gradients 2]
+            U2
         end
         
         G0 --> AR[All-Reduce<br/>勾配の平均化]
@@ -94,82 +115,13 @@ graph TB
     style U2 fill:#2d6b35,color:#fff
 ```
 
-各 GPU は独立して Forward Pass と Backward Pass を実行しますが、勾配を計算した後に All-Reduce という通信操作を使って全 GPU の勾配を平均化します。この平均化された勾配を使って各 GPU が同じパラメータ更新を行うため、全てのモデルが同期された状態を保ちます。
-
-## PyTorch DDP とは
-
-PyTorch の分散学習において、Distributed Data Parallel は最も基本的で重要な技術です。PyTorch DDP は PyTorch 標準の分散学習機能で、PyTorch に標準搭載されているため追加の依存関係が不要です。DDP で学ぶ勾配同期、通信最適化、バケット化などの基礎概念は、他の発展手法にも共通する重要な知識です。
-
-単一 GPU のメモリに収まる規模のモデル（BF16 精度で 7B から 13B パラメータ程度）では、DDP が効率的な選択肢です。既存の PyTorch コードを数行変更するだけで分散化でき、デバッグも容易です。エラーメッセージが明確で問題の特定がしやすい点も利点です。[Hugging Face の Trainer API](https://huggingface.co/blog/pytorch-ddp-accelerate-transformers) では DDP が標準的な分散学習オプションとして利用可能であり、PyTorch Lightning でも DDP が推奨バックエンドとして採用されています。
-
-Small Language Models (SLM) の市場は複数の調査会社により高成長が予測されています。[MarketsandMarkets](https://www.marketsandmarkets.com/Market-Reports/small-language-model-market-4008452.html) は 2025 年 0.93 億ドルから 2032 年 54.5 億ドルへの成長（CAGR 28.7%）を、[Polaris Market Research](https://www.polarismarketresearch.com/industry-analysis/small-language-model-market) は 2024 年 69.8 億ドルから 2034 年 580.5 億ドルへの成長（CAGR 23.6%）を、[DataInsights Market](https://www.datainsightsmarket.com/reports/small-language-model-149827) は 2025 年 64.3 億ドルから 2033 年 377.8 億ドルへの成長（CAGR 17.8%）を報告しています。エッジデバイスでの AI 処理需要の拡大により、5B パラメータ以下の軽量モデルの重要性が高まっています。このような小規模モデルのトレーニングでは、Tensor Parallelism などの高度な並列化手法を必要としないケースが中心となります。
-
-## DDP の動作フロー
-
-DDP のトレーニングは以下の 5 つのフェーズで構成されます。
-
-```mermaid
-sequenceDiagram
-    participant R0 as Rank 0
-    participant R1 as Rank 1
-    participant R2 as Rank 2
-    
-    Note over R0,R2: Phase 1: 初期化
-    R0->>R1: Broadcast Parameters
-    R0->>R2: Broadcast Parameters
-    Note over R0,R2: 全 GPU が同じパラメータを持つ
-    
-    Note over R0,R2: Phase 2: Forward Pass
-    R0->>R0: Forward(Batch 0)
-    R1->>R1: Forward(Batch 1)
-    R2->>R2: Forward(Batch 2)
-    Note over R0,R2: 各 GPU が独立に計算
-    
-    Note over R0,R2: Phase 3: Backward Pass
-    R0->>R0: Compute Gradients
-    R1->>R1: Compute Gradients
-    R2->>R2: Compute Gradients
-    
-    Note over R0,R2: Phase 4: All-Reduce
-    R0->>R1: Exchange Gradients
-    R1->>R2: Exchange Gradients
-    R2->>R0: Exchange Gradients
-    Note over R0,R2: 勾配を平均化
-    
-    Note over R0,R2: Phase 5: Update
-    R0->>R0: Update Parameters
-    R1->>R1: Update Parameters
-    R2->>R2: Update Parameters
-    Note over R0,R2: 全 GPU が同じ更新を適用
-```
-
-### Phase 1: 初期化とパラメータブロードキャスト
-
-トレーニング開始時、Rank 0（通常は最初の GPU）が持つモデルパラメータを全ての GPU にブロードキャストします。これにより、全ての GPU が完全に同じ初期パラメータを持つことが保証されます。このステップは一度だけ実行され、以降は各 GPU が独立して動作します。
-
-### Phase 2: Forward Pass（順伝播）
-
-各 GPU は異なるデータバッチを受け取り、独立に Forward Pass を実行します。この時点では GPU 間の通信は発生せず、完全に並列に計算が進みます。GPU 0 は Batch 0 を、GPU 1 は Batch 1 を、というように異なるデータを処理するため、実効的なバッチサイズは単一 GPU の場合の GPU 数倍になります。
-
-### Phase 3: Backward Pass（逆伝播）
-
-Loss を計算した後、各 GPU は独立に Backward Pass を実行して勾配を計算します。この段階でも GPU 間の通信は発生しません。各 GPU は自分が担当したデータバッチに対する勾配のみを計算します。
-
-### Phase 4: All-Reduce（勾配同期）
-
-ここが DDP の最も重要なステップです。各 GPU が計算した勾配を All-Reduce 操作によって平均化します。All-Reduce は全ての GPU が勾配を送受信し、最終的に全 GPU が同じ平均勾配を持つようにする通信操作です。この操作により、実効的に大きなバッチサイズでトレーニングしたのと同等の勾配が得られます。
-
-### Phase 5: パラメータ更新
-
-平均化された勾配を使って、各 GPU が独立にパラメータを更新します。全ての GPU が同じ初期パラメータを持ち、同じ勾配で更新するため、更新後も全ての GPU が同じパラメータを保持します。この性質により、次のイテレーションでも同期が保たれます。
-
 ## 素朴な実装の課題
 
-DDP の基本的な動作は理解しやすいものの、素朴に実装すると重大な性能問題が発生します。
+DDP の基本的な動作は理解しやすいものの、素朴に実装すると重大な性能問題が発生します。ここで説明する課題と最適化手法は、PyTorch 公式ドキュメントおよび複数の技術解説で詳述されているのでそちらも確認してみてください。
 
 ::::details パラメータごとの All-Reduce の問題
 
-最も単純な実装では、各パラメータの勾配が計算されるたびに All-Reduce を実行することになります。
+最も単純な実装では、各パラメータの勾配が計算されるたびに All-Reduce を実行することになります。[PyTorch DDP の詳細な実装解説](https://github.com/michael-diggin/torch-ddp)では、この素朴な実装（ddp1.py）から段階的に最適化していく過程が示されています。
 
 ```python
 # 素朴な実装（非効率）
@@ -182,7 +134,7 @@ for param in model.parameters():
 
 大規模なモデルでは数千から数万のパラメータが存在します。例えば Llama 2 7B モデルには約 32,000 個のパラメータテンソルがあります。各 All-Reduce 呼び出しにはレイテンシーが存在するため、32,000 回の通信を行うと膨大なオーバーヘッドが発生します。
 
-通信のレイテンシーは転送するデータサイズではなく、通信回数に大きく依存します。小さなテンソルを何度も送るよりも、大きなテンソルを一度に送る方が遥かに効率的です。この問題を解決するために、PyTorch DDP は勾配バケット化という最適化を実装しています。
+[DDP の技術ノート](https://skrohit.github.io/posts/Notes_on_DDP/)によると、「Collective communication performs poorly on small tensors due to low bandwidth utilization and large communication overhead」と説明されています。通信のレイテンシーは転送するデータサイズではなく、通信回数に大きく依存します。小さなテンソルを何度も送るよりも、大きなテンソルを一度に送る方が遥かに効率的です。この問題を解決するために、PyTorch DDP は勾配バケット化という最適化を実装しています。
 ::::
 
 ::::details 通信と計算の分離による非効率性
@@ -211,12 +163,12 @@ gantt
     All-Reduce :ar2, 15, 18
 ```
 
-この方式では、Backward Pass 中に GPU の計算リソースが利用可能であるにもかかわらず、通信は待機状態になります。逆に All-Reduce 中は通信リソースを使っていますが、計算リソースは遊んでいます。計算と通信を重ねることができれば、全体の実行時間を短縮できます。
+この方式では、Backward Pass 中には通信リソースは待機状態になります。逆に All-Reduce 中は通信リソースを使っていますが、計算リソースは遊んでいます。計算と通信を重ねることができれば、全体の実行時間を短縮できます。
 ::::
 
 ## 勾配バケット化による最適化
 
-PyTorch DDP は勾配バケット化（Gradient Bucketing）という手法で通信回数を削減します。
+PyTorch DDP は勾配バケット化（Gradient Bucketing）という手法で通信回数を削減します。[PyTorch 公式ドキュメント](https://pytorch.org/docs/stable/ddp_comm_hooks.html)では、「gradients are bucketized to increase the overlap between communication and computation」と説明されています。
 
 ```mermaid
 graph TB
@@ -230,13 +182,13 @@ graph TB
         end
         
         subgraph "Bucket 1 (25MB)"
-            P1 --> B1[Flatten & Concatenate]
+            P1 --> B1[Flatten and Concatenate]
             P2 --> B1
             P3 --> B1
         end
         
         subgraph "Bucket 2 (25MB)"
-            P4 --> B2[Flatten & Concatenate]
+            P4 --> B2[Flatten and Concatenate]
             P5 --> B2
         end
         
@@ -255,19 +207,13 @@ graph TB
     style AR2 fill:#2d6b35,color:#fff
 ```
 
-バケット化では、複数のパラメータの勾配を一つの大きなテンソルにまとめてから All-Reduce を実行します。PyTorch のデフォルトではバケットサイズは 25MB に設定されており、この設定は多くの場合で良好なパフォーマンスを示します。
+バケット化では、複数パラメータの勾配を一つの大きなテンソルにまとめてから All-Reduce を実行します。[PyTorch のデフォルトバケットサイズは 25MB](https://skrohit.github.io/posts/Notes_on_DDP/#-gradient-bucketing) に設定されており、この設定は多くの場合で良好なパフォーマンスを示します。バケットサイズは DDP コンストラクタの `bucket_cap_mb` パラメータで調整可能です。
 
-### バケット化のメリット
-
-通信回数の削減により、レイテンシーによるオーバーヘッドが大幅に減少します。例えば 32,000 個のパラメータを 500 個のバケットにまとめれば、通信回数は 1/64 になります。大きなテンソルでは GPU 間の帯域幅を効率的に活用でき、通信と計算のオーバーラップも実装しやすくなります。
-
-### バケットの構成戦略
-
-DDP はモデルのパラメータを逆順（最後の層から最初の層へ）にバケットに割り当てます。これは Backward Pass が最後の層から開始されるため、最初に勾配が計算される層を最初のバケットに入れることで、早期に通信を開始できるようにするためです。
+通信回数の削減により、レイテンシーによるオーバーヘッドが大幅に減少します。例えば 32,000 個のパラメータを 500 個バケットにまとめれば、通信回数は 1/64 になります。大きなテンソルでは GPU 間の帯域幅を効率的に活用でき、通信と計算のオーバーラップも実装しやすくなります。
 
 ## 通信と計算のオーバーラップ
 
-バケット化により通信回数を削減できましたが、さらに重要な最適化が通信と計算のオーバーラップです。
+バケット化により通信回数を削減できましたが、併せて重要な最適化が通信と計算のオーバーラップです。[GitHub の torch-ddp 実装例](https://github.com/michael-diggin/torch-ddp)では、ddp3.py で非同期操作、ddp4.py でバケット化を組み合わせた最適化の進化が示されています。
 
 ```mermaid
 gantt
@@ -287,13 +233,11 @@ gantt
     Bucket 2 All-Reduce :ar2, 6, 10
 ```
 
-### オーバーラップの仕組み
-
 Backward Pass は最後の層から最初の層へと進行します。各層の勾配計算が完了すると、その層が属するバケットの準備が整ったことをチェックします。バケット内の全ての勾配が揃った時点で、即座に非同期 All-Reduce を開始します。
 
 非同期 All-Reduce は別のストリームで実行されるため、GPU は次の層の Backward 計算を続けることができます。これにより、通信と計算が並行して実行され、全体の実行時間が短縮されます。
 
-### Autograd フックによる実装
+::::details Autograd フックによる実装
 
 PyTorch DDP は autograd のフックメカニズムを使ってこの最適化を実装しています。
 
@@ -325,12 +269,16 @@ class DistributedDataParallel:
 ```
 
 各パラメータの勾配が計算される度にフックが呼ばれ、属するバケットの状態をチェックします。バケットが完成したら即座に通信を開始し、GPU は引き続き次の層の計算を進めます。
+::::
 
 ## Ring All-Reduce アルゴリズム
 
 DDP が使用する All-Reduce 操作の内部では、Ring All-Reduce というアルゴリズムが使われています。これは NCCL（NVIDIA Collective Communications Library）が実装する高効率な通信パターンです。
+Prefferd Network の[「分散深層学習を支える技術：AllReduceアルゴリズム」](https://tech.preferred.jp/ja/blog/prototype-allreduce-library/)にわかりやすく説明がまとめられているため一読することをお勧めします。
 
-### 素朴な All-Reduce の問題
+::::details Ring All-Reduce
+
+## 素朴な All-Reduce の問題
 
 最も単純な All-Reduce 実装では、全ての GPU が Rank 0 に勾配を送り、Rank 0 が合計を計算して全 GPU にブロードキャストします。
 
@@ -364,7 +312,7 @@ graph TB
 
 この方式では、Rank 0 がボトルネックになります。N 個の GPU がある場合、Rank 0 は N 倍のデータを受信し、N 倍のデータを送信する必要があります。GPU 数が増えるほど、Rank 0 の通信量が線形に増加してしまいます。
 
-### Ring All-Reduce の効率性
+## Ring All-Reduce の効率性
 
 Ring All-Reduce では、GPU をリング状に配置し、隣接する GPU とのみ通信します。
 
@@ -398,7 +346,7 @@ graph LR
 
 各 GPU が持つ合計済み chunk をリング上で共有します。さらに N-1 ステップで、全ての GPU が全ての chunk を持つようになります。
 
-### 通信量の比較
+## 通信量の比較
 
 Ring All-Reduce の重要な特性は、通信量が GPU 数に依存しないことです。
 
@@ -408,85 +356,21 @@ Ring All-Reduce の重要な特性は、通信量が GPU 数に依存しない�
 | Ring All-Reduce | O(M) | O(M) |
 
 ここで M はデータサイズ、N は GPU 数です。素朴な実装では Rank 0 が O(N×M) の通信を行う必要がありますが、Ring All-Reduce では全ての GPU が O(M) の通信のみで済みます。これにより、数百から数千の GPU にスケールしても通信効率が維持されます。
-
-## DDP の利点と制約
-
-### 利点
-
-**実装の容易性**
-
-PyTorch に標準搭載されており、追加の依存関係が不要です。既存のコードを数行変更するだけで分散化でき、学習曲線が緩やかです。エラーメッセージが明確で、デバッグが容易です。
-
-**優れたパフォーマンス**
-
-勾配バケット化により通信回数を最小化します。通信と計算のオーバーラップにより GPU の稼働率を最大化します。Ring All-Reduce により数百から数千 GPU へのスケーラビリティを実現します。
-
-**ハードウェアの柔軟性**
-
-PyTorch DDP は標準的な API として、複数のハードウェアバックエンドで動作します。NVIDIA GPU では NCCL バックエンド、CPU では gloo バックエンドを使用するだけでなく、[AWS Trainium](https://aws.amazon.com/ai/machine-learning/neuron/) でも PyTorch の DDP API がそのまま利用可能です。[AWS Neuron SDK のドキュメント](https://awsdocs-neuron.readthedocs-hosted.com/en/v2.9.1/frameworks/torch/torch-neuronx/tutorials/training/distributed_data_parallel.html)によると、既存の PyTorch DDP コードを minimal な変更で Trainium に移行でき、GPU から AI アクセラレータへの柔軟な展開が可能になります。
-
-### 制約
-
-**メモリ効率**
-
-各 GPU がモデル全体のコピーを保持する必要があります。モデルが大きすぎると単一 GPU のメモリに収まりません。70B パラメータ以上の大規模モデルでは単独では不十分です。
-
-**適用範囲**
-
-Data Parallelism のみをサポートし、Model Parallelism は含まれません。超大規模モデルには FSDP や Megatron-LM などの追加技術が必要です。
-
-**勾配同期のオーバーヘッド**
-
-All-Reduce 通信がボトルネックになる可能性があります。特にノード間通信では、ノード内の NVLink に比べて遅い InfiniBand や Ethernet を使用するため、通信コストが増大します。
-
-## DDP と他の並列化手法の関係
-
-DDP は分散学習の基礎となる技術であり、他の高度な手法の土台となっています。
-
-```mermaid
-graph TB
-    subgraph "PyTorch 分散学習エコシステム"
-        DDP[DDP<br/>Data Parallelism<br/>基礎技術]
-        
-        FSDP[FSDP<br/>Parameter Sharding<br/>メモリ効率化]
-        
-        Megatron[Megatron-LM<br/>Tensor Parallel<br/>Model Parallelism]
-        
-        DeepSpeed[DeepSpeed<br/>ZeRO<br/>統合最適化]
-        
-        DDP --> FSDP
-        DDP --> Megatron
-        DDP --> DeepSpeed
-    end
-    
-    style DDP fill:#2d5986,color:#fff
-    style FSDP fill:#4a5986,color:#fff
-    style Megatron fill:#2d6b35,color:#fff
-    style DeepSpeed fill:#8b4513,color:#fff
-```
-
-FSDP は DDP の勾配同期メカニズムを拡張し、パラメータと optimizer state も分散します。Megatron-LM は DDP の Data Parallelism に Tensor Parallelism を組み合わせます。DeepSpeed は DDP の通信パターンを基礎として ZeRO 最適化を実装しています。
-
-これらの高度な手法を理解するためには、DDP で学ぶ勾配同期、通信パターン、バケット化といった概念が不可欠です。
-
-::::details マルチ GPU 処理手法の詳細
-
-DDP を含む様々な並列化手法の詳細については、[マルチ GPU 処理手法の整理](./multi-gpu-processing-approaches.md)を参照してください。この章では以下のトピックを詳しく解説しています。
-
-- Data Parallelism、Pipeline Parallelism、Tensor Parallelism の比較
-- ZeRO（Zero Redundancy Optimizer）の詳細
-- FSDP、DeepSpeed、Megatron-LM の特徴
-- フレームワーク選択のガイドライン
-- 学習手法（事前学習、SFT、DPO）とフレームワークの対応
-
-DDP の理解を深めた後、より高度な手法を学ぶ際の参考にしてください。
 ::::
+
+## DDP 制約
+
+**メモリ効率**: 各 GPU がモデル全体のコピーを保持する必要があります。モデルが大きすぎると単一 GPU のメモリに収まりません。70B パラメータ以上の大規模モデルでは単独では不十分です。
+
+**適用範囲**: Data Parallelism のみをサポートし、Model Parallelism は含まれません。超大規模モデルには FSDP や Megatron-LM などの追加技術が必要です。
+
+**勾配同期のオーバーヘッド**: All-Reduce 通信がボトルネックになる可能性があります。特にノード間通信では、ノード内の NVLink に比べて遅い InfiniBand や Ethernet を使用する場合、通信コストが増大します。
 
 ---
 
 # Amazon SageMaker HyperPod Slurm での実装
 
-ここからは、Amazon SageMaker HyperPod の Slurm 環境で実際に DDP を使用したトレーニングを実行します。
+ここからは、Amazon SageMaker HyperPod の Slurm 環境で実際に DDP を使用したトレーニングを実行します。色々とコードを変えてみたり DDP のコードリーディングをするなど実験してみましょう。
 
 ## 前提条件
 
@@ -522,8 +406,11 @@ AWS CLI v2 がインストールされ、適切な権限で設定されている
 GPU を使用したい場合は、Worker を `ml.g5.xlarge` などに変更してください。
 ::::
 
-## リポジトリのクローンと準備
+## トレーニングスクリプトと Slurm ジョブの実行
 
+リポジトリには 2 つの異なる実行方法が用意されています。それぞれの方法にはメリットとデメリットがあり、用途に応じて選択できます。
+
+::::details リポジトリのクローン
 :::message
 なんのための作業か: DDP トレーニングコードと Slurm ジョブスクリプトを取得します。AWS の分散トレーニングサンプルリポジトリには、Slurm 向けに最適化された PyTorch DDP サンプルが含まれています。
 :::
@@ -570,10 +457,7 @@ ls -la slurm/
 2.create-enroot-image.sh    # Enroot イメージ作成スクリプト
 3.container-train.sbatch    # Enroot コンテナでの実行用 sbatch
 ```
-
-## トレーニングスクリプトとSlurmジョブの実行
-
-リポジトリには 2 つの異なる実行方法が用意されています。それぞれの方法にはメリットとデメリットがあり、用途に応じて選択できます。
+::::
 
 ::::details トレーニングスクリプトの確認
 
@@ -1089,6 +973,26 @@ sbatch ddp_train.sbatch
 # まとめ
 
 本章では、PyTorch Distributed Data Parallel（DDP）の内部動作を詳しく学び、Amazon SageMaker HyperPod の Slurm 環境で実際に実装しました。
+
+
+
+FSDP は DDP の勾配同期メカニズムを拡張し、パラメータと optimizer state も分散します。Megatron-LM は DDP の Data Parallelism に Tensor Parallelism を組み合わせます。DeepSpeed は DDP の通信パターンを基礎として ZeRO 最適化を実装しています。
+
+これらの高度な手法を理解するためには、DDP で学ぶ勾配同期、通信パターン、バケット化といった概念が不可欠です。
+
+::::details マルチ GPU 処理手法の詳細
+
+DDP を含む様々な並列化手法の詳細については、[マルチ GPU 処理手法の整理](./multi-gpu-processing-approaches.md)を参照してください。この章では以下のトピックを詳しく解説しています。
+
+- Data Parallelism、Pipeline Parallelism、Tensor Parallelism の比較
+- ZeRO（Zero Redundancy Optimizer）の詳細
+- FSDP、DeepSpeed、Megatron-LM の特徴
+- フレームワーク選択のガイドライン
+- 学習手法（事前学習、SFT、DPO）とフレームワークの対応
+
+DDP の理解を深めた後、より高度な手法を学ぶ際の参考にしてください。
+::::
+
 
 ## 学んだこと
 
