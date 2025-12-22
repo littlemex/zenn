@@ -1,5 +1,5 @@
 ---
-title: "Amazon SageMaker HyperPod の障害対応力の検証と可視化"
+title: "Blueprints by Slurm: レジリエンシーと可視化"
 emoji: "🔧"
 type: "tech"
 topics: ["aws", "sagemaker", "hyperpod", "slurm", "resiliency", "observability"]
@@ -236,7 +236,7 @@ DDP の詳細な実装方法については [PyTorch DDP チュートリアル](
 
 [HyperPod Slurm 環境での observability](https://awslabs.github.io/ai-on-sagemaker-hyperpod/docs/add-ons/Observability/observability-slurm) は、Amazon Managed Service for Prometheus と Amazon Managed Grafana を手動で統合することで実現されます。EKS 環境のワンクリック統合とは異なり、メトリクスエクスポーターの手動インストールと設定が必要となります。
 
-Observability の階層は、前の章で説明した統合テレメトリの概念を具現化したものです。クラスターレベルでは Slurm のジョブキューの状態、パーティション情報、ノードの利用率を監視します。ノードレベルでは GPU の温度、メモリ使用量、電力消費量、ネットワークトラフィックを追跡します。アプリケーションレベルでは学習の進捗、損失関数の値、スループットを記録します。
+Observability の階層は、前の章で説明した**統合テレメトリ**の概念を具現化したものです。クラスターレベルでは Slurm のジョブキューの状態、パーティション情報、ノードの利用率を監視します。ノードレベルでは GPU の温度、メモリ使用量、電力消費量、ネットワークトラフィックを追跡します。アプリケーションレベルでは学習の進捗、損失関数の値、スループットを記録します。
 
 これらの多層的な監視により、障害の根本原因を迅速に特定し、予防的な対策を講じることが可能になります。例えば、特定の GPU で温度上昇が継続的に観測される場合、ハードウェア障害の予兆として事前にノードを交換することができます。
 
@@ -256,21 +256,18 @@ Observability の階層は、前の章で説明した統合テレメトリの概
 本章の実践には、前章で構築した Amazon SageMaker HyperPod Slurm クラスターが稼働している必要があります。クラスターが削除されている場合は、[Amazon SageMaker HyperPod Getting Started by SLURM](./amazon-sagemaker-hyperpod-slurm-tutorial) を参照してクラスターを再作成してください。
 :::
 
-実際の resiliency テストには GPU インスタンスの追加を推奨します。GPU 固有の障害パターンとその復旧動作を確認するためです。前章の CPU インスタンス構成に加えて、Worker グループに `ml.g5.xlarge` または `ml.g5.2xlarge` インスタンスを 1-2 台追加することで、より実践的なテスト環境を構築できます。
-
-**推奨クラスター構成（resiliency テスト用）**
-
-Controller ノードは引き続き `ml.c5.xlarge` で Slurm コントローラーとしての役割を担います。Login ノードも `ml.c5.xlarge` で SSH ログイン用エントリーポイントとして機能します。Worker ノードは CPU 用の `ml.c5.4xlarge` 2 台に加えて、GPU 用の `ml.g5.xlarge` 2 台を追加することで、異なるハードウェア特性における障害と復旧の違いを確認できます。
-
-AWS CLI v2 とSSM Session Manager プラグインが適切に設定されていることを確認してください。また、Amazon Managed Service for Prometheus と Amazon Managed Grafana のワークスペースを作成する権限が必要です。
-
-**provisioning_parameters.json 自動更新スクリプト**
-
 :::message
-Quick Setup で CPU インスタンスでグループを作成した場合には上記 GPU インスタンスを追加するとエラーします。
+AWS CLI v2 とSSM Session Manager プラグインが適切に設定されていることを確認してください。また、Amazon Managed Service for Prometheus と Amazon Managed Grafana のワークスペースを作成する権限が必要です。
 :::
 
-HyperPod クラスター作成時に instance group names の不整合エラーが発生する場合、以下のスクリプトで S3 上の設定ファイルを自動更新できます。
+
+## 推奨クラスター構成（resiliency テスト用）
+
+実際の resiliency テストには GPU インスタンスの追加を推奨します。GPU 固有の障害パターンとその復旧動作を確認するためです。前章の CPU インスタンス構成に加えて、Worker グループに `ml.g5.xlarge` インスタンスを 2 台追加することで、より実践的なテスト環境を構築します。
+
+### provisioning_parameters.json 自動更新スクリプト
+
+この `provisioning_parameters.json` ファイルは `slurm.conf` という slurm の設定ファイルを Hyperpod が自動生成する際に利用されます。Quick Setup 時には勝手にこのファイルが作成されるため意識しませんでしたが、GPU インスタンスを追加する場合には**このファイルをアップデートする**必要があります。以下のスクリプトで GPU インスタンスグループを設定に追加し、S3 上の json ファイルを自動更新できます。
 
 ```bash
 # HyperPod クラスター設定の自動更新スクリプト
@@ -339,7 +336,7 @@ sed -i 's/your-hyperpod-bucket-name/actual-bucket-name-here/' update_provisionin
 ./update_provisioning_params.sh
 ```
 
-このスクリプトにより、GPU インスタンス (`ml.g5.xlarge`) グループ設定が適用されます。
+このスクリプトにより、GPU インスタンスグループ設定が適用されます。
 ::::
 
 ::::details GPU インスタンスの追加方法
@@ -356,18 +353,90 @@ sed -i 's/your-hyperpod-bucket-name/actual-bucket-name-here/' update_provisionin
 
 ![](/images/books/ml-distributed-experiment-collection/hyperpod-slurm-updating-gpu.png)
 
-SageMaker HyperPod クラスター管理コンソールから対象クラスターを選択し、「Edit」を選択します。「Create instance group」を選択し、「gpu-worker」という名前で `ml.g5.xlarge` を 2 台追加します。更新には約 10 数分かかり、既存の CPU ワーカーノードに影響を与えることなく GPU ノードが追加されます。
+SageMaker HyperPod クラスター管理コンソールから対象クラスターを選択し、「Edit」を選択します。「Create instance group」を選択し、「gpu-worker」という名前で `ml.g5.xlarge` を 2 台追加します。更新には約 10 数分かかり、既存の CPU ワーカーノードに影響を与えることなく GPU ノードが追加されます。GPU ノードでは CUDA ドライバと NCCL ライブラリが自動的にインストールされ、分散学習に必要な環境が整備されます。
+::::
 
-クラスター更新が完了したら、`sinfo` コマンドで新しい GPU パーティションが追加されていることを確認できます。GPU ノードでは CUDA ドライバと NCCL ライブラリが自動的にインストールされ、分散学習に必要な環境が整備されます。
+::::details 調査中: パーティション自動作成の不具合
+
+パーティションは Slurm において**計算ノードの論理的なグループ**です。クラスター内の計算リソースを目的や特性に応じて分類・管理するための仕組みです。特定のパーティションのみにジョブを割り振りたいようなケースで利用できます。
+
+```
+# 特定のパーティションでジョブ実行
+sbatch --partition=gpu myjob.sh
+
+# または slurm スクリプト内で指定
+#SBATCH --partition=gpu
+```
+
+:::message alert
+`provisioning_parameters.json` でパーティションが正しく設定されていても、HyperPod Agent が GPU インスタンス用の専用パーティション（例：`ml.g5.xlarge`）を slurm.conf に反映しない場合があります。GPU ノードは認識され、Slurm で利用可能ですが、すべて `dev` パーティションに配置される状況が発生します。
+:::
+
+以下のコマンドで手動でパーティション設定を追加できます。Nodes の IP アドレスはご自身の環境に合わせて変更してください。ただし本来であれば HyperPod Agent が自動管理する slurm.conf を直接編集することの推奨度は不明です。HyperPod Agent による設定更新のタイミングや頻度は現在調査中です。設定がクリアされる可能性もあるため自己判断で設定し、重要なワークロードではクラスターから作り直すことを推奨します。
+
+```bash
+# GPU パーティションを手動追加
+echo "PartitionName=ml.g5.xlarge Nodes=ip-10-3-135-7,ip-10-3-96-49 Default=NO MaxTime=INFINITE State=UP" | sudo tee -a /opt/slurm/etc/slurm.conf
+sudo scontrol reconfigure
+
+# 設定確認
+sinfo
+```
+
+### 確認された動作例
+```bash
+# 手動設定後の sinfo 出力例
+sinfo
+PARTITION     AVAIL  TIMELIMIT  NODES  STATE NODELIST
+dev*             up   infinite      2  alloc ip-10-4-33-25,ip-10-4-198-29
+dev*             up   infinite      2   idle ip-10-3-96-49,ip-10-3-135-7
+ml.c5.4xlarge    up   infinite      2  alloc ip-10-4-33-25,ip-10-4-198-29
+ml.g5.xlarge     up   infinite      2   idle ip-10-3-96-49,ip-10-3-135-7
+```
+
+手動設定により、インスタンスタイプに対応した専用パーティションが正常に作成され、適切なノードが割り当てられることを確認しています。
+
+以下のように g5 グループは正常に `nvidia-smi` が実行できていることがわかります。
+
+```bash
+# CPU インスタンスで Driver がないのでコマンド失敗
+srun --partition=ml.c5.4xlarge nvidia-smi
+NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver. Make sure that the latest NVIDIA driver is installed and running.
+
+srun: error: ip-10-4-33-25: task 0: Exited with exit code 9
+
+# GPU インスタンスでコマンド成功
+ubuntu@ip-10-4-109-244:~$ srun --partition=ml.g5.xlarge nvidia-smi
+Mon Dec 22 17:29:56 2025       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.95.05              Driver Version: 580.95.05      CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA A10G                    On  |   00000000:00:1E.0 Off |                    0 |
+|  0%   17C    P8             11W /  300W |       0MiB /  23028MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+```
 ::::
 
 ## SageMaker Studio Integration の設定
 
 :::message
-1. Studio Domain の作成と設定
-2. HyperPod クラスターとの接続
-3. JupyterLab 環境での操作確認
-4. FSx for Lustre との統合確認
+- [ ] 1. Studio Domain の作成と設定
+- [ ] 2. HyperPod クラスターとの接続
+- [ ] 3. JupyterLab 環境での操作確認
+- [ ] 4. FSx for Lustre との統合確認
 :::
 
 ::::details 1. Studio Domain の作成と設定
@@ -380,7 +449,9 @@ SageMaker HyperPod クラスター管理コンソールから対象クラスタ�
 次のステップに進む条件: Studio Domain が InService 状態になり、User Profile が作成されていること。
 :::
 
-[SageMaker Studio と HyperPod の統合](https://awslabs.github.io/ai-on-sagemaker-hyperpod/docs/getting-started/orchestrated-by-slurm/sagemaker-studio-integration)では、Studio Domain を通じてクラスターへのシームレスなアクセスが可能になります。まず SageMaker Studio コンソールから新しい Domain を作成します。
+[SageMaker Studio と HyperPod の統合](https://awslabs.github.io/ai-on-sagemaker-hyperpod/docs/getting-started/orchestrated-by-slurm/sagemaker-studio-integration)では、Studio Domain を通じてクラスターへのシームレスなアクセスが可能になります。
+
+まず SageMaker Studio コンソールから新しい Domain を作成します。
 
 SageMaker Studio のセットアップページで「Quick setup」を選択し、Domain 名として「hyperpod-integration-domain」などの識別しやすい名前を入力します。実行ロールは既存の SageMaker 実行ロールを使用するか、新規作成を選択します。VPC とサブネットは HyperPod クラスターと同じネットワーク環境を選択することで、プライベート通信による低レイテンシなアクセスが実現されます。
 
