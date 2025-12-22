@@ -379,7 +379,7 @@ Ring All-Reduce の重要な特性は、通信量が GPU 数に依存しない�
 :::message
 **Slurm クラスターの構築**
 
-本章の実践には、事前に Amazon SageMaker HyperPod Slurm クラスターが構築されている必要があります。クラスターの構築手順については [Amazon SageMaker HyperPod Getting Started by SLURM](./amazon-sagemaker-hyperpod-slurm-tutorial.md) を参照してください。
+本章の実践には、事前に Amazon SageMaker HyperPod Slurm クラスターが構築されている必要があります。クラスターの構築手順については [Amazon SageMaker HyperPod Getting Started by SLURM](./amazon-sagemaker-hyperpod-slurm-tutorial) を参照してください。
 :::
 
 以下のリソースが準備されていることを確認してください。
