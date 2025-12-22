@@ -1,9 +1,30 @@
 
+| 機能 | Kubernetes | Slurm | 説明 |
+|------|-----------|-------|------|
+| **Gang Scheduling** | △（拡張必要） | ◎（デフォルト） | Volcano/Kueue で実現可能 vs 標準機能 |
+| **動的ノード追加** | ◎（Cluster Autoscaler） | △（手動/スクリプト） | クラウドネイティブ vs 静的前提 |
+| **GPU Time-Slicing** | ◎（Device Plugin） | △（設定複雑） | 柔軟な共有 vs 基本はプロセス分離 |
+| **MIG サポート** | ◎（DRA, GPU Operator） | △（手動設定） | K8s HyperPod は自動対応 |
+| **推論サービング** | ◎（KServe, Triton） | ✕（不向き） | マイクロサービス vs バッチ |
+| **ネットワークトポロジー最適化** | △（プラグイン依存） | ◎（標準機能） | ノード配置の最適化 |
+| **ジョブ優先度管理** | ◎（Priority Class） | ◎（QoS, Fair Share） | 両方とも強力 |
+| **リソースクォータ** | ◎（Namespace 単位） | ◎（Account/User 単位） | 管理粒度が異なる |
+| **インタラクティブ開発** | ◎（Port Forward, Exec） | △（salloc, 非標準） | Jupyter など vs SSH ベース |
+| **複数クラスター管理** | ◎（Multi-cluster Tools） | △（個別管理） | Federation vs 独立クラスター |
+| **Spot インスタンス活用** | ◎（自動） | △（手動設定） | Karpenter など vs スクリプト |
 
+**凡例**: ◎ 優秀、◯ 良好、△ 限定的、✕ 非対応・不向き
+
+**Prolog/Epilog スクリプトでの自動診断**
+- 
+- MIG/TIme slice/vGPU違い
 - Transformer のアーキテクチャの違い、SwiGLU、RoPE、RMSNorm、GQA、MoE
 - グローバルバッチサイズ、学習率、計算精度（BF16など）の適切な設定とは？
 - NCCL
 - DP/PP, ZeRO あたり
+- DDP をより深める
+  - https://zenn.dev/tosshi/scraps/c28b1815d84434
+  - コードリードする
 - scaling inf on EKS
 - Slurm
 - Intelligent-Tiering ストレージクラス（2025年5月）
