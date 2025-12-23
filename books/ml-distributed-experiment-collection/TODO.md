@@ -33,6 +33,10 @@
 - SRD の話
 - PC --rollback-on-failure false を Cluster 作成時につけると、作成に時間がかかりすぎた際に、再実行できるようになる。
 - https://github.com/aws-samples/awsome-distributed-training/のサンプルリストの整理
+- CodSpeed によるテスト
+- dotenvx を使う
+- DSPy + FT の融合 https://docs.wandb.ai/weave/cookbooks/dspy_prompt_optimization
+- https://huggingface.co/blog/hf-skills-training Claude が FT してくれる
 
 - https://github.com/deepnote/deepnote deepnote 使って sagemaker studio notebook できる？
 
@@ -62,6 +66,20 @@ Infos
 - https://jax-ml.github.io/scaling-book
 - https://arxiv.org/pdf/2510.20171
 - https://github.com/uccl-project/uccl
+
+# models
+
+- SAM3D、SAMAudio
+- Diffusion Model
+- DeepSeek-Math-V2
+- Mistral 3 Sparse MoE とは
+- Devstral2
+- rnj1 数学系
+- chroma-radiance-x0 画像生成、ピクセルベース https://note.com/mayu_hiraizumi/n/nb61e83489e8c
+- nemotron3
+- vLLM Router
+- nemotron3nano + Evaluator が公開されている（重要）
+- LLM Omni
 
 
 https://zenn.dev/tosshi/scraps/8862058842320e
@@ -93,3 +111,11 @@ update
 - MoE: https://blog.dailydoseofds.com/p/regular-ml-inference-vs-llm-inference
 
 - ONNX: https://blog.dailydoseofds.com/p/model-development-and-optimization-f78
+
+- https://docs.vllm.ai/en/stable/examples/online_serving/multi-node-serving/
+- https://qiita.com/SELEE/items/c9152ce0fd99be4b7832
+
+# その他
+
+- mesh splatting
+- https://note.com/kmoriyama/n/n303937451c76
