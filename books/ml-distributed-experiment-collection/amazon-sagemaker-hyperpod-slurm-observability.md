@@ -218,8 +218,9 @@ def setup_checkpoint_handler(model, optimizer, checkpoint_dir):
     signal.signal(signal.SIGTERM, emergency_checkpoint_save)
     signal.signal(signal.SIGINT, emergency_checkpoint_save)
 
-# 学習ループでの使用例
-setup_checkpoint_handler(ddp_model, optimizer, "/fsx/checkpoints")
+# 学習ループでの使用例（実際のマウントポイントを確認）
+# FSx_MOUNT=$(df -h | grep fsx_lustre | awk '{print $NF}')
+setup_checkpoint_handler(ddp_model, optimizer, f"{FSX_MOUNT}/checkpoints")
 ```
 
 **4. 実運用での推奨設定**
@@ -507,7 +508,7 @@ VPC_ID=$(aws ec2 describe-subnets \
     --output text)
 
 # FSx for Lustre ID を取得
-CLUSTER_CONFIG=$(echo "$CLUSTER_INFO" | jq -r '.ClusterConfig.InstanceGroups[] | select(.InstanceGroupName == "controller") | .LifeCycleConfig.SourceS3Uri // empty')
+CLUSTER_CONFIG=$(echo "$CLUSTER_INFO" | jq -r '.InstanceGroups[] | select(.InstanceGroupName == "controller") | .LifeCycleConfig.SourceS3Uri // empty')
 aws s3 cp "$CLUSTER_CONFIG/provisioning_parameters.json" /tmp/provisioning_params.json
 FSX_ID=$(jq -r '.fsx_dns_name // empty' /tmp/provisioning_params.json | cut -d'.' -f1)
 
@@ -653,8 +654,6 @@ User Profile 作成後、SageMaker コンソールから該当プロファイル
 User Profile を作成しただけでは FSx や Slurm クライアントにアクセスできません。以下の手順で Code Editor Space を手動作成し、FSx とライフサイクル設定をアタッチする必要があります。
 :::
 
-手順が丁寧に記載されているので[こちら](https://awslabs.github.io/ai-on-sagemaker-hyperpod/docs/getting-started/orchestrated-by-slurm/sagemaker-studio-integration)も合わせて確認ください。
-
 1. **SageMaker Studio にアクセス**
    - User Profile から Studio にログイン
 
@@ -666,11 +665,13 @@ User Profile を作成しただけでは FSx や Slurm クライアントにア�
 3. **重要：FSx とライフサイクル設定のアタッチ**
    - "Attach custom filesystem - optional" ドロップダウンから **FSx for Lustre volume を選択**
    - "Lifecycle configuration" ドロップダウンから **利用可能なライフサイクル設定を選択**
-   - "Create Space" をクリック
+   - "Run Space" をクリック
 
 4. **Space の起動**
-   - 作成された Space の "Run" をクリック
    - Code Editor が起動するまで数分待機
+   - 正常に作成されたら "Open Code Editor" で Editor を起動
+
+![](/images/books/ml-distributed-experiment-collection/hyperpod-slurm-studio-create-space.png)
 
 ## FSx アクセスの確認
 
@@ -678,15 +679,19 @@ Code Editor Space が正常に起動したら、以下を確認します：
 
 ```bash
 # ターミナルで FSx マウント確認
-ls -la /
-ls -la /fsx/
-ls -la /shared/  # SharedFSx=True の場合
+df -h | grep fsx_lustre
 
-# 書き込み権限の確認
-echo "test from studio" > /fsx/ml-researcher/test.txt
+# FSx マウントポイントを動的に取得
+FSX_MOUNT=$(df -h | grep fsx_lustre | awk '{print $NF}')
+echo "FSx mount point: $FSX_MOUNT"
+
+# FSx ファイルシステムの権限確認
+ls -la "$FSX_MOUNT"
+# 所有者が nobody:nogroup になっている場合は書き込み権限の調整が必要
 
 # HyperPod クラスターとの共有確認
-# （同じファイルが HyperPod クラスターでも見えることを確認）
+# SSH で HyperPod クラスターに接続してマウント状況を確認
+# 例: ssh controller-machine "df -h | grep lustre && ls -la /shared/"
 ```
 
 ## Slurm コマンドの動作確認
@@ -699,13 +704,14 @@ sinfo
 squeue
 srun hostname
 
-# 簡単なジョブ投入テスト
+# 簡単なジョブ投入テスト（FSx マウントポイントを動的に取得）
+FSX_MOUNT=$(df -h | grep fsx_lustre | awk '{print $NF}')
 echo '#!/bin/bash
 echo "Hello from HyperPod: $(hostname)"
-date' > /fsx/test_job.sh
+date' > "$FSX_MOUNT/test_job.sh"
 
-chmod +x /fsx/test_job.sh
-sbatch --partition=dev /fsx/test_job.sh
+chmod +x "$FSX_MOUNT/test_job.sh"
+sbatch --partition=dev "$FSX_MOUNT/test_job.sh"
 ```
 
 ## HyperPod クラスターとの統合確認
@@ -727,6 +733,35 @@ aws ssm start-session --target sagemaker-cluster:<cluster-id>_controller-<instan
 :::message alert
 **重要**: Code Editor Space 作成時に FSx とライフサイクル設定のアタッチを忘れると、`/fsx` へのアクセスや Slurm コマンドが利用できません。Space 作成時の設定が重要です。
 :::
+
+### FSx 書き込み権限の設定（必要に応じて）
+
+FSx ファイルシステムで Permission denied エラーが発生する場合は、HyperPod クラスター側で権限を調整します：
+
+```bash
+# HyperPod クラスターに SSH 接続
+ssh controller-machine
+
+# FSx の権限確認
+ls -la /shared/
+# 所有者が nobody:nogroup の場合は権限調整が必要
+
+# Studio ユーザー向けディレクトリの作成と権限設定
+sudo mkdir -p /shared/studio-workspace
+sudo chmod 755 /shared/studio-workspace 
+sudo chown sagemaker-user:sagemaker-user /shared/studio-workspace
+
+# 確認
+ls -la /shared/
+```
+
+権限設定後、Studio Code Editor から再度アクセスを試行します：
+
+```bash
+# Studio ターミナルから再試行
+echo "test from studio $(date)" > "$FSX_MOUNT/studio-workspace/test.txt"
+cat "$FSX_MOUNT/studio-workspace/test.txt"
+```
 
 これらのテストにより、開発環境（Studio）と実行環境（HyperPod）の完全な統合が確認されます。
 ::::
