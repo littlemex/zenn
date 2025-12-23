@@ -432,6 +432,14 @@ Mon Dec 22 17:29:56 2025
 
 ## SageMaker Studio Integration の設定
 
+[Amazon SageMaker Studio](https://docs.aws.amazon.com/sagemaker/latest/dg/studio.html) は、機械学習の統合開発環境（IDE）です。Web ベースの インターフェースにより、データサイエンティストや研究者が単一の環境で ML ライフサイクル全体を管理できます。柔軟にインスタンスタイプを選択でき、FSx for Lustre のファイル共有、MLflow 統合など多様な機能を有しています。
+
+::::details Studio 補足情報
+Studio と HyperPod の統合により、**開発環境と実行環境のシームレスな連携**が実現されます。具体的には、Studio の Code Editor でスクリプトを開発し、同じ環境のターミナルから `sbatch` コマンドで HyperPod クラスターにジョブを投入できます。FSx for Lustre の共有により、Studio で作成したコードやデータセットが HyperPod クラスター全体で即座に利用可能になります。自身のローカルのエディタの方が使いやすい場合はローカルエディタから Studio の Code Editor に接続することが可能です。そして [Presigned URL](https://docs.aws.amazon.com/sagemaker/latest/APIReference/API_CreatePresignedDomainUrl.html) でコンソールアクセスなしで CLI から Studio にアクセスすることも可能です。
+
+ただし、Studio Code Editor では Docker がデフォルトでは無効であり、[Docker in Docker アーキテクチャ](https://docs.aws.amazon.com/sagemaker/latest/dg/studio-updated-local-get-started.html)となっているためネットワークモードや namespace に制約がかかっておりコンテナ開発には不向きです。
+::::
+
 :::message
 - [ ] 1. Studio Domain の作成と設定
 - [ ] 2. HyperPod クラスターとの接続
@@ -439,23 +447,288 @@ Mon Dec 22 17:29:56 2025
 - [ ] 4. FSx for Lustre との統合確認
 :::
 
-::::details 1. Studio Domain の作成と設定
+::::details 1. Studio Domain の作成
 
 :::message
-なんのための作業か: SageMaker Studio Domain を作成し、HyperPod クラスターにアクセスするための統合環境を構築します。Studio を通じてクラスターの状態監視とジョブ管理を GUI で実行できるようになります。
+なんのための作業か: awsome-distributed-training リポジトリの CloudFormation テンプレートを使用して、SageMaker Studio Domain と FSx for Lustre の完全統合環境を構築します。
 :::
 
 :::message
-次のステップに進む条件: Studio Domain が InService 状態になり、User Profile が作成されていること。
+次のステップに進む条件: CloudFormation スタックが CREATE_COMPLETE 状態になり、Studio Domain が作成されていること。
 :::
 
-[SageMaker Studio と HyperPod の統合](https://awslabs.github.io/ai-on-sagemaker-hyperpod/docs/getting-started/orchestrated-by-slurm/sagemaker-studio-integration)では、Studio Domain を通じてクラスターへのシームレスなアクセスが可能になります。
+[awsome-distributed-training の CloudFormation テンプレート](https://github.com/aws-samples/awsome-distributed-training/blob/main/1.architectures/5.sagemaker-hyperpod/slurm-studio/studio-slurm.yaml)を使用することで、FSx for Lustre 統合、Slurm クライアントインストール、セキュリティ設定の自動化が実現されます。
 
-まず SageMaker Studio コンソールから新しい Domain を作成します。
+## 自動化スクリプト（推奨方法）
 
-SageMaker Studio のセットアップページで「Quick setup」を選択し、Domain 名として「hyperpod-integration-domain」などの識別しやすい名前を入力します。実行ロールは既存の SageMaker 実行ロールを使用するか、新規作成を選択します。VPC とサブネットは HyperPod クラスターと同じネットワーク環境を選択することで、プライベート通信による低レイテンシなアクセスが実現されます。
+既存の HyperPod クラスター情報から必要なパラメータを自動取得し、CloudFormation をデプロイするスクリプトを提供します：
 
-Domain 作成後、User Profile として「ml-researcher」などの適切な名前でプロファイルを追加します。この User Profile を通じて HyperPod クラスターへのアクセス権限が管理されます。Studio Domain の作成には約 10-15 分かかりますが、完了すると InService 状態に移行します。
+```bash
+# Studio Domain + FSx 統合スクリプトの作成
+cat << 'EOF' > create_studio_domain.sh
+#!/bin/bash
+
+# SageMaker Studio Domain 作成スクリプト（HyperPod + FSx 統合用）
+# awsome-distributed-training の CloudFormation テンプレートを使用
+
+set -euo pipefail
+
+# 設定変数
+CLUSTER_NAME="cpu-slurm-cluster"  # 実際のクラスター名に変更
+STACK_NAME="hyperpod-studio-integration"
+REGION="us-east-1"  # 必要に応じて変更
+HEAD_NODE_NAME="controller"  # または "controller-machine"
+SHARED_FSX="True"  # True: 共有FSx, False: ユーザー別パーティション
+
+echo "=============================================="
+echo "SageMaker Studio Domain + FSx 統合作成スクリプト"
+echo "awsome-distributed-training CloudFormation 使用"
+echo "=============================================="
+
+# 1. HyperPod クラスター情報から必要なパラメータを自動取得
+echo "1. HyperPod クラスター情報を取得中..."
+
+CLUSTER_INFO=$(aws sagemaker describe-cluster \
+    --cluster-name "$CLUSTER_NAME" \
+    --region "$REGION" \
+    --output json)
+
+# VPC 設定を取得
+VPC_CONFIG=$(echo "$CLUSTER_INFO" | jq -r '.VpcConfig')
+SUBNET_IDS=$(echo "$VPC_CONFIG" | jq -r '.Subnets[]? // empty' | tr '\n' ',' | sed 's/,$//')
+SECURITY_GROUP_IDS=$(echo "$VPC_CONFIG" | jq -r '.SecurityGroupIds[]? // empty' | head -1)
+
+# VPC ID をサブネットから取得
+FIRST_SUBNET=$(echo "$VPC_CONFIG" | jq -r '.Subnets[]? // empty' | head -1)
+VPC_ID=$(aws ec2 describe-subnets \
+    --subnet-ids "$FIRST_SUBNET" \
+    --region "$REGION" \
+    --query 'Subnets[0].VpcId' \
+    --output text)
+
+# FSx for Lustre ID を取得
+CLUSTER_CONFIG=$(echo "$CLUSTER_INFO" | jq -r '.ClusterConfig.InstanceGroups[] | select(.InstanceGroupName == "controller") | .LifeCycleConfig.SourceS3Uri // empty')
+aws s3 cp "$CLUSTER_CONFIG/provisioning_parameters.json" /tmp/provisioning_params.json
+FSX_ID=$(jq -r '.fsx_dns_name // empty' /tmp/provisioning_params.json | cut -d'.' -f1)
+
+echo "取得したパラメータ:"
+echo "  VPC ID: $VPC_ID"
+echo "  Subnet IDs: $SUBNET_IDS"
+echo "  Security Group ID: $SECURITY_GROUP_IDS"
+echo "  FSx Lustre ID: $FSX_ID"
+
+# 2. CloudFormation テンプレートのダウンロード
+echo ""
+echo "2. CloudFormation テンプレートをダウンロード中..."
+curl -sL "https://raw.githubusercontent.com/aws-samples/awsome-distributed-training/main/1.architectures/5.sagemaker-hyperpod/slurm-studio/studio-slurm.yaml" -o /tmp/studio-slurm.yaml
+
+# 3. CloudFormation スタックのデプロイ
+echo ""
+echo "3. CloudFormation スタックをデプロイ中..."
+echo "作成には約 15-20 分かかります（Lambda + FSx 統合のため）"
+
+aws cloudformation create-stack \
+    --stack-name "$STACK_NAME" \
+    --template-body file:///tmp/studio-slurm.yaml \
+    --parameters ParameterKey=ExistingVpcId,ParameterValue="$VPC_ID" \
+                 ParameterKey=ExistingSubnetIds,ParameterValue="$SUBNET_IDS" \
+                 ParameterKey=ExistingFSxLustreId,ParameterValue="$FSX_ID" \
+                 ParameterKey=SecurityGroupId,ParameterValue="$SECURITY_GROUP_IDS" \
+                 ParameterKey=HyperPodClusterName,ParameterValue="$CLUSTER_NAME" \
+                 ParameterKey=HeadNodeName,ParameterValue="$HEAD_NODE_NAME" \
+                 ParameterKey=SharedFSx,ParameterValue="$SHARED_FSX" \
+    --capabilities CAPABILITY_NAMED_IAM \
+    --region "$REGION"
+
+echo "✅ CloudFormation デプロイ完了"
+echo "次に create_user_profile.sh を実行してください"
+EOF
+
+chmod +x create_studio_domain.sh
+```
+
+### 実行手順
+
+```bash
+# 設定を環境に合わせて調整
+sed -i 's/cpu-slurm-cluster/your-actual-cluster-name/' create_studio_domain.sh
+sed -i 's/us-east-1/your-region/' create_studio_domain.sh
+
+# スクリプト実行
+./create_studio_domain.sh
+```
+
+このスクリプトにより、FSx for Lustre の完全統合、Slurm クライアントの自動インストール、セキュリティ設定の自動化が実現されます。以下のように SageMaker AI コンソールで正常に作成されたことが確認できます。
+
+![](/images/books/ml-distributed-experiment-collection/hyperpod-slurm-create-domain.png)
+::::
+
+::::details 2. User Profile の作成（CLI）
+
+:::message
+なんのための作業か: Studio Domain 作成後に User Profile を追加し、FSx パーティションの自動作成とアクセス権限設定を実行します。
+:::
+
+:::message
+次のステップに進む条件: User Profile が InService 状態になり、FSx パーティションが自動作成されていること。
+:::
+
+CloudFormation による Domain 作成が完了したら、User Profile を作成します。awsome-distributed-training テンプレートには EventBridge による自動 FSx パーティション作成機能が含まれているため、User Profile 作成と同時に `/fsx/<user-name>/` ディレクトリが自動作成されます。
+
+### User Profile 作成スクリプト
+
+```bash
+# User Profile 作成スクリプトの作成
+cat << 'EOF' > create_user_profile.sh
+#!/bin/bash
+
+# SageMaker Studio User Profile 作成スクリプト
+set -euo pipefail
+
+# 設定変数
+DOMAIN_NAME="hyperpod-studio-integration"  # CloudFormation スタック名と同じ
+USER_PROFILE_NAME="ml-researcher"  # 作成するユーザー名
+REGION="us-east-1"
+
+echo "=============================================="
+echo "SageMaker Studio User Profile 作成スクリプト"
+echo "=============================================="
+
+# コマンドライン引数でユーザー名を指定可能
+if [[ $# -ge 1 ]]; then
+    USER_PROFILE_NAME="$1"
+fi
+
+# 1. CloudFormation スタックから Domain ID を取得
+DOMAIN_ID=$(aws cloudformation describe-stacks \
+    --stack-name "$DOMAIN_NAME" \
+    --region "$REGION" \
+    --query 'Stacks[0].Outputs[?OutputKey==`StudioDomainId`].OutputValue' \
+    --output text)
+
+echo "Domain ID: $DOMAIN_ID"
+echo "User Profile 名: $USER_PROFILE_NAME"
+
+# 2. User Profile の作成
+aws sagemaker create-user-profile \
+    --domain-id "$DOMAIN_ID" \
+    --user-profile-name "$USER_PROFILE_NAME" \
+    --region "$REGION"
+
+echo "✅ User Profile 作成完了"
+echo "FSx パーティション /fsx/$USER_PROFILE_NAME/ も自動作成されます"
+EOF
+
+chmod +x create_user_profile.sh
+```
+
+### 実行手順
+
+```bash
+# デフォルトユーザーで作成
+./create_user_profile.sh
+
+# または特定のユーザー名を指定
+./create_user_profile.sh data-scientist-1
+```
+
+User Profile 作成後、SageMaker コンソールから該当プロファイルでログインし、JupyterLab を起動できます。
+
+![](/images/books/ml-distributed-experiment-collection/hyperpod-slurm-create-user-profile.png)
+::::
+
+::::details 3. 統合テストと動作確認
+
+:::message
+なんのための作業か: 作成した Studio 環境で FSx アクセス、Slurm コマンド、HyperPod クラスターとの連携が正常に動作することを確認します。
+:::
+
+:::message
+次のステップに進む条件: Studio 内から FSx ファイルシステムにアクセスでき、Slurm コマンドが実行できること。
+:::
+
+## Code Editor Space の作成
+
+:::message alert
+User Profile を作成しただけでは FSx や Slurm クライアントにアクセスできません。以下の手順で Code Editor Space を手動作成し、FSx とライフサイクル設定をアタッチする必要があります。
+:::
+
+手順が丁寧に記載されているので[こちら](https://awslabs.github.io/ai-on-sagemaker-hyperpod/docs/getting-started/orchestrated-by-slurm/sagemaker-studio-integration)も合わせて確認ください。
+
+1. **SageMaker Studio にアクセス**
+   - User Profile から Studio にログイン
+
+2. **Code Editor Space の作成**
+   - "Code Editor" をクリック
+   - "Create Code Editor Space" をクリック
+   - Space 名を入力（例：`hyperpod-workspace`）
+
+3. **重要：FSx とライフサイクル設定のアタッチ**
+   - "Attach custom filesystem - optional" ドロップダウンから **FSx for Lustre volume を選択**
+   - "Lifecycle configuration" ドロップダウンから **利用可能なライフサイクル設定を選択**
+   - "Create Space" をクリック
+
+4. **Space の起動**
+   - 作成された Space の "Run" をクリック
+   - Code Editor が起動するまで数分待機
+
+## FSx アクセスの確認
+
+Code Editor Space が正常に起動したら、以下を確認します：
+
+```bash
+# ターミナルで FSx マウント確認
+ls -la /
+ls -la /fsx/
+ls -la /shared/  # SharedFSx=True の場合
+
+# 書き込み権限の確認
+echo "test from studio" > /fsx/ml-researcher/test.txt
+
+# HyperPod クラスターとの共有確認
+# （同じファイルが HyperPod クラスターでも見えることを確認）
+```
+
+## Slurm コマンドの動作確認
+
+ライフサイクル設定により、Slurm クライアントが自動インストールされます：
+
+```bash
+# Studio Code Editor 内ターミナルで実行
+sinfo
+squeue
+srun hostname
+
+# 簡単なジョブ投入テスト
+echo '#!/bin/bash
+echo "Hello from HyperPod: $(hostname)"
+date' > /fsx/test_job.sh
+
+chmod +x /fsx/test_job.sh
+sbatch --partition=dev /fsx/test_job.sh
+```
+
+## HyperPod クラスターとの統合確認
+
+Studio から HyperPod クラスターへの直接接続も可能です：
+
+```bash
+# SSH 設定（Studio 内ターミナル）
+eval $(ssh-agent -s)
+ssh-add ~/.ssh/id_rsa  # 必要に応じて
+
+# クラスターへの接続確認
+ssh controller-machine
+
+# またはSSMセッション経由
+aws ssm start-session --target sagemaker-cluster:<cluster-id>_controller-<instance-id>
+```
+
+:::message alert
+**重要**: Code Editor Space 作成時に FSx とライフサイクル設定のアタッチを忘れると、`/fsx` へのアクセスや Slurm コマンドが利用できません。Space 作成時の設定が重要です。
+:::
+
+これらのテストにより、開発環境（Studio）と実行環境（HyperPod）の完全な統合が確認されます。
 ::::
 
 ::::details 2. HyperPod クラスターとの接続
