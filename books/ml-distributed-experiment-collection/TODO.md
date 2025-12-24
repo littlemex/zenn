@@ -16,7 +16,7 @@
 **凡例**: ◎ 優秀、◯ 良好、△ 限定的、✕ 非対応・不向き
 
 **Prolog/Epilog スクリプトでの自動診断**
-- 
+- https://zenn.dev/kiiwami/articles/a1d024ef82e0a5cd 神コンテンツ、これを全部実装したい
 - MIG/TIme slice/vGPU違い
 - Transformer のアーキテクチャの違い、SwiGLU、RoPE、RMSNorm、GQA、MoE
 - グローバルバッチサイズ、学習率、計算精度（BF16など）の適切な設定とは？
@@ -26,11 +26,13 @@
   - https://zenn.dev/tosshi/scraps/c28b1815d84434
   - コードリードする
 - scaling inf on EKS
-- Slurm
+- https://arxiv.org/html/2411.13055v2
 - Intelligent-Tiering ストレージクラス（2025年5月）
 - EFA 対応の強化（2024年11月）、GPUDirect Storage (GDS) の完全サポート、ENA Express による約 30% のレイテンシ削減
 - Unsloth
 - SRD の話
+- https://zenn.dev/kiiwami/articles/a1d024ef82e0a5cd 学習の流れが非常に分かりやすい
+- PDSH
 - PC --rollback-on-failure false を Cluster 作成時につけると、作成に時間がかかりすぎた際に、再実行できるようになる。
 - https://github.com/aws-samples/awsome-distributed-training/のサンプルリストの整理
 - CodSpeed によるテスト
@@ -46,6 +48,15 @@
 
 https://huggingface.co/spaces/HuggingFaceTB/smol-training-playbook
 
+hyperpod 
+
+- https://aws.amazon.com/jp/blogs/aws/introducing-checkpointless-and-elastic-training-on-amazon-sagemaker-hyperpod/
+
+GPU
+
+- https://www.fibermall.com/ja/blog/nvidia-nvlink-and-nvswitch-evolution.htm#2024_Blackwell_Architecture_with_B200
+- https://techblog.lycorp.co.jp/ja/20250115a
+- https://drivenets.com/blog/rail-vs-tor-architectures-which-is-best-for-ai-clusters/
 
 Infos
 - https://zenn.dev/tosshi/scraps/8839cb8949b692
@@ -93,6 +104,8 @@ update
 - https://aws.amazon.com/jp/blogs/machine-learning/adaptive-infrastructure-for-foundation-model-training-with-elastic-training-on-sagemaker-hyperpod/
 - 
 
+https://developer.nvidia.com/blog/nvidia-cuda-13-1-powers-next-gen-gpu-programming-with-nvidia-cuda-tile-and-performance-gains/
+
 
 - https://github.com/NVIDIA-NeMo/Megatron-Bridge
 - Memory 効率テクニック: https://blog.dailydoseofds.com/p/a-memory-efficient-technique-to-train
@@ -114,6 +127,7 @@ update
 
 - https://docs.vllm.ai/en/stable/examples/online_serving/multi-node-serving/
 - https://qiita.com/SELEE/items/c9152ce0fd99be4b7832
+- https://developer.nvidia.com/blog/accelerate-large-scale-llm-inference-and-kv-cache-offload-with-cpu-gpu-memory-sharing/
 
 # その他
 
