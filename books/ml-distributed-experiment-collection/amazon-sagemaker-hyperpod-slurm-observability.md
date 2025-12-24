@@ -1,5 +1,5 @@
 ---
-title: "Blueprints by Slurm: レジリエンシーと可視化"
+title: "Blueprints by Slurm: レジリエンシーと可視化（前編）"
 emoji: "🔧"
 type: "tech"
 topics: ["aws", "sagemaker", "hyperpod", "slurm", "resiliency", "observability"]
@@ -271,65 +271,11 @@ AWS CLI v2 とSSM Session Manager プラグインが適切に設定されてい�
 この `provisioning_parameters.json` ファイルは `slurm.conf` という slurm の設定ファイルを Hyperpod が自動生成する際に利用されます。Quick Setup 時には勝手にこのファイルが作成されるため意識しませんでしたが、GPU インスタンスを追加する場合には**このファイルをアップデートする**必要があります。以下のスクリプトで GPU インスタンスグループを設定に追加し、S3 上の json ファイルを自動更新できます。
 
 ```bash
-# HyperPod クラスター設定の自動更新スクリプト
-cat << 'EOF' > update_provisioning_params.sh
-#!/bin/bash
-
-# 設定値
-BUCKET_NAME="your-hyperpod-bucket-name"  # 実際のS3バケット名に変更
-CLUSTER_NAME="cpu-slurm-cluster"
-DEFAULT_INSTANCE_TYPE="ml.g5.xlarge"
-
-echo "HyperPod provisioning_parameters.json 自動更新スクリプト"
-echo "=============================================="
-
-# S3から現在のファイルをダウンロード
-echo "1. S3からprovisioning_parameters.jsonをダウンロード中..."
-aws s3 cp s3://${BUCKET_NAME}/provisioning_parameters.json ./provisioning_parameters.json
-
-if [ $? -ne 0 ]; then
-    echo "エラー: S3からのダウンロードに失敗しました"
-    echo "バケット名を確認してください: ${BUCKET_NAME}"
-    exit 1
-fi
-
-# 現在の設定内容を表示
-echo "2. 現在の設定内容:"
-cat provisioning_parameters.json | jq '.'
-
-# worker_groupsに新しいGPUワーカーグループを追加
-echo "3. worker_groups に gpu-worker グループを追加中..."
-jq --arg instance_type "$DEFAULT_INSTANCE_TYPE" '
-  .worker_groups += [{"instance_group_name": "gpu-worker", "partition_name": $instance_type}]
-' provisioning_parameters.json > provisioning_parameters_updated.json
-
-# 更新された内容を表示
-echo "4. 更新後の設定内容:"
-cat provisioning_parameters_updated.json | jq '.'
-
-# S3に更新されたファイルをアップロード
-echo "5. 更新されたファイルをS3にアップロード中..."
-aws s3 cp provisioning_parameters_updated.json s3://${BUCKET_NAME}/provisioning_parameters.json
-
-if [ $? -eq 0 ]; then
-    echo "✅ 正常にアップロードが完了しました"
-    echo "クラスター作成を再実行できます"
-else
-    echo "❌ S3アップロードに失敗しました"
-    exit 1
-fi
-
-# 一時ファイルのクリーンアップ
-rm -f provisioning_parameters.json provisioning_parameters_updated.json
-
-echo "=============================================="
-echo "スクリプト実行完了"
-EOF
-
+curl -sSL https://raw.githubusercontent.com/littlemex/samples/main/ml_distributed_experiment_collection/amazon-sagemaker-hyperpod-slurm-observability/update_provisioning_params.sh -o update_provisioning_params.sh
 chmod +x update_provisioning_params.sh
 ```
 
-スクリプトを実行する前に、`BUCKET_NAME` を実際の S3 バケット名に変更してください。
+スクリプトを実行する前に、`BUCKET_NAME` を実際の S3 バケット名に変更してください。本チュートリアルと異なるインスタンスタイプを指定する場合も手動でスクリプトを修正してください。
 
 ```bash
 # スクリプト内のバケット名を更新してから実行
@@ -442,9 +388,10 @@ Studio と HyperPod の統合により、**開発環境と実行環境のシー�
 ::::
 
 :::message
-- [ ] 1. Studio Domain の作成と設定
-- [ ] 2. HyperPod クラスターとの接続
-- [ ] 3. FSx for Lustre との統合確認
+- [ ] 1. Studio Domain の作成
+- [ ] 2. User Profile の作成（CLI）
+- [ ] 3. SageMaker Studio の設定
+- [ ] 4. FSx for Lustre との統合確認
 :::
 
 ::::details 1. Studio Domain の作成
@@ -464,95 +411,12 @@ Studio と HyperPod の統合により、**開発環境と実行環境のシー�
 既存の HyperPod クラスター情報から必要なパラメータを自動取得し、CloudFormation をデプロイするスクリプトを提供します：
 
 ```bash
-# Studio Domain + FSx 統合スクリプトの作成
-cat << 'EOF' > create_studio_domain.sh
-#!/bin/bash
-
-# SageMaker Studio Domain 作成スクリプト（HyperPod + FSx 統合用）
-# awsome-distributed-training の CloudFormation テンプレートを使用
-
-set -euo pipefail
-
-# 設定変数
-CLUSTER_NAME="cpu-slurm-cluster"  # 実際のクラスター名に変更
-STACK_NAME="hyperpod-studio-integration"
-REGION="us-east-1"  # 必要に応じて変更
-HEAD_NODE_NAME="controller"  # または "controller-machine"
-SHARED_FSX="True"  # True: 共有FSx, False: ユーザー別パーティション
-
-echo "=============================================="
-echo "SageMaker Studio Domain + FSx 統合作成スクリプト"
-echo "awsome-distributed-training CloudFormation 使用"
-echo "=============================================="
-
-# 1. HyperPod クラスター情報から必要なパラメータを自動取得
-echo "1. HyperPod クラスター情報を取得中..."
-
-CLUSTER_INFO=$(aws sagemaker describe-cluster \
-    --cluster-name "$CLUSTER_NAME" \
-    --region "$REGION" \
-    --output json)
-
-# VPC 設定を取得
-VPC_CONFIG=$(echo "$CLUSTER_INFO" | jq -r '.VpcConfig')
-SUBNET_IDS=$(echo "$VPC_CONFIG" | jq -r '.Subnets[]? // empty' | tr '\n' ',' | sed 's/,$//')
-SECURITY_GROUP_IDS=$(echo "$VPC_CONFIG" | jq -r '.SecurityGroupIds[]? // empty' | head -1)
-
-# VPC ID をサブネットから取得
-FIRST_SUBNET=$(echo "$VPC_CONFIG" | jq -r '.Subnets[]? // empty' | head -1)
-VPC_ID=$(aws ec2 describe-subnets \
-    --subnet-ids "$FIRST_SUBNET" \
-    --region "$REGION" \
-    --query 'Subnets[0].VpcId' \
-    --output text)
-
-# FSx for Lustre ID を取得
-CLUSTER_CONFIG=$(echo "$CLUSTER_INFO" | jq -r '.InstanceGroups[] | select(.InstanceGroupName == "controller") | .LifeCycleConfig.SourceS3Uri // empty')
-aws s3 cp "$CLUSTER_CONFIG/provisioning_parameters.json" /tmp/provisioning_params.json
-FSX_ID=$(jq -r '.fsx_dns_name // empty' /tmp/provisioning_params.json | cut -d'.' -f1)
-
-echo "取得したパラメータ:"
-echo "  VPC ID: $VPC_ID"
-echo "  Subnet IDs: $SUBNET_IDS"
-echo "  Security Group ID: $SECURITY_GROUP_IDS"
-echo "  FSx Lustre ID: $FSX_ID"
-
-# 2. CloudFormation テンプレートのダウンロード
-echo ""
-echo "2. CloudFormation テンプレートをダウンロード中..."
-curl -sL "https://raw.githubusercontent.com/aws-samples/awsome-distributed-training/main/1.architectures/5.sagemaker-hyperpod/slurm-studio/studio-slurm.yaml" -o /tmp/studio-slurm.yaml
-
-# 3. CloudFormation スタックのデプロイ
-echo ""
-echo "3. CloudFormation スタックをデプロイ中..."
-echo "作成には約 15-20 分かかります（Lambda + FSx 統合のため）"
-
-aws cloudformation create-stack \
-    --stack-name "$STACK_NAME" \
-    --template-body file:///tmp/studio-slurm.yaml \
-    --parameters ParameterKey=ExistingVpcId,ParameterValue="$VPC_ID" \
-                 ParameterKey=ExistingSubnetIds,ParameterValue="$SUBNET_IDS" \
-                 ParameterKey=ExistingFSxLustreId,ParameterValue="$FSX_ID" \
-                 ParameterKey=SecurityGroupId,ParameterValue="$SECURITY_GROUP_IDS" \
-                 ParameterKey=HyperPodClusterName,ParameterValue="$CLUSTER_NAME" \
-                 ParameterKey=HeadNodeName,ParameterValue="$HEAD_NODE_NAME" \
-                 ParameterKey=SharedFSx,ParameterValue="$SHARED_FSX" \
-    --capabilities CAPABILITY_NAMED_IAM \
-    --region "$REGION"
-
-echo "✅ CloudFormation デプロイ完了"
-echo "次に create_user_profile.sh を実行してください"
-EOF
-
+curl -sSL https://raw.githubusercontent.com/littlemex/samples/main/ml_distributed_experiment_collection/amazon-sagemaker-hyperpod-slurm-observability/create_studio_domain.sh -o create_studio_domain.sh
 chmod +x create_studio_domain.sh
-```
 
-### 実行手順
-
-```bash
-# 設定を環境に合わせて調整
-sed -i 's/cpu-slurm-cluster/your-actual-cluster-name/' create_studio_domain.sh
-sed -i 's/us-east-1/your-region/' create_studio_domain.sh
+# ご自身の環境に合わせて変更してください
+# sed -i 's/cpu-slurm-cluster/your-actual-cluster-name/' create_studio_domain.sh
+# sed -i 's/us-east-1/your-region/' create_studio_domain.sh
 
 # スクリプト実行
 ./create_studio_domain.sh
@@ -573,56 +437,21 @@ sed -i 's/us-east-1/your-region/' create_studio_domain.sh
 次のステップに進む条件: User Profile が InService 状態になり、FSx パーティションが自動作成されていること。
 :::
 
-CloudFormation による Domain 作成が完了したら、User Profile を作成します。awsome-distributed-training テンプレートには EventBridge による自動 FSx パーティション作成機能が含まれているため、User Profile 作成と同時に `/fsx/<user-name>/` ディレクトリが自動作成されます。
+CloudFormation による Domain 作成が完了したら、User Profile を作成します。FSx for Lustre ファイルシステムは `/fsx/shared/` ディレクトリを通じて HyperPod クラスターと Studio 環境間で共有されます。
 
-### User Profile 作成スクリプト
+## User Profile 作成スクリプト
 
 ```bash
-# User Profile 作成スクリプトの作成
-cat << 'EOF' > create_user_profile.sh
-#!/bin/bash
+# ダウンロードして内容確認
+curl -sSL https://raw.githubusercontent.com/littlemex/samples/main/ml_distributed_experiment_collection/amazon-sagemaker-hyperpod-slurm-observability/create_user_profile.sh -o create_user_profile.sh
 
-# SageMaker Studio User Profile 作成スクリプト
-set -euo pipefail
-
-# 設定変数
-DOMAIN_NAME="hyperpod-studio-integration"  # CloudFormation スタック名と同じ
-USER_PROFILE_NAME="ml-researcher"  # 作成するユーザー名
-REGION="us-east-1"
-
-echo "=============================================="
-echo "SageMaker Studio User Profile 作成スクリプト"
-echo "=============================================="
-
-# コマンドライン引数でユーザー名を指定可能
-if [[ $# -ge 1 ]]; then
-    USER_PROFILE_NAME="$1"
-fi
-
-# 1. CloudFormation スタックから Domain ID を取得
-DOMAIN_ID=$(aws cloudformation describe-stacks \
-    --stack-name "$DOMAIN_NAME" \
-    --region "$REGION" \
-    --query 'Stacks[0].Outputs[?OutputKey==`StudioDomainId`].OutputValue' \
-    --output text)
-
-echo "Domain ID: $DOMAIN_ID"
-echo "User Profile 名: $USER_PROFILE_NAME"
-
-# 2. User Profile の作成
-aws sagemaker create-user-profile \
-    --domain-id "$DOMAIN_ID" \
-    --user-profile-name "$USER_PROFILE_NAME" \
-    --region "$REGION"
-
-echo "✅ User Profile 作成完了"
-echo "FSx パーティション /fsx/$USER_PROFILE_NAME/ も自動作成されます"
-EOF
+# スクリプト内容の確認
+head -20 create_user_profile.sh
 
 chmod +x create_user_profile.sh
 ```
 
-### 実行手順
+## 実行手順
 
 ```bash
 # デフォルトユーザーで作成
@@ -637,10 +466,10 @@ User Profile 作成後、SageMaker コンソールから該当プロファイル
 ![](/images/books/ml-distributed-experiment-collection/hyperpod-slurm-create-user-profile.png)
 ::::
 
-::::details 3. 統合テストと動作確認
+::::details 3. SageMaker Studio の設定
 
 :::message
-なんのための作業か: 作成した Studio 環境で FSx アクセス、Slurm コマンド、HyperPod クラスターとの連携が正常に動作することを確認します。
+なんのための作業か: 作成した Studio 環境で Slurm コマンド、HyperPod クラスターとの連携が正常に動作することを確認します。
 :::
 
 :::message
@@ -672,45 +501,11 @@ User Profile を作成しただけでは FSx や Slurm クライアントにア�
 
 ![](/images/books/ml-distributed-experiment-collection/hyperpod-slurm-studio-create-space.png)
 
-## FSx アクセスの確認
+## Slurm コマンドの実行方法
 
-Code Editor Space が正常に起動したら、以下を確認します：
+Studio Code Editor では、**2 つのアプローチ**で Slurm コマンドを実行できます。
 
-```bash
-# ターミナルで FSx マウント確認
-df -h | grep fsx_lustre
-
-# FSx マウントポイントを動的に取得
-FSX_MOUNT=$(df -h | grep fsx_lustre | awk '{print $NF}')
-echo "FSx mount point: $FSX_MOUNT"
-
-# FSx ファイルシステムの権限確認
-ls -la "$FSX_MOUNT"
-# 所有者が nobody:nogroup になっている場合は書き込み権限の調整が必要
-
-# HyperPod クラスターとの共有確認
-# SSH で HyperPod クラスターに接続してマウント状況を確認
-# 例: ssh controller-machine "df -h | grep lustre && ls -la /shared/"
-```
-
-## Slurm コマンドの動作確認
-
-:::message alert
-**重要**: Studio Code Editor 内では MUNGE 認証の制約により、Slurm コマンドを直接実行できません。Login ノード経由でのアクセスが必要です。
-:::
-
-### SSM Session Manager Plugin のインストール
-
-```bash
-# Studio Code Editor 内で SSM Session Manager Plugin をインストール
-curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" -o "session-manager-plugin.deb"
-sudo dpkg -i session-manager-plugin.deb
-
-# インストール確認
-session-manager-plugin --version
-```
-
-### 方法1: Easy SSH スクリプト（推奨）
+### 方法1: Login ノード経由のSSH
 
 ```bash
 # GitHub から easy-ssh.sh を取得
@@ -720,87 +515,32 @@ chmod +x easy-ssh.sh
 # SSH Key 生成（未作成の場合）
 ssh-keygen -t rsa -b 4096 -f "$HOME/.ssh/id_rsa" -N ""
 
-# Login ノードに接続設定（重要: controller ではなく login）
+# Login ノードに接続設定
 ./easy-ssh.sh -c login cpu-slurm-cluster
-```
-
-### 方法2: 手動接続設定
-
-```bash
-# Login ノードの Instance ID 取得
-LOGIN_INSTANCE_ID=$(aws sagemaker list-cluster-nodes --cluster-name cpu-slurm-cluster --query 'ClusterNodeSummaries[?InstanceGroupName==`login`].InstanceId' --output text)
-echo "Login Instance ID: $LOGIN_INSTANCE_ID"
-
-# SSH 設定追加
-echo "Host hyperpod-login
-    User ubuntu
-    ProxyCommand sh -c \"aws ssm start-session --target sagemaker-cluster:7isg1upszym4_login-$LOGIN_INSTANCE_ID --document-name AWS-StartSSHSession --parameters 'portNumber=%p'\"" >> ~/.ssh/config
 
 # SSH 経由での Slurm 操作
-ssh hyperpod-login squeue
-ssh hyperpod-login sinfo
-ssh hyperpod-login "srun hostname"
-
-# 簡単なジョブ投入テスト
-FSX_MOUNT=$(df -h | grep fsx_lustre | awk '{print $NF}')
-echo '#!/bin/bash
-echo "Hello from HyperPod: $(hostname)"
-date' > "$FSX_MOUNT/test_job.sh"
-
-chmod +x "$FSX_MOUNT/test_job.sh"
-ssh hyperpod-login "sbatch --partition=dev /shared/test_job.sh"
+ssh cpu-slurm-cluster sinfo
 ```
 
-## HyperPod クラスターとの統合確認
-
-Studio から HyperPod クラスターへの直接接続も可能です：
-
-```bash
-# SSH 設定（Studio 内ターミナル）
-eval $(ssh-agent -s)
-ssh-add ~/.ssh/id_rsa  # 必要に応じて
-
-# クラスターへの接続確認
-ssh controller-machine
-
-# またはSSMセッション経由
-aws ssm start-session --target sagemaker-cluster:<cluster-id>_controller-<instance-id>
-```
+### 方法2: Studio Code Editor 内での直接実行
 
 :::message alert
-**重要**: Code Editor Space 作成時に FSx とライフサイクル設定のアタッチを忘れると、`/fsx` へのアクセスや Slurm コマンドが利用できません。Space 作成時の設定が重要です。
+**制約事項**: Studio Code Editor はコンテナ環境で動作し、MUNGE 認証に課題があります。以下の手順は技術検証用であり、本番利用には方法 1 を推奨します。
 :::
 
-### FSx 書き込み権限の設定（必要に応じて）
+[MUNGE (MUNGE Uid 'N' Gid Emporium)](https://dun.github.io/munge/) は、Slurm クラスターにおける認証システムです。クラスター内の全ノード間で安全な通信を確保し、ユーザーがジョブを投入する際の認証に使用されます。MUNGE の動作には、すべてのノードで同じ秘密鍵（MUNGE キー）を共有する必要があり、この鍵の同期が Slurm コマンド実行の前提条件となります。
 
-FSx ファイルシステムで Permission denied エラーが発生する場合は、HyperPod クラスター側で権限を調整します：
-
-```bash
-# HyperPod クラスターに SSH 接続
-ssh controller-machine
-
-# FSx の権限確認
-ls -la /shared/
-# 所有者が nobody:nogroup の場合は権限調整が必要
-
-# Studio ユーザー向けディレクトリの作成と権限設定
-sudo mkdir -p /shared/studio-workspace
-sudo chmod 755 /shared/studio-workspace 
-sudo chown sagemaker-user:sagemaker-user /shared/studio-workspace
-
-# 確認
-ls -la /shared/
-```
-
-権限設定後、Studio Code Editor から再度アクセスを試行します：
+Studio Code Editor 内での Slurm クライアント直接実行には、HyperPod クラスターから MUNGE キーを取得し、Studio 環境で MUNGE デーモンを起動する必要があります。
 
 ```bash
-# Studio ターミナルから再試行
-echo "test from studio $(date)" > "$FSX_MOUNT/studio-workspace/test.txt"
-cat "$FSX_MOUNT/studio-workspace/test.txt"
-```
+curl -sSL https://raw.githubusercontent.com/littlemex/samples/main/ml_distributed_experiment_collection/amazon-sagemaker-hyperpod-slurm-observability/setup_slurm_munge_studio.sh -o setup_slurm_munge_studio.sh
+chmod +x setup_slurm_munge_studio.sh
 
-これらのテストにより、開発環境（Studio）と実行環境（HyperPod）の完全な統合が確認されます。
+./setup_slurm_munge_studio.sh
+
+# slurm コマンドの動作確認
+sinfo
+```
 ::::
 
 ::::details 3. FSx for Lustre との統合確認
@@ -813,11 +553,31 @@ cat "$FSX_MOUNT/studio-workspace/test.txt"
 次のステップに進む条件: Studio から FSx ファイルシステムにアクセスでき、ファイルの読み書きと共有が正常に動作すること。
 :::
 
-FSx for Lustre ファイルシステムは、クラスター内の全ノードで `/fsx` ディレクトリとしてマウントされています。Studio 環境からも同じパスでアクセス可能です。JupyterLab のファイルブラウザーで `/fsx` ディレクトリを開き、クラスター内でのデータ共有状況を確認します。
+FSx for Lustre ファイルシステムは、Slurm クラスター内の全ノードで `/fsx` ディレクトリとしてマウントしました。User Profile 作成スクリプトの設定によって Studio 環境からも共有ディレクトリにアクセス可能です。Slurm Login ノードに接続して `/fsx` ディレクトリの権限設定を行いましょう。これによって Studio 側からも権限が許可されたディレクトリにアクセス可能です。
 
-大容量のデータセットや学習用スクリプト、チェックポイントファイルを `/fsx` に配置することで、全ノードからの高速アクセスが実現されます。FSx for Lustre の並列 I/O 性能により、数百ノード規模のクラスターでも効率的なデータ転送が保証されます。
+```bash
+# HyperPod クラスターに SSH 接続
+ssh cpu-slurm-cluster
 
-Studio 内から FSx への大容量ファイルアップロードテストを実行し、転送速度を確認します。また、複数ノードから同一ファイルへの同時アクセステストにより、ファイルロックとデータ整合性の動作を検証します。これらのテストは、実際の分散学習におけるデータローディングの性能予測に重要な指標となります。
+# FSx の権限確認
+ls -la /fsx
+
+# Studio ユーザー向け共有ディレクトリの作成と権限設定
+sudo mkdir -p /fsx/shared/studio-workspace
+sudo chmod 755 /fsx/shared/studio-workspace 
+sudo chown 10001:1001 /fsx/shared/studio-workspace
+
+# 確認
+ls -la /fsx/shared
+```
+
+権限設定後、Studio Code Editor から再度アクセスを試行します。
+
+```bash
+# Studio ターミナルから再試行
+FSX_MOUNT=$(df -h | grep fsx_lustre | awk '{print $NF}')
+touch $FSX_MOUNT/studio-workspace/testfile && ls -la $FSX_MOUNT/studio-workspace
+```
 ::::
 
 ## Observability システムの構築
@@ -919,571 +679,8 @@ Grafana のアラート機能を使用して、クリティカルな状態の自
 アラート通知は Amazon SNS を通じて電子メールや Slack チャンネルに送信されます。通知メッセージには問題の詳細情報、推奨される対応手順、関連するダッシュボードへのリンクを含めることで、迅速な問題解決を支援します。アラートの重要度に応じて通知頻度を調整し、重要でないアラートによる通知疲れを防ぎます。
 ::::
 
-## Environment Validation の実行
+## まとめ
 
-:::message
-1. PyTorch 環境の検証
-2. EFA ネットワークスタックの検証  
-3. NCCL と CUDA の検証
-4. 検証結果の分析とトラブルシューティング
-:::
+本章では、Amazon SageMaker HyperPod の Slurm 環境における observability 機能を追加しました。
 
-::::details 1. PyTorch 環境の検証
-
-:::message
-なんのための作業か: [PyTorch 環境検証](https://awslabs.github.io/ai-on-sagemaker-hyperpod/docs/validation-and-testing/environment-validation/pytorch-environment-validation)を実行し、分散学習に必要なライブラリとコンポーネントの動作を確認します。
-:::
-
-:::message
-次のステップに進む条件: PyTorch、NCCL、MPI、OpenMP、CUDA の全コンポーネントが正常に動作し、検証スクリプトがエラーなく完了すること。
-:::
-
-クラスターに SSH 接続し、PyTorch 環境検証スクリプトをダウンロードします。この検証スクリプトは、HyperPod クラスター上で分散学習を実行する前の重要な事前確認として位置づけられています。
-
-```bash
-cd /fsx
-wget https://raw.githubusercontent.com/awslabs/ai-on-sagemaker-hyperpod/main/validation/pytorch_environment_validation.py
-chmod +x pytorch_environment_validation.py
-```
-
-検証スクリプトを GPU ノード上で実行します。このスクリプトは CUDA の可用性、PyTorch の GPU サポート、NCCL の通信機能、MPI の並列処理能力、OpenMP のマルチスレッド処理を包括的にテストします。
-
-```bash
-srun --partition=ml.g5.xlarge --gpus=1 python pytorch_environment_validation.py
-```
-
-実行結果では、各コンポーネントの詳細なバージョン情報と動作状況が表示されます。CUDA デバイス数、利用可能な GPU メモリ容量、NCCL のバックエンド初期化状況、MPI プロセス間通信の成功を確認します。エラーが発生した場合は、該当するライブラリの再インストールまたは環境変数の調整が必要です。
-
-検証結果をログファイルとして保存し、後の分析やトラブルシューティングに活用します。特に NCCL の初期化エラーや CUDA out of memory エラーは、分散学習実行時の重要な問題予測指標となります。
-::::
-
-::::details 2. EFA ネットワークスタックの検証
-
-:::message
-なんのための作業か: [EFA（Elastic Fabric Adapter）の検証](https://awslabs.github.io/ai-on-sagemaker-hyperpod/docs/validation-and-testing/environment-validation/efa-validation)を実行し、高性能ノード間通信の動作を確認します。
-:::
-
-:::message
-次のステップに進む条件: EFA デバイスが正しく認識され、帯域幅とレイテンシのベンチマークが期待値内で完了すること。
-:::
-
-EFA は AWS が提供する高性能ネットワークファブリックであり、分散学習における All-Reduce 通信の性能を決定する重要な要素です。まず EFA デバイスの存在と設定を確認します。
-
-```bash
-srun --nodes=2 --ntasks-per-node=1 fi_info -p efa
-```
-
-このコマンドの出力で、各ノードに EFA プロバイダーが正しく認識されていることを確認します。続いて EFA の帯域幅測定を実行します。
-
-```bash
-srun --nodes=2 --ntasks-per-node=1 fi_pingpong -e rdma -p efa
-```
-
-fi_pingpong の結果では、メッセージサイズ別の帯域幅とレイテンシが表示されます。小さなメッセージ（8B-1KB）では低レイテンシが重要であり、大きなメッセージ（1MB 以上）では高帯域幅が求められます。分散学習では両方の特性が All-Reduce 通信の効率に直接影響します。
-
-EFA のループバックテストも実行し、単一ノード内での通信性能を確認します。これにより、ノード内の GPU 間通信と、ノード間通信の性能差を把握できます。EFA の性能が期待値を下回る場合は、ネットワーク設定の確認やドライバーの更新が必要な場合があります。
-::::
-
-::::details 3. NCCL と CUDA の検証
-
-:::message
-なんのための作業か: [NCCL と CUDA の検証](https://awslabs.github.io/ai-on-sagemaker-hyperpod/docs/validation-and-testing/nccl-cuda-validation/Troubleshoot%20NCCL%20and%20CUDA)を実行し、GPU 集合通信ライブラリの動作を確認します。
-:::
-
-:::message
-次のステップに進む条件: NCCL テストが全てのメッセージサイズで正常に完了し、期待される帯域幅が達成されること。
-:::
-
-NCCL（NVIDIA Collective Communications Library）は、複数 GPU での効率的な集合通信を提供する重要なライブラリです。[NCCL テストスイート](https://github.com/NVIDIA/nccl-tests)を使用して、All-Reduce、All-Gather、Reduce-Scatter の各操作を検証します。
-
-```bash
-cd /fsx
-git clone https://github.com/NVIDIA/nccl-tests.git
-cd nccl-tests
-make
-```
-
-2 つの GPU ノード間で All-Reduce テストを実行し、通信性能を測定します。
-
-```bash
-srun --nodes=2 --gpus-per-node=1 --ntasks-per-node=1 \
-  ./build/all_reduce_perf -b 8 -e 2G -f 2
-```
-
-テスト結果では、メッセージサイズごとの帯域幅（GB/s）とレイテンシ（μs）が表示されます。大容量メッセージでの帯域幅は、EFA の理論値に近い値が得られることを確認します。小容量メッセージでは低レイテンシが重要であり、分散学習の勾配同期効率に直接影響します。
-
-CUDA の基本動作確認では、GPU 間メモリコピーの性能とエラー検出機能を確認します。`nvidia-smi` を使用して GPU の状態とエラーカウンターを監視し、ハードウェア障害の兆候がないことを確認します。NCCL テストで通信エラーが発生する場合は、GPU ドライバーの更新、CUDA バージョンの確認、またはハードウェア問題の調査が必要です。
-::::
-
-::::details 4. 検証結果の分析とトラブルシューティング
-
-:::message
-なんのための作業か: 各検証テストの結果を総合的に分析し、潜在的な問題を特定してトラブルシューティング手順を実行します。
-:::
-
-:::message
-次のステップに進む条件: 全ての検証テストが基準値をクリアし、問題があった場合は適切に解決されていること。
-:::
-
-各検証テストの結果を統合的に分析し、クラスター全体の健全性を評価します。PyTorch 環境検証の結果、EFA ネットワーク性能、NCCL 通信効率を相互に関連付けることで、分散学習性能の予測が可能になります。
-
-性能基準値との比較では、同世代のインスタンスタイプでの期待値と実測値を比較します。例えば ml.g5.xlarge では、NCCL All-Reduce の帯域幅が 10GB/s 程度、EFA のレイテンシが 10μs 以下であることが望ましい性能指標となります。これらの値を大幅に下回る場合は、設定の最適化やハードウェア交換を検討します。
-
-よくある問題とその解決方法として、NCCL の初期化エラーは環境変数 `NCCL_DEBUG=INFO` を設定して詳細ログを確認し、ネットワーク設定やファイアウォール問題を特定します。EFA の性能低下は、SR-IOV の有効化確認やプレースメントグループの設定確認が有効です。CUDA out of memory エラーは、GPU メモリの断片化や他のプロセスによるメモリ使用を調査します。
-
-検証結果はスプレッドシートやデータベースに記録し、クラスターの性能トレンドを長期的に追跡します。定期的な検証実行により、ハードウェアの経年劣化や設定変更の影響を早期に発見できます。
-::::
-
-## Resiliency テストの実行
-
-:::message
-1. Auto-Resume 機能付きジョブの準備
-2. 意図的な障害注入の実行
-3. Node Recovery プロセスの監視
-4. 復旧時間と影響範囲の測定
-5. ログ分析と根本原因の特定
-:::
-
-::::details 1. Auto-Resume 機能付きジョブの準備
-
-:::message
-なんのための作業か: [Auto-Resume 機能のテスト](https://awslabs.github.io/ai-on-sagemaker-hyperpod/docs/validation-and-testing/resiliency/slurm-resiliency)のため、チェックポイント機能を含む学習ジョブを準備し、障害注入実験の基盤を構築します。
-:::
-
-:::message
-次のステップに進む条件: Auto-Resume フラグ付きのジョブが正常に投入され、定期的なチェックポイント保存が動作していること。
-:::
-
-Resiliency テスト用の学習スクリプトを作成します。このスクリプトは、定期的なチェックポイント保存と障害からの自動復旧機能を含む設計となっています。
-
-```python
-# /fsx/resiliency_test_job.py
-import torch
-import torch.distributed as dist
-import time
-import os
-import argparse
-from datetime import datetime
-
-def setup_distributed():
-    """分散環境の初期化"""
-    dist.init_process_group(backend='nccl')
-    local_rank = int(os.environ['LOCAL_RANK'])
-    torch.cuda.set_device(local_rank)
-    return local_rank
-
-def save_checkpoint(epoch, model, optimizer, loss, checkpoint_path):
-    """チェックポイント保存"""
-    if dist.get_rank() == 0:
-        checkpoint = {
-            'epoch': epoch,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'loss': loss,
-            'timestamp': datetime.now().isoformat()
-        }
-        torch.save(checkpoint, checkpoint_path)
-        print(f"Checkpoint saved at epoch {epoch}")
-
-def load_checkpoint(model, optimizer, checkpoint_path):
-    """チェックポイント読み込み"""
-    if os.path.exists(checkpoint_path):
-        checkpoint = torch.load(checkpoint_path)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        start_epoch = checkpoint['epoch'] + 1
-        print(f"Resumed from epoch {start_epoch}")
-        return start_epoch
-    return 0
-```
-
-学習ジョブを `--auto-resume=1` フラグ付きで投入し、HyperPod の自動復旧機能を有効にします。
-
-```bash
-cat > resiliency_test.sbatch << 'EOF'
-#!/bin/bash
-#SBATCH --job-name=resiliency-test
-#SBATCH --nodes=2
-#SBATCH --gpus-per-node=1
-#SBATCH --time=02:00:00
-#SBATCH --output=resiliency_test_%j.out
-#SBATCH --error=resiliency_test_%j.err
-
-cd /fsx
-srun --auto-resume=1 python resiliency_test_job.py \
-  --epochs=1000 --checkpoint-interval=10
-EOF
-
-sbatch resiliency_test.sbatch
-```
-
-ジョブが正常に開始され、定期的なチェックポイント保存が実行されることを確認します。`tail -f` コマンドでログを監視し、チェックポイント保存メッセージが定期的に出力されることを確認します。
-::::
-
-::::details 2. 意図的な障害注入の実行
-
-:::message
-なんのための作業か: 制御された環境で意図的に障害を発生させ、HyperPod の自動復旧メカニズムの動作を観察します。
-:::
-
-:::message
-次のステップに進む条件: 障害が正常に注入され、Health Monitoring Agent が問題を検出してノードがドレイン状態に移行すること。
-:::
-
-実行中の学習ジョブに対して意図的な障害を注入します。最も安全で制御可能な方法は、特定のノードで CUDA プロセスを異常終了させることです。
-
-まず現在実行中のジョブとその使用ノードを確認します。
-
-```bash
-squeue -o "%.10i %.20j %.10u %.2t %.10M %.6D %R"
-scontrol show job <job_id>
-```
-
-対象ノードに SSH 接続し、GPU プロセスを強制終了します。これにより CUDA context エラーが発生し、NCCL 通信の失敗を引き起こします。
-
-```bash
-# 対象ノードで実行
-sudo pkill -9 python
-# または GPU リセットによる障害シミュレーション
-sudo nvidia-smi -r
-```
-
-障害注入直後から、複数のターミナル窓で状況を監視します。第一ターミナルでは Slurm ノードの状態変化を監視します。
-
-```bash
-watch -n 5 'sinfo -N -o "%.15N %.10t %.4c %.8z %.6m %.8d %.6w %.8f %20E"'
-```
-
-第二ターミナルでは Health Monitoring Agent のログを確認します。
-
-```bash
-# HMA ログの確認
-sudo journalctl -u health-monitoring-agent -f
-```
-
-第三ターミナルでは該当ジョブの状況を追跡します。
-
-```bash
-watch -n 10 'scontrol show job <job_id>'
-```
-
-正常な動作では、数分以内にノードが DRAINING 状態に移行し、最終的に DOWN 状態になります。その後、新しいインスタンスへの自動交換プロセスが開始されます。
-::::
-
-::::details 3. Node Recovery プロセスの監視
-
-:::message
-なんのための作業か: 障害ノードの自動交換プロセスを詳細に監視し、Recovery の各段階における時間と動作を記録します。
-:::
-
-:::message
-次のステップに進む条件: 問題のあるノードが新しいインスタンスに交換され、クラスターが正常状態に復帰すること。
-:::
-
-Node Recovery プロセスは複数の段階で構成されます。最初の段階では、HMA が障害を検出してノードをドレイン状態にマークします。この段階では実行中のジョブが継続実行され、新規ジョブの配置のみが停止されます。
-
-第二段階では、既存ジョブの正常終了を待機します。Auto-Resume 機能が有効なジョブは、この段階でチェックポイントを保存して終了します。強制終了されたジョブについても、最後に保存されたチェックポイントから復旧可能な状態が維持されます。
-
-第三段階では、実際のノード交換が実行されます。AWS コンソールの EC2 ダッシュボードで、問題のあるインスタンスの Terminate と新しいインスタンスの Launch を確認できます。
-
-```bash
-# AWS CLI での確認
-aws ec2 describe-instances --filters "Name=tag:sagemaker:cluster-name,Values=<cluster-name>" \
-  --query 'Reservations[].Instances[].[InstanceId,State.Name,LaunchTime]' \
-  --output table
-```
-
-第四段階では、新しいノードがクラスターに参加し、健全性検証が実行されます。新しいノードは自動的に Slurm に登録され、必要なソフトウェアスタックがインストールされます。
-
-```bash
-# 新ノードの登録確認
-scontrol show node <new-node-name>
-sinfo -R  # ノードの利用不可理由を確認
-```
-
-各段階の所要時間を記録することで、Recovery プロセスの効率性を評価できます。通常、完全な Recovery には 10-20 分程度を要しますが、インスタンスタイプや地域によって変動します。
-::::
-
-::::details 4. 復旧時間と影響範囲の測定
-
-:::message
-なんのための作業か: 障害発生から完全復旧までの時間を正確に測定し、ビジネスへの影響を定量化します。
-:::
-
-:::message
-次のステップに進む条件: 障害検出時間、ノード交換時間、ジョブ再開時間が正確に記録され、影響を受けたジョブ数が特定されること。
-:::
-
-復旧時間の測定では、複数の時間指標を追跡します。障害検出時間は、実際の障害発生から HMA がノードをドレイン状態にするまでの時間です。通常 2-5 分程度ですが、障害の種類によって変動します。
-
-ノード交換時間は、ドレイン状態から新しいインスタンスがクラスターに参加するまでの時間です。この時間は AWS のインスタンス起動時間、ソフトウェアインストール時間、ネットワーク設定時間の合計となります。
-
-```bash
-# 復旧時間の記録例
-echo "障害注入時刻: $(date)" > /fsx/resiliency_log.txt
-# HMA ログから検出時刻を抽出
-grep "Node marked for drain" /var/log/health-monitoring-agent.log >> /fsx/resiliency_log.txt
-# 新ノード参加時刻を記録
-grep "Node ready" /var/log/slurm/slurmctld.log >> /fsx/resiliency_log.txt
-```
-
-影響範囲の測定では、障害発生時に実行中だったジョブ数、待機中のジョブ数、および各ジョブの復旧状況を追跡します。Auto-Resume 機能により自動復旧したジョブと、手動再投入が必要だったジョブを区別して記録します。
-
-```bash
-# 影響を受けたジョブの特定
-sacct -S now-1hour -E now -o JobID,JobName,State,ExitCode,NodeList
-```
-
-復旧後の性能影響も測定します。新しいノードでの GPU 性能、ネットワーク通信性能が交換前と同等であることを確認し、性能劣化がないことを検証します。これらの測定結果は、SLA（Service Level Agreement）の評価や障害対応プロセスの改善に活用されます。
-::::
-
-::::details 5. ログ分析と根本原因の特定
-
-:::message
-なんのための作業か: 収集したログデータを分析し、障害の根本原因、復旧プロセスの効率性、改善点を特定します。
-:::
-
-:::message
-次のステップに進む条件: HMA ログ、Slurm ログ、アプリケーションログが統合分析され、障害パターンと復旧効率が文書化されること。
-:::
-
-統合ログ分析では、前章で説明した多層的テレメトリの概念を実践します。HMA ログからは障害検出の詳細情報、検出に要した時間、検出精度を分析します。
-
-```bash
-# HMA ログの時系列分析
-grep -E "(gpu|temperature|memory|error)" /var/log/health-monitoring-agent.log | \
-  awk '{print $1" "$2" "$0}' | sort > /fsx/hma_timeline.log
-```
-
-Slurm ログからはジョブの状態変化、スケジューリング動作、ノード管理の詳細を抽出します。特に Auto-Resume の動作ログは、自動復旧機能の効率性評価に重要です。
-
-```bash
-# Slurm ログの分析
-grep -E "(auto.resume|checkpoint|job.*failed)" /var/log/slurm/slurmctld.log | \
-  tail -n 100 > /fsx/slurm_resiliency.log
-```
-
-アプリケーションログからは、実際の学習プロセスへの影響、チェックポイント保存の成功率、復旧後の学習継続状況を確認します。
-
-根本原因の特定では、障害の種類（ハードウェア障害、ソフトウェア障害、ネットワーク問題）を分類し、類似パターンの検索を行います。これにより、再発防止策や予防的メンテナンスの計画を策定できます。
-
-分析結果はダッシュボードにまとめ、障害頻度、平均復旧時間、影響規模のトレンドを可視化します。これらの指標は、クラスター運用の KPI（Key Performance Indicator）として継続的に監視されます。
-::::
-
-## 結果の分析と可視化
-
-:::message
-1. Grafana ダッシュボードでの監視結果確認
-2. 障害発生から復旧までの時系列分析
-3. 性能影響の定量化
-4. レポート作成と改善提案
-:::
-
-::::details 1. Grafana ダッシュボードでの監視結果確認
-
-:::message
-なんのための作業か: 構築した監視システムを使用して、障害発生から復旧までのプロセスをリアルタイムデータで確認し、可視化システムの有効性を検証します。
-:::
-
-:::message
-次のステップに進む条件: 障害イベント、復旧プロセス、性能回復がダッシュボード上で明確に確認できること。
-:::
-
-Grafana ダッシュボードで resiliency テスト期間中のメトリクスを確認します。GPU Health ダッシュボードでは、障害注入の瞬間に該当 GPU のメトリクス送信が停止し、その後新しいノードからのメトリクスが開始される様子を観察できます。
-
-時間範囲を障害発生前後 1 時間に設定し、各メトリクスの変化パターンを分析します。ノード数の変化グラフでは、障害ノードの離脱と新ノードの参加が明確に表示されます。GPU 使用率グラフでは、障害による学習停止と復旧後の再開が確認できます。
-
-```promql
-# Prometheus クエリ例：ノード数の変化
-count(up{job="node-exporter"})
-
-# GPU 温度の異常検出
-gpu_temperature > 85
-
-# ジョブ待機時間の監視  
-slurm_queue_jobs{state="pending"}
-```
-
-Network Performance ダッシュボードでは、障害前後でのクラスター内通信パターンの変化を確認します。障害発生時には通信エラー率が一時的に上昇し、復旧後に正常レベルに戻る様子が観測されます。
-
-ダッシュボードのアノテーション機能を使用して、障害注入、検出、復旧の各イベントにマーカーを追加します。これにより、メトリクスの変化とイベントの関連性を視覚的に理解できます。
-::::
-
-::::details 2. 障害発生から復旧までの時系列分析
-
-:::message
-なんのための作業か: 収集したデータを時系列で整理し、復旧プロセスの各段階における効率性と改善点を特定します。
-:::
-
-:::message
-次のステップに進む条件: 障害検出、ノード交換、ジョブ復旧の各段階の所要時間が分析され、ボトルネックが特定されること。
-:::
-
-時系列分析では、resiliency テストで収集したデータを統合してタイムラインを構築します。障害注入から完全復旧までのプロセスを分単位で分析し、各段階の効率性を評価します。
-
-```bash
-# タイムライン分析用データの準備
-cat > /fsx/timeline_analysis.py << 'EOF'
-import pandas as pd
-from datetime import datetime
-import matplotlib.pyplot as plt
-
-# ログデータから時刻とイベントを抽出
-events = [
-    {'time': '2025-01-15 14:30:00', 'event': 'Failure Injection', 'type': 'manual'},
-    {'time': '2025-01-15 14:32:15', 'event': 'HMA Detection', 'type': 'automatic'},
-    {'time': '2025-01-15 14:33:45', 'event': 'Node Drain', 'type': 'automatic'},
-    {'time': '2025-01-15 14:35:20', 'event': 'Job Termination', 'type': 'automatic'},
-    {'time': '2025-01-15 14:47:30', 'event': 'New Node Ready', 'type': 'automatic'},
-    {'time': '2025-01-15 14:48:15', 'event': 'Job Resume', 'type': 'automatic'}
-]
-
-df = pd.DataFrame(events)
-df['time'] = pd.to_datetime(df['time'])
-df['duration_from_start'] = (df['time'] - df['time'].iloc[0]).dt.total_seconds() / 60
-
-print("Resiliency Timeline Analysis:")
-for _, row in df.iterrows():
-    print(f"{row['time']:%H:%M:%S} (+{row['duration_from_start']:.1f}min): {row['event']}")
-EOF
-
-python /fsx/timeline_analysis.py
-```
-
-実行結果では、障害注入から完全復旧までに要した総時間と、各段階の所要時間が明確に表示されます。この分析により、最も時間を要している段階を特定し、今後の改善対象を明確にできます。
-
-最長の待機時間は通常、新しいインスタンスの起動とソフトウェアスタックのインストール段階に発生します。この段階の短縮には、カスタム AMI の使用やプリインストール済み環境の準備が有効です。また、複数ノードの同時交換が必要な場合は、並列処理による時間短縮も検討できます。
-::::
-
-::::details 3. 性能影響の定量化
-
-:::message
-なんのための作業か: Resiliency テストが学習性能に与える影響を定量的に測定し、サービスレベル目標（SLO）との比較評価を実施します。
-:::
-
-:::message
-次のステップに進む条件: 学習スループット、精度への影響、リソース利用効率の変化が数値として記録され、許容範囲内であることが確認されること。
-:::
-
-性能影響の定量化では、複数の指標を組み合わせて包括的な評価を実施します。学習スループットの測定では、障害発生前後での 1 秒あたりの処理サンプル数を比較します。通常、障害からの復旧直後は一時的にスループットが低下しますが、チェックポイントから再開されるため学習進捗への影響は最小限に留まります。
-
-```bash
-# 性能測定スクリプトの作成
-cat > /fsx/performance_analysis.py << 'EOF'
-import json
-import pandas as pd
-from datetime import datetime
-
-# ログからスループットデータを抽出
-def extract_throughput_data(log_file):
-    throughput_data = []
-    with open(log_file, 'r') as f:
-        for line in f:
-            if 'samples/sec' in line:
-                # ログ解析してスループット値を抽出
-                timestamp = line.split()[0] + " " + line.split()[1]
-                throughput = float(line.split('samples/sec')[0].split()[-1])
-                throughput_data.append({
-                    'timestamp': timestamp, 
-                    'throughput': throughput
-                })
-    return throughput_data
-
-# 障害前後の性能比較
-baseline_throughput = 1250.0  # samples/sec
-post_recovery_throughput = 1180.0  # samples/sec
-
-performance_impact = ((baseline_throughput - post_recovery_throughput) / baseline_throughput) * 100
-print(f"Performance Impact: {performance_impact:.2f}%")
-
-# 復旧時間の計算
-failure_time = datetime.strptime('14:30:00', '%H:%M:%S')
-recovery_time = datetime.strptime('14:48:15', '%H:%M:%S')
-downtime_minutes = (recovery_time - failure_time).total_seconds() / 60
-print(f"Total Downtime: {downtime_minutes:.1f} minutes")
-
-# SLO 達成状況の評価
-slo_availability = 99.9  # 99.9% availability target
-monthly_minutes = 30 * 24 * 60  # 43,200 minutes per month
-allowed_downtime = monthly_minutes * (100 - slo_availability) / 100  # 43.2 minutes
-print(f"SLO Compliance: {'PASS' if downtime_minutes < allowed_downtime else 'FAIL'}")
-EOF
-
-python /fsx/performance_analysis.py
-```
-
-リソース利用効率の分析では、GPU 使用率、メモリ効率、ネットワーク使用量の変化を追跡します。適切に設計されたチェックポイント機能により、復旧後の学習再開は高効率で実行され、リソースの無駄遣いは最小限に抑えられます。
-
-学習精度への影響評価では、障害前後での損失関数の値、検証精度、収束速度を比較します。チェックポイントベースの復旧では、学習状態が正確に復元されるため、精度への悪影響はほとんど発生しません。ただし、チェックポイント間隔が長い場合は、一部の学習進捗が失われる可能性があります。
-
-これらの測定結果を月次レポートとしてまとめ、クラスター運用の KPI として継続的に監視します。性能影響が許容範囲を超える場合は、チェックポイント戦略の見直しや、より高性能なインスタンスタイプへの移行を検討します。
-::::
-
-::::details 4. レポート作成と改善提案
-
-:::message
-なんのための作業か: Resiliency と Observability の検証結果を包括的なレポートとしてまとめ、運用改善のための具体的な提案を策定します。
-:::
-
-:::message
-次のステップに進む条件: 検証結果、問題点、改善提案が文書化され、ステークホルダーへの報告準備が完了すること。
-:::
-
-包括的なレポート作成では、実施した全てのテストと検証の結果を統合し、運用チームと研究チームの両方にとって有用な情報を提供します。Executive Summary では、Resiliency 機能の有効性、Observability システムの価値、検出された問題と解決策を簡潔にまとめます。
-
-```markdown
-# HyperPod Slurm Resiliency & Observability 検証レポート
-
-## Executive Summary
-- **テスト期間**: 2025 年 1 月 15 日 - 1 月 16 日
-- **対象クラスター**: cpu-slurm-cluster (4 ノード, GPU 2 台追加)
-- **実施テスト**: Environment Validation, Intentional Failure Injection, Auto-Resume Verification
-- **主要結果**: 
-  - 障害検出時間: 2.3 分（目標 5 分以内）
-  - 完全復旧時間: 18.2 分（目標 30 分以内）
-  - Auto-Resume 成功率: 100%（2/2 ジョブ）
-  - 性能影響: 5.6%（許容範囲 10% 以内）
-
-## 検証結果詳細
-
-### Environment Validation
-- PyTorch 環境: 全コンポーネント正常動作確認
-- EFA ネットワーク: 帯域幅 95Gbps、レイテンシ 8.2μs達成
-- NCCL 通信: All-Reduce 性能 12.8GB/s達成
-
-### Resiliency Testing  
-- 意図的障害注入: GPU プロセス強制終了による CUDA エラー
-- HMA 検出: 2.3 分で障害ノード特定とドレイン開始
-- ノード交換: 15.9 分で新インスタンス参加完了
-- ジョブ復旧: チェックポイントから正常再開確認
-
-### Observability Effectiveness
-- Grafana ダッシュボード: リアルタイム監視で障害可視化成功
-- アラート通知: GPU 温度異常の事前検出（テスト時 87°C で発火）
-- メトリクス収集: 99.7% の可用性で継続データ取得
-```
-
-技術的改善提案では、今回の検証で特定された課題と解決策を具体的に提示します。チェックポイント頻度の最適化、監視閾値の調整、アラート通知先の拡充、自動復旧プロセスの高速化などを含みます。
-
-運用プロセスの改善提案では、定期的な Resiliency テストの実施計画、障害対応マニュアルの更新、チーム間の連携強化策を提案します。また、類似環境での best practice の共有や、業界標準との比較評価も含めます。
-
-コスト効果分析では、自動復旧による人的コスト削減効果、ダウンタイム短縮による機会損失回避効果を定量化します。Observability システムの構築・運用コストと、それによって得られる価値を比較し、ROI（投資収益率）を算出します。
-
-今後の展開計画では、より大規模なクラスターでの検証、異なる障害パターンでのテスト、機械学習ワークロード固有の resiliency 要件への対応を提案します。これらの提案は、継続的な改善サイクルの基盤となります。
-::::
-
-# まとめ
-
-本章では、Amazon SageMaker HyperPod の Slurm 環境における resiliency 機能と observability システムの実践的な検証を実施しました。理論的な説明から始まり、実際のハンズオンを通じて、大規模学習環境における障害対応と監視の重要性を確認できました。
-
-**Resiliency 機能の有効性**: Auto-Resume 機能と Health Monitoring Agent の組み合わせにより、ノード障害からの自動復旧が確実に動作することを確認しました。障害検出から完全復旧まで平均 18 分という時間は、前章で紹介した Meta Llama 3 の事例と比較しても実用的な水準です。チェックポイントベースの学習再開により、障害による学習進捗の損失を最小限に抑制できています。
-
-**Observability の価値**: Amazon Managed Prometheus と Grafana を用いた統合監視システムにより、障害の予兆検出から復旧プロセスの可視化まで、包括的な observability が実現されました。特に GPU 温度監視による予防的アラートは、深刻な障害を未然に防ぐ有効な手段として機能します。多層的なメトリクス収集により、クラスター、ノード、アプリケーションの各レベルでの問題を迅速に特定できます。
-
-**Environment Validation の重要性**: PyTorch、EFA、NCCL の各コンポーネントを系統的に検証することで、分散学習環境の健全性を客観的に評価できました。これらの検証は、大規模学習を開始する前の必須手順として位置づけられます。定期的な validation 実行により、ハードウェアの経年劣化や設定変更の影響を早期発見できます。
-
-**実践的な運用知識の習得**: 意図的な障害注入から復旧プロセスの詳細監視まで、実際の運用で遭遇する状況を模擬体験することで、理論と実践のギャップを埋めることができました。SageMaker Studio との統合により、従来のコマンドライン操作に加えて、GUI ベースでの直感的なクラスター管理も実現されます。
-
-今回の検証により、HyperPod Slurm 環境が提供する resiliency 機能は、大規模分散学習の実用的な要求を満たす水準にあることが確認されました。適切な observability システムとの組み合わせにより、研究者は学習アルゴリズムの開発に集中し、インフラストラクチャの障害対応は自動化されたシステムに委任できます。
-
-継続的な改善として、より大規模なクラスターでの検証、異なる障害パターンでのテスト、機械学習ワークロード固有の要件への最適化を進めることで、さらに堅牢で効率的な学習環境を構築できるでしょう。
+Amazon Managed Prometheus と Grafana を用いた統合監視システムにより、障害の予兆検出から復旧プロセスの可視化まで、包括的な observability が実現されます。特に GPU 温度監視による予防的アラートは、深刻な障害を未然に防ぐ有効な手段として機能します。多層的なメトリクス収集により、クラスター、ノード、アプリケーションの各レベルでの問題を迅速に特定できます。次回は続きとして今回導入した observability 機能を活用していきましょう。
