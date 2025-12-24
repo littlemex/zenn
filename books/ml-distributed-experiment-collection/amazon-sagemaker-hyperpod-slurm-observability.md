@@ -3,7 +3,7 @@ title: "Blueprints by Slurm: レジリエンシーと可視化"
 emoji: "🔧"
 type: "tech"
 topics: ["aws", "sagemaker", "hyperpod", "slurm", "resiliency", "observability"]
-free: true
+free: false
 ---
 
 ::::details 前提
@@ -444,8 +444,7 @@ Studio と HyperPod の統合により、**開発環境と実行環境のシー�
 :::message
 - [ ] 1. Studio Domain の作成と設定
 - [ ] 2. HyperPod クラスターとの接続
-- [ ] 3. JupyterLab 環境での操作確認
-- [ ] 4. FSx for Lustre との統合確認
+- [ ] 3. FSx for Lustre との統合確認
 :::
 
 ::::details 1. Studio Domain の作成
@@ -696,22 +695,60 @@ ls -la "$FSX_MOUNT"
 
 ## Slurm コマンドの動作確認
 
-ライフサイクル設定により、Slurm クライアントが自動インストールされます：
+:::message alert
+**重要**: Studio Code Editor 内では MUNGE 認証の制約により、Slurm コマンドを直接実行できません。Login ノード経由でのアクセスが必要です。
+:::
+
+### SSM Session Manager Plugin のインストール
 
 ```bash
-# Studio Code Editor 内ターミナルで実行
-sinfo
-squeue
-srun hostname
+# Studio Code Editor 内で SSM Session Manager Plugin をインストール
+curl "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" -o "session-manager-plugin.deb"
+sudo dpkg -i session-manager-plugin.deb
 
-# 簡単なジョブ投入テスト（FSx マウントポイントを動的に取得）
+# インストール確認
+session-manager-plugin --version
+```
+
+### 方法1: Easy SSH スクリプト（推奨）
+
+```bash
+# GitHub から easy-ssh.sh を取得
+curl -O https://raw.githubusercontent.com/aws-samples/awsome-distributed-training/main/1.architectures/5.sagemaker-hyperpod/easy-ssh.sh
+chmod +x easy-ssh.sh
+
+# SSH Key 生成（未作成の場合）
+ssh-keygen -t rsa -b 4096 -f "$HOME/.ssh/id_rsa" -N ""
+
+# Login ノードに接続設定（重要: controller ではなく login）
+./easy-ssh.sh -c login cpu-slurm-cluster
+```
+
+### 方法2: 手動接続設定
+
+```bash
+# Login ノードの Instance ID 取得
+LOGIN_INSTANCE_ID=$(aws sagemaker list-cluster-nodes --cluster-name cpu-slurm-cluster --query 'ClusterNodeSummaries[?InstanceGroupName==`login`].InstanceId' --output text)
+echo "Login Instance ID: $LOGIN_INSTANCE_ID"
+
+# SSH 設定追加
+echo "Host hyperpod-login
+    User ubuntu
+    ProxyCommand sh -c \"aws ssm start-session --target sagemaker-cluster:7isg1upszym4_login-$LOGIN_INSTANCE_ID --document-name AWS-StartSSHSession --parameters 'portNumber=%p'\"" >> ~/.ssh/config
+
+# SSH 経由での Slurm 操作
+ssh hyperpod-login squeue
+ssh hyperpod-login sinfo
+ssh hyperpod-login "srun hostname"
+
+# 簡単なジョブ投入テスト
 FSX_MOUNT=$(df -h | grep fsx_lustre | awk '{print $NF}')
 echo '#!/bin/bash
 echo "Hello from HyperPod: $(hostname)"
 date' > "$FSX_MOUNT/test_job.sh"
 
 chmod +x "$FSX_MOUNT/test_job.sh"
-sbatch --partition=dev "$FSX_MOUNT/test_job.sh"
+ssh hyperpod-login "sbatch --partition=dev /shared/test_job.sh"
 ```
 
 ## HyperPod クラスターとの統合確認
@@ -766,41 +803,7 @@ cat "$FSX_MOUNT/studio-workspace/test.txt"
 これらのテストにより、開発環境（Studio）と実行環境（HyperPod）の完全な統合が確認されます。
 ::::
 
-::::details 2. HyperPod クラスターとの接続
-
-:::message
-なんのための作業か: Studio Domain と HyperPod クラスターを接続し、Studio インターフェースからクラスターの監視と操作を可能にします。
-:::
-
-:::message
-次のステップに進む条件: Studio インターフェースから HyperPod クラスターの詳細が表示され、ノード一覧とジョブ情報が確認できること。
-:::
-
-Studio Domain が InService になったら、User Profile を開いて JupyterLab アプリケーションを起動します。JupyterLab の左側パネルに「HyperPod」タブが表示されていることを確認します。このタブから既存の HyperPod クラスターへの接続を設定できます。
-
-クラスター接続の設定では、前章で取得したクラスター ARN を使用します。`hyperpod-cluster.env` ファイルから `HYPERPOD_CLUSTER_ARN` の値をコピーして、Studio の接続設定に貼り付けます。接続が成功すると、Studio インターフェース内でクラスターのノード一覧、実行中のジョブ、リソース使用状況をリアルタイムで確認できるようになります。
-
-HyperPod タブからは Slurm ジョブの投入も可能です。ターミナルエミュレーターが統合されており、`srun` や `sbatch` コマンドを Studio 内で直接実行できます。このインターフェースにより、従来の SSH 接続に加えて、より直感的なクラスター管理が実現されます。
-::::
-
-::::details 3. JupyterLab 環境での操作確認
-
-:::message
-なんのための作業か: Studio の JupyterLab 環境からクラスターに対する基本的な操作を確認し、ノートブック形式でのクラスター管理の利便性を体験します。
-:::
-
-:::message
-次のステップに進む条件: JupyterLab からクラスターコマンドが実行でき、結果が適切に表示されること。
-:::
-
-JupyterLab 環境では、統合ターミナルを使用してクラスターコマンドを直接実行できます。新しいターミナルタブを開き、SSH 設定が自動的に適用されていることを確認します。Studio の統合により、前章で設定した `~/.ssh/config` が引き継がれ、クラスターへの接続が簡素化されます。
-
-ターミナル内で `ssh <cluster-name>` コマンドを実行し、クラスターに接続します。接続後、`sinfo -N -l` でノードの詳細情報を表示し、GPU ノードが正しく認識されていることを確認します。Jupyter ノートブックから魔法コマンド `!srun hostname` を使用してクラスタージョブを実行することも可能です。
-
-JupyterLab の利点は、実行結果をノートブック形式で保存し、後から参照できることです。クラスターの状態変化や実験結果を時系列で記録することで、障害解析や性能最適化の際の重要な資料として活用できます。また、Python スクリプトから `subprocess` モジュールを使用して Slurm コマンドを呼び出し、結果を DataFrame として処理することも可能です。
-::::
-
-::::details 4. FSx for Lustre との統合確認
+::::details 3. FSx for Lustre との統合確認
 
 :::message
 なんのための作業か: Studio 環境から FSx for Lustre ファイルシステムへのアクセスを確認し、大容量データセットや学習結果の効率的な管理方法を習得します。
