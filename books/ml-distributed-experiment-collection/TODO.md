@@ -91,6 +91,7 @@ Infos
 - vLLM Router
 - nemotron3nano + Evaluator が公開されている（重要）
 - LLM Omni
+- DeepSeek-OCR を FT する
 
 
 https://zenn.dev/tosshi/scraps/8862058842320e
