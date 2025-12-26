@@ -1,5 +1,5 @@
 ---
-title: "Blueprints by Slurm: レジリエンシーと可視化（前編）"
+title: "Blueprints by Slurm: レジリエンシーと可観測性-前編"
 emoji: "🔧"
 type: "tech"
 topics: ["aws", "sagemaker", "hyperpod", "slurm", "resiliency", "observability"]
@@ -543,7 +543,7 @@ sinfo
 ```
 ::::
 
-::::details 3. FSx for Lustre との統合確認
+::::details 4. FSx for Lustre との統合確認
 
 :::message
 なんのための作業か: Studio 環境から FSx for Lustre ファイルシステムへのアクセスを確認し、大容量データセットや学習結果の効率的な管理方法を習得します。
@@ -583,100 +583,691 @@ touch $FSX_MOUNT/studio-workspace/testfile && ls -la $FSX_MOUNT/studio-workspace
 ## Observability システムの構築
 
 :::message
-1. Amazon Managed Prometheus workspace の作成
-2. Amazon Managed Grafana workspace の作成
-3. メトリクスエクスポーターのインストール
-4. カスタムダッシュボードの設定
-5. アラート設定の構築
+**更新された推奨手順**
+- [ ] 1. Open Source Grafana + Amazon Managed Prometheus 環境のデプロイ
+- [ ] 2. Grafana へのアクセス
+- [ ] 3. Grafana データソースの設定
+- [ ] 4. ダッシュボードのインポート
+- [ ] 3. テストメトリクス投入環境の構築（オプション）
+- [ ] 4. HyperPod クラスターへの Observability コンポーネントインストール
+- [ ] 5. 動作確認とダッシュボード設定
 :::
 
-::::details 1. Amazon Managed Prometheus workspace の作成
+HyperPod Slurm Observability は、Amazon Managed Service for Prometheus と Grafana を組み合わせて実現します。
+
+![](https://awslabs.github.io/ai-on-sagemaker-hyperpod/assets/images/observability_architecture-1f511d1934afb3d2ebf7c89c41a31a17.png)
+
+:::message alert
+**重要**: Amazon Managed Grafana は AWS Organizations の**管理アカウント**でのみ完全に利用できます。メンバーアカウントでは IAM Identity Center の制限により Amazon Managed Grafana ワークスペースの作成ができません。
+:::
+
+ワークショップ用のアカウントなど Organization の管理アカウントが利用できないケースを想定して本章では OSS ベースの Grafana を EC2 にデプロイして利用します。管理アカウントを利用できるケースでは[こちら](https://awslabs.github.io/ai-on-sagemaker-hyperpod/docs/add-ons/Observability/observability-slurm)の手順でフルマネージドの Grafana + Prometheus 構成を実現することも可能です。本番環境ではこちらを利用することを推奨します。
+
+::::details  1. Open Source Grafana + Amazon Managed Prometheus 環境のデプロイ
+
+CloudFormation テンプレートを使用して OSS Grafana と Amazon Managed Prometheus を構築します。
 
 :::message
-なんのための作業か: HyperPod クラスターのメトリクス収集基盤として Amazon Managed Prometheus workspace を作成し、時系列データの効率的な保存と検索を可能にします。
+EC2 インスタンスのセキュリティグループの inbound アクセス制限をかけるために許可する IP アドレスを指定することができます。
 :::
 
-:::message
-次のステップに進む条件: Prometheus workspace が Active 状態になり、エンドポイント URL が利用可能になること。
-:::
+```bash
+# スクリプトと依存ファイルをダウンロード
+curl -sSL https://raw.githubusercontent.com/littlemex/samples/main/ml_distributed_experiment_collection/amazon-sagemaker-hyperpod-slurm-observability/setup_hyperpod_observability_oss.sh -o setup_hyperpod_observability_oss.sh
+curl -sSL https://raw.githubusercontent.com/littlemex/samples/main/ml_distributed_experiment_collection/amazon-sagemaker-hyperpod-slurm-observability/ecr-policy.json -o ecr-policy.json
+curl -sSL https://raw.githubusercontent.com/littlemex/samples/main/ml_distributed_experiment_collection/amazon-sagemaker-hyperpod-slurm-observability/cluster-observability-with-os-grafana.yaml -o cluster-observability-with-os-grafana.yaml
 
-[Amazon Managed Service for Prometheus](https://docs.aws.amazon.com/prometheus/) は、Prometheus のメトリクス収集とクエリ機能をマネージド形式で提供します。AWS コンソールから Amazon Managed Service for Prometheus を選択し、新しい workspace を作成します。
+# 実行権限を付与
+chmod +x setup_hyperpod_observability_oss.sh
 
-Workspace 名として「hyperpod-slurm-metrics」など、目的を明確にした名前を設定します。この workspace では、クラスターから収集される GPU メトリクス、Slurm ジョブ統計、ネットワーク性能データ、システムリソース使用量が時系列データとして保存されます。Prometheus の retention period はデフォルトで 150 日に設定されており、長期間のトレンド分析が可能です。
+# 基本実行（IP アドレス自動検出）
+./setup_hyperpod_observability_oss.sh
 
-Workspace 作成後、IAM ロールを設定してクラスターノードからのメトリクス送信を許可します。AmazonPrometheusRemoteWriteAccess ポリシーを含むロールを作成し、HyperPod クラスターのインスタンスプロファイルに追加します。これにより、各ノードで動作するメトリクスエクスポーターが Prometheus workspace にデータを送信できるようになります。
+# または特定の IP アドレスを指定
+./setup_hyperpod_observability_oss.sh --ip 192.168.1.100
+```
+
+作成の完了を待って Grafana ダッシュボード URL を確認しましょう。
+
+```bash
+# 作成状況の確認
+./setup_hyperpod_observability_oss.sh --check-status
+==============================================
+HyperPod Slurm Open Source Grafana Setup
+==============================================
+....
+🌐 Grafana Access Information:
+   URL: http://XXX:3000
+   Default Login: admin/admin
+   Security: Access restricted to XXX/32
+
+🔗 Direct Browser Access:
+   Copy this URL to your browser: http://XXX:3000
+
+📋 Next Steps:
+   1. Access Grafana and change default password
+   2. Configure Prometheus data source
+   3. Import observability dashboards
+
+===============================================
+```
+
+## 補足: SigV4 認証の設定
+
+テンプレートでは、Grafana の SigV4 認証が事前設定されます。
+
+```bash
+# CloudFormation UserData で設定される環境変数
+export AWS_SDK_LOAD_CONFIG=true
+export GF_AUTH_SIGV4_AUTH_ENABLED=true
+
+# Grafana 設定ファイルでの SigV4 有効化
+[auth.sigv4]
+enabled = true
+verbose_logging = false
+```
 ::::
 
-::::details 2. Amazon Managed Grafana workspace の作成
+::::details 2. Grafana へのアクセス
 
-:::message
-なんのための作業か: Prometheus で収集したメトリクスを可視化するため、Amazon Managed Grafana workspace を作成し、リアルタイム監視ダッシュボードを構築します。
-:::
+![](/images/books/ml-distributed-experiment-collection/grafana-login.png)
 
-:::message
-次のステップに進む条件: Grafana workspace が Active 状態になり、Web UI にアクセスしてダッシュボードを作成できること。
-:::
+- [ ] ブラウザで取得した URL にアクセス
+- [ ] デフォルト認証情報でログイン：`admin / admin`
+- [ ] Grafana ホームダッシュボードが表示されることを確認
 
-[Amazon Managed Grafana](https://docs.aws.amazon.com/grafana/) は、Grafana のダッシュボード機能をマネージド形式で提供します。AWS コンソールから Amazon Managed Grafana を選択し、新しい workspace を作成します。認証方式として AWS IAM Identity Center（旧 AWS SSO）を選択することで、組織内でのアクセス管理を統一できます。
-
-Grafana workspace の作成時に、データソースとして前のステップで作成した Amazon Managed Prometheus workspace を指定します。この連携により、Prometheus に蓄積された時系列データを Grafana ダッシュボードで可視化できます。また、Amazon CloudWatch をデータソースとして追加することで、AWS サービスレベルのメトリクスも同一ダッシュボード内で監視できます。
-
-Workspace が Active になったら、Grafana Web UI にアクセスしてデフォルトダッシュボードを確認します。HyperPod 向けのダッシュボードテンプレートをインポートし、GPU 使用率、メモリ消費量、ネットワークトラフィック、Slurm ジョブ統計を可視化します。これらのダッシュボードは、クラスター運用における意思決定の重要な情報源となります。
+![](/images/books/ml-distributed-experiment-collection/grafana-home.png)
 ::::
 
-::::details 3. メトリクスエクスポーターのインストール
+::::details  3. Grafana データソースの設定
 
-:::message
-なんのための作業か: クラスターの各ノードにメトリクスエクスポーターをインストールし、システムおよびアプリケーションレベルのメトリクスを Prometheus に送信する仕組みを構築します。
+:::message alert
+**重要**: Grafana の通常の Prometheus データソースの SigV4 認証は**非推奨**となりました。Amazon Managed Service for Prometheus 専用プラグインを使用する必要があります。
 :::
 
-:::message
-次のステップに進む条件: 各ノードでエクスポーターが正常に動作し、Prometheus workspace にメトリクスが送信されていること。
-:::
+Grafana と Amazon Managed Prometheus workspace を接続するための Prometheus エンドポイント URL を取得しましょう。
 
-[メトリクスエクスポーターのインストール](https://awslabs.github.io/ai-on-sagemaker-hyperpod/docs/add-ons/Observability/observability-slurm-install-exporters)では、複数のエクスポーターをクラスター全体に配布する必要があります。最初に Node Exporter をインストールして、CPU、メモリ、ディスク、ネットワークの基本的なシステムメトリクスを収集します。
+```bash
+# Prometheus エンドポイント URL を取得（query用URL）
+aws cloudformation describe-stacks \
+  --stack-name HyperpodSlurmOSObservability \
+  --region us-east-1 \
+  --query 'Stacks[0].Outputs[?OutputKey==`PrometheusQueryURL`].OutputValue' \
+  --output text
 
-GPU ノードには NVIDIA DCGM Exporter を追加インストールし、GPU 固有のメトリクスを収集します。DCGM Exporter は GPU の温度、電力消費量、メモリ使用量、利用率をリアルタイムで監視し、障害の予兆検出に重要な役割を果たします。
+# 出力例: https://aps-workspaces.us-east-1.amazonaws.com/workspaces/ws-97d9f0f9-95bb-4779-9908-d42c2cd2a288/
+```
 
-Slurm 固有のメトリクスには Slurm Exporter を使用します。このエクスポーターは、ジョブキューの長さ、パーティション別のノード使用状況、ユーザー別のリソース消費量を追跡します。これらの情報は、クラスター運用の効率性評価と容量計画に活用されます。
+![](/images/books/ml-distributed-experiment-collection/grafana-data-source.png)
 
-各エクスポーターの設定ファイルで、前のステップで作成した Prometheus workspace の remote write エンドポイント URL を指定します。エクスポーター起動後、`curl` コマンドでローカルメトリクスエンドポイントにアクセスし、データが正しく収集されていることを確認します。
+- [ ] 1. **Connections > Data Sources** を選択
+- [ ] 2. **Add data source** をクリック
+
+![](/images/books/ml-distributed-experiment-collection/grafana-add-data-source.png)
+
+- [ ] 3. ⚠️ **Amazon Managed Service for Prometheus** を選択（通常の Prometheus ではない）
+
+![](/images/books/ml-distributed-experiment-collection/grafana-add-data-source-connection.png)
+![](/images/books/ml-distributed-experiment-collection/grafana-add-data-source-auth.png)
+![](/images/books/ml-distributed-experiment-collection/grafana-add-data-source-save.png)
+
+- [ ] 4. **以下の設定を入力**：
+   - [ ] **Prometheus server URL**: 上記で取得した URL
+   - [ ] **Authentication Provider**: `AWS SDK Default` を選択
+   - [ ] **Default Region**: `us-east-1` を入力
+- [ ] 5. **Save & test** でテスト成功を確認
 ::::
 
-::::details 4. カスタムダッシュボードの設定
+::::details 4. ダッシュボードのインポート
 
-:::message
-なんのための作業か: HyperPod Slurm 環境に特化したカスタムダッシュボードを作成し、運用に必要な重要メトリクスを効率的に監視できる環境を整備します。
-:::
+Prometheus データソース設定完了後、以下の公式ダッシュボードテンプレートをインポートします。
 
-:::message
-次のステップに進む条件: GPU Health、Slurm Jobs、Network Performance の各ダッシュボードが作成され、リアルタイムデータが表示されること。
-:::
+![](/images/books/ml-distributed-experiment-collection/grafana-dashboard-new.png)
 
-Grafana Web UI でカスタムダッシュボードを作成し、HyperPod Slurm 環境の特性に合わせたパネル構成を実装します。GPU Health ダッシュボードでは、各 GPU の温度、電力消費量、メモリ使用率をノード別に表示します。しきい値ベースの色分けにより、異常状態を視覚的に識別できるよう設定します。
+- [ ] 1. **Dashboards > New > Import** を選択
 
-Slurm Jobs ダッシュボードでは、実行中ジョブ数、待機中ジョブ数、完了ジョブ数を時系列グラフで表示します。パーティション別、ユーザー別の内訳により、リソース利用状況の詳細分析が可能になります。また、ジョブの平均実行時間と待機時間をヒストグラムで表示し、スケジューリング効率の評価指標とします。
+![](/images/books/ml-distributed-experiment-collection/grafana-dashboard-import.png)
 
-Network Performance ダッシュボードでは、ノード間通信の帯域幅使用量とレイテンシを監視します。特に分散学習で重要な All-Reduce 通信パターンを識別し、ネットワークボトルネックの早期発見を支援します。InfiniBand や EFA のメトリクスを組み合わせることで、高性能通信ネットワークの状態を包括的に把握できます。
+- [ ] 2. 以下の URL を順次インポート
+  - [ ] **Slurm Exporter Dashboard**:
+    https://grafana.com/grafana/dashboards/4323-slurm-dashboard/
+  - [ ] **Node Exporter Dashboard**:
+    https://grafana.com/grafana/dashboards/1860-node-exporter-full/
+  - [ ] **DCGM Exporter Dashboard**（GPU メトリクス）:
+    https://grafana.com/grafana/dashboards/12239-nvidia-dcgm-exporter-dashboard/
+  - [ ] **FSx for Lustre Dashboard**:
+    https://grafana.com/grafana/dashboards/20906-fsx/
 
-各ダッシュボードには時間範囲選択機能を設定し、過去 1 時間から過去 30 日までの柔軟な期間分析を可能にします。また、ダッシュボードの自動更新間隔を 30 秒に設定し、リアルタイム監視を実現します。
+![](/images/books/ml-distributed-experiment-collection/grafana-dashboard-import-2.png)
+![](/images/books/ml-distributed-experiment-collection/grafana-dashboard-slurm.png)
 ::::
 
-::::details 5. アラート設定の構築
+::::details 5. 
+
 
 :::message
-なんのための作業か: 異常状態の自動検出とアラート通知システムを構築し、障害の早期発見と迅速な対応を可能にします。
+FSx ダッシュボード用には追加で Amazon CloudWatch データソースの設定が必要です。同様の手順で CloudWatch データソースを追加してください。
+:::
+
+**5. メトリクス収集状況の確認**
+
+HyperPod クラスター側で Observability コンポーネントが正常に動作していることを確認します。
+
+```bash
+# HyperPod クラスターに SSH でアクセス
+ssh cpu-slurm-cluster
+
+# Slurm Exporter サービス状況確認
+systemctl status slurm_exporter.service --no-pager -l
+
+# Docker コンテナ状況確認  
+docker ps
+
+# ワーカーノードの状況確認
+srun -N 2 docker ps
+```
+
+**正常な出力例**：
+```
+● slurm_exporter.service - Prometheus SLURM Exporter
+   Loaded: loaded (/etc/systemd/system/slurm_exporter.service; enabled; vendor preset: enabled)
+   Active: active (running) since Thu 2025-09-11 04:27:30 UTC; 1 day 20h ago
+Main PID: 2408455 (slurm_exporter)
+
+CONTAINER ID   IMAGE                                                     COMMAND           CREATED       STATUS        NAMES
+da773247a262   602401143452.dkr.ecr.us-west-2.amazonaws.com/hyperpod/otel_collector:v1754424030352   "/app/otelcollector"   6 hours ago   Up 6 hours    otel-collector
+8c18b89cc1a3   602401143452.dkr.ecr.us-west-2.amazonaws.com/hyperpod/node_exporter:v1.9.1            "/bin/node_exporter"   45 hours ago  Up 45 hours   node-exporter
+48396ed3e3ef   602401143452.dkr.ecr.us-west-2.amazonaws.com/hyperpod/dcgm_exporter:4.1.1-4.0.4-ubi9   "/usr/local/dcgm/dcg"  45 hours ago  Up 45 hours   dcgm-exporter
+```
+
+**セキュリティ機能の詳細**:
+- **動的 IP 制限**: 現在のアクセス元 IP アドレスを自動取得し、Grafana インスタンスへのアクセスを特定 IP/32 に制限
+- **CloudFormation Parameter 方式**: IP アドレスを Parameter として安全に渡し、テンプレート改変の必要性を排除
+- **IP アドレスバリデーション**: 手動指定された IP アドレスの形式検証
+- **SigV4 事前設定**: Grafana の SigV4 認証を CloudFormation で自動有効化
+
+**技術改良点**:
+- **ローカルテンプレート**: 外部依存を排除し、改良されたテンプレートをローカルに配置
+- **高性能インスタンス**: m5.xlarge への変更で Grafana の応答性能を向上
+- **暗号化ストレージ**: 50GB GP3 暗号化 EBS による安全なデータ保存
+- **堅牢なデプロイ**: CloudFormation シグナルによるデプロイ完了確認
+
+
+### Amazon Managed Grafana 自動化スクリプト（管理アカウント用）
+
+AWS Organizations 管理アカウントで利用する場合の完全自動化スクリプトです。
+
+```bash
+# Amazon Managed Grafana 用スクリプトのダウンロード
+curl -sSL https://raw.githubusercontent.com/littlemex/samples/main/ml_distributed_experiment_collection/amazon-sagemaker-hyperpod-slurm-observability/setup_hyperpod_observability.sh -o setup_hyperpod_observability.sh
+chmod +x setup_hyperpod_observability.sh
+
+# 実行
+./setup_hyperpod_observability.sh
+```
+
+**両スクリプトの共通機能**:
+- **冪等性保証**: 安全に複数回実行可能
+- **IAM権限の自動追加**: AmazonPrometheusRemoteWriteAccess とECRアクセスポリシーの追加
+- **CloudFormation 自動デプロイ**: Prometheus workspace と Grafana の自動作成
+- **ライフサイクルスクリプト更新**: S3からの取得、Observability設定の有効化、アップロード
+- **クラスターへのインストール**: 既存クラスターへのObservabilityコンポーネント配布
+
+**残る手動作業**: Grafana へのアクセスとダッシュボード設定が必要です。
+
+## Prometheus API 404エラーのトラブルシューティング
+
+Amazon SageMaker HyperPod の observability 実装において、Prometheus API へのアクセス時に404エラーが発生する場合があります。本セクションでは、この問題の根本原因と解決方法を詳述します。
+
+### 問題の症状
+
+以下のような症状が発生している場合、データソース設定に問題がある可能性があります：
+
+- Grafana で「Please enter a valid URL」エラーが表示
+- Prometheus API クエリが404 Not Foundで失敗
+- メトリクスブラウザーで「No options found」が表示
+- Explore 画面で「No data」が継続
+
+### 根本原因の分析
+
+**AWS 公式ドキュメントの要求事項**
+[Amazon Managed Service for Prometheus で使用する Grafana オープンソースまたは Grafana Enterprise のセットアップ](https://docs.aws.amazon.com/ja_jp/prometheus/latest/userguide/AMP-onboard-query-standalone-grafana.html)では以下が明確に要求されています：
+
+1. **専用プラグイン使用**: 通常の「Prometheus」データソースではなく「Amazon Managed Service for Prometheus」データソースを使用
+2. **URL 形式**: エンドポイントから `/api/v1/query` パスを削除する必要がある
+3. **SigV4 認証**: AWS SDK Default 認証プロバイダーを使用
+
+**既存スクリプトの問題点**
+- データソースの URL 設定が手動であり、設定漏れが発生
+- 正しいデータソースタイプの指定が不明確
+- 404エラー時の自動復旧機能が未実装
+
+### 自動解決ツールの提供
+
+#### 1. Grafana データソース自動設定スクリプト
+
+```bash
+# スクリプトをダウンロード
+curl -sSL https://raw.githubusercontent.com/littlemex/samples/main/ml_distributed_experiment_collection/amazon-sagemaker-hyperpod-slurm-observability/configure_grafana_datasource.sh -o configure_grafana_datasource.sh
+chmod +x configure_grafana_datasource.sh
+
+# 自動設定実行
+./configure_grafana_datasource.sh
+```
+
+このスクリプトは以下を自動実行します：
+- CloudFormation スタックから正しい Prometheus Query URL を取得
+- Grafana API 経由での「Amazon Managed Service for Prometheus」データソース作成
+- AWS SDK Default 認証プロバイダーの設定
+- データソース接続テストの実行
+
+#### 2. テストメトリクス投入環境
+
+実際にクエリ可能なメトリクスが存在しない場合、テスト用のメトリクス投入環境を構築できます：
+
+```bash
+# テストメトリクス環境スクリプトをダウンロード
+curl -sSL https://raw.githubusercontent.com/littlemex/samples/main/ml_distributed_experiment_collection/amazon-sagemaker-hyperpod-slurm-observability/setup_test_metrics.sh -o setup_test_metrics.sh
+chmod +x setup_test_metrics.sh
+
+# テスト環境起動
+./setup_test_metrics.sh start
+
+# 環境状況確認
+./setup_test_metrics.sh status
+
+# 環境停止
+./setup_test_metrics.sh stop
+```
+
+**テスト環境の構成**:
+- **メトリクスサーバー**: http://localhost:8000/metrics（Prometheus形式のサンプルメトリクス配信）
+- **Prometheus**: http://localhost:9090（ローカルPrometheus、AMP remote_write設定済み）
+- **サンプルメトリクス**: CPU、メモリ、ディスク、ネットワーク、HyperPod風メトリクス
+
+#### 3. 利用可能なテストメトリクス
+
+投入されるサンプルメトリクスの一覧：
+
+**システムメトリクス**:
+```promql
+cpu_usage_percent{instance="test-server",cpu="cpu0",job="sample"}
+memory_usage_percent{instance="test-server",job="sample"}
+disk_read_bytes_total{device="nvme0n1",instance="test-server"}
+network_receive_bytes_total{interface="eth0",instance="test-server"}
+```
+
+**HyperPod 風メトリクス**:
+```promql
+slurm_jobs_running{cluster="cpu-slurm-cluster",partition="cpu"}
+slurm_nodes_total{cluster="cpu-slurm-cluster",state="allocated"}
+gpu_utilization_percent{instance="worker-01",gpu_id="0"}
+```
+
+### 解決手順の実行例
+
+```bash
+# Step 1: 既存環境確認
+aws cloudformation describe-stacks --stack-name HyperpodSlurmOSObservability --region us-east-1 --query 'Stacks[0].Outputs'
+
+# Step 2: データソース自動設定
+./configure_grafana_datasource.sh
+
+# Step 3: テストメトリクス投入
+./setup_test_metrics.sh start
+
+# Step 4: Grafana での確認
+# ブラウザで http://YOUR-GRAFANA-IP:3000/explore にアクセス
+# Amazon Managed Service for Prometheus データソースを選択
+# cpu_usage_percent などのメトリクスをクエリ
+```
+
+### 検証結果の例
+
+正常に設定された場合、以下のような結果が得られます：
+
+**ローカル Prometheus での確認**:
+```json
+{
+  "status":"success",
+  "data":{
+    "resultType":"vector",
+    "result":[
+      {
+        "metric":{
+          "__name__":"cpu_usage_percent",
+          "cpu":"cpu0",
+          "instance":"host.docker.internal:8000",
+          "job":"sample-metrics-test"
+        },
+        "value":[1766750694.011,"76.53"]
+      }
+    ]
+  }
+}
+```
+
+**Grafana メトリクスブラウザー**:
+- ✅ `cpu_usage_percent`, `disk_read_bytes_total`, `gpu_utilization_percent` など
+- ✅ メトリクスのグラフ表示が正常動作
+- ✅ Amazon Managed Service for Prometheus データソース接続成功
+
+### 手動設定（詳細制御が必要な場合）
+
+自動化スクリプトを使用しない場合の手動設定手順です。
+
+Observability アーキテクチャは以下のようになっています。
+
+![](https://awslabs.github.io/ai-on-sagemaker-hyperpod/assets/images/observability_architecture-1f511d1934afb3d2ebf7c89c41a31a17.png)
+
+### 推奨デプロイ方法
+
+今回実証した成功手順に基づく推奨構成です：
+
+**Open Source Grafana + Amazon Managed Prometheus 構成（推奨）**
+- ✅ AWS Organizations メンバーアカウントで完全動作
+- ✅ IAM Identity Center 不要
+- ✅ 完全自動化スクリプトによる構築
+- ✅ 404エラー自動解決機能付き
+
+**Amazon Managed Grafana + Amazon Managed Prometheus 構成（管理アカウント限定）**
+- AWS Organizations 管理アカウントでのみ利用可能
+- IAM Identity Center が必要
+- フルマネージド環境
+
+::::details 1. Open Source Grafana + Amazon Managed Prometheus 環境のデプロイ
+
+:::message
+なんのための作業か: AWS Organizations メンバーアカウントでも利用可能な Open Source Grafana と Amazon Managed Prometheus の統合環境を自動構築します。
 :::
 
 :::message
-次のステップに進む条件: GPU 温度、ジョブ待機時間、ノード障害に関するアラートが設定され、テスト通知が正常に送信されること。
+次のステップに進む条件: CloudFormation スタックが CREATE_COMPLETE 状態になり、Grafana インスタンスと Amazon Managed Prometheus workspace が利用可能になること。
 :::
 
-Grafana のアラート機能を使用して、クリティカルな状態の自動検出システムを構築します。GPU 温度アラートでは、85°C を超える温度が 5 分間継続した場合にアラートを発火するよう設定します。この閾値は NVIDIA GPU の標準的な動作温度範囲を考慮した設定であり、ハードウェア障害の予兆を早期に検出します。
+**自動化スクリプトによる一括構築**
 
-ジョブ待機時間アラートでは、特定のパーティションでジョブが 30 分以上待機状態にある場合にアラートを送信します。これにより、リソース不足やスケジューリングの問題を迅速に識別できます。また、ノード数の急激な減少を検出するアラートも設定し、複数ノードの同時障害や意図しない削除を監視します。
+```bash
+# Open Source Grafana 用スクリプトのダウンロード
+curl -sSL https://raw.githubusercontent.com/littlemex/samples/main/ml_distributed_experiment_collection/amazon-sagemaker-hyperpod-slurm-observability/setup_hyperpod_observability_oss.sh -o setup_hyperpod_observability_oss.sh
+chmod +x setup_hyperpod_observability_oss.sh
 
-アラート通知は Amazon SNS を通じて電子メールや Slack チャンネルに送信されます。通知メッセージには問題の詳細情報、推奨される対応手順、関連するダッシュボードへのリンクを含めることで、迅速な問題解決を支援します。アラートの重要度に応じて通知頻度を調整し、重要でないアラートによる通知疲れを防ぎます。
+# 事前検証（推奨）
+./setup_hyperpod_observability_oss.sh --dry-run
+
+# 基本実行（IP アドレス自動検出）
+./setup_hyperpod_observability_oss.sh
+
+# 特定 IP アドレス指定
+./setup_hyperpod_observability_oss.sh --ip 192.168.1.100
+```
+
+**スクリプトが自動実行する内容**:
+- HyperPod クラスター存在確認
+- IAM 権限自動追加（AmazonPrometheusRemoteWriteAccess、ECR アクセス）
+- CloudFormation による Amazon Managed Prometheus workspace 作成
+- Grafana EC2 インスタンス起動（SigV4 認証事前設定済み）
+- IP アドレス制限によるセキュリティ設定
+- ライフサイクルスクリプトの自動更新
+
+**取得される接続情報**:
+```bash
+# CloudFormation スタック状況確認
+aws cloudformation describe-stacks \
+  --stack-name HyperpodSlurmOSObservability \
+  --region us-east-1 \
+  --query 'Stacks[0].Outputs'
+
+# Grafana URL の表示例
+# http://3.81.149.57:3000
+```
+::::
+
+::::details 2. Grafana データソースの自動設定
+
+:::message
+なんのための作業か: Grafana と Amazon Managed Prometheus の接続を自動設定し、404エラーの発生を防止します。
+:::
+
+:::message
+次のステップに進む条件: Grafana で Amazon Managed Service for Prometheus データソースが正常に動作し、接続テストが成功すること。
+:::
+
+**データソース自動設定スクリプト**
+
+```bash
+# 自動設定スクリプトのダウンロード
+curl -sSL https://raw.githubusercontent.com/littlemex/samples/main/ml_distributed_experiment_collection/amazon-sagemaker-hyperpod-slurm-observability/configure_grafana_datasource.sh -o configure_grafana_datasource.sh
+chmod +x configure_grafana_datasource.sh
+
+# 自動設定実行
+./configure_grafana_datasource.sh
+```
+
+**スクリプトが実行する処理**:
+1. CloudFormation から Prometheus Query URL の自動取得
+2. Grafana API 経由での「Amazon Managed Service for Prometheus」データソース作成
+3. AWS SDK Default 認証プロバイダーの設定
+4. データソース接続テストの実行と結果確認
+
+**手動確認方法**:
+```bash
+# Grafana にブラウザでアクセス
+# 1. http://YOUR-GRAFANA-IP:3000 にアクセス
+# 2. admin/admin でログイン
+# 3. Connections > Data sources で設定確認
+# 4. Amazon Managed Service for Prometheus データソースの存在確認
+```
+::::
+
+::::details 3. テストメトリクス投入環境の構築（オプション）
+
+:::message
+なんのための作業か: HyperPod クラスターからの実際のメトリクス投入前に、Grafana でのクエリ動作を確認するためのテスト環境を構築します。
+:::
+
+:::message
+次のステップに進む条件: Grafana でサンプルメトリクスのグラフ表示が成功し、メトリクスブラウザーでメトリクス一覧が表示されること。
+:::
+
+**統合テスト環境の起動**
+
+```bash
+# テストメトリクス環境スクリプトのダウンロード
+curl -sSL https://raw.githubusercontent.com/littlemex/samples/main/ml_distributed_experiment_collection/amazon-sagemaker-hyperpod-slurm-observability/setup_test_metrics.sh -o setup_test_metrics.sh
+chmod +x setup_test_metrics.sh
+
+# テスト環境起動（Docker 使用）
+./setup_test_metrics.sh start
+
+# 環境状況確認
+./setup_test_metrics.sh status
+```
+
+**テスト環境の構成**:
+- **メトリクスサーバー**: http://localhost:8000/metrics
+- **Prometheus**: http://localhost:9090
+- **Grafana**: CloudFormation で作成された URL
+
+**生成されるサンプルメトリクス**:
+```promql
+# システムメトリクス
+cpu_usage_percent{instance="test-server",cpu="cpu0",job="sample"}
+memory_usage_percent{instance="test-server",job="sample"}
+disk_read_bytes_total{device="nvme0n1",instance="test-server"}
+network_receive_bytes_total{interface="eth0",instance="test-server"}
+
+# HyperPod 風メトリクス
+slurm_jobs_running{cluster="cpu-slurm-cluster",partition="cpu"}
+slurm_nodes_total{cluster="cpu-slurm-cluster",state="allocated"}
+gpu_utilization_percent{instance="worker-01",gpu_id="0"}
+```
+
+**動作確認方法**:
+```bash
+# メトリクス生成状況確認
+curl http://localhost:8000/metrics | head -10
+
+# ローカル Prometheus でのクエリテスト
+curl -s "http://localhost:9090/api/v1/query?query=cpu_usage_percent" | jq .
+
+# テスト環境停止
+./setup_test_metrics.sh stop
+```
+::::
+
+::::details 4. HyperPod クラスターへの Observability コンポーネントインストール
+
+:::message
+なんのための作業か: HyperPod クラスターの全ノードにメトリクス収集コンポーネントをインストールし、Amazon Managed Prometheus への送信を開始します。
+:::
+
+:::message
+次のステップに進む条件: 全ノードでメトリクスエクスポーター（Node Exporter、DCGM Exporter、Slurm Exporter）が稼働し、Prometheus にメトリクスが送信されていること。
+:::
+
+**HyperPod クラスターでのインストール**
+
+```bash
+# 1. HyperPod クラスターのヘッドノードにアクセス
+ssh cpu-slurm-cluster
+
+# 2. 環境変数の設定
+export NUM_WORKERS=2  # 実際のワーカーノード数に調整
+export PROMETHEUS_REMOTE_WRITE_URL=$(aws cloudformation describe-stacks \
+  --stack-name HyperpodSlurmOSObservability \
+  --region us-east-1 \
+  --query 'Stacks[0].Outputs[?OutputKey==`PrometheusRemoteWriteURL`].OutputValue' \
+  --output text)
+export ARG_ADVANCED=--advanced
+
+# 3. Observability インストールスクリプトの準備
+mkdir -p ~/observability-setup
+cd ~/observability-setup
+git clone https://github.com/aws-samples/awsome-distributed-training.git
+cd awsome-distributed-training/1.architectures/5.sagemaker-hyperpod/LifecycleScripts/base-config/observability
+
+# 4. 既存サービスの停止（再インストール時）
+sudo python3 stop_observability.py --node-type controller || true
+srun -N $NUM_WORKERS sudo python3 stop_observability.py --node-type compute || true
+
+# 5. Observability コンポーネントのインストール
+sudo python3 install_observability.py --node-type controller --prometheus-remote-write-url $PROMETHEUS_REMOTE_WRITE_URL $ARG_ADVANCED
+srun -N $NUM_WORKERS sudo python3 install_observability.py --node-type compute --prometheus-remote-write-url $PROMETHEUS_REMOTE_WRITE_URL $ARG_ADVANCED
+```
+
+**インストール確認**:
+```bash
+# Controller ノード（ヘッドノード）での確認
+systemctl status slurm_exporter.service --no-pager -l
+docker ps
+
+# Worker ノードでの確認
+srun -N $NUM_WORKERS docker ps
+srun -N $NUM_WORKERS systemctl is-active node_exporter
+```
+
+**成功時の出力例**:
+```
+● slurm_exporter.service - Prometheus SLURM Exporter
+   Active: active (running)
+
+CONTAINER ID   IMAGE                    COMMAND              STATUS
+da773247a262   hyperpod/otel_collector  "/app/otelcollector" Up 6 hours
+8c18b89cc1a3   hyperpod/node_exporter   "/bin/node_exporter" Up 45 hours
+```
+::::
+
+::::details 5. 動作確認とダッシュボード設定
+
+:::message
+なんのための作業か: 構築した Observability 環境でメトリクスの収集・表示が正常に動作することを確認し、監視ダッシュボードを設定します。
+:::
+
+:::message
+次のステップに進む条件: Grafana でメトリクスクエリが成功し、各種ダッシュボードでリアルタイム監視が可能になること。
+:::
+
+**Grafana でのメトリクス確認**
+
+1. **Grafana アクセス**
+```bash
+# Grafana URL の取得
+GRAFANA_URL=$(aws cloudformation describe-stacks \
+  --stack-name HyperpodSlurmOSObservability \
+  --region us-east-1 \
+  --query 'Stacks[0].Outputs[?OutputKey==`GrafanaInstanceAddress`].OutputValue' \
+  --output text)
+
+echo "Grafana URL: $GRAFANA_URL"
+# ブラウザで該当 URL にアクセス（admin/admin でログイン）
+```
+
+2. **メトリクスクエリテスト**
+- **Explore ページ**（/explore）にアクセス
+- **Amazon Managed Service for Prometheus** データソースを選択
+- **メトリクスブラウザー**でメトリクス一覧確認
+- **サンプルクエリ実行**:
+  ```promql
+  # CPU 使用率
+  cpu_usage_percent
+  
+  # Slurm ジョブ状況
+  slurm_jobs_running
+  
+  # GPU 使用率（GPU ノード存在時）
+  gpu_utilization_percent
+  ```
+
+3. **ダッシュボードのインポート**
+
+**推奨ダッシュボード**:
+```bash
+# Grafana UI で以下を順次インポート
+# Dashboards > New > Import で URL を入力
+
+# Node Exporter Dashboard (ID: 1860)
+https://grafana.com/grafana/dashboards/1860-node-exporter-full/
+
+# Slurm Dashboard (ID: 4323)
+https://grafana.com/grafana/dashboards/4323-slurm-dashboard/
+
+# DCGM Exporter Dashboard (ID: 12239) - GPU ノード用
+https://grafana.com/grafana/dashboards/12239-nvidia-dcgm-exporter-dashboard/
+```
+
+4. **メトリクス収集の確認**
+
+```bash
+# Amazon Managed Prometheus でのメトリクス確認
+aws amp query-metrics \
+  --workspace-id $(aws cloudformation describe-stacks \
+    --stack-name HyperpodSlurmOSObservability \
+    --region us-east-1 \
+    --query 'Stacks[0].Outputs[?OutputKey==`PrometheusWorkspaceId`].OutputValue' \
+    --output text | sed 's|.*workspace/||') \
+  --query "up" \
+  --start-time $(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%S.%3NZ) \
+  --end-time $(date -u +%Y-%m-%dT%H:%M:%S.%3NZ) \
+  --region us-east-1
+```
+
+**成功時の確認項目**:
+- ✅ Grafana でメトリクスブラウザーにメトリクス一覧表示
+- ✅ Explore でのクエリ実行とグラフ表示成功
+- ✅ ダッシュボードでのリアルタイム監視データ表示
+- ✅ HyperPod クラスターから Amazon Managed Prometheus へのメトリクス送信確認
+
+**トラブルシューティング**:
+メトリクスが表示されない場合は、以下を確認：
+```bash
+# HyperPod クラスターでのサービス状況
+ssh cpu-slurm-cluster "systemctl status slurm_exporter.service"
+ssh cpu-slurm-cluster "docker ps"
+
+# Prometheus ワークスペースへの送信確認
+ssh cpu-slurm-cluster "docker logs otel-collector | grep -i error"
+```
 ::::
 
 ## まとめ
