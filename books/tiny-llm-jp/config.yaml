@@ -1,0 +1,15 @@
+title: "tiny-llm - 1週間でLLMサービングを学ぶ"
+summary: "MLXを使ってLLMサービングシステムをゼロから構築するコース。システムエンジニア向けに、アテンション、KVキャッシュ、連続バッチングなどの技術を学びます。"
+topics: ["LLM", "機械学習", "MLX", "システム設計", "モデル推論"]
+published: false
+price: 0 # 有料の場合200〜5000
+# 本に含めるチャプターを順番に並べましょう
+chapters:
+  - preface
+  - week1-01-attention
+#  - week1-02-positional-encodings
+#  - week1-03-gqa
+#  - week1-04-rmsnorm-and-mlp
+#  - week1-05-qwen2-model
+#  - week1-06-generate-response
+#  - week1-07-sampling-prepare
