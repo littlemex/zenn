@@ -3,7 +3,7 @@ title: "Blueprints by Slurm: レジリエンシーと可観測性-前編"
 emoji: "🔧"
 type: "tech"
 topics: ["aws", "sagemaker", "hyperpod", "slurm", "resiliency", "observability"]
-free: false
+free: true
 ---
 
 ::::details 前提
