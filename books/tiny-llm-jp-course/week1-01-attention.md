@@ -440,25 +440,27 @@ graph TB
 
 ### linear 関数の実装
 
-この関数は存在しないため、模範解答を推測します。基本的な線形変換の実装は以下の通りです。
+模範解答の linear 関数の実装は以下の通りです。
 
 ```python
 def linear(
     x: mx.array,
-    weight: mx.array,
-    bias: mx.array | None = None
+    w: mx.array,
+    bias: mx.array | None = None,
 ) -> mx.array:
-    # 行列積: (..., I) @ (O, I).T = (..., O)
-    output = mx.matmul(x, weight.T)
-    
-    # バイアスがあれば加算
     if bias is not None:
-        output = output + bias
-    
-    return output
+        return mx.matmul(x, w.T) + bias
+    else:
+        return mx.matmul(x, w.T)
 ```
 
-重要なポイントは、`weight` を転置してから行列積を計算することです。これは PyTorch や MLX の慣例で、重みは `(出力次元, 入力次元)` の形状で保存されます。
+この実装には以下の重要なポイントがあります。
+
+**重みの転置**：`w.T` により重み行列を転置してから行列積を計算します。これは PyTorch や MLX の慣例で、重みは `(出力次元, 入力次元)` の形状で保存されます。入力 `x` が `(..., I)` の形状、重み `w` が `(O, I)` の形状の場合、`x @ w.T` により `(..., O)` の出力が得られます。
+
+**条件分岐による最適化**：バイアスの有無で明示的に分岐しています。バイアスがある場合は加算を行い、ない場合は行列積のみを返します。これにより、バイアスが None の場合の不要な計算を避けることができます。
+
+**ブロードキャスト**：バイアスベクトル `(O,)` は自動的にバッチ次元にブロードキャストされるため、`(..., O)` の形状の出力に対して正しく加算されます。
 
 ### SimpleMultiHeadAttention の実装
 
