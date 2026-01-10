@@ -2,37 +2,39 @@
 title: "はじめに"
 ---
 
-# tiny-llm - 1週間でLLMサービングを学ぶ
+:::message
+この書籍は [tiny-llm リポジトリ](https://github.com/skyzh/tiny-llm) のドキュメントの日本語翻訳です。
+:::
 
-[![CI (main)](https://github.com/skyzh/tiny-llm/actions/workflows/main.yml/badge.svg)](https://github.com/skyzh/tiny-llm/actions/workflows/main.yml)
+# tiny-llm - 1 週間で LLM サービングを学ぶ
 
-システムエンジニア向けのMLXを使ったLLMサービングのコースです。このコードベースは、高レベルのニューラルネットワークAPIを使わず、MLXの配列/行列APIのみをベースにしています。これにより、モデルサービング基盤をゼロから構築し、最適化について深く掘り下げることができます。
+システムエンジニア向けの MLX を使った LLM サービングのコースです。このコードベースは、高レベルのニューラルネットワーク API を使わず、MLX の配列/行列 API のみをベースにしています。これにより、モデルサービング基盤をゼロから構築し、最適化について深く掘り下げることができます。
 
-このコースの目標は、大規模言語モデル（例：Qwen2モデル）を効率的にサービングする技術を学ぶことです。
+このコースの目標は、大規模言語モデル（例：Qwen2 モデル）を効率的にサービングする技術を学ぶことです。
 
-**Week 1**では、Qwen2モデルを使ってレスポンスを生成するために必要なコンポーネント（アテンション、RoPEなど）をPythonのみで実装します。**Week 2**では、vLLMに似ているが、よりシンプルな推論システム（KVキャッシュ、連続バッチング、フラッシュアテンションなど）を実装します。**Week 3**では、より高度なトピックと、モデルが外部世界とどのように相互作用するかをカバーします。
+**Week 1** では、Qwen2 モデルを使ってレスポンスを生成するために必要なコンポーネント（アテンション、RoPE など）を Python のみで実装します。**Week 2** では、vLLM に似ているが、よりシンプルな推論システム（KV キャッシュ、連続バッチング、フラッシュアテンションなど）を実装します。**Week 3** では、より高度なトピックと、モデルが外部世界とどのように相互作用するかをカバーします。
 
-## なぜMLXなのか
+## なぜ MLX なのか
 
-最近では、NVIDIA GPUをセットアップするよりも、macOSベースのローカル開発環境を手に入れる方が簡単です。
+最近では、NVIDIA GPU をセットアップするよりも、macOS ベースのローカル開発環境を手に入れる方が簡単です。
 
-## なぜQwen2なのか
+## なぜ Qwen2 なのか
 
-これは私が最初に触れたLLMです。vLLMのドキュメントで使われている定番の例でもあります。私はvLLMのソースコードを読むことに時間を費やし、それに関する知識を蓄積してきました。
+これは私が最初に触れた LLM です。vLLM のドキュメントで使われている定番の例でもあります。私は vLLM のソースコードを読むことに時間を費やし、それに関する知識を蓄積してきました。
 
 ## 書籍
 
-tiny-llmの書籍（英語版）は [https://skyzh.github.io/tiny-llm/](https://skyzh.github.io/tiny-llm/) で公開されています。ガイドに従って、学習を始めることができます。
+tiny-llm の書籍（英語版）は [https://skyzh.github.io/tiny-llm/](https://skyzh.github.io/tiny-llm/) で公開されています。ガイドに従って、学習を始めることができます。
 
 ## コミュニティ
 
-skyzhのDiscordサーバーに参加して、tiny-llmコミュニティと一緒に学習できます。
+skyzh の Discord サーバーに参加して、tiny-llm コミュニティと一緒に学習できます。
 
 [![Join skyzh's Discord Server](https://skyzh.github.io/tiny-llm/discord-badge.svg)](https://skyzh.dev/join/discord)
 
 ## ロードマップ
 
-Week 1は完成しています。Week 2は進行中です。
+Week 1 は完成しています。Week 2 は進行中です。
 
 | Week + Chapter | Topic                                                       | Code | Test | Doc | Doc JP |
 | -------------- | ----------------------------------------------------------- | ---- | ---- | --- | ------ |
@@ -58,8 +60,8 @@ Week 1は完成しています。Week 2は進行中です。
 | 3.6            | AI Agent / Tool Calling                                     | 🚧    | 🚧   | 🚧  | 🚧     |
 | 3.7            | Long Context                                                | 🚧    | 🚧   | 🚧  | 🚧     |
 
-カバーされていないその他のトピック：量子化/圧縮されたKVキャッシュ、プレフィックス/プロンプトキャッシュ、サンプリング、ファインチューニング、小さなカーネル（softmax、siluなど）
+カバーされていないその他のトピック：量子化/圧縮された KV キャッシュ、プレフィックス/プロンプトキャッシュ、サンプリング、ファインチューニング、小さなカーネル（softmax、silu など）
 
 ## オリジナル版について
 
-この書籍は、skyzh氏による[tiny-llm](https://github.com/skyzh/tiny-llm)プロジェクトの日本語翻訳版です。オリジナルの英語版は[こちら](https://skyzh.github.io/tiny-llm/)で公開されています。
+この書籍は、skyzh 氏による [tiny-llm](https://github.com/skyzh/tiny-llm) プロジェクトの日本語翻訳版です。オリジナルの英語版は[こちら](https://skyzh.github.io/tiny-llm/)で公開されています。
