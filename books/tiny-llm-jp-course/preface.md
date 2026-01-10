@@ -2,8 +2,29 @@
 title: "はじめに"
 ---
 
-:::message
+:::message alert
 この書籍は [tiny-llm リポジトリ](https://github.com/skyzh/tiny-llm) のドキュメントの日本語翻訳です。
+
+**原文**: [Chapter Title](https://skyzh.github.io/tiny-llm)  
+**原著作者**: Alex Chi Z  
+**原著作権**: © 2025 Alex Chi Z  
+**ライセンス**: [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0)  
+**翻訳**: [littlemex] (© 2026)
+
+この翻訳は、原著作物の日本語訳です。Apache License 2.0に基づき公開されています。
+
+**変更内容**: 原文（英語）を日本語に翻訳
+
+**Apache License 2.0について**:
+- ✅ 商用利用可能
+- ✅ 修正・改変可能
+- ✅ 配布可能
+- ✅ サブライセンス可能
+- ⚠️ 著作権表示とライセンス表記が必須
+- ⚠️ 変更箇所の明示が必須
+- ℹ️ 無保証（AS IS）
+
+ライセンス全文: https://www.apache.org/licenses/LICENSE-2.0
 :::
 
 # tiny-llm - 1 週間で LLM サービングを学ぶ
