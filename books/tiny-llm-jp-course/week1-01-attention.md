@@ -68,6 +68,21 @@ mask: 1 x H x L x L
 
 このタスクの最後に、以下のテストに合格できるはずです：
 
+::::details 手順補足
+
+手元の MacBook 等に tiny-llm リポジトリをクローンし、以下を実行する。
+
+```bash
+URL=https://raw.githubusercontent.com/pdm-project/pdm/main/install-pdm.py
+curl -sSL $URL | python3 -
+pdm update
+``` 
+::::
+
+:::message alert
+初期状態では不完全な実装のためテストはエラーします。自分で参考資料を読みながら実装することでエラーを解消しましょう。
+:::
+
 ```
 pdm run test --week 1 --day 1 -- -k task_1
 ```
@@ -123,719 +138,495 @@ pdm run test --week 1 --day 1 -- -k task_2
 pdm run test --week 1 --day 1
 ```
 
-# 座学
+::::details 解答
+```bash
+cd src && cp tiny_llm_ref/attention.py tiny_llm/attention.py && cp tiny_llm_ref/basics.py tiny_llm/basics.py
+```
+::::
 
-このセクションでは、実装に入る前にアテンションメカニズムと Transformer アーキテクチャの理論的背景を学びます。推奨読み物の内容を基に、わかりやすく整理しました。
+# Task 1 の解説
 
-## Transformer の 3 つのアーキテクチャ
+このセクションでは、Task 1 の `scaled_dot_product_attention_simple` 関数について、全体像から実装の詳細まで段階的に解説します。
 
-Transformer モデルには、主に 3 つのアーキテクチャバリアントがあります。それぞれ異なる用途に最適化されています。
+::::details Task 1 の解説
+
+## Task 1 Part 1: アーキテクチャにおける位置と役割
+
+### Transformer における位置
+
+`scaled_dot_product_attention_simple` 関数は、Transformer アーキテクチャの中核を担うアテンション計算を実行します。以下の図は、この関数が Transformer の全体構造のどこに位置するかを示しています。
 
 ```mermaid
 graph TB
-    subgraph "Encoder-only（エンコーダーのみ）"
-        E1[入力テキスト] --> E2[双方向アテンション<br/>全トークンを同時に見る]
-        E2 --> E3[文章の深い理解]
-        E3 --> E4[分類・抽出タスク]
-        style E2 fill:#e1f5ff
+    Input[入力トークン埋め込み<br/>N x L x E] --> MHA[MultiHeadAttention 層]
+    
+    subgraph MHA構造
+        MHA --> QKV[Q/K/V 投影<br/>線形変換]
+        QKV --> Split[ヘッドに分割<br/>N x H x L x D]
+        Split --> SDPA[scaled_dot_product_attention_simple<br/>★ここ★]
+        SDPA --> Concat[ヘッドを結合]
+        Concat --> Out[出力投影]
     end
     
-    subgraph "Decoder-only（デコーダーのみ）"
-        D1[入力テキスト] --> D2[単方向アテンション<br/>過去のトークンのみ]
-        D2 --> D3[次トークン予測]
-        D3 --> D4[テキスト生成]
-        style D2 fill:#fff3e1
-    end
+    Out --> FFN[FeedForward 層]
+    FFN --> Output[次の層へ]
     
-    subgraph "Encoder-Decoder（両方）"
-        ED1[入力テキスト] --> ED2[エンコーダー<br/>双方向理解]
-        ED2 --> ED3[デコーダー<br/>単方向生成]
-        ED3 --> ED4[変換タスク]
-        style ED2 fill:#e1f5ff
-        style ED3 fill:#fff3e1
-    end
+    style SDPA fill:#ffcccc
 ```
 
-### 1. Encoder-only モデル（エンコーダーのみ）
+### 関数の役割
 
-Encoder-only モデルは、**双方向アテンション**を使用して文章全体のすべての単語を同時に見ることができるアーキテクチャです。このアプローチにより、文章の深い理解に優れた性能を発揮します。別名として **auto-encoding models**（自己符号化モデル）とも呼ばれ、事前学習では文章の一部をマスク（隠して）し、元の文章を復元するタスクで学習します。
+`scaled_dot_product_attention_simple` は、アテンション計算の中核を担う関数です。この関数は Query、Key、Value という 3 つのテンソルを受け取り、「どのトークンがどのトークンに注目すべきか」を計算します。計算された注目度（アテンション重み）に基づいて Value を集約し、コンテキストを考慮した出力を生成します。この関数は MultiHeadAttention 層内で各ヘッドごとに独立して呼び出され、トークン間の関係性を数値化する役割を果たします。
 
-このモデルは、文章分類（感情分析やトピック分類）、固有表現認識（NER）、単語分類タスク、抽出型質問応答といったタスクに特に適しています。代表的なモデルとして BERT、DistilBERT、ModernBERT、RoBERTa などがあります。
+### なくなると何が困るのか
 
-```mermaid
-sequenceDiagram
-    participant Input as 入力文
-    participant Encoder as Encoder
-    participant Output as 出力
-    
-    Input->>Encoder: "今日は[MASK]天気です"
-    Note over Encoder: 全トークンを同時に処理<br/>双方向アテンション<br/>"今日は"と"天気です"の両方を見る
-    Encoder->>Output: [MASK] = "良い"
-    Note over Output: 文脈の完全な理解に基づく予測
-```
+この関数がなければ、Transformer はトークン間の関係性を理解できなくなります。その結果、以下の能力が完全に失われます。
 
-### 2. Decoder-only モデル（デコーダーのみ）
+文脈理解能力が失われます。例えば「今日は良い天気だ」という文で、「良い」が「天気」を修飾していることを理解できません。長距離依存の捉え方も不可能になり、文の最初の単語と最後の単語の関係を捉えられなくなります。また、動的な重み付けができなくなるため、各トークンの重要度を文脈に応じて変化させることができません。
 
-Decoder-only モデルは、**単方向アテンション**を採用しており、各単語はそれより前の単語のみを参照できる仕組みになっています。このアーキテクチャは次のトークンを予測することで学習し、別名として **auto-regressive models**（自己回帰モデル）とも呼ばれます。事前学習では文章の続きを予測するタスクで訓練されます。
+## Task 1 Part 2: 実装仕様
 
-このモデルは、テキスト生成（創作や対話）、コード生成、質問応答（生成型）といったタスクに特に優れています。代表的なモデルとして、Hugging Face SmolLM シリーズ、Meta's Llama シリーズ、Google's Gemma シリーズ、DeepSeek's V3、GPT シリーズ、そして本コースで使用する Qwen2 などがあります。
+### あなたがやるべきこと
 
-```mermaid
-sequenceDiagram
-    participant Input as 入力
-    participant Decoder as Decoder
-    participant Output as 生成テキスト
-    
-    Input->>Decoder: "今日は"
-    Note over Decoder: 過去のトークンのみ参照<br/>「今日は」まで
-    Decoder->>Output: "良い"
-    Output->>Decoder: "今日は良い"
-    Note over Decoder: 「今日は良い」まで参照
-    Decoder->>Output: "天気"
-    Output->>Decoder: "今日は良い天気"
-    Note over Decoder: 「今日は良い天気」まで参照
-    Decoder->>Output: "です"
-```
-
-**現代の LLM（Large Language Models）について**：
-
-ほとんどの現代的な大規模言語モデルは、**Decoder-only アーキテクチャ**を採用しています。これらのモデルは通常 2 段階で訓練されます。第 1 段階の**事前学習（Pretraining）**では、大量のテキストデータを使用して次トークン予測を学習します。第 2 段階の**指示チューニング（Instruction Tuning）**では、モデルが指示に従って有用な応答を生成できるように微調整を行います。この 2 段階のアプローチにより、現代の LLM は幅広いタスクに対応できる汎用性を獲得しています。
-
-**現代のLLMの主な能力**：
-
-| 能力 | 説明 | 例 |
-|-----|------|-----|
-| テキスト生成 | 文脈に沿った自然な文章作成 | エッセイ、物語、メール作成 |
-| 要約 | 長文を短く要約 | レポートの要約 |
-| 翻訳 | 言語間の翻訳 | 英語から日本語へ |
-| 質問応答 | 事実的な質問への回答 | "フランスの首都は？" |
-| コード生成 | プログラムコードの作成 | 関数の自動生成 |
-| 推論 | 段階的な問題解決 | 数学問題や論理パズル |
-| Few-shot学習 | 少数の例から学習 | 2-3例で分類タスク実行 |
-
-### 3. Encoder-Decoder モデル（Sequence-to-Sequence）
-
-Encoder-Decoder モデルは、エンコーダーとデコーダーの**両方**を組み合わせたアーキテクチャです。エンコーダー部分は双方向アテンションを使用して入力を深く理解し、デコーダー部分は単方向アテンションで適切な出力を生成します。事前学習では、文章の一部を破損させてそれを復元するタスクで訓練されます。
-
-このモデルは、機械翻訳、テキスト要約、文法修正、構造化データから自然言語への変換、生成型質問応答といったタスクに特に適しています。代表的なモデルとして BART、T5、mBART、Marian（翻訳専用）などがあります。
-
-```mermaid
-graph LR
-    subgraph "Encoder（理解）"
-        I[入力文<br/>"The cat is on the mat"] --> E[双方向<br/>アテンション<br/>全単語を分析]
-    end
-    
-    subgraph "Decoder（生成）"
-        E --> D[単方向<br/>アテンション<br/>逐次生成]
-        D --> O[出力文<br/>"猫がマットの上にいる"]
-    end
-    
-    style E fill:#e1f5ff
-    style D fill:#fff3e1
-```
-
-**実用例**：
-
-| 応用 | 説明 | 例モデル |
-|-----|------|---------|
-| 機械翻訳 | 言語間のテキスト変換 | Marian, T5 |
-| テキスト要約 | 長文の簡潔な要約 | BART, T5 |
-| データ→テキスト | 構造化データを自然言語に | T5 |
-| 文法修正 | 文法エラーの訂正 | T5 |
-| 質問応答 | コンテキストに基づく回答生成 | BART, T5 |
-
-## アテンションメカニズムの役割
-
-**アテンションの本質**：文章内のどの単語が重要かを動的に判断する仕組みです。
-
-### なぜアテンションが重要なのか
-
-例文として「**フランス**の首都は___」という文を考えてみましょう。この文で次の単語を予測する際、すべての単語が同じ重みを持つわけではありません。具体的には、「フランス」は地理的な場所を示す重要度が最も高い単語（★★★★★）であり、「首都」も求める情報の種類を示す重要な単語（★★★★☆）です。一方、「の」や「は」といった文法的な助詞は重要度が低く（★☆☆☆☆）、予測にほとんど影響を与えません。アテンションメカニズムは、このような各単語の重要度を自動的に計算し、適切に重み付けを行います。
-
-```mermaid
-graph TB
-    subgraph "入力トークン"
-        W1[フランス]
-        W2[の]
-        W3[首都]
-        W4[は]
-    end
-    
-    subgraph "アテンション重み"
-        W1 -.->|重要度: 0.6| A1[高]
-        W2 -.->|重要度: 0.05| A2[低]
-        W3 -.->|重要度: 0.3| A3[高]
-        W4 -.->|重要度: 0.05| A4[低]
-    end
-    
-    subgraph "予測結果"
-        A1 --> P[パリ]
-        A3 --> P
-    end
-    
-    style W1 fill:#ffcccc
-    style W3 fill:#ffcccc
-    style P fill:#ccffcc
-```
-
-### スケールドドット積アテンション
-
-アテンションの数学的な定義：
+以下の数式を MLX で実装することが求められています。
 
 $$
-\text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right)V
+\text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d_k}} + M\right)V
 $$
 
-**各要素の直感的な理解**：
+実装は 5 つのステップで構成されます。まず Q と K の転置行列の積を計算して類似度を求めます。次にその結果を √d_k でスケーリングします（scale パラメータが None の場合）。オプショナルでマスクを加算します。Softmax 関数を適用して確率分布に変換します。最後に Value と乗算して最終出力を得ます。
 
-- **Q (Query)**：「何を探しているのか？」（質問）
-- **K (Key)**：「何を持っているのか？」（鍵）
-- **V (Value)**：「実際の情報は何か？」（値）
+### 関数の入出力仕様
 
 ```mermaid
 graph TB
-    subgraph "ステップ1: 類似度計算"
-        Q[Query<br/>何を探している？] --> M[QK^T<br/>ドット積で類似度]
-        K[Key<br/>何を持っている？] --> M
-    end
+    Q[query<br/>shape: ...×L×D<br/>type: mx.array]
+    K[key<br/>shape: ...×L×D<br/>type: mx.array]
+    V[value<br/>shape: ...×L×D<br/>type: mx.array]
+    S[scale<br/>type: float or None<br/>default: 1/√D]
+    M[mask<br/>shape: ...×L×L<br/>type: mx.array or None]
     
-    subgraph "ステップ2: スケーリング"
-        M --> S[√d_k で割る<br/>安定化]
-    end
+    Q --> Func[scaled_dot_product_attention_simple]
+    K --> Func
+    V --> Func
+    S --> Func
+    M --> Func
     
-    subgraph "ステップ3: 正規化"
-        S --> SF[Softmax<br/>確率分布に変換]
-    end
+    Func --> O[output<br/>shape: ...×L×D<br/>type: mx.array]
     
-    subgraph "ステップ4: 重み付け"
-        SF --> O[V と掛け算<br/>重み付き和]
-        V[Value<br/>実際の情報] --> O
-    end
-    
-    O --> R[アテンション出力]
-    
-    style Q fill:#ffe6e6
-    style K fill:#e6ffe6
-    style V fill:#e6f3ff
-    style R fill:#fff3e6
+    style Func fill:#ffe6e6
+    style O fill:#ccffcc
 ```
 
-**なぜスケーリング（√d_k で割る）が必要？**
+入力パラメータの詳細は以下の通りです。`...` はバッチ次元を表し、0 個以上の任意の次元を持つことができます。`L` はシーケンス長（sequence length）を表します。`D` はヘッドの次元（head dimension）を表します。マスクは加算形式で提供され、値が -∞ の部分は Softmax 後に 0 となり、そのトークンを無視する効果があります。
 
-スケーリングが必要な理由を理解するために、まず問題点を確認しましょう。`d_k`（キーの次元）が大きくなると、内積 `QK^T` の値も大きくなりすぎるという問題が発生します。この大きすぎる値が Softmax 関数に入力されると、出力が極端な値（0 か 1）に偏ってしまい、アテンションの柔軟性が失われます。この問題を解決するために、`√d_k` で割るスケーリングを適用することで値を適度な範囲に収めます。その結果、より滑らかで適切なアテンション分布が得られ、モデルの表現力が向上します。
+### タスク説明の補足
 
-**具体例**：
+元のタスク説明は、入力の前提として Q、K、V がすべて同じ形状（...×L×D）を持つこと、そしてマスクは加算可能な float 配列（-∞ を含む）であることを述べています。
 
-d_k = 64 の場合：
-- スケーリングなし：QK^T が -100 〜 100 の範囲 → Softmax後は [0.0, 0.0, ..., 1.0]（極端）
-- √64 = 8 でスケーリング：-12.5 〜 12.5 の範囲 → Softmax後は [0.1, 0.2, ..., 0.3]（バランス良い）
-
-## LLM推論の2段階プロセス
-
-テキスト生成は、**Prefillフェーズ**と**Decodeフェーズ**の2段階で行われます。これは料理に例えると、材料の準備（Prefill）と調理（Decode）に似ています。
+処理の流れは以下のシーケンスで表現できます。
 
 ```mermaid
 sequenceDiagram
-    participant User as ユーザー
-    participant Tokenizer as トークナイザー
-    participant Prefill as Prefillフェーズ<br/>（準備段階）
-    participant Decode as Decodeフェーズ<br/>（生成段階）
-    participant Output as 出力
+    participant Q as Query<br/>何を探す？
+    participant K as Key<br/>何を持つ？
+    participant V as Value<br/>実際の値
     
-    User->>Tokenizer: "今日の天気は"
-    Tokenizer->>Prefill: [今日, の, 天気, は]
-    
-    Note over Prefill: 入力全体を一度に処理<br/>計算集約的（Compute-intensive）<br/>並列処理可能
-    
-    Prefill->>Decode: コンテキスト理解完了
-    
-    loop 1トークンずつ生成
-        Note over Decode: メモリ集約的（Memory-intensive）<br/>逐次処理のみ
-        Decode->>Output: "良い"
-        Note over Decode: 過去のトークンを全て参照
-        Decode->>Output: "です"
-        Note over Decode: さらに過去が増える
-        Decode->>Output: "ね"
-    end
+    Q->>K: 1. 内積で類似度計算<br/>QK^T → L×L
+    Note over K: 2. スケーリング<br/>÷√D
+    Note over K: 3. マスク加算<br/>見えない部分を -∞ に
+    K->>K: 4. Softmax<br/>確率分布化
+    K->>V: 5. 重み付き和<br/>×V → 最終出力
 ```
 
-### Prefill フェーズ（準備段階）
+いくつかのキーポイントがあります。`N..` 表記はバッチ次元の柔軟性を示しており、0 個、1 個、複数個すべてに対応します。実際の使用時は MultiHeadAttention 内で形状は `N x H x L x D` となります。この関数自体は最後の 2 次元（L×D）のみを処理します。
 
-Prefill フェーズでは、入力テキストをモデルが理解できる形式に変換し、初期処理を行います。まず**トークン化（Tokenization）**のステップで、入力テキストを基本単位（トークン）に分割します（例："今日は良い天気" → ["今日", "は", "良い", "天気"]）。次に**埋め込み変換（Embedding Conversion）**で、各トークンを数値ベクトルに変換し、単語の意味を数学的に表現します。最後の**初期処理（Initial Processing）**では、全ニューラルネットワーク層を通してこれらのベクトルを処理し、入力全体の文脈を深く理解します。
+## Task 1 Part 3: 模範解答の解説
 
-**特徴**：
+### コア実装の分析
 
-| 特性 | 説明 |
-|-----|------|
-| 計算方式 | 並列処理可能（全トークンを同時に） |
-| リソース | 計算集約的（Compute-intensive） |
-| 処理時間 | 入力長に比例 |
-| メトリクス | **TTFT (Time to First Token)** に影響 |
+模範解答のコードは以下の通りです。
 
-**比喩**：
-- 本を読む前に、全ページをざっと眺めて内容を把握する段階
+```python
+def scaled_dot_product_attention_simple(
+    query: mx.array,
+    key: mx.array,
+    value: mx.array,
+    scale: float | None = None,
+    mask: mx.array | None = None,
+) -> mx.array:
+    # 1. スケール因子の計算
+    factor = mx.rsqrt(query.shape[-1]) if scale is None else scale
+    
+    # 2. スコア計算：QK^T × scale
+    scores = mx.matmul(query, key.swapaxes(-2, -1)) * factor
+    
+    # 3. マスク適用
+    if mask is not None:
+        scores = scores + mask
+    
+    # 4. Softmax + Value の積
+    return mx.matmul(softmax(scores, axis=-1), value)
+```
 
-### Decode フェーズ（生成段階）
+この実装にはいくつかの重要なテクニックが含まれています。
 
-Decode フェーズでは、実際のテキスト生成が 1 トークンずつ行われます。まず**アテンション計算（Attention Computation）**で過去の全トークンを参照し、次のトークンに関連する情報を抽出します。次に**確率計算（Probability Calculation）**で各候補トークンの確率を計算し、最も適切なトークンを判断します。その後**トークン選択（Token Selection）**において、サンプリング戦略に基づいて確率的または決定的にトークンを選択します。最後に**継続判定（Continuation Check）**で、終了トークン（EOS）が検出されたか、または最大長に達したかを確認し、生成を継続するか終了するかを決定します。
+### mx.rsqrt() の使用
 
-**特徴**：
+```python
+factor = mx.rsqrt(query.shape[-1])  # 1/√D を効率的に計算
+```
 
-| 特性 | 説明 |
-|-----|------|
-| 計算方式 | 逐次処理のみ（1トークンずつ） |
-| リソース | メモリ集約的（Memory-intensive） |
-| 処理時間 | 生成トークン数に比例 |
-| メトリクス | **TPOT (Time Per Output Token)** に影響 |
+このコードは `1.0 / mx.sqrt(x)` と同じ結果を得ますが、より高速に動作します。GPU での除算と平方根の逆数計算は専用命令で最適化されているため、`rsqrt` を使用することでパフォーマンスが向上します。
 
-**比喩**：
-- 文章を書く際、前に書いた内容を確認しながら、次の単語を一つずつ選んでいく作業
+### swapaxes(-2, -1) による転置
 
-### フェーズ間の違い
+```python
+key.swapaxes(-2, -1)  # 最後の 2 次元を入れ替え
+```
+
+この操作は Key テンソルの最後の 2 次元を入れ替えます。入力が `...×L×D` の場合、出力は `...×D×L` となります。重要なのは、任意のバッチ次元（`...` 部分）には影響を与えず、最後の 2 次元のみを転置することです。これにより、行列積 `query @ key.T` の形状が `...×L×L` となり、各トークンペアの類似度スコアが得られます。
+
+### スケーリングとスコア計算の一体化
+
+```python
+scores = mx.matmul(query, key.swapaxes(-2, -1)) * factor
+```
+
+このコードは行列積とスケーリングを同じ行で実行しています。別々に書くことも可能ですが、一体化することでコードが簡潔になり、メモリ効率も向上します。
+
+### 条件付きマスク適用
+
+```python
+if mask is not None:
+    scores = scores + mask
+```
+
+マスクはオプショナルなパラメータであり、提供された場合のみ適用されます。マスクの値は通常、見える部分が 0、見えない部分が -∞ です。加算後に Softmax を適用すると、-∞ の部分は確率 0 に変換されます。
+
+### Softmax と Value の積
+
+```python
+return mx.matmul(softmax(scores, axis=-1), value)
+```
+
+最後のステップでは、Softmax を適用してアテンション重みを得た後、Value と行列積を計算します。`axis=-1` は最後の次元（各行）に対して Softmax を適用することを意味します。これにより、各トークンについて、他のトークンへの注目度の合計が 1 になります。
+
+### 実装のポイント
+
+この実装の優れている点は、シンプルさと効率性のバランスにあります。わずか 4 行のコアロジックで、Transformer の最も重要な計算を実現しています。MLX の高レベル API（matmul、swapaxes、softmax）を適切に組み合わせることで、可読性を保ちながら高性能な実装を達成しています。
+
+また、任意のバッチ次元に対応できる柔軟性も重要です。`...×L×D` という表記により、バッチサイズ 1 でも、複数のバッチ次元を持つ場合でも、同じコードで処理できます。これは MLX のブロードキャスト機能により実現されています。
+
+::::
+
+# Task 2 の解説
+
+このセクションでは、Task 2 の `SimpleMultiHeadAttention` クラスと `linear` 関数について、全体像から実装の詳細まで段階的に解説します。
+
+::::details Task 2 の解説
+
+## Task 2 Part 1: MultiHeadAttention の役割と構造
+
+### MultiHeadAttention とは
+
+MultiHeadAttention（マルチヘッドアテンション）は、複数の「視点」から同時に情報を見る仕組みです。Task 1 で実装したシングルアテンションを複数並列に実行し、それぞれの結果を統合することで、より豊かな表現を獲得します。
 
 ```mermaid
 graph TB
-    subgraph "Prefillフェーズ"
-        P1[全入力トークン] --> P2[並列処理]
-        P2 --> P3[一度に理解]
-        P3 --> P4[計算集約的]
-    end
+    Input[入力<br/>N x L x E] --> Linear[線形投影<br/>Q/K/V]
     
-    subgraph "Decodeフェーズ"
-        D1[1トークンずつ] --> D2[逐次処理]
-        D2 --> D3[段階的生成]
-        D3 --> D4[メモリ集約的]
-    end
+    Linear --> Split[ヘッドに分割<br/>N x L x H x D]
     
-    P4 -.->|移行| D1
+    Split --> H1[ヘッド 1<br/>文法構造]
+    Split --> H2[ヘッド 2<br/>意味関係]
+    Split --> H3[ヘッド 3<br/>長距離依存]
+    Split --> Hn[ヘッド H<br/>その他]
     
-    style P2 fill:#e6f3ff
-    style D2 fill:#ffe6e6
-```
-
-## サンプリング戦略：確率から選択へ
-
-次のトークンを選ぶ方法には様々な戦略があります。これは「創造性」と「正確性」のバランスを調整するツールです。
-
-```mermaid
-graph TB
-    Start[生の確率<br/>Logits<br/>全語彙に対する生の値] --> Temp[Temperature調整<br/>創造性のダイヤル]
+    H1 --> Attn1[Attention]
+    H2 --> Attn2[Attention]
+    H3 --> Attn3[Attention]
+    Hn --> Attnn[Attention]
     
-    Temp --> Penalty{繰り返しペナルティ}
+    Attn1 --> Concat[結合<br/>N x L x HxD]
+    Attn2 --> Concat
+    Attn3 --> Concat
+    Attnn --> Concat
     
-    Penalty -->|Presence| P1[出現済みトークンに<br/>固定ペナルティ<br/>新しい語彙を促進]
-    Penalty -->|Frequency| P2[頻出トークンに<br/>スケーリングペナルティ<br/>繰り返しを強く抑制]
+    Concat --> Out[出力投影<br/>N x L x E]
     
-    P1 --> Filter{候補の絞り込み}
-    P2 --> Filter
-    
-    Filter -->|Top-p| F1[累積確率p%の<br/>トークンのみ考慮<br/>動的な候補数]
-    Filter -->|Top-k| F2[上位k個の<br/>トークンのみ考慮<br/>固定の候補数]
-    
-    F1 --> Final[最終選択<br/>サンプリング]
-    F2 --> Final
-    
-    style Start fill:#e6e6ff
-    style Temp fill:#ffe6e6
-    style P1 fill:#e6f3ff
-    style P2 fill:#e6f3ff
-    style F1 fill:#e6ffe6
-    style F2 fill:#e6ffe6
-    style Final fill:#fff3e6
-```
-
-### 1. Temperature（温度パラメータ）
-
-**Temperature = 創造性のダイヤル**
-
-```mermaid
-graph LR
-    subgraph "T = 0.1（低温）"
-        L1[確定的] --> L2[予測可能]
-        L2 --> L3[安全]
-        L3 --> L4[事実重視]
-    end
-    
-    subgraph "T = 1.0（標準）"
-        M1[バランス] --> M2[自然]
-        M2 --> M3[元の分布]
-    end
-    
-    subgraph "T = 2.0（高温）"
-        H1[創造的] --> H2[予測不可能]
-        H2 --> H3[冒険的]
-        H3 --> H4[実験的]
-    end
-    
-    style L1 fill:#e6f3ff
-    style M1 fill:#fff3e6
-    style H1 fill:#ffe6e6
-```
-
-**具体例**：
-
-「猫は___にいる」の次のトークン予測
-
-| トークン | 元の確率 | T=0.5（低温） | T=1.0（標準） | T=2.0（高温） |
-|---------|---------|--------------|--------------|-------------|
-| 家 | 0.40 | 0.65 | 0.40 | 0.30 |
-| 庭 | 0.30 | 0.25 | 0.30 | 0.25 |
-| 屋根 | 0.20 | 0.08 | 0.20 | 0.22 |
-| 宇宙 | 0.10 | 0.02 | 0.10 | 0.23 |
-
-Temperature パラメータは出力の性質を大きく変化させます。**低温（< 1.0）**に設定すると、最も可能性の高い選択肢に偏るため、予測可能で安定した出力が得られます。**標準（1.0）**では、学習した確率分布をそのまま使用し、自然なバランスの取れた出力となります。**高温（> 1.0）**に設定すると、低確率の選択肢も選ばれやすくなり、創造的で実験的な出力が生成されます。
-
-### 2. Top-p（Nucleus）サンプリング
-
-**累積確率がp%に達するまでのトークンのみを候補とする**
-
-例：p = 0.9（90%）の場合
-
-| トークン | 確率 | 累積確率 | 選択候補 |
-|---------|------|---------|----------|
-| です | 0.50 | 0.50 | ✅ 候補に含む |
-| ます | 0.25 | 0.75 | ✅ 候補に含む |
-| でした | 0.10 | 0.85 | ✅ 候補に含む |
-| だ | 0.06 | 0.91 | ❌ 90%超過で除外 |
-| ました | 0.05 | 0.96 | ❌ 除外 |
-| だった | 0.04 | 1.00 | ❌ 除外 |
-
-```mermaid
-graph LR
-    All[全候補<br/>1000+トークン] --> Sort[確率順にソート]
-    Sort --> Cum[累積確率を計算]
-    Cum --> Cut[90%に達したら<br/>カット]
-    Cut --> Sample[残った候補から<br/>サンプリング]
-    
-    style All fill:#ffe6e6
-    style Cut fill:#e6ffe6
-    style Sample fill:#e6f3ff
-```
-
-Top-p サンプリングのメリットは、状況に応じて候補数が動的に変化することです。モデルの確信度が高い時は少数の候補のみを考慮し、確信度が低い時は多数の候補から選択できるため、柔軟な生成が可能になります。
-
-### 3. Top-k サンプリング
-
-**上位k個のトークンのみを候補とする**
-
-例：k = 3 の場合
-
-| トークン | 確率 | 順位 | 選択候補 |
-|---------|------|------|----------|
-| です | 0.50 | 1位 | ✅ |
-| ます | 0.25 | 2位 | ✅ |
-| でした | 0.10 | 3位 | ✅ |
-| だ | 0.06 | 4位 | ❌ 4位以下除外 |
-| ました | 0.05 | 5位 | ❌ |
-
-**Top-p vs Top-k**：
-
-| 特徴 | Top-p | Top-k |
-|-----|-------|-------|
-| 候補数 | 動的（状況による） | 固定 |
-| 確率分布 | 累積確率ベース | ランキングベース |
-| 適用場面 | より柔軟 | よりシンプル |
-
-### 4. 繰り返しペナルティ
-
-**同じ単語やフレーズの繰り返しを防ぐメカニズム**
-
-```mermaid
-graph TB
-    T[トークン: 天気] --> Check{既に出現？}
-    
-    Check -->|初回| S1[ペナルティ: なし<br/>確率: 0.30]
-    Check -->|2回目| S2[Presence: 固定<br/>確率: 0.30 - 0.05 = 0.25]
-    Check -->|3回目| S3[Frequency: 増加<br/>確率: 0.30 - 0.10 = 0.20]
-    Check -->|5回目| S4[Frequency: さらに増加<br/>確率: 0.30 - 0.20 = 0.10]
-    
-    S1 --> R1[選ばれやすい]
-    S2 --> R2[やや選ばれにくい]
-    S3 --> R3[かなり選ばれにくい]
-    S4 --> R4[非常に選ばれにくい]
-    
-    style S1 fill:#e6ffe6
-    style S2 fill:#fff3e6
-    style S3 fill:#ffe6cc
-    style S4 fill:#ffe6e6
-```
-
-**Presence Penalty（出現ペナルティ）**は、一度でも出現したトークンに対して固定のペナルティを適用する手法です。これにより新しい語彙の使用が促進され、単調な繰り返しを避けることができます。値の範囲は通常 -2.0 から 2.0 の間で設定されます。
-
-**Frequency Penalty（頻度ペナルティ）**は、出現回数に比例してペナルティが増加する手法です。頻繁に使われる単語ほどより強く抑制されるため、より多様な表現が可能になります。こちらも値の範囲は通常 -2.0 から 2.0 の間で設定されます。
-
-**適用順序**：
-1. 生の確率（Logits）を計算
-2. Temperatureを適用
-3. ペナルティを適用 ← ここ
-4. Top-p/Top-kフィルタリング
-5. 最終サンプリング
-
-### 5. 生成長の制御
-
-**いつ生成を止めるか？**
-
-```mermaid
-graph TB
-    Gen[トークン生成] --> Check{停止条件？}
-    
-    Check -->|EOS検出| Stop1[終了トークン<br/>自然な終了]
-    Check -->|最大長| Stop2[max_tokens達成<br/>強制終了]
-    Check -->|停止文字列| Stop3[カスタム停止<br/>例: "\n\n"]
-    Check -->|継続| Gen
-    
-    Stop1 --> End[生成終了]
-    Stop2 --> End
-    Stop3 --> End
-    
-    style Stop1 fill:#e6ffe6
-    style Stop2 fill:#ffe6e6
-    style Stop3 fill:#e6f3ff
-```
-
-生成長の制御には主に 3 つの方法があります。第 1 に**トークン数制限**では、`min_tokens` で最小生成数を、`max_tokens` で最大生成数を指定します。第 2 に**停止シーケンス**を使用すると、特定の文字列（例："```"、"\n\n"、"END"）が出現した時点で生成を停止できます。第 3 に **EOS（End-of-Sequence）トークン**により、モデルが自然に終了を判断します（例：`<|im_end|>`、`</s>`）。これらの制御方法を組み合わせることで、タスクに応じた適切な長さの出力を生成できます。
-
-### 6. Beam Search：先読みで最適化
-
-**1トークンずつではなく、複数の候補パスを同時に探索**
-
-```mermaid
-graph TB
-    Start[今日は] --> B1[良い]
-    Start --> B2[素晴らしい]
-    Start --> B3[最高の]
-    
-    B1 --> B1_1[天気]
-    B1 --> B1_2[日]
-    
-    B2 --> B2_1[天気]
-    B2 --> B2_2[日]
-    
-    B3 --> B3_1[天気]
-    B3 --> B3_2[一日]
-    
-    B1_1 --> End1[最高スコア選択]
-    B1_2 --> End1
-    B2_1 --> End1
-    B2_2 --> End1
-    B3_1 --> End1
-    B3_2 --> End1
-    
-    style B1_1 fill:#ccffcc
-    style End1 fill:#fff3e6
-```
-
-Beam Search は、チェス選手が複数の手先を読むように、複数の候補パスを同時に探索する手法です。具体的な動作は次のようになります。各ステップでは複数の候補（beam）を維持し（通常 5-10 個）、各候補について次のトークンの確率を計算します。その中から最も確率の高い組み合わせのみを保持し、この処理を終了条件に達するまで繰り返します。最終的に、最も高いスコアを持つシーケンスを最適解として選択します。
-
-この手法には複数のメリットがあります。より文法的に正しい文章を生成でき、出力の一貫性が向上します。また局所的な最適解に陥りにくく、グローバルな最適化が可能になります。一方でデメリットとしては、計算コストが beam_size 倍に増加し、メモリ使用量も増加します。さらに、確率が高い選択肢に集中するため、創造性が低下する可能性があります。
-
-Beam Search は、正確性が重視される翻訳タスクや要約タスク、その他正確性が重要なタスクに特に適しています。
-
-## マルチヘッドアテンションの仕組み
-
-マルチヘッドアテンションは、複数の「視点」から同時に情報を見る仕組みです。
-
-```mermaid
-graph TB
-    Input[入力<br/>N x L x E] --> Split[分割と投影]
-    
-    Split --> H1[ヘッド1<br/>N x H x D]
-    Split --> H2[ヘッド2<br/>N x H x D]
-    Split --> H3[ヘッド3<br/>N x H x D]
-    Split --> Hh[ヘッドH<br/>N x H x D]
-    
-    H1 --> A1[アテンション1<br/>文法構造]
-    H2 --> A2[アテンション2<br/>意味的関係]
-    H3 --> A3[アテンション3<br/>長距離依存]
-    Hh --> Ah[アテンションH<br/>その他の側面]
-    
-    A1 --> Concat[結合]
-    A2 --> Concat
-    A3 --> Concat
-    Ah --> Concat
-    
-    Concat --> Output[出力投影<br/>N x L x E]
-    
-    style Input fill:#e6f3ff
     style H1 fill:#ffe6e6
     style H2 fill:#e6ffe6
-    style H3 fill:#fff3e6
-    style Hh fill:#f3e6ff
-    style Output fill:#e6f3ff
+    style H3 fill:#e6f3ff
+    style Hn fill:#fff3e6
 ```
 
-### 各ヘッドの役割例
+### なぜ複数のヘッドが必要なのか
 
-現実のTransformerモデルでは、各ヘッドが異なる言語的特徴を捉えることが研究で示されています：
+シングルヘッドでは、アテンションは 1 つの視点からしか情報を見ることができません。マルチヘッドを使用することで、各ヘッドが異なる言語的特徴に注目できます。例えば、ヘッド 1 は文法的な関係（主語と述語）に、ヘッド 2 は意味的な類似性に、ヘッド 3 は長距離の依存関係に注目する、といった具合です。この並列化により、モデルは文章をより多角的に理解できます。
 
-| ヘッド | 注目する関係 | 例 |
-|-------|------------|-----|
-| ヘッド1 | 文法構造 | 主語と述語の関係 |
-| ヘッド2 | 意味的類似性 | 同義語、関連語 |
-| ヘッド3 | 長距離依存 | 文章の始めと終わりの関係 |
-| ヘッド4 | 位置関係 | 隣接トークンとの関係 |
-| ヘッドH | その他 | 複雑な言語パターン |
+## Task 2 Part 2: 実装仕様
 
-### 次元変換の詳細フロー
+### あなたがやるべきこと
+
+2 つの関数/クラスを実装する必要があります。
+
+**1. linear 関数（basics.py）**
+
+線形変換を実行する関数です。行列積とバイアス加算を行います。
+
+```python
+def linear(
+    x: mx.array,        # 入力: N.. x I
+    weight: mx.array,   # 重み: O x I
+    bias: mx.array | None = None  # バイアス: O（オプショナル）
+) -> mx.array:          # 出力: N.. x O
+```
+
+**2. SimpleMultiHeadAttention クラス（attention.py）**
+
+マルチヘッドアテンション層を実装するクラスです。
+
+```python
+class SimpleMultiHeadAttention:
+    def __init__(self, hidden_size, num_heads, wq, wk, wv, wo):
+        # 初期化：パラメータを保存
+        
+    def __call__(self, query, key, value, mask=None):
+        # フォワードパス：実際の計算
+```
+
+### 処理の流れ
+
+```mermaid
+sequenceDiagram
+    participant Input as 入力<br/>N x L x E
+    participant Linear as 線形投影
+    participant Reshape as リシェイプ
+    participant Transpose as 転置
+    participant Attn as アテンション
+    participant Merge as 結合
+    participant Output as 出力<br/>N x L x E
+    
+    Input->>Linear: Q/K/V 投影<br/>E → H×D
+    Linear->>Reshape: N x L x (H×D)<br/>→ N x L x H x D
+    Reshape->>Transpose: N x L x H x D<br/>→ N x H x L x D
+    Note over Transpose: ヘッドを<br/>バッチ次元に
+    Transpose->>Attn: scaled_dot_product_attention_simple
+    Attn->>Transpose: N x H x L x D<br/>→ N x L x H x D
+    Transpose->>Merge: リシェイプ<br/>→ N x L x (H×D)
+    Merge->>Output: 出力投影<br/>(H×D) → E
+```
+
+### 形状変換の詳細
+
+重要な形状変換を段階的に説明します。
 
 ```mermaid
 graph TB
-    I[入力: N x L x E<br/>E=埋め込み次元] --> Q[Q/K/V投影<br/>重み行列適用]
+    S1[入力<br/>N x L x E] --> S2[Q/K/V 投影後<br/>N x L x HxD]
+    S2 --> S3[リシェイプ<br/>N x L x H x D]
+    S3 --> S4[転置<br/>N x H x L x D]
+    S4 --> S5[アテンション後<br/>N x H x L x D]
+    S5 --> S6[転置戻し<br/>N x L x H x D]
+    S6 --> S7[リシェイプ<br/>N x L x HxD]
+    S7 --> S8[出力投影後<br/>N x L x E]
     
-    Q --> QKV[Q,K,V: N x L x HxD]
-    
-    QKV --> R[リシェイプ<br/>N x L x H x D]
-    
-    R --> T[転置<br/>N x H x L x D]
-    
-    Note1[なぜ転置？<br/>各ヘッドを独立した<br/>バッチとして処理]
-    
-    T --> A[アテンション計算<br/>ヘッドごと独立]
-    
-    A --> T2[転置戻し<br/>N x L x H x D]
-    
-    T2 --> M[結合<br/>N x L x HxD]
-    
-    M --> O[出力投影<br/>N x L x E]
-    
-    style I fill:#e6f3ff
-    style T fill:#ffe6e6
-    style A fill:#ffcccc
-    style O fill:#e6f3ff
+    style S4 fill:#ffcccc
+    style S6 fill:#ccffcc
 ```
 
-**なぜ転置（N x L x H x D → N x H x L x D）が必要？**
+## Task 2 Part 3: 模範解答の解説
 
-転置の必要性を理解するために、形状の変化とその意味を確認しましょう。元の形状 `N x L x H x D` では、L（シーケンス長）がヘッドの前にあるため、トークン優先の処理となり、各トークンの全ヘッドがまとめて処理されます。これを転置して `N x H x L x D` とすると、H（ヘッド数）がシーケンスの前に来るため、ヘッド優先の処理となり、各ヘッドが独立したバッチとして動作します。この変換により、各ヘッドは独自の視点でシーケンス全体を分析できるようになります。
+### linear 関数の実装
 
-この転置操作の結果として、並列処理の効率化が図れ、各ヘッドの独立性が保証され、異なる言語的特徴を効果的に抽出できるようになります。
+この関数は存在しないため、模範解答を推測します。基本的な線形変換の実装は以下の通りです。
 
-## コンテキスト長とアテンションスパン
-
-LLMが処理できる「記憶の範囲」について理解しましょう。
-
-### コンテキスト長とは
-
-**コンテキスト長**：モデルが一度に処理できる最大トークン数
-
-```mermaid
-graph LR
-    Short[短いコンテキスト<br/>2K-4K tokens] --> Med[中程度<br/>8K-32K tokens]
-    Med --> Long[長いコンテキスト<br/>128K-200K tokens]
-    Long --> Ultra[超長<br/>1M+ tokens]
+```python
+def linear(
+    x: mx.array,
+    weight: mx.array,
+    bias: mx.array | None = None
+) -> mx.array:
+    # 行列積: (..., I) @ (O, I).T = (..., O)
+    output = mx.matmul(x, weight.T)
     
-    Short -.->|用途| S1[チャット<br/>短文生成]
-    Med -.->|用途| M1[文書分析<br/>コード生成]
-    Long -.->|用途| L1[長文要約<br/>書籍分析]
-    Ultra -.->|用途| U1[大規模<br/>データ分析]
+    # バイアスがあれば加算
+    if bias is not None:
+        output = output + bias
     
-    style Short fill:#e6ffe6
-    style Med fill:#fff3e6
-    style Long fill:#ffe6cc
-    style Ultra fill:#ffe6e6
+    return output
 ```
 
-### 制限要因
+重要なポイントは、`weight` を転置してから行列積を計算することです。これは PyTorch や MLX の慣例で、重みは `(出力次元, 入力次元)` の形状で保存されます。
 
-コンテキスト長は複数の要因によって制限されます。第 1 に**モデルアーキテクチャ**の制約があり、位置エンコーディングの設計やアテンションメカニズムの実装によって処理可能な長さが決まります。第 2 に**計算リソース**の制約があり、メモリ使用量は O(n²) で増加し、計算時間は O(n) で増加するため、長いコンテキストでは急激にリソース消費が大きくなります。第 3 に**コストと効率**の問題があり、GPU/TPU のメモリ制限や推論速度の要件がコンテキスト長の実用的な上限を決定します。
+### SimpleMultiHeadAttention の実装
 
-```mermaid
-graph TB
-    CL[コンテキスト長: n] --> M[メモリ使用量<br/>O n²<br/>二次的に増加]
-    CL --> P[処理時間<br/>O n<br/>線形に増加]
-    CL --> Q[品質<br/>長すぎると<br/>注意が散漫に]
-    
-    M --> Cost[実用性のトレードオフ]
-    P --> Cost
-    Q --> Cost
-    
-    style CL fill:#e6f3ff
-    style M fill:#ffe6e6
-    style P fill:#fff3e6
-    style Q fill:#ffe6cc
-    style Cost fill:#ffcccc
+模範解答のコードを解析します。
+
+```python
+class SimpleMultiHeadAttention:
+    def __init__(
+        self,
+        hidden_size: int,
+        num_heads: int,
+        wq: mx.array,
+        wk: mx.array,
+        wv: mx.array,
+        wo: mx.array,
+    ):
+        self.hidden_size = hidden_size
+        self.num_heads = num_heads
+        assert hidden_size % num_heads == 0
+        self.head_dim = hidden_size // num_heads
+        self.scale = mx.rsqrt(self.head_dim)
+        assert wq.shape == (hidden_size, num_heads * self.head_dim)
+        assert wk.shape == (hidden_size, num_heads * self.head_dim)
+        assert wv.shape == (hidden_size, num_heads * self.head_dim)
+        assert wo.shape == (num_heads * self.head_dim, hidden_size)
+        self.wq = wq
+        self.wk = wk
+        self.wv = wv
+        self.wo = wo
 ```
 
-## パフォーマンス指標と最適化
+#### 初期化の解説
 
-実際にLLMをデプロイする際の重要な考慮事項です。
+**パラメータの計算と検証**：
 
-### 主要な4つのメトリクス
+`head_dim` は各ヘッドの次元で、`hidden_size // num_heads` で計算されます。例えば、`hidden_size=768`、`num_heads=12` の場合、`head_dim=64` となります。
 
-```mermaid
-graph TB
-    subgraph "ユーザー体験に直結"
-        TTFT[TTFT<br/>Time to First Token<br/>最初のトークンまでの時間]
-        TPOT[TPOT<br/>Time Per Output Token<br/>各トークンの生成時間]
-    end
+`scale` はアテンション計算用のスケール因子で、`1 / √head_dim` です。これを事前計算しておくことで、フォワードパス時の計算を効率化できます。
+
+**重み行列の形状確認**：
+
+各 assert 文は、渡された重み行列が正しい形状を持つことを確認します。`wq/wk/wv` は `(hidden_size, num_heads * head_dim)` の形状で、入力を各ヘッドに投影します。`wo` は `(num_heads * head_dim, hidden_size)` の形状で、結合されたヘッドを元の次元に戻します。
+
+#### フォワードパスの実装
+
+```python
+def __call__(
+    self,
+    query: mx.array,
+    key: mx.array,
+    value: mx.array,
+    mask: mx.array | None = None,
+) -> mx.array:
+    N, L, _ = query.shape
+    assert query.shape == key.shape == value.shape
     
-    subgraph "システム効率"
-        TP[Throughput<br/>スループット<br/>同時処理リクエスト数]
-        VRAM[VRAM Usage<br/>GPUメモリ使用量<br/>ハードウェア制約]
-    end
+    # Q/K/V の投影とリシェイプ
+    projection_q = (
+        linear(query, self.wq)
+        .reshape(N, L, self.num_heads, self.head_dim)
+        .transpose(0, 2, 1, 3)
+    )
+    projection_k = (
+        linear(key, self.wk)
+        .reshape(N, L, self.num_heads, self.head_dim)
+        .transpose(0, 2, 1, 3)
+    )
+    projection_v = (
+        linear(value, self.wv)
+        .reshape(N, L, self.num_heads, self.head_dim)
+        .transpose(0, 2, 1, 3)
+    )
     
-    TTFT -.->|影響| UX1[応答性]
-    TPOT -.->|影響| UX2[生成速度]
-    TP -.->|影響| Scale[スケーラビリティ]
-    VRAM -.->|影響| Cost[コスト]
+    # アテンション計算
+    x = scaled_dot_product_attention_simple(
+        projection_q,
+        projection_k,
+        projection_v,
+        scale=self.scale,
+        mask=mask,
+    )
     
-    style TTFT fill:#e6f3ff
-    style TPOT fill:#e6ffe6
-    style TP fill:#fff3e6
-    style VRAM fill:#ffe6e6
+    # 転置して結合
+    x = x.transpose(0, 2, 1, 3).reshape(N, L, self.hidden_size)
+    
+    # 出力投影
+    return linear(x, self.wo)
 ```
 
-**各指標の最適化方法**：
+#### 各ステップの詳細解説
 
-| 指標 | 影響要因 | 最適化手法 |
-|-----|---------|-----------|
-| TTFT | Prefillフェーズ | バッチサイズ調整、効率的なトークナイザー |
-| TPOT | Decodeフェーズ | KVキャッシュ、量子化、効率的なカーネル |
-| Throughput | 並列処理能力 | 連続バッチング、効率的なスケジューリング |
-| VRAM | モデルサイズ、コンテキスト長 | 量子化、モデル圧縮、ページングアテンション |
+**1. Q/K/V の投影**
 
-### KVキャッシュ最適化
-
-次の章（Week 2, Day 1）で詳しく学びますが、**KVキャッシュ**は最も重要な最適化手法の一つです。
-
-```mermaid
-graph TB
-    subgraph "KVキャッシュなし"
-        N1[毎ステップ<br/>全計算] --> N2[遅い<br/>O n²]
-        N2 --> N3[メモリ効率<br/>高]
-    end
-    
-    subgraph "KVキャッシュあり"
-        Y1[中間結果<br/>を保存] --> Y2[速い<br/>O n]
-        Y2 --> Y3[メモリ使用量<br/>増加]
-    end
-    
-    Y1 -.->|トレードオフ| Trade[速度 vs メモリ]
-    N1 -.->|トレードオフ| Trade
-    
-    style N1 fill:#ffe6e6
-    style Y1 fill:#e6ffe6
-    style Trade fill:#fff3e6
+```python
+linear(query, self.wq)  # (N, L, E) @ (E, H×D).T = (N, L, H×D)
 ```
 
-KV キャッシュは、各デコードステップで計算した Key と Value を保存し、次のステップでは新しいトークンの K/V のみを計算する最適化手法です。この仕組みにより、計算量を大幅に削減できます（特に長いシーケンスで効果的）。
+線形変換により、入力の埋め込み次元 `E` を `H×D` に変換します。
 
-この手法のメリットとして、生成速度の劇的な向上（数倍から数十倍）、長いコンテキストの実用化、そしてリアルタイム対話の実現が挙げられます。一方でデメリットとして、メモリ使用量の増加とバッチサイズとのトレードオフが存在します。Week 2, Day 1 で詳しく学習しますが、このトレードオフを理解することが実用的な LLM システムの構築には不可欠です。
+**2. リシェイプ**
 
-## 座学のまとめ
+```python
+.reshape(N, L, self.num_heads, self.head_dim)  # (N, L, H×D) → (N, L, H, D)
+```
 
-この座学セクションで学んだ重要なポイントを振り返りましょう。
+`H×D` の次元を `H` と `D` に分割し、ヘッドを明示的に表現します。
 
-まず **Transformer アーキテクチャの 3 つのタイプ**では、Encoder-only が双方向アテンションにより文章理解に優れ、Decoder-only が単方向アテンションでテキスト生成（現代の LLM）に使用され、Encoder-Decoder が両方を組み合わせて変換タスクに適していることを学びました。
+**3. 転置**
 
-次に**アテンションメカニズム**について、文章内の重要な情報に動的に注目する仕組みを理解しました。スケールドドット積アテンション $\text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^T}{\sqrt{d_k}}\right)V$ の数式と、マルチヘッドアテンションが複数の視点から並行して分析を行う仕組みを学習しました。
+```python
+.transpose(0, 2, 1, 3)  # (N, L, H, D) → (N, H, L, D)
+```
 
-**LLM 推論の 2 段階**では、Prefill フェーズが入力全体を並列処理する計算集約的なフェーズであり、Decode フェーズが 1 トークンずつ生成するメモリ集約的なフェーズであることを理解しました。
+この転置が最も重要です。ヘッド次元 `H` をバッチ次元の直後に移動することで、各ヘッドが独立したバッチとして処理されます。結果として、`scaled_dot_product_attention_simple` は `N×H` 個の独立したアテンション計算を並列実行できます。
 
-**サンプリング戦略**においては、Temperature が創造性を制御し、Top-p/Top-k が候補の絞り込みを行い、ペナルティが繰り返しを抑制し、Beam Search が複数候補の先読み探索を実現することを学びました。
+**転置が必要な理由**：
 
-最後に**パフォーマンス最適化**では、4 つの重要指標（TTFT、TPOT、Throughput、VRAM）があり、コンテキスト長には長さとコストのトレードオフが存在し、KV キャッシュには速度とメモリのトレードオフがあることを理解しました。
+アテンション関数は最後の 2 次元（`L×D`）に対して動作します。`(N, H, L, D)` の形状にすることで、各 `(N, H)` の組み合わせについて独立に `L×D` のアテンションを計算できます。もし `(N, L, H, D)` のままだと、`L` と `H` が混ざってしまい、正しい計算ができません。
 
----
+**4. アテンション計算**
 
-これらの理論を理解したところで、次はいよいよ実装です！Task 1 と Task 2 で、これらの概念を実際のコードで実現していきましょう。
+```python
+x = scaled_dot_product_attention_simple(
+    projection_q,  # (N, H, L, D)
+    projection_k,  # (N, H, L, D)
+    projection_v,  # (N, H, L, D)
+    scale=self.scale,
+    mask=mask,
+)
+# 出力: (N, H, L, D)
+```
+
+Task 1 で実装した関数を使用します。`N×H` 個のアテンションが並列計算されます。
+
+**5. 転置して戻す**
+
+```python
+x.transpose(0, 2, 1, 3)  # (N, H, L, D) → (N, L, H, D)
+```
+
+アテンション計算後、元の順序に戻します。
+
+**6. ヘッドの結合**
+
+```python
+.reshape(N, L, self.hidden_size)  # (N, L, H, D) → (N, L, H×D)
+```
+
+すべてのヘッドを 1 つの次元に結合します。`H×D = hidden_size` です。
+
+**7. 出力投影**
+
+```python
+linear(x, self.wo)  # (N, L, H×D) @ (E, H×D).T = (N, L, E)
+```
+
+最後の線形変換で、元の埋め込み次元 `E` に戻します。
+
+### 実装のポイント
+
+**メソッドチェーン**の活用により、複数の操作（linear、reshape、transpose）を 1 つの式で記述しています。これによりコードが簡潔になり、中間変数が不要になります。
+
+**transpose の軸指定**として `(0, 2, 1, 3)` を使用することで、必要な次元のみを入れ替えます。この順序により、`(N, L, H, D)` が `(N, H, L, D)` に変換されます。
+
+**事前計算された scale** を使用することで、フォワードパス時の計算コストを削減しています。`__init__` で一度だけ計算し、`__call__` では再利用します。
+
+**バッチ次元の保持**により、入力のバッチサイズ `N` はすべての計算を通じて保持されます。これにより、任意のバッチサイズに対応できます。
+
+この実装は、効率性と可読性のバランスが取れた優れた設計です。各ステップが明確に分かれており、デバッグやカスタマイズが容易です。
+
+::::
