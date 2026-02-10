@@ -2,6 +2,10 @@
 title: "音声認識入門: 学習内容と構築するもの"
 ---
 
+**翻訳元**: [What you'll learn and what you'll build - Hugging Face Audio Course](https://huggingface.co/learn/audio-course/chapter5/introduction)
+
+---
+
 # 学習内容と構築するもの
 
 このセクションでは、Transformer を使用して音声を文字に変換する方法について学びます。この技術は音声認識（speech recognition）として知られています。
