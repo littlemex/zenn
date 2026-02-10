@@ -7,3 +7,4 @@ price: 10000 # 有料の場合200〜5000
 chapters:
   - example1
   - hf-audio-course-ch5-intro
+  - profinfer-ebpf-llm-profiler
