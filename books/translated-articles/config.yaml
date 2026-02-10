@@ -8,3 +8,4 @@ chapters:
   - example1
   - hf-audio-course-ch5-intro
   - profinfer-ebpf-llm-profiler
+  - vllm-omni-disaggregated-serving
