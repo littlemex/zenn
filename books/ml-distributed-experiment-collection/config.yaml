@@ -5,16 +5,19 @@ published: false
 price: 4000 # 有料の場合200〜5000
 # 本に含めるチャプターを順番に並べましょう
 chapters:
-  - review
-  - background
-  - infrastructures
-  - orchestration
-  - aws-parallelcluster-tutorial
-  - resiliency
-  - amazon-sagemaker-hyperpod-resiliency
-  - amazon-sagemaker-hyperpod-slurm-tutorial
-  - amazon-sagemaker-hyperpod-slurm-ddp-on-cpu
-  - amazon-sagemaker-hyperpod-slurm-observability
+  - experiment-hyperpod-checkpointless-training
+  - transformer-distributed-parallelism
+  - pipeline-parallelism
+#  - review
+#  - background
+#  - infrastructures
+#  - orchestration
+#  - aws-parallelcluster-tutorial
+#  - resiliency
+#  - amazon-sagemaker-hyperpod-resiliency
+#  - amazon-sagemaker-hyperpod-slurm-tutorial
+#  - amazon-sagemaker-hyperpod-slurm-ddp-on-cpu
+#  - amazon-sagemaker-hyperpod-slurm-observability
 #  - amazon-sagemaker-hyperpod-slurm-resiliency
 #  - multi-gpu-processing-approaches
 #  - appendix-optimizer
