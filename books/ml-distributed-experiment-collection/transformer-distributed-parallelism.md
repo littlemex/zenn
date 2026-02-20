@@ -287,11 +287,11 @@ Sequence Parallel 適用区間（LayerNorm, Dropout など）:
 
 ```mermaid
 graph LR
-    subgraph "要素単位演算区間"
+    subgraph "要素単位演算区間 (入力)"
         LN1["LayerNorm<br/>[B, S/sp, D]"]
     end
 
-    subgraph "通信"
+    subgraph "通信 (AllGather)"
         AG1["AllGather"]
     end
 
@@ -301,11 +301,11 @@ graph LR
         Out["出力射影<br/>[B, S, D/tp]"]
     end
 
-    subgraph "通信"
+    subgraph "通信 (ReduceScatter)"
         RS["ReduceScatter"]
     end
 
-    subgraph "要素単位演算区間"
+    subgraph "要素単位演算区間 (出力)"
         LN2["LayerNorm<br/>[B, S/sp, D]"]
     end
 

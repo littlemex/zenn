@@ -1,8 +1,8 @@
 ---
 title: "パイプライン並列化を理解する -- GPipe から DualPipe まで、スケジューリング戦略の全体像"
-emoji: "🔀"
+emoji: "⛓️"
 type: "tech"
-topics: ["MachineLearning", "DistributedTraining", "PipelineParallelism", "GPU", "DeepLearning"]
+topics: ["MachineLearning", "DistributedTraining", "PyTorch", "GPU", "DeepLearning"]
 free: true
 ---
 
