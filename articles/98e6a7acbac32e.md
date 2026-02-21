@@ -3,7 +3,7 @@ title: "Amazon SageMaker HyperPod -- Managed Tiered Checkpointing"
 emoji: "💾"
 type: "tech"
 topics: ["AWS", "SageMaker", "HyperPod", "分散学習", "Checkpoint"]
-published: false
+published: true
 ---
 
 ## はじめに
@@ -136,7 +136,7 @@ Managed Tiered Checkpointing を利用するには、クラスター作成時に
 ```bash
 aws sagemaker create-cluster \
     --cluster-name my-training-cluster \
-    --orchestrator "Eks={ClusterArn=arn:aws:eks: us-west-2:123456789012:cluster/my-eks}" \
+    --orchestrator "Eks={ClusterArn=arn: aws: eks: us-west-2:123456789012: cluster/my-eks}" \
     --instance-groups '[{
         "InstanceGroupName": "training-group",
         "InstanceType": "ml.p5.48xlarge",
@@ -145,7 +145,7 @@ aws sagemaker create-cluster \
             "SourceS3Uri": "s3://my-bucket/lifecycle-scripts",
             "OnCreate": "on_create.sh"
         },
-        "ExecutionRole": "arn:aws:iam::123456789012:role/MyRole",
+        "ExecutionRole": "arn: aws: iam::123456789012: role/MyRole",
         "InstanceStorageConfigs": [
             { "EbsVolumeConfig": {"VolumeSizeInGB": 500} }
         ]
@@ -290,6 +290,94 @@ except BaseException as e:
     print(f"Checkpoint load failed at step 500: {str(e)}")
 ```
 
+::::details 補足: state_dict と .pt ファイルの基礎
+
+PyTorch でモデルを保存する際、**state_dict**（状態辞書）という Python 辞書を使用します。
+
+**state_dict とは**
+- モデルの各レイヤーの**パラメータ（重みとバイアス）**を格納した辞書
+- 例: `{"layer1.weight": Tensor(...), "layer1.bias": Tensor(...), ...}`
+- 学習可能パラメータに加え、registered buffers（BatchNorm の running_mean 等）も含まれる
+
+**基本的な保存・ロード**
+```python
+# 保存
+torch.save(model.state_dict(), "checkpoint.pt")
+
+# ロード
+model = MyModel()
+model.load_state_dict(torch.load("checkpoint.pt", weights_only=True))
+```
+
+**.pt ファイル**
+- Python の pickle 形式でシリアル化されたファイル
+- 慣例的に `.pt` または `.pth` 拡張子を使用
+- 単一ファイルにすべてのパラメータを保存
+
+詳細は [PyTorch チュートリアル: モデルの保存とロード](https://pytorch.org/tutorials/beginner/saving_loading_models.html)を参照してください。
+
+::::
+
+::::details 補足: FSDP（Fully Sharded Data Parallel）の必要性
+
+大規模モデル（70B パラメータ以上）は、単一 GPU のメモリに収まりません。**FSDP** は、モデルパラメータを複数 GPU に分割することでこの問題を解決します。
+
+**DDP（DistributedDataParallel）との違い**
+
+| 方式 | メモリ使用 | 対象モデル |
+|------|-----------|-----------|
+| **DDP** | 各 GPU に**モデル全体**をコピー | 1 つの GPU に収まるモデル |
+| **FSDP** | 各 GPU に**パラメータの一部**だけを保存 | GPU メモリを超える大規模モデル |
+
+**FSDP の仕組み**
+```
+通常（280GB モデル、FP32 の場合）:
+GPU 0: [全パラメータ 280GB] → メモリ不足
+
+FSDP（8 GPU に分散）:
+GPU 0: [シャード 1/8]  35GB
+GPU 1: [シャード 2/8]  35GB
+...
+GPU 7: [シャード 8/8]  35GB
+```
+
+各 GPU は自分の担当部分だけを保持するため、大規模モデルの学習が可能になります。詳細は [PyTorch FSDP API 紹介](https://pytorch.org/blog/introducing-pytorch-fully-sharded-data-parallel-api/)を参照してください。
+
+::::
+
+::::details 補足: SHARDED_STATE_DICT と PyTorch DCP の統合
+
+FSDP を使用する場合、チェックポイント保存時に state_dict の形式を選択できます。
+
+**2 つの形式**
+
+| 形式 | 説明 | 問題点 |
+|------|------|--------|
+| **FULL_STATE_DICT** | 全 GPU のパラメータを 1 箇所（GPU 0）に集約 | GPU 0 のメモリ不足、集約時間が長い |
+| **SHARDED_STATE_DICT** | パラメータを分割したまま保存 | 通常の torch.save() は非対応 |
+
+**従来方式の問題**
+```python
+# [NG] 全パラメータを GPU 0 に集約（遅い、メモリ不足）
+with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT):
+    state_dict = model.state_dict()  # 280GB を GPU 0 に集約
+    torch.save(state_dict, "checkpoint.pt")
+```
+
+**PyTorch DCP の解決策**
+```python
+# [OK] パラメータを分割したまま保存（速い、メモリ効率的）
+with FSDP.state_dict_type(model, StateDictType.SHARDED_STATE_DICT):
+    state_dict = model.state_dict()  # 分割されたまま
+    async_save(state_dict, storage_writer=writer)  # 各 GPU が並列に保存
+```
+
+PyTorch DCP は `DTensor`（分散テンソル）や `ShardedTensor`（分割されたテンソル）を**ネイティブに理解**するため、パラメータ集約が不要です。各 GPU が自分の担当部分を並列に保存することで、高速化とメモリ効率を両立します。
+
+詳細は [PyTorch Distributed Checkpoint チュートリアル](https://pytorch.org/tutorials/recipes/distributed_checkpoint_recipe.html)を参照してください。
+
+::::
+
 ## PyTorch DCP async_save の内部アーキテクチャ
 
 Managed Tiered Checkpointing の高速化を実現する中核技術は、DCP の **`async_save`** です。このセクションでは、OSS レイヤーでの実装アーキテクチャを解説します。
@@ -306,8 +394,8 @@ PyTorch DCP は、チェックポイント保存の並列化を段階的に実�
 
 ```mermaid
 graph LR
-    L1A["GPU 計算<br/>学習ステップ"] --> L1B["GPU → CPU コピー<br/>(メインスレッド、ブロッキング)"]
-    L1B --> L1C["ディスク書き込み<br/>(非同期スレッド)"]
+    L1A["GPU 計算<br/>学習ステップ"] --> L1B["GPU → CPU コピー<br/>メインスレッド、ブロッキング"]
+    L1B --> L1C["ディスク書き込み<br/>非同期スレッド"]
 
     style L1A fill: #fff3e0,stroke: #e65100
     style L1B fill: #fff3e0,stroke: #e65100
@@ -322,8 +410,8 @@ GPU→CPU コピー（ステージング）がメインスレッドで実行さ�
 
 ```mermaid
 graph LR
-    L2A["GPU 計算<br/>学習ステップ"] --> L2B["GPU → CPU コピー<br/>(Pinned Memory、高速化)"]
-    L2B --> L2C["ディスク書き込み<br/>(非同期スレッド)"]
+    L2A["GPU 計算<br/>学習ステップ"] --> L2B["GPU → CPU コピー<br/>Pinned Memory、高速化"]
+    L2B --> L2C["ディスク書き込み<br/>非同期スレッド"]
     L2C -.->|"バッファ再利用"| L2B
 
     style L2A fill: #e8f5e9,stroke: #2e7d32
@@ -342,8 +430,8 @@ Pinned Memory（ページング不可能な CPU メモリ）を使用して GPU�
 ```mermaid
 graph LR
     L3A["GPU 計算<br/>学習ステップ"]
-    L3B["GPU → CPU コピー<br/>(バックグラウンドスレッド)"]
-    L3C["ディスク書き込み<br/>(非同期スレッド)"]
+    L3B["GPU → CPU コピー<br/>バックグラウンドスレッド"]
+    L3C["ディスク書き込み<br/>非同期スレッド"]
 
     L3A -.->|"並列実行"| L3B
     L3B --> L3C
