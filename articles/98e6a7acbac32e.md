@@ -1,7 +1,7 @@
 ---
 title: "Amazon SageMaker HyperPod -- Managed Tiered Checkpointing"
 emoji: "💾"
-type: "tech"
+type: "idea"
 topics: ["AWS", "SageMaker", "HyperPod", "分散学習", "Checkpoint"]
 published: true
 ---
