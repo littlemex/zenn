@@ -8,39 +8,37 @@ published: false
 
 ## はじめに
 
-本記事は SageMaker HyperPod 機能解説シリーズの一部です。以下もすでに記事として書いてあるので参考にしてください。
+本記事は SageMaker HyperPod 機能解説シリーズの一部です。以下の記事も公開済みですので、あわせて参照してください。
 
-https://zenn.dev/yunokiisshin/articles/45a746434b2090
+https://zenn.dev/tosshi/articles/45a746434b2090
 
-大規模な分散学習では、チェックポイント保存が学習スループットの低下要因になります。モデルサイズが数十から数百 GB に及ぶ場合、チェックポイントの書き込みに数分から数十分を要し、その間 GPU は待機状態となります。
+https://zenn.dev/tosshi/articles/be0db364a7f8e2
+
+大規模な分散学習では、チェックポイント保存が学習スループットの低下要因になります。大規模言語モデル（70B パラメータ以上）のチェックポイントは数百 GB に及ぶことがあり、チェックポイント書き込み中は GPU が待機状態となります。
 
 Amazon SageMaker HyperPod の **Managed Tiered Checkpointing** は、保存先を CPU メモリと Amazon S3 の 2 階層に分けることで、保存の高速化とコスト削減を両立する機能です。本記事では、仕組み、実装方法、パフォーマンス特性、および FSx for Lustre + DRA との使い分けを解説します。
 
-:::message
-**実際に試す際の推奨リポジトリ**: Managed Tiered Checkpointing を試す際は、AWS の GenAI Frameworks team が管理する [`awsome-distributed-training`](https://github.com/aws-samples/awsome-distributed-training) リポジトリの利用を推奨します。実績のあるコードとサンプルが含まれており、環境構築を効率化できます。チュートリアルとしては [AI on SageMaker HyperPod](https://awslabs.github.io/ai-on-sagemaker-hyperpod/) もおすすめです。
-:::
-
 :::message alert
-本記事は 2026 年 2 月時点の公式ドキュメント、オープンソースコード、などに基づく調査記事です。間違っている可能性もあるため必ず最新の公式ドキュメントを正として確認してください。間違いがあればコメントください。
+本記事は 2026 年 2 月時点の公式ドキュメント、オープンソースコードなどに基づく調査記事です。内容に誤りがある可能性もあるため、必ず最新の公式ドキュメントを正として確認してください。誤りを発見された場合はコメントでお知らせください。
 :::
 
-## 概要
+## 概要と FSx + DRA との比較
 
 :::message
 本機能は [EKS 環境でのセットアップ手順が公式ドキュメントに記載](https://docs.aws.amazon.com/sagemaker/latest/dg/managed-tier-checkpointing-setup.html)されています。Slurm 環境での利用可否については、公式ドキュメントに明示的な記載がないため、最新の情報を AWS に確認してください。
 
-**FSx for Lustre との併用について**: Managed Tiered Checkpointing と FSx for Lustre + DRA は技術的に併用可能ですが、どちらも Amazon S3 にチェックポイントを永続化するため、チェックポイント保存の役割が重複します。FSx が構築済みの場合は、FSx をデータセット保存に、Managed Tiered Checkpointing をチェックポイント保存に使い分けることを推奨します（詳細は「使い分けガイドライン」セクション参照）。
+**FSx for Lustre との併用について**: Managed Tiered Checkpointing と FSx for Lustre + DRA は技術的に併用可能ですが、どちらも Amazon S3 にチェックポイントを永続化するため、チェックポイント保存の役割が重複します。FSx が構築済みの場合は、FSx をデータセット保存に、Managed Tiered Checkpointing をチェックポイント保存に使い分けることを推奨します。
 :::
 
-### 従来のアプローチ: FSx for Lustre + DRA
+### FSx for Lustre + DRA（Data Repository Association）
 
-Managed Tiered Checkpointing の導入以前、HyperPod では **[FSx for Lustre](https://aws.amazon.com/fsx/lustre/) + [DRA（Data Repository Association）](https://docs.aws.amazon.com/fsx/latest/LustreGuide/create-dra-linked-data-repo.html)** によるチェックポイント保存が標準的でした。
+HyperPod では **[Amazon FSx for Lustre](https://aws.amazon.com/fsx/lustre/) + [DRA](https://docs.aws.amazon.com/fsx/latest/LustreGuide/create-dra-linked-data-repo.html)** によるチェックポイント保存も広く利用されています。
 
 ```mermaid
 graph LR
-    TN["学習ノード"] -->|"torch.save<br/>5-30 秒<br/>学習の中断"| FSx["FSx for Lustre<br/>共有ストレージ"]
+    TN["学習ノード"] -->|"torch.save<br/>学習の中断"| FSx["FSx for Lustre<br/>共有ストレージ"]
     FSx -->|"DRA<br/>変更検知"| DRA["Data Repository<br/>Association"]
-    DRA -->|"バックグラウンド<br/>エクスポート<br/>数分"| S3["Amazon S3<br/>永続ストレージ"]
+    DRA -->|"バックグラウンド<br/>エクスポート"| S3["Amazon S3<br/>永続ストレージ"]
 
     style TN fill: #1a237e,color: #ffffff
     style FSx fill: #0d47a1,color: #ffffff
@@ -48,18 +46,18 @@ graph LR
     style S3 fill: #1976d2,color: #ffffff
 ```
 
-従来方式の処理フローは、学習スクリプトが `torch.save()` で FSx に書き込み（5-30 秒、学習を中断）、DRA が変更を検知して S3 へのエクスポートをスケジュールし、バックグラウンドで S3 に永続化（数分）するというものです。この方式には、学習の中断時間（5-30 秒）、FSx の高コスト（月額 $140-$500/TB）、S3 エクスポート遅延、容量管理といった課題がありました。
+FSx + DRA の処理フローは、学習スクリプトが `torch.save()` で FSx に書き込み（書き込み完了まで学習を中断）、DRA が変更を検知して S3 へのエクスポートをスケジュールし、バックグラウンドで S3 に永続化するというものです。この方式は、POSIX 互換の共有ファイルシステムが必要な場合や、複数ノード間でのデータセット共有が必須な環境に適しています。
 
-Managed Tiered Checkpointing はこれらの課題を以下のように解決します。
+一方、Managed Tiered Checkpointing は、CPU メモリを活用した高速化とコスト最適化を重視した設計です。以下に両方式の特性を比較します。
 
-| 比較項目 | FSx + DRA（従来） | Managed Tiered Checkpointing |
+| 比較項目 | FSx + DRA | Managed Tiered Checkpointing |
 |---------|------------------|----------------------------|
-| 学習の中断時間 | 5-30 秒（FSx 書き込み） | 1-2 秒（メモリコピー） |
-| 月額コスト（1.2 TB 想定） | $180（FSx）+ $32（S3）[^1] | $32（S3 のみ）[^1] |
-| ノード障害時の復旧 | 数分（FSx または S3 から復元） | 数秒（メモリレプリカから復旧） |
-| スケーラビリティ | 数百ノード（FSx のクライアント数制限あり） | 数千ノード（各ノードのローカルメモリを使用） |
+| 学習の中断時間 | FSx 書き込み完了まで中断[^2] | メモリコピー完了まで中断[^4] |
+| ノード障害時の復旧 | FSx または S3 から復元 | メモリレプリカから高速復旧 |
+| POSIX 互換性 | あり（標準ファイルシステム） | なし（専用 API 使用） |
+| データセット共有 | 得意（共有ストレージ） | S3 直接読込で対応 |
 | S3 保存形式 | 単一の `.pt` ファイル | PyTorch DCP の sharded checkpoint（`.distcp`） |
-| 推奨ケース | データセット共有が必須な既存構成 | 新規プロジェクトまたはコスト最適化 |
+| 推奨ケース | POSIX 互換性やデータセット共有が必須 | チェックポイント高速化とコスト最適化 |
 
 以降では、Managed Tiered Checkpointing の仕組みと実装方法を詳しく解説します。
 
@@ -69,12 +67,12 @@ Managed Tiered Checkpointing は **2 つの階層**でチェックポイント�
 
 ```mermaid
 graph TB
-    subgraph "Tier 1: CPU メモリ -- 高速・主要層"
+    subgraph "Tier 1: CPU メモリ"
         M1["クラスターノードの<br/>CPU メモリ (RAM)<br/>速度: GB/s"]
         M2["隣接ノードへの<br/>自動レプリケーション"]
     end
 
-    subgraph "Tier 2: Amazon S3 -- 耐久性・副次層"
+    subgraph "Tier 2: Amazon S3"
         S1["S3 バケット<br/>永続保存先<br/>耐久性: 99.999999999%"]
     end
 
@@ -98,9 +96,10 @@ Tier 1（CPU メモリ）に保存されたチェックポイントは、**隣�
 メモリ管理は、EKS 環境では Kubernetes DaemonSet としてデプロイされるメモリ管理デーモンが担当し、チェックポイント用の分散メモリ（disaggregated memory）を管理します。
 
 :::message
-`InstanceMemoryAllocationPercentage` パラメータで、チェックポイント用に割り当てる CPU メモリの割合を設定できます（0-100%）。学習プロセスが使用するメモリとのバランスを考慮して設定してください。
+`InstanceMemoryAllocationPercentage` パラメータで、チェックポイント用に割り当てる CPU メモリの割合を設定できます（20-100% の範囲で指定）。学習プロセスが使用するメモリとのバランスを考慮して設定してください。
 
-設定例（`--tiered-storage-config` 内に含める）:
+以下は設定例です（`--tiered-storage-config` 内に含めます）。
+
 ```json
 {
   "Mode": "Enable",
@@ -117,13 +116,13 @@ Tier 1（CPU メモリ）に保存されたチェックポイントは、**隣�
 graph TB
     subgraph "従来方式 -- 同期保存"
         direction LR
-        A1["学習"] --> A2["チェックポイント<br/>保存 5-30 秒<br/>学習中断"] --> A3["学習"] --> A4["チェックポイント<br/>保存 5-30 秒<br/>学習中断"] --> A5["学習"]
+        A1["学習"] --> A2["チェックポイント<br/>保存<br/>学習中断"] --> A3["学習"] --> A4["チェックポイント<br/>保存<br/>学習中断"] --> A5["学習"]
     end
 
     subgraph "Tiered Checkpointing -- 非同期保存"
         direction LR
         B1["学習 -- 中断なし"]
-        B2["Tier1: RAM コピー<br/>1-2 秒"] -.->|"バックグラウンド"| B3["Tier2: S3<br/>アップロード"]
+        B2["Tier1: RAM コピー<br/>高速"] -.->|"バックグラウンド"| B3["Tier2: S3<br/>アップロード"]
     end
 
     style A2 fill: #b71c1c,color: #ffffff
@@ -133,7 +132,7 @@ graph TB
     style B3 fill: #0d47a1,color: #ffffff
 ```
 
-従来方式ではチェックポイント保存中に学習が中断されます（図の赤色ノード）。Tiered Checkpointing では Tier 1（RAM）へのステージング（1-2 秒）後すぐに学習を再開でき、S3 へのアップロードはバックグラウンドで非同期に実行されます。
+従来方式ではチェックポイント保存中に学習が中断されます（図の赤色ノード）。Tiered Checkpointing では Tier 1（RAM）への高速なステージング後すぐに学習を再開でき、S3 へのアップロードはバックグラウンドで非同期に実行されます。
 
 ## 実装と API
 
@@ -389,11 +388,11 @@ graph LR
 
 | メトリクス | 同期 S3 チェックポイント | Managed Tiered Checkpointing |
 |-----------|----------------------|----------------------------|
-| チェックポイント保存時間 | 数分から数十分（モデルサイズ依存）[^2] | 数秒（Tier 1 メモリコピー）[^4] |
+| チェックポイント保存時間 | モデルサイズ・ストレージ性能に依存 | 高速なメモリ操作[^4] |
 | 学習の中断時間 | 保存時間と同等 | ほぼゼロ（非同期） |
 | 復旧元の選択 | S3 のみ | メモリ -> S3 の順にフォールバック |
 | ストレージコスト | S3 のみ | メモリ + S3（段階的） |
-| 学習スループット低下 | 数% から十数%[^2] | 大幅に削減[^3] |
+| 学習スループット低下 | ストレージ性能に依存 | 大幅に削減[^3] |
 
 :::message
 **Checkpointless Training との関係**: Managed Tiered Checkpointing と [Checkpointless Training](https://zenn.dev/yunokiisshin/articles/45a746434b2090) は補完的な関係です。Checkpointless Training は GPU メモリ内の冗長レプリカによる高速 in-memory 復旧を担い、Tiered Checkpointing はカタストロフィックな障害（複数ノード同時障害やクラスター再構築）に対する永続バックアップを担います。併用することで、軽微なノード障害から大規模クラスター障害まで幅広い障害シナリオに対応できます。
@@ -409,7 +408,7 @@ graph LR
 |---------|-----|-----|
 | FSx 未構築の新規プロジェクト | 適合 | 不要 |
 | コスト最適化重視 | 適合（FSx 月額不要） | FSx コスト発生 |
-| 学習の中断時間の最小化 | 1-2 秒のステージングのみ | 5-30 秒 |
+| 学習の中断時間の最小化 | 高速なメモリステージングのみ[^4] | FSx 書き込み完了まで中断[^2] |
 | 数千ノード規模 | 適合 | FSx クライアント数制限あり |
 | PyTorch DCP 標準化 | 適合 | 別方式 |
 | 既存 FSx インフラの活用 | - | 適合 |
@@ -425,7 +424,7 @@ graph LR
 
 Managed Tiered Checkpointing は、大規模分散学習におけるチェックポイント保存の課題に対する実用的な解決策です。
 
-CPU メモリ（Tier 1）と Amazon S3（Tier 2）の 2 階層でチェックポイントを管理する階層化アーキテクチャにより、速度と耐久性を両立します。PyTorch DCP の `async_save()` による非同期保存で学習の中断時間を数十秒から 1-2 秒に短縮し、FSx for Lustre が不要となることで月額ストレージコストも削減可能です。ノード間のメモリレプリケーションにより、ノード障害時には数秒で復旧でき、各ノードのローカルメモリを使用するため数千ノード規模にも対応できます。
+CPU メモリ（Tier 1）と Amazon S3（Tier 2）の 2 階層でチェックポイントを管理する階層化アーキテクチャにより、速度と耐久性を両立します。PyTorch DCP の `async_save()` による非同期保存で学習の中断時間を大幅に短縮し[^3]、FSx for Lustre が不要となることで月額ストレージコストも削減可能です。ノード間のメモリレプリケーションにより、ノード障害時に高速に復旧でき、各ノードのローカルメモリを使用するため数千ノード規模にも対応できます。
 
 新規プロジェクトでは Managed Tiered Checkpointing の採用を推奨します。既存の FSx 環境がある場合は、FSx をデータセット共有に残しつつ、チェックポイント保存のみ Tiered Checkpointing に移行するハイブリッド構成も検討してください。
 
@@ -445,10 +444,10 @@ CPU メモリ（Tier 1）と Amazon S3（Tier 2）の 2 階層でチェックポ
 - [FSx for Lustre Data Repository Association](https://docs.aws.amazon.com/fsx/latest/LustreGuide/create-dra-linked-data-repo.html)
 - [s3torchconnector](https://github.com/amazon-science/s3torchconnector) -- S3 からの直接データ読み込みライブラリ
 
-[^1]: コスト数値は FSx for Lustre のオンデマンド料金と S3 Standard の一般的な料金に基づく概算です。実際の料金はリージョン、ストレージクラス、データ転送量等により異なります。最新の料金は [AWS 公式料金ページ](https://aws.amazon.com/pricing/)を参照してください。
-[^2]: 従来方式のパフォーマンス数値（復旧時間、チェックポイント I/O オーバーヘッド等）は、大規模分散学習における一般的な知見に基づく推定値です。AWS の公式発表による数値ではありません。実際の値はクラスター構成、モデルサイズ、チェックポイント頻度等により異なります。
+[^1]: コスト数値は FSx for Lustre SSD ストレージのオンデマンド料金（約 $140/TB-month）に、スループット容量やプロビジョニング IOPS の追加料金を含めた概算です。S3 Standard の料金は一般的な料金に基づきます。実際の料金はリージョン、ストレージクラス、データ転送量等により異なります。最新の料金は [AWS 公式料金ページ](https://aws.amazon.com/pricing/)を参照してください。
+[^2]: FSx for Lustre への書き込み時間は、クラスター構成、モデルサイズ、チェックポイント頻度、FSx のスループット設定（125-1000 MBps/TiB）により異なります。詳細は [Amazon FSx for Lustre パフォーマンス](https://docs.aws.amazon.com/fsx/latest/LustreGuide/performance.html)を参照してください。
 [^3]: Managed Tiered Checkpointing の[公式ドキュメント](https://docs.aws.amazon.com/sagemaker/latest/dg/managed-tier-checkpointing.html)では "Improved training throughput" と定性的に記載されていますが、具体的な削減率は公開されていません。
-[^4]: Tier 1 メモリコピーの所要時間はモデルサイズとノード間の帯域幅に依存します。小規模モデルでは 1-2 秒程度ですが、大規模モデル（数百 GB 規模）ではより長くなる可能性があります。
+[^4]: Tier 1 メモリコピーの所要時間はモデルサイズとノード間の帯域幅に依存します。公式ドキュメントでは具体的な所要時間は公開されていませんが、ディスク I/O よりも高速なメモリ操作であることから、学習の中断時間を最小化できます。
 
 ---
 
