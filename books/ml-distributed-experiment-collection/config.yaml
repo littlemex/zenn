@@ -1,7 +1,7 @@
 title: "ML Distributed Training/Inference - Experiment Collection"
 summary: "分散学習・推論関連の実験集です。"
 topics: ["AWS", "SageMaker Hyperpod", "Distributed Training", "Distributed Inference"]
-published: false
+published: true
 price: 500 # 有料の場合200〜5000
 # 本に含めるチャプターを順番に並べましょう
 chapters:
