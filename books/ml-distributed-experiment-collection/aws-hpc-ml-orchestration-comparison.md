@@ -18,7 +18,7 @@ AWS で ML 分散学習ワークロードを実行する際、オーケストレ
 :::message
 **執筆時点**: 2026 年 2 月
 
-AWS のサービスは頻繁に更新されます。機能や料金については、必ず AWS 公式ドキュメントを確認してください。
+AWS のサービスは頻繁に更新されます。機能や料金については、必ず AWS 公式ドキュメントを確認してください。比較記事のため参照 URL がかなり多く、目視チェックしていますがミスがあるかもしれません。
 :::
 
 ## 3 つのサービス概要
@@ -115,12 +115,10 @@ ML 分散学習では、マネージドとセルフマネージの選択基準�
 
 以下の比較表では、各サービスの主要な機能を項目ごとに整理しています。各サービスの強みと制約を把握するための参考としてください。
 
-### 基本特性
-
 | 項目 | ParallelCluster | HyperPod | PCS |
 |------|----------------|----------|-----|
-| **サービス形態** | [セルフマネージド](https://docs.aws.amazon.com/parallelcluster/latest/ug/what-is-aws-parallelcluster.html) | [フルマネージド](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod.html) | [フルマネージド](https://docs.aws.amazon.com/pcs/latest/userguide/what-is-pcs.html) |
-| **管理が必要な項目** | [Slurm 設定、ノード管理、障害対応](https://docs.aws.amazon.com/parallelcluster/latest/ug/what-is-aws-parallelcluster.html) | [最小限（IAM ロール、ネットワーク設定、ライフサイクルスクリプト）](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-operate.html) | [最小限（Launch Template、ネットワーク設定）](https://docs.aws.amazon.com/pcs/latest/userguide/getting-started-pcs.html) |
+| **サービス形態** | [セルフマネージド](https://docs.aws.amazon.com/parallelcluster/latest/ug/what-is-aws-parallelcluster.html) | [フルマネージド](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod.html) | [フルマネージド](https://docs.aws.amazon.com/pcs/latest/userguide/what-is-service.html) |
+| **管理が必要な項目** | [Slurm 設定、ノード管理、障害対応](https://docs.aws.amazon.com/parallelcluster/latest/ug/what-is-aws-parallelcluster.html) | [最小限（IAM ロール、ネットワーク設定、ライフサイクルスクリプト）](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-operate.html) | [最小限（Launch Template、ネットワーク設定）](https://docs.aws.amazon.com/pcs/latest/userguide/getting-started.html) |
 | **料金体系** | [EC2 リソース料金のみ](https://docs.aws.amazon.com/parallelcluster/latest/ug/what-is-aws-parallelcluster.html) | [ml.\* インスタンス料金](https://aws.amazon.com/sagemaker/pricing/) | [EC2 料金 + クラスタ管理料金](https://aws.amazon.com/pcs/pricing/) |
 
 ::::details 料金についての補足
@@ -136,7 +134,7 @@ ML 分散学習では、マネージドとセルフマネージの選択基準�
 | オプション | ParallelCluster | HyperPod | PCS |
 |----------|----------------|----------|-----|
 | **Savings Plans** | [EC2 Savings Plans](https://aws.amazon.com/savingsplans/pricing/) | [SageMaker Savings Plans](https://aws.amazon.com/savingsplans/ml-pricing/) | [EC2 Savings Plans](https://aws.amazon.com/savingsplans/pricing/) |
-| **Capacity Block for ML** | [対応](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-capacity-blocks.html) | [非対応](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-capacity-blocks.html) | [対応（理論上可能）](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-capacity-blocks.html) |
+| **Capacity Block for ML** | [対応](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-capacity-blocks.html) | [非対応](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-capacity-blocks.html) | [対応](https://docs.aws.amazon.com/pcs/latest/userguide/capacity-blocks.html) |
 | **Spot インスタンス** | 対応 | [対応](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-spot.html) | 対応 |
 
 :::message
@@ -230,22 +228,12 @@ HyperPod は障害検知からジョブ再開まで全自動で対応します�
 
 | 項目 | ParallelCluster | HyperPod | PCS |
 |------|----------------|----------|-----|
-| **Amazon FSx for Lustre** | [対応](https://docs.aws.amazon.com/parallelcluster/latest/ug/SharedStorage-v3.html#yaml-SharedStorage-FsxLustreSettings) | [対応](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-prerequisites.html) | [対応](https://docs.aws.amazon.com/pcs/latest/userguide/working-with_storage.html) |
-| **Amazon EFS** | [対応](https://docs.aws.amazon.com/parallelcluster/latest/ug/SharedStorage-v3.html#yaml-SharedStorage-EfsSettings) | [対応](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod.html) | [対応](https://docs.aws.amazon.com/pcs/latest/userguide/working-with_storage.html) |
-| **Amazon S3** | [対応（FSx Lustre 経由）](https://docs.aws.amazon.com/parallelcluster/latest/ug/SharedStorage-v3.html#yaml-SharedStorage-FsxLustreSettings) | [対応（ネイティブ）](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod.html) | [対応](https://docs.aws.amazon.com/pcs/latest/userguide/working-with_storage.html) |
-| **共有ファイルシステム** | [宣言的設定可能（SharedStorage）](https://docs.aws.amazon.com/parallelcluster/latest/ug/SharedStorage-v3.html) | [自動設定](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-prerequisites.html) | [自動設定](https://docs.aws.amazon.com/pcs/latest/userguide/working-with_storage.html) |
+| **Amazon FSx for Lustre** | [対応](https://docs.aws.amazon.com/parallelcluster/latest/ug/SharedStorage-v3.html#yaml-SharedStorage-FsxLustreSettings) | [対応](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-prerequisites.html) | [対応](https://docs.aws.amazon.com/pcs/latest/userguide/working-with_file-systems.html) |
+| **Amazon EFS** | [対応](https://docs.aws.amazon.com/parallelcluster/latest/ug/SharedStorage-v3.html#yaml-SharedStorage-EfsSettings) | [対応](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod.html) | [対応](https://docs.aws.amazon.com/pcs/latest/userguide/working-with_file-systems.html) |
+| **Amazon S3** | [対応](https://docs.aws.amazon.com/parallelcluster/latest/ug/SharedStorage-v3.html#yaml-SharedStorage-FsxLustreSettings) | [対応](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod.html) | [対応](https://docs.aws.amazon.com/pcs/latest/userguide/working-with_file-systems.html) |
+| **共有ファイルシステム** | [宣言的設定可能（SharedStorage）](https://docs.aws.amazon.com/parallelcluster/latest/ug/SharedStorage-v3.html) | [自動設定](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-prerequisites.html) | [自動設定](https://docs.aws.amazon.com/pcs/latest/userguide/working-with_file-systems.html) |
 
 ### スケーリング
-
-| 項目 | ParallelCluster | HyperPod | PCS |
-|------|----------------|----------|-----|
-| **オートスケーリング** | [対応（Slurm 連携）](https://docs.aws.amazon.com/parallelcluster/latest/ug/autoscaling-v3.html) | [対応](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-operate-slurm-cli-command.html) | [対応](https://docs.aws.amazon.com/pcs/latest/userguide/working-with_compute-node-groups.html) |
-| **スケールアウトの仕組み** | EC2 インスタンス起動、AMI ロード、初期化スクリプト実行 | マネージドなインスタンス管理による起動 | マネージドコントローラーによる起動最適化 |
-| **最大ノード数** | サービスクォータに依存 | サービスクォータに依存 | サービスクォータに依存 |
-| **スポットインスタンス** | [対応](https://docs.aws.amazon.com/parallelcluster/latest/ug/Scheduling-v3.html#yaml-Scheduling-SlurmQueues-CapacityType) | [対応](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-spot.html) | [対応](https://docs.aws.amazon.com/pcs/latest/userguide/working-with_compute-node-groups.html#compute-node-group-purchase-option) |
-
-:::message
-**スケールアウトの仕組みの補足**
 
 **ParallelCluster** は Slurm の自動スケーリング機能と連携し、ジョブキューの状況に応じて EC2 インスタンスを起動します。起動時には指定した AMI のロードと postinstall.sh などの初期化スクリプトが実行されます。AMI のサイズやスクリプトの複雑さによって起動時間が変動します。
 
@@ -254,7 +242,6 @@ HyperPod は障害検知からジョブ再開まで全自動で対応します�
 **PCS** はマネージドコントローラーが Slurm と連携し、インスタンス起動を最適化します。Launch Template で定義された設定に基づいてノードが起動します。
 
 実際のスケールアウト時間はインスタンスタイプ、リージョン、キャパシティ状況によって変動します。具体的な性能については、AWS 公式ドキュメントやベンチマークテストを参照してください。
-:::
 
 ## まとめ
 
