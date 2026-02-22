@@ -157,7 +157,7 @@ ML 分散学習では、マネージドとセルフマネージの選択基準�
 | 項目 | ParallelCluster | HyperPod | PCS |
 |------|----------------|----------|-----|
 | **対応インスタンス** | [通常の EC2 インスタンス](https://docs.aws.amazon.com/parallelcluster/latest/ug/Scheduling-v3.html)（`p4d`, `p5`, `trn1` など） | [ML インスタンス](https://docs.aws.amazon.com/sagemaker/latest/APIReference/API_ClusterInstanceGroupSpecification.html)（`ml.p4d`, `ml.p5`, `ml.trn1` など） | [通常の EC2 インスタンス](https://docs.aws.amazon.com/pcs/latest/userguide/key-concepts.html) |
-| **CPU インスタンス** | [対応](https://docs.aws.amazon.com/parallelcluster/latest/ug/Scheduling-v3.html)（Hpc7a, C6i など） | [対応](https://docs.aws.amazon.com/sagemaker/latest/APIReference/API_ClusterInstanceGroupSpecification.html)（ml.c5.*, ml.m5.* など。主用途は前処理や補助タスク） | [対応](https://aws.amazon.com/pcs/pricing/) |
+| **CPU インスタンス** | [対応](https://docs.aws.amazon.com/parallelcluster/latest/ug/Scheduling-v3.html)（Hpc7a, C6i など） | [対応](https://docs.aws.amazon.com/sagemaker/latest/APIReference/API_ClusterInstanceGroupSpecification.html) | [対応](https://aws.amazon.com/pcs/pricing/) |
 | **UltraServers** | [対応（v3.14.0+）](https://github.com/aws/aws-parallelcluster/releases/tag/v3.14.0) | [対応](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod.html) | 未確認 |
 
 :::message
@@ -183,7 +183,7 @@ HyperPod は `ml.*` プレフィックスのインスタンスを使用するの
 |------|----------------|----------|-----|
 | **Slurm** | [対応](https://docs.aws.amazon.com/parallelcluster/latest/ug/Scheduling-v3.html) | [対応](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-operate-slurm.html) | [対応](https://aws.amazon.com/pcs/features/) |
 | **AWS Batch** | [対応](https://docs.aws.amazon.com/parallelcluster/latest/ug/Scheduling-v3.html) | 非対応 | 非対応 |
-| **Kubernetes/EKS (Elastic Kubernetes Service)** | 非対応 | [対応](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-eks.html) | 非対応 |
+| **Kubernetes/EKS** | 非対応 | [対応](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-eks.html) | 非対応 |
 | **Slurm バージョン管理** | 手動 | マネージド更新 | [マネージド更新](https://aws.amazon.com/pcs/features/) |
 
 ### カスタマイズとライフサイクル管理
@@ -191,7 +191,7 @@ HyperPod は `ml.*` プレフィックスのインスタンスを使用するの
 | 項目 | ParallelCluster | HyperPod | PCS |
 |------|----------------|----------|-----|
 | **ノード起動時スクリプト** | [OnNodeStart, OnNodeConfigured, OnNodeUpdated](https://docs.aws.amazon.com/parallelcluster/latest/ug/custom-bootstrap-actions-v3.html) | ライフサイクルスクリプト | Launch Template のみ |
-| **カスタム AMI (Amazon Machine Image)** | 対応 | 対応 | [対応](https://docs.aws.amazon.com/pcs/latest/userguide/working-with_ami_custom.html) |
+| **カスタム AMI (Amazon Machine Image)** | [対応](https://docs.aws.amazon.com/parallelcluster/latest/ug/building-custom-amis.html) | [対応](https://docs.aws.amazon.com/sagemaker/latest/dg/hyperpod-custom-ami-support.html) | [対応](https://docs.aws.amazon.com/pcs/latest/userguide/working-with_ami_custom.html) |
 | **スクリプト実行タイミング** | [起動直後/設定完了後/更新後](https://docs.aws.amazon.com/parallelcluster/latest/ug/custom-bootstrap-actions-v3.html) | 起動時 | Launch Template 経由 |
 | **動的設定変更** | 限定的 | 対応 | 限定的 |
 
@@ -203,85 +203,17 @@ HyperPod は `ml.*` プレフィックスのインスタンスを使用するの
 
 | 項目 | ParallelCluster | HyperPod | PCS |
 |------|----------------|----------|-----|
-| **自動障害検知** | [対応（組み込み）](https://docs.aws.amazon.com/parallelcluster/latest/ug/monitoring-v3.html) | [対応（組み込み）](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-operate.html) | [対応（組み込み）](https://docs.aws.amazon.com/pcs/latest/userguide/monitoring-clusters.html) |
-| **自動ノード交換** | [対応（clustermgtd による自動検出・交換）](https://github.com/aws/aws-parallelcluster/blob/develop/CHANGELOG.md) | [対応（自動）](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-operate.html) | [マネージドコントローラーによる対応](https://docs.aws.amazon.com/pcs/latest/userguide/monitoring-clusters.html) |
-| **ジョブ自動再開** | Slurm --requeue 対応（PCS と同じ） | [対応（Slurm/EKS）](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-operate.html) | [Slurm ネイティブ機能（--requeue）のみ](https://docs.aws.amazon.com/pcs/latest/userguide/working-with_slurm.html) |
-| **ヘルスチェック** | [組み込み（clustermgtd/computemgtd）](https://docs.aws.amazon.com/parallelcluster/latest/ug/monitoring-v3.html) | 自動組み込み | [自動組み込み](https://docs.aws.amazon.com/pcs/latest/userguide/monitoring-clusters.html) |
-| **チェックポイント** | アプリ依存 | [SageMaker 統合](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-operate.html) | アプリ依存 |
+| **自動障害検知** | [対応（組み込み）](https://docs.aws.amazon.com/parallelcluster/latest/ug/troubleshooting-v3-cluster-health-metrics.html) | [対応（組み込み）](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-resiliency-slurm-cluster-health-check.html) | [対応（組み込み）](https://docs.aws.amazon.com/pcs/latest/userguide/monitoring-cloudwatch.html) |
+| **自動ノード交換** | [対応（clustermgtd による自動検出・交換）](https://github.com/aws/aws-parallelcluster/blob/develop/CHANGELOG.md) | [対応（自動）](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-resiliency-slurm-auto-resume.html) | [マネージドコントローラーによる対応](https://docs.aws.amazon.com/pcs/latest/userguide/monitoring-cloudwatch.html) |
+| **ジョブ自動再開** | Slurm --requeue 対応 | [対応（Slurm/EKS）](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-resiliency-slurm-auto-resume.html) | [slurm --requeue](https://docs.aws.amazon.com/pcs/latest/userguide/slurm.html) |
+| **ヘルスチェック** | [組み込み](https://docs.aws.amazon.com/parallelcluster/latest/ug/troubleshooting-v3-cluster-health-metrics.html) | 自動組み込み | [自動組み込み](https://docs.aws.amazon.com/pcs/latest/userguide/monitoring-cloudwatch.html) |
+| **チェックポイント** | アプリ依存 | [マネージド機能あり](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-resiliency-slurm-auto-resume.html) | アプリ依存 |
 
 :::message
-**ParallelCluster のレジリエンス**: clustermgtd により不健全なノードの自動検出と交換に対応しています（詳細: [monitoring-v3.html](https://docs.aws.amazon.com/parallelcluster/latest/ug/monitoring-v3.html)）。ただし、ジョブの自動再開にはアプリケーション側でのチェックポイント実装が必要です。HyperPod のような SageMaker 統合の高度なレジリエンス機能（自動チェックポイント管理）とは異なります。
+**ParallelCluster のレジリエンス**: ParallelCluster は clustermgtd（クラスター管理デーモン）と computemgtd（コンピュートノード管理デーモン）により、不健全なノードの自動検出と交換に対応しています。詳細は [Cluster health metrics](https://docs.aws.amazon.com/parallelcluster/latest/ug/troubleshooting-v3-cluster-health-metrics.html) および [CHANGELOG](https://github.com/aws/aws-parallelcluster/blob/develop/CHANGELOG.md) を参照してください。ただし、ジョブの自動再開にはアプリケーション側でのチェックポイント実装が必要です。HyperPod のような SageMaker 統合の高度なレジリエンス機能（自動チェックポイント管理）とは異なります。
 
 **PCS のジョブ再開**: Slurm のネイティブな `--requeue` 機能を利用したジョブ再開は可能ですが、HyperPod のような SageMaker 統合のチェックポイントベースの自動再開とは異なります。アプリケーション側でチェックポイントを実装する必要があります。
 :::
-
-#### レジリエンス機能の比較図
-
-以下の図は、障害発生時の各サービスの対応フローを示しています。
-
-```mermaid
-graph LR
-    %% 障害発生を起点とした各サービスの対応フロー
-    FAULT["障害発生<br/>（ノード故障・GPU エラー）"]
-
-    %% ParallelCluster の対応フロー
-    subgraph PC_RES["ParallelCluster のレジリエンス"]
-        direction LR
-        PC_DET["障害検知<br/>CloudWatch / Slurm"]
-        PC_REPLACE["自動ノード交換<br/>(clustermgtd)"]
-        PC_RESTART["ジョブ再投入<br/>(手動/--requeue)"]
-
-        PC_DET --> PC_REPLACE
-        PC_REPLACE --> PC_RESTART
-    end
-
-    %% HyperPod の対応フロー
-    subgraph HP_RES["HyperPod のレジリエンス"]
-        direction LR
-        HP_DET["自動障害検知<br/>ヘルスチェック"]
-        HP_REPLACE["自動ノード交換"]
-        HP_CKPT["チェックポイント<br/>復元"]
-        HP_RESUME["ジョブ自動再開"]
-
-        HP_DET --> HP_REPLACE
-        HP_REPLACE --> HP_CKPT
-        HP_CKPT --> HP_RESUME
-    end
-
-    %% PCS の対応フロー
-    subgraph PCS_RES["PCS のレジリエンス"]
-        direction LR
-        PCS_DET["自動障害検知<br/>ヘルスチェック"]
-        PCS_REPLACE["自動ノード交換"]
-        PCS_REQUEUE["Slurm --requeue<br/>によるジョブ再開"]
-
-        PCS_DET --> PCS_REPLACE
-        PCS_REPLACE --> PCS_REQUEUE
-    end
-
-    FAULT --> PC_DET
-    FAULT --> HP_DET
-    FAULT --> PCS_DET
-
-    %% スタイル
-    style FAULT fill: #ffcdd2,stroke: #c62828,stroke-width:2px
-
-    style PC_RES fill: #e8f4fd,stroke: #1a73e8,stroke-width:2px
-    style PC_DET fill: #bbdefb,stroke: #1a73e8
-    style PC_REPLACE fill: #bbdefb,stroke: #1a73e8
-    style PC_RESTART fill: #bbdefb,stroke: #1a73e8
-
-    style HP_RES fill: #fce8e6,stroke: #d93025,stroke-width:2px
-    style HP_DET fill: #f8bbd0,stroke: #d93025
-    style HP_REPLACE fill: #f8bbd0,stroke: #d93025
-    style HP_CKPT fill: #f8bbd0,stroke: #d93025
-    style HP_RESUME fill: #f8bbd0,stroke: #d93025
-
-    style PCS_RES fill: #e6f4ea,stroke: #137333,stroke-width:2px
-    style PCS_DET fill: #c8e6c9,stroke: #137333
-    style PCS_REPLACE fill: #c8e6c9,stroke: #137333
-    style PCS_REQUEUE fill: #c8e6c9,stroke: #137333
-```
 
 HyperPod は障害検知からジョブ再開まで全自動で対応します。PCS と ParallelCluster は自動ノード交換まで対応しますが、ジョブ再開は Slurm のネイティブ機能（--requeue）に依存します。ParallelCluster の clustermgtd は不健全なノードを自動的に検出・交換します。
 
@@ -289,10 +221,10 @@ HyperPod は障害検知からジョブ再開まで全自動で対応します�
 
 | 項目 | ParallelCluster | HyperPod | PCS |
 |------|----------------|----------|-----|
-| **組み込みモニタリング** | [限定的（CloudWatch Logs 転送）](https://docs.aws.amazon.com/parallelcluster/latest/ug/monitoring-v3.html) | [対応（CloudWatch）](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-operate.html) | [対応（組み込み）](https://docs.aws.amazon.com/pcs/latest/userguide/monitoring-clusters.html) |
-| **カスタムメトリクス** | [手動（Prometheus など）](https://docs.aws.amazon.com/parallelcluster/latest/ug/monitoring-v3.html) | CloudWatch 統合 | [CloudWatch 統合](https://docs.aws.amazon.com/pcs/latest/userguide/monitoring-clusters.html) |
-| **ログ管理** | [CloudWatch Logs 自動転送あり](https://docs.aws.amazon.com/parallelcluster/latest/ug/monitoring-v3.html) | 自動集約 | [自動集約](https://docs.aws.amazon.com/pcs/latest/userguide/monitoring-clusters.html) |
-| **ダッシュボード** | [手動構築](https://docs.aws.amazon.com/parallelcluster/latest/ug/monitoring-v3.html) | SageMaker Console | [AWS Console](https://docs.aws.amazon.com/pcs/latest/userguide/monitoring-clusters.html) |
+| **組み込みモニタリング** | [限定的（CloudWatch Logs 転送）](https://docs.aws.amazon.com/parallelcluster/latest/ug/Monitoring-v3.html) | [対応（CloudWatch）](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod.html) | [対応（組み込み）](https://docs.aws.amazon.com/pcs/latest/userguide/monitoring-overview.html) |
+| **カスタムメトリクス** | [手動（Prometheus など）](https://docs.aws.amazon.com/parallelcluster/latest/ug/Monitoring-v3.html) | CloudWatch 統合 | [CloudWatch 統合](https://docs.aws.amazon.com/pcs/latest/userguide/monitoring-overview.html) |
+| **ログ管理** | [CloudWatch Logs 自動転送あり](https://docs.aws.amazon.com/parallelcluster/latest/ug/Monitoring-v3.html) | 自動集約 | [自動集約](https://docs.aws.amazon.com/pcs/latest/userguide/monitoring-overview.html) |
+| **ダッシュボード** | [手動構築](https://docs.aws.amazon.com/parallelcluster/latest/ug/Monitoring-v3.html) | SageMaker Console | [AWS Console](https://docs.aws.amazon.com/pcs/latest/userguide/monitoring-overview.html) |
 
 ### ストレージ統合
 
@@ -322,26 +254,6 @@ HyperPod は障害検知からジョブ再開まで全自動で対応します�
 **PCS** はマネージドコントローラーが Slurm と連携し、インスタンス起動を最適化します。Launch Template で定義された設定に基づいてノードが起動します。
 
 実際のスケールアウト時間はインスタンスタイプ、リージョン、キャパシティ状況によって変動します。具体的な性能については、AWS 公式ドキュメントやベンチマークテストを参照してください。
-:::
-
-## できること・できないこと
-
-以下の表は、各サービスで特に注意すべき機能の有無を示しています。
-
-| 項目 | ParallelCluster | HyperPod | PCS |
-|------|----------------|----------|-----|
-| **オープンソース** | [対応](https://github.com/aws/aws-parallelcluster)（コミュニティ貢献可能） | 非対応（プロプライエタリ） | 非対応（プロプライエタリ） |
-| **カスタムブートストラップアクション** | [対応](https://docs.aws.amazon.com/parallelcluster/latest/ug/custom-bootstrap-actions-v3.html)（OnNodeConfigured, OnNodeStart） | 対応（OnCreate のみ） | 非対応（Launch Template のみ） |
-| **自動障害検知とノード交換** | [対応（clustermgtd による自動検出・交換。チェックポイント統合なし）](https://docs.aws.amazon.com/parallelcluster/latest/ug/monitoring-v3.html) | [対応（自動）](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-operate.html) | 対応（自動） |
-| **ジョブ自動再開（チェックポイント統合）** | Slurm --requeue 対応 | [対応（SageMaker 統合）](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-operate.html) | Slurm --requeue 対応 |
-| **Topology-aware スケジューリング** | [対応（Slurm トポロジープラグイン、v3.14.0+）](https://github.com/aws/aws-parallelcluster/releases/tag/v3.14.0) | [対応（自動、UltraServers）](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-topology.html) | Slurm ネイティブ機能のみ |
-| **SageMaker エコシステムとの統合** | 非対応 | [対応（ネイティブ）](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod.html) | 非対応 |
-| **AWS Batch サポート** | [対応（alinux2/x86_64 のみ、2025 年 6 月 EOL）](https://docs.aws.amazon.com/parallelcluster/latest/ug/Scheduling-v3.html) | 非対応 | 非対応 |
-| **EKS サポート** | 非対応 | [対応（ネイティブ）](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod-eks.html) | 非対応 |
-| **UltraServers** | [対応（P6e-GB200、v3.14.0+）](https://github.com/aws/aws-parallelcluster/releases/tag/v3.14.0) | [対応](https://docs.aws.amazon.com/sagemaker/latest/dg/sagemaker-hyperpod.html) | 未確認 |
-
-:::message
-**表の見方**: この表は各サービス固有の強みと制約を示しています。他のセクションで既に説明済みの基本機能（Slurm 対応、EFA 対応、ストレージ統合など）は省略しています。
 :::
 
 ## まとめ
