@@ -1,5 +1,5 @@
 ---
-title: "Transformer の分散並列化を理解する"
+title: "Transformer の分散並列化を理解する -- 前編"
 free: true
 ---
 
@@ -186,7 +186,7 @@ graph TB
 ```
 
 :::message
-各操作の通信量はデータサイズや通信トポロジー（Ring, Tree 等）によって異なります。例えば Ring AllReduce では各 GPU が送受信するデータ量は $2 \times (N-1) / N \times M$（$M$: メッセージサイズ、$N$: GPU 数）となり、GPU 数が増えても 1 GPU あたりの通信量はほぼ一定です。詳細は [NCCL のドキュメント](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/usage/collectives.html) を参照してください。
+各操作の通信量はデータサイズや通信トポロジー（Ring, Tree 等）によって異なります。例えば Ring AllReduce では各 GPU が送受信するデータ量は $\frac{2(N-1)}{N} \times M$（$M$: メッセージサイズ、$N$: GPU 数）となり、GPU 数が増えても 1 GPU あたりの通信量はほぼ一定です。詳細は [NCCL のドキュメント](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/usage/collectives.html) を参照してください。
 :::
 
 **P2P 通信（Point-to-Point）について**
@@ -310,6 +310,8 @@ graph TB
 :::message
 **端的に言うと**: 重み行列を分割して複数 GPU に配置することで、1 つの GPU に収まらない大きなモデルを扱えるようにする。
 :::
+
+以下の図では、H は中間次元（例: FFN の場合 4D）を表します。
 
 ```mermaid
 graph LR
@@ -565,7 +567,7 @@ graph TB
     style AG1 fill: #e1f5fe,stroke: #0288d1
     style Full1 fill: #f5f5f5,stroke: #616161
     style QKV fill: #fff8e1,stroke: #f9a825
-    style Attn fill: #fce4ec,stroke: #c62828
+    style Attn fill: #fff8e1,stroke: #f9a825
     style OutProj fill: #fff8e1,stroke: #f9a825
     style RS1 fill: #e1f5fe,stroke: #0288d1
     style Output fill: #e1f5fe,stroke: #0288d1
@@ -946,7 +948,7 @@ graph TB
 |---------|---------|---------|---------|---------|------|
 | 1 | 入力準備 | トークン ID | $[B, S]$ のシーケンス | なし（全 GPU にブロードキャスト） | 全 GPU: トークン ID $[B, S]$ |
 | 2 | Lookup | 各 GPU の語彙範囲 | GPU 0: ID 0～V/4 の埋め込みを取得<br/>GPU 1: ID V/4～V/2 の埋め込みを取得<br/>該当しないトークンは 0 ベクトル | なし | 各 GPU: 0 埋めされた埋め込み $[B, S, D]$ |
-| 3 | 集約 | 0 埋めテンソル | 各 GPU の結果を要素ごとに合算 | **AllReduce**（デフォルト）または **ReduceScatter**（sp 併用時） | 全 GPU: 完全な埋め込み $[B, S, D]$（AllReduce の場合）<br/>各 GPU: 埋め込みの一部（ReduceScatter の場合） |
+| 3 | 集約 | 0 埋めテンソル | 各 GPU の結果を要素ごとに合算 | **AllReduce**（デフォルト）または **ReduceScatter**（sp 併用時） | 全 GPU: 完全な埋め込み $[B, S, D]$（AllReduce の場合）<br/>各 GPU: 埋め込みの S 次元の一部 $[B, S/sp, D]$（ReduceScatter の場合、sp 形式へ直接移行） |
 
 ## 出力層での処理（Logit 計算）
 
@@ -954,8 +956,8 @@ graph TB
 
 | フェーズ | 入力 | 重み行列 | 出力 | 通信 |
 |---------|------|---------|------|------|
-| 訓練時 | $[B, S, D]$ | $[D, V/tp]$ に分割 | 各 GPU: $[B, S, V/tp]$ | AllReduce（cross entropy） |
-| 推論時 | $[B, S, D]$ | $[D, V/tp]$ に分割 | 全 GPU: $[B, S, V]$ | AllGather |
+| 訓練時 | $[B, S, D]$ | $[D, V/vp]$ に分割 | 各 GPU: $[B, S, V/vp]$ | AllReduce（cross entropy） |
+| 推論時 | $[B, S, D]$ | $[D, V/vp]$ に分割 | 全 GPU: $[B, S, V]$ | AllGather |
 
 **処理の流れ（埋め込み層の例）**
 
@@ -990,6 +992,8 @@ sp と組み合わせる場合は AllReduce の代わりに ReduceScatter を使
 | Context Parallel (cp) | シーケンス S（Attention） | 超長シーケンスの $O(S^2)$ 削減 | P2P（Ring Attention） | 独立 |
 | Expert Parallel (ep) | MoE の Expert | Expert メモリ削減 | AllToAll | dp と同じ |
 | Vocab Parallel (vp) | 語彙次元 V | 埋め込み層メモリ削減 | AllReduce or ReduceScatter | tp と同じ[^6] |
+
+[^6]: Megatron-LM および NeMo の実装では vp と tp が同一デバイスグループを共有
 
 ## 並列化戦略の適用順序
 
@@ -1179,7 +1183,7 @@ graph TB
 | 処理 | 並列化 | 理由 | 分割対象 |
 |------|--------|------|----------|
 | LayerNorm | sp | 各トークンに独立して正規化を適用する要素単位演算 | シーケンス次元 S を分割 |
-| QKV 射影 | tp | 大きな重み行列 $[D, 3D]$ による行列積演算 | Attention ヘッド方向（出力次元）を分割 |
+| QKV 射影 | tp | 大きな重み行列（Q, K, V の射影を結合した $[D, 3D]$）による行列積演算 | Attention ヘッド方向（出力次元）を分割 |
 | Attention 計算 | cp | 長いシーケンス（例: 128K トークン）での Attention 計算 | Query/Key/Value のシーケンス次元を分割 |
 | 出力射影 | tp | 分割された Attention ヘッドを元の次元に戻す行列積演算 | 入力次元（ヘッド方向）を分割 |
 
@@ -1326,7 +1330,9 @@ graph TB
 
 ## まとめ
 
-本記事では、Transformer の分散並列化を支える 6 つの並列化戦略と 4 つの集団通信操作を解説しました。正直ややこしすぎて頭がおかしくなりそうですが並列化戦略は効果的な大規模訓練や推論に必須の技術なのでしっかり今後も実務レベルでの解像度を高めていきたいです。
+本記事では、Transformer の分散並列化を支える 6 つの並列化戦略と 4 つの集団通信操作を解説しました。正直、ややこしすぎて頭が混乱しそうですが、並列化戦略は効果的な大規模訓練や推論に必須の技術です。今後も実務レベルでの理解を深めていきたいと思います。もし何か間違いや分かりづらい点などあればお気軽に以下に記載ください。
+
+https://zenn.dev/tosshi/scraps/9da4a1076302c2
 
 
 ## 参考文献
