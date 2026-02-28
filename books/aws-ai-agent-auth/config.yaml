@@ -1,0 +1,28 @@
+title: "AWS AgentCore で実現する AI Agent の認証認可設計"
+summary: "AI Agent 時代の認証認可設計を AWS AgentCore を中心に体系的に解説します。4層 Defense in Depth アーキテクチャ、マルチテナント対応、Memory アクセス制御など、実装可能な設計パターンを提供します。
+
+本書は bedrock-agentcore-cookbook で 95% の実装検証済みです。
+
+# ライセンス
+
+© 2025 littlemex.
+
+本文および自作図表: CC BY 4.0
+
+※公式ドキュメントからの引用や翻訳部分は原典の著作権に従います。
+
+引用画像: 各画像の出典に記載されたライセンスに従います。"
+topics: ["AWS", "Security", "AI", "AgentCore", "IAM"]
+published: false
+price: 0 # 無料
+# 本に含めるチャプターを順番に並べましょう
+chapters:
+  - ch01
+  - ch02
+  - ch03
+  - ch04
+  - ch05
+  - ch06
+  - ch07
+  - ch08
+  - ch09-10
