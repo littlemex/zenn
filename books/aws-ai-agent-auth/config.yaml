@@ -17,12 +17,12 @@ published: false
 price: 0 # 無料
 # 本に含めるチャプターを順番に並べましょう
 chapters:
-  - ch01
-  - ch02
-  - ch03
-  - ch04
-  - ch05
-  - ch06
-  - ch07
-  - ch08
-  - ch09-10
+  - introduction
+  - auth-patterns-3lo-vs-2lo
+  - mcp-auth-integration
+  - agentcore-access-control
+  - defense-in-depth-architecture
+  - entity-design-dynamodb
+  - memory-access-control
+  - multi-tenant-design
+  - implementation-roadmap
