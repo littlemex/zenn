@@ -1,0 +1,10 @@
+title: "AWS ParallelCluster ワークショップ"
+summary: "AWS ParallelCluster の初学者向けワークショップです"
+topics: ["Training", "ParallelCluster", "Distributed", "Slurm", "AWS"]
+published: false
+price: 0 # 有料の場合200〜5000
+# 本に含めるチャプターを順番に並べましょう
+chapters:
+  - 00-overview
+  - 01-getting-started
+
