@@ -296,10 +296,9 @@ FSx OpenZFS にはマルチ AZ 構成があります。ZFS の同期レプリケ
 | `FSxLustreFilesystemId` | FSx Lustre ID | `/fsx` マウント設定 |
 | `FSxORootVolumeId` | FSx OpenZFS Volume ID | `/home` マウント設定 |
 
+# ワークショップ実施
 
-# インフラのデプロイ
-
-## アーキテクチャ概要
+## インフラのデプロイ
 
 CloudFormation テンプレート `parallelcluster-prerequisites` を使って解説した構成でデプロイします。
 
