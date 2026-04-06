@@ -266,12 +266,6 @@ Conda 環境と同じ形式の出力が得られます。
 [RANK 4] Epoch 49 | Batchsize: 32 | Steps: 8
 ```
 
-## 完了ジョブの確認
-
-```bash
-sacct --format=JobID,JobName,Partition,State,Elapsed,NodeList
-```
-
 ## ジョブのキャンセル
 
 ```bash
