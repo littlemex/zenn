@@ -364,7 +364,7 @@ SharedStorage セクションは、FSx OpenZFS を `/home` に、FSx Lustre を 
 
 `VolumeId` と `FileSystemId` は環境変数から展開されます。これらの ID は CloudFormation スタックの Outputs から取得されます。この参照関係により、ネットワークインフラとクラスターが正しく連携します。
 
-重要なのは、HeadNode と ComputeFleet の両方が同じファイルシステムをマウントすることです。研究者は HeadNode で訓練スクリプトを作成し、それを `/fsx` に保存します。Slurm ジョブを投入すると、ComputeFleet ノードが起動し、同じ `/fsx` からスクリプトを読み込んで実行します。データの同期やコピーは不要です。
+重要なのは、HeadNode と ComputeFleet の両方が同じファイルシステムをマウントすることです。研究者は HeadNode で学習スクリプトを作成し、それを `/fsx` に保存します。Slurm ジョブを投入すると、ComputeFleet ノードが起動し、同じ `/fsx` からスクリプトを読み込んで実行します。データの同期やコピーは不要です。
 
 ## Monitoring とデバッグの設定
 

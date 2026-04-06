@@ -8,4 +8,5 @@ chapters:
   - 00-overview
   - aws-parallelcluster-workshop-01-getting-started
   - aws-parallelcluster-workshop-02-cluster
+  - aws-parallelcluster-workshop-03-cpu-training
 
