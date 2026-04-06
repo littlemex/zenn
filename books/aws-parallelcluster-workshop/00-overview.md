@@ -1,56 +1,53 @@
 ---
-title: "Machine Learning on AWS ParallelCluster"
+title: "AWS ParallelCluster ワークショップ"
+emoji: "🏗"
 type: "tech"
+topics: ["aws", "parallelcluster", "slurm", "hpc"]
 free: true
 ---
 
-本ワークショップは [AWS 公式ワークショップ "Machine Learning on AWS ParallelCluster"](https://catalog.workshops.aws/ml-on-aws-parallelcluster/en-US) をベースに、日本語でまとめて補足を入れたものです。
 
 # ワークショップの概要
 
-AWS ParallelCluster は AWS が提供する HPC クラスター管理ツールです。Slurm スケジューラーを使って Amazon EC2 インスタンスを柔軟にスケールアウト・スケールインでき、機械学習の分散トレーニング環境を素早く構築できます。
+このワークショップは、[AWS 公式ワークショップ](https://catalog.workshops.aws/ml-on-aws-parallelcluster/en-US) を日本語で補足的な解説をするための資料です。
+
+https://github.com/awslabs/awsome-distributed-training/tree/a3e2166043acf2675dda6aa4e47e352ee1182855
+
+このワークショップの大部分が AWS WWSO ML Frameworks チームが作成した awslabs/awsome-distributed-training のリファレンス実装をベースにまとめられています。ワークショップ内容は随時変更される可能性があるのでご注意ください。
 
 # ワークショップで学べること
 
-- AWS ParallelCluster 3.x を使った HPC クラスターの構築
-- CloudFormation による VPC・FSx for Lustre のインフラ自動構築
-- Slurm によるジョブスケジューリングの基本操作（`sbatch`、`squeue`、`sinfo`）
-- CPU インスタンス（c5.4xlarge）を使った PyTorch DDP 分散学習
-- GPU インスタンス（g5.8xlarge / p4d.24xlarge）を使った Megatron-LM による GPT 事前学習
-- Prometheus と Grafana によるクラスターの可観測性（Observability）の実装
-- On-Demand Capacity Reservation（ODCR）や GPU Health Check などの運用 Tips
+- AWS ParallelCluster を使った HPC クラスターの構築
+- Slurm によるジョブスケジューリングの基本操作
+- CPU インスタンスを使った PyTorch DDP 分散学習
+- [Optional、動作未確認] GPU インスタンスを使った Megatron-LM によるトレーニング
+- Prometheus と Grafana によるクラスター o11y の実装
 
-# 全体構成
+:::message
+本日本語補足資料では公式ワークショップでは講師が口頭で補足するような説明をまとめます。GPU がなくても実施可能な CPU ベースのワークショップを用いて初学者が ML 学習インフラの環境構築についての理解を深めることを目的とします。
+:::
 
-```mermaid
-flowchart TD
-    A[概要] --> B[Getting Started<br>VPC・FSx・pcluster CLI]
-    B --> C[クラスターの作成と基本操作]
-    C --> D[CPU 分散学習<br>PyTorch DDP]
-    C --> E[GPU 分散学習<br>Megatron-LM]
-    C --> F[NCCL Tests<br>通信性能確認]
-    D --> G[可観測性<br>Grafana ダッシュボード]
-    E --> G
-    F --> G
-    G --> H[クリーンアップ]
-    C -.-> I[Tips<br>ODCR・Health Check]
+# 2 つの進め方
 
-    style A fill:#4a90d9,color:#fff
-    style B fill:#7b68ee,color:#fff
-    style C fill:#7b68ee,color:#fff
-    style D fill:#50c878,color:#fff
-    style E fill:#ff6b6b,color:#fff
-    style F fill:#ff6b6b,color:#fff
-    style G fill:#ffa500,color:#fff
-    style H fill:#808080,color:#fff
-    style I fill:#9e9e9e,color:#fff
-```
+ワークショップには **AWS 主催イベント** と **自己所有アカウント** の 2 つの進め方があります。AWS が開催してくれるイベント以外では基本的には後者の自己所有アカウントで進めてください。コストが気になる方はワークショップが終わったらリソースを削除するのが良いでしょう。
 
-# 事前準備
+# 必要なもの
+
+## 共通
+
+- AWS アカウント
+- Chrome、Firefox、Safari、Opera、Edge などのブラウザ
+- 基本的な Linux コマンドの知識
+
+## 自己所有アカウントの追加要件
 
 - AdministratorAccess 相当の IAM 権限（または以下のサービスへのアクセス権）
-  - Amazon EC2、AWS CloudFormation、Amazon FSx、Amazon VPC、AWS Systems Manager
-- 必要に応じて GPU インスタンス（g5.8xlarge など）のサービスクォータ引き上げ申請
+  - Amazon EC2（インスタンス起動・停止）
+  - AWS CloudFormation（スタック作成・削除）
+  - Amazon FSx（ファイルシステム作成・削除）
+  - Amazon VPC（VPC・サブネット・セキュリティグループ管理）
+  - AWS Systems Manager（Session Manager 経由のアクセス）
+- 必要に応じて GPU インスタンスのサービスクォータ引き上げ申請
 
 # アーキテクチャ概要
 
@@ -70,15 +67,15 @@ graph TB
         FSxL[(FSx for Lustre<br>/fsx<br>1.2 TB)]
         FSxZ[(FSx for OpenZFS<br>/home)]
     end
-    User[ユーザー / CloudShell] -->|SSM Session Manager| HN
-    HN -->|Slurm ジョブ投入| CN1
-    HN -->|Slurm ジョブ投入| CN2
-    HN -->|Slurm ジョブ投入| CN3
-    HN --- FSxL
-    CN1 --- FSxL
-    CN2 --- FSxL
-    CN3 --- FSxL
-    HN --- FSxZ
+    User[ユーザー / CloudShell] -->|SSM / SSH| HN
+    HN <-->CN1
+    HN <-->CN2
+    HN <-->CN3
+    HN <--> FSxL
+    CN1 <--> FSxL
+    CN2 <--> FSxL
+    CN3 <--> FSxL
+    HN <--> FSxZ
 
     style HN fill:#4a90d9,color:#fff
     style CN1 fill:#7b68ee,color:#fff
@@ -92,8 +89,44 @@ graph TB
 
 | コンポーネント | 説明 |
 |------------|------|
-| ヘッドノード | Slurm マスターノード。ジョブ受付・スケジューリングを担当 |
+| ヘッドノード | Slurm マスターノード。ジョブ受付・スケジューリングを担当。 |
 | コンピュートノード | Slurm ワーカーノード。ジョブ投入時にオンデマンドで起動し、アイドル後に自動削除 |
-| FSx for Lustre | 高性能並列ファイルシステム。`/fsx` にマウントされ全ノードで共有。トレーニングデータやチェックポイントの置き場として使用 |
-| FSx for OpenZFS | `/home` ディレクトリ用の共有ストレージ。全ノードで同一のホームディレクトリを参照できる |
+| FSx for Lustre | 高性能並列ファイルシステム。`/fsx` にマウントされ全ノードで共有 |
+| FSx for OpenZFS | `/home` ディレクトリ用の共有ストレージ |
 | Slurm | ジョブスケジューラー。`sbatch`・`squeue`・`sinfo` などのコマンドでジョブを管理 |
+
+:::message
+ワークショップでは構築が手間なため AWS Console に組み込まれている CloudShell を使っていますがローカル PC や SageMaker のノートブックなど好きに使うことができ、特に接続元の制限はありません。
+:::
+
+# Basic01: CPU インスタンスで分散学習体験
+
+## Step 1: Getting Started
+
+まずはインフラを構築します。CloudFormation テンプレートで VPC と FSx を作成し、pcluster CLI をインストールします。
+
+https://catalog.workshops.aws/ml-on-aws-parallelcluster/en-US/01-getting-started
+
+## Step 2: クラスターの作成
+
+クラスター構成を定義した `config.yaml` を作成し、pcluster CLI でクラスターを起動します。Slurm の基本操作も確認します。
+
+https://catalog.workshops.aws/ml-on-aws-parallelcluster/en-US/03-cluster
+
+## Step 3: CPU 分散学習
+
+CPU インスタンスでの PyTorch DDP 分散学習を実行します。
+
+https://catalog.workshops.aws/ml-on-aws-parallelcluster/en-US/04-train-cpu
+
+## Step 4: 可観測性
+
+Self-hosted Grafana ダッシュボードを構築し、クラスターのメトリクスを監視します。
+
+https://catalog.workshops.aws/ml-on-aws-parallelcluster/en-US/06-observability
+
+## Step 5: クリーンアップ
+
+ワークショップ完了後は、コスト削減のためクラスターとインフラを削除しておきましょう。
+
+https://catalog.workshops.aws/ml-on-aws-parallelcluster/en-US/08-cleanup
