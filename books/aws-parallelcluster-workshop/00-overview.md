@@ -130,3 +130,39 @@ https://catalog.workshops.aws/ml-on-aws-parallelcluster/en-US/06-observability
 ワークショップ完了後は、コスト削減のためクラスターとインフラを削除しておきましょう。
 
 https://catalog.workshops.aws/ml-on-aws-parallelcluster/en-US/08-cleanup
+
+# Advanced01: Trainium2 + NKI ワークショップ
+
+AWS Trainium2 インスタンスと Neuron Kernel Interface（NKI）を使った実験環境を構築します。ML Capacity Block を使用して容量を確保し、Neuron SDK をインストールして NKI の動作を確認します。
+
+## 対象者
+
+- AWS Neuron SDK に興味がある方
+- Trainium2 での低レベルカーネル開発を試したい方
+- ML Capacity Block の使い方を学びたい方
+- ParallelCluster + Slurm による ML インフラ構築を実践したい方
+
+## 前提条件
+
+- AWS アカウント
+- AdministratorAccess 相当の IAM 権限
+- 基本的な Linux コマンドの知識
+- sa-east-1 リージョンでの trn2.3xlarge の ML Capacity Block 予約（手動で実施）
+
+## Step 1: 環境準備（Getting Started）
+
+AWS CLI と ParallelCluster CLI をセットアップし、ML Capacity Block で trn2.3xlarge を確保します。
+
+[Advanced 01-1: 環境準備](/aws-parallelcluster-workshop-05-getting-started.md)
+
+## Step 2: Trainium2 クラスターの作成
+
+ML Capacity Block を使用した ParallelCluster を構築します。カスタム AMI のビルドはスキップし、Slurm ジョブで Neuron SDK を自動インストールします。
+
+[Advanced 01-2: Trainium2 クラスターの作成](/aws-parallelcluster-workshop-06-advanced01-create-cluster)
+
+## Step 3: NKI テストの実行
+
+構築したクラスターで NKI が正常に動作することを確認します。Slurm ジョブとして Neuron SDK をインストールし、NKI のインポートテストを実行します。
+
+[Advanced 01-3: NKI テストの実行](/aws-parallelcluster-workshop-07-advanced01-nki-test)
