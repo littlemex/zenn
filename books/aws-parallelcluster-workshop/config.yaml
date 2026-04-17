@@ -10,4 +10,7 @@ chapters:
   - aws-parallelcluster-workshop-02-cluster
   - aws-parallelcluster-workshop-03-cpu-training
   - aws-parallelcluster-workshop-04-observability
+  - aws-parallelcluster-workshop-05-getting-started
+  - aws-parallelcluster-workshop-06-cluster
+  - aws-parallelcluster-workshop-07-nki-test
 
