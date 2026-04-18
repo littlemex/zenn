@@ -44,8 +44,8 @@ HeadNode 上で GitHub から直接スクリプトをダウンロードします
 ```bash
 # NKI テストスクリプトをダウンロード
 wget https://raw.githubusercontent.com/littlemex/samples/main/aws-neuron/nki-test/test_nki.py
-wget https://raw.githubusercontent.com/littlemex/samples/main/aws-neuron/nki-test/run_nki_test_with_setup.sh
-chmod +x run_nki_test_with_setup.sh
+wget https://raw.githubusercontent.com/littlemex/samples/main/aws-neuron/nki-test/run_nki_test_with_setup.sbatch
+chmod +x run_nki_test_with_setup.sbatch
 ```
 
 では実際にバッチジョブを投入して結果を確認してみましょう。すでにクラスター作成時の設定で Compute ノードには自動的に Neuron SDK 等がインストールされているはずですが、なんらかの理由で存在しない場合はセットアップした上で NKI のバージョンを確認する簡単なジョブです。
