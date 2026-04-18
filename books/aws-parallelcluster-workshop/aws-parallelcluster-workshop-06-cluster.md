@@ -29,10 +29,6 @@ https://raw.githubusercontent.com/littlemex/samples/main/aws-neuron/setup/instal
 - PyTorch Neuron のインストール (torch-neuronx==2.6.*, neuronx-cc==2.*)
 - NKI 0.3.0 のインストール (neuronx-cc の依存関係として自動)
 
-:::message alert
-**重要**: NKI は neuronx-cc の依存関係として自動的にインストールされます。明示的に `pip install nki` を実行する必要はありません（パッケージ名が PyPI に存在しないためエラーになります）。
-:::
-
 :::message
 このスクリプトは次の章（NKI Test）で Slurm ジョブから自動実行されます。手動でダウンロードや S3 アップロードを行う必要はありません。
 :::
@@ -189,10 +185,6 @@ pcluster version
 
 先ほど解説した設定でクラスターを作成します。大体 20-25 分くらいで作成が完了します。
 
-:::message
-**Imds セクションについて**: 以前のバージョンでは `Imds.ImdsSupport: v2.0` と `HeadNode.Imds.Secured: false` の設定が含まれていましたが、これらの設定により HeadNode 初期化時に `cfn-signal` が CloudFormation に送信されず、`WaitCondition` タイムアウトが発生することが確認されました。現在は Imds セクションを削除し、ParallelCluster のデフォルト設定（IMDSv2）を使用することで問題が解決しています。
-:::
-
 https://catalog.workshops.aws/ml-on-aws-parallelcluster/en-US/03-cluster/02-setup-cluster
 
 ::::details クラスター作成
@@ -201,7 +193,7 @@ https://catalog.workshops.aws/ml-on-aws-parallelcluster/en-US/03-cluster/02-setu
 
 ```bash
 cd ~/samples/aws-neuron/parallelcluster
-bash create_config_no_fsx.sh $CR_ID
+bash create_config_mlcb.sh $CR_ID
 source env_vars
 ```
 
@@ -227,6 +219,11 @@ HeadNode:
       - Policy: arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
       - Policy: arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
       - Policy: arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+  CustomActions:
+    OnNodeConfigured:
+      Sequence:
+        - Script: 'https://raw.githubusercontent.com/aws-samples/aws-parallelcluster-post-install-scripts/main/docker/postinstall.sh'
+        - Script: 'https://raw.githubusercontent.com/aws-samples/aws-parallelcluster-post-install-scripts/main/pyxis/postinstall.sh'
 Scheduling:
   Scheduler: slurm
   SlurmSettings:
@@ -265,10 +262,19 @@ Scheduling:
         OnNodeConfigured:
           Sequence:
             - Script: 'https://raw.githubusercontent.com/aws-samples/aws-parallelcluster-post-install-scripts/main/docker/postinstall.sh'
-            - Script: 'https://raw.githubusercontent.com/littlemex/samples/main/aws-neuron/setup/install-neuron-sdk-2.29.sh'
-        OnNodeStart:
-          Sequence:
             - Script: 'https://raw.githubusercontent.com/aws-samples/aws-parallelcluster-post-install-scripts/main/pyxis/postinstall.sh'
+            - Script: 'https://raw.githubusercontent.com/littlemex/samples/main/aws-neuron/setup/install-neuron-sdk-2.29.sh'
+SharedStorage:
+  - Name: HomeDirs
+    MountDir: /home
+    StorageType: FsxOpenZfs
+    FsxOpenZfsSettings:
+      VolumeId: ${FSXO_ID}
+  - MountDir: /fsx
+    Name: fsx
+    StorageType: FsxLustre
+    FsxLustreSettings:
+      FileSystemId: ${FSX_ID}
 Monitoring:
   DetailedMonitoring: true
   Logs:
