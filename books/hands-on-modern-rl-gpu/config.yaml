@@ -1,0 +1,35 @@
+title: "AWS GPU で動かす Hands-On Modern RL"
+summary: "walkinglabs/hands-on-modern-rl (CartPole から VLM RL までの 14 章) を AWS の最新 GPU インスタンス (g7e.2xlarge / NVIDIA RTX PRO 6000 Blackwell 96GB) 上で動かすための実機検証済みハンズオン。CDK ベースの環境構築、SSM 経由の Task Runner、章ごとの venv セットアップから訓練スクリプト実行まで、つまずきポイントを網羅した日本語ガイド。
+
+# ライセンス
+
+© 2026 littlemex.
+
+本文および自作図表: CC BY 4.0
+
+※walkinglabs/hands-on-modern-rl の各章説明は原リポジトリ (CC BY-NC-SA 4.0) の要約・翻訳を含みます。
+※AWS 公式ドキュメントからの引用は原典のライセンスに従います。
+"
+topics: ["AWS", "GPU", "ReinforcementLearning", "MachineLearning", "PyTorch"]
+published: false
+price: 0
+# 本に含めるチャプターを順番に並べる
+chapters:
+  - 00-overview
+  - 01-setup
+  - 02-clone-venv
+  - 03-verification
+  - 04-cartpole
+  - 05-dpo
+  - 06-mdp
+  - 07-dqn
+  - 08-policy-gradient
+  - 09-actor-critic
+  - 10-ppo
+  - 11-rlhf
+  - 12-alignment
+  - 13-continuous-control
+  - 14-grpo-rlvr
+  - 15-agentic-rl
+  - 16-vlm-rl
+  - 17-future-trends
