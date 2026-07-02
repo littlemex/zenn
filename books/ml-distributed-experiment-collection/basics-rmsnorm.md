@@ -1,9 +1,10 @@
 ---
 title: "RMSNorm の数理: 方向の正規化と大きさのスケーリング"
-free: false
+emoji: "📐"
+type: "tech"
+topics: ["RMSNorm", "Transformer", "LLM", "MachineLearning", "Normalization"]
+free: true
 ---
-
-# RMSNorm の数理: 方向の正規化と大きさのスケーリング
 
 ## 概要
 
@@ -104,7 +105,7 @@ RMSNorm を提案した論文（Zhang & Sennrich, 2019, [arXiv:1910.07467](https
 
 ## matmul はどこに挟まるのか
 
-ユーザーの関心事である「行列積（matmul）がどこに挟まるか」を明確にします。結論から言うと、**RMSNorm のコア演算そのものに matmul は含まれません**。RMSNorm の内部は次の要素演算だけで構成されます。
+「行列積（matmul）がどこに挟まるか」を明確にします。結論から言うと、**RMSNorm のコア演算そのものに matmul は含まれません**。RMSNorm の内部は次の要素演算だけで構成されます。
 
 - 二乗（要素ごと）、平均（reduction）、平方根、除算（ブロードキャスト）、ゲイン乗算（要素ごと）
 
