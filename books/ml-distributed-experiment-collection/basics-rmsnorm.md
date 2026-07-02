@@ -355,9 +355,195 @@ RMSNorm の数理的な意味を、比較に頼らず本質だけを取り出す
 - **re-scaling invariance**: 入力を定数倍しても出力は不変。層間で暴走する活性の大きさを吸収するのが正規化の効き目の本体
 - **matmul の位置**: RMSNorm のコアは要素演算・reduction のみで matmul を含まない。matmul は直後の線形層に現れ、ゲイン $g$ はその重み行列の列スケーリングとして吸収できる
 - **backward**: 微分の力技は不要。スケール不変性から「入力方向 $u$ の勾配は伝えても無駄」→除去、と読めて $\partial L/\partial x = \frac{1}{r}(z - \langle z,u\rangle u) = \frac{1}{r}Pz$（$P=I-uu^\top$）。forward の球面への射影と同じ射影が backward にも現れ、$1/r$ 因子が暗黙の学習率調整として働く
+- **ハードフレンドリー化**: L1（MAD）正規化なら二乗を abs に・補正を符号選択に落とせる（射影先は球面から正八面体へ、ヤコビアンは非対称化）。一方、四分の一平方や偏極恒等式で乗算を二乗器に還元するトリックは、桁落ち（誤差 $\sim u\kappa$）とオーバーフロー（レンジ半減）で低精度では破綻する
 
-すべての式は数値微分・PyTorch autograd・スケール不変性テストで裏取り済みです。
+すべての式は数値微分・PyTorch autograd・スケール不変性テストで裏取り済みです。発展節の L1-RMSNorm・ヤコビアン非対称性・桁落ちも同様に数値検証しています。
+
+## 発展: 乗算器のないハードウェアで RMSNorm を再現できるか
+
+ここからは応用的な問いを扱います。**乗算器を持たない（あるいは乗算が非常に高価な）ハードウェア**を仮定します。加算・減算・絶対値・シフト、そして L2 ノルム（二乗和）程度のプリミティブは使えるものとします。このとき RMSNorm の forward/backward をどこまで再現できるでしょうか。これは架空の設定ではなく、FPGA や DSP、アナログ・インメモリ計算といった "multiplier-less" な設計で実際に問われる課題です。
+
+RMSNorm 内の乗算を洗い出すと、(a) 二乗和（統計量 $r$ の計算）、(b) スカラー逆数 $1/r$、(c) 要素ごとのスケーリング（$x_i / r$、$g_i \cdot$）、(d) backward の内積 $\langle dy, y\rangle$——の 4 種です。これらを乗算器なしで代替できるかを、2 つの方向から検討します。**L1 化**（乗算そのものを減らす）と、**恒等式による乗算の置換**（乗算を二乗＋加算に変換する）です。先に結論を言うと、前者は有望・後者は低精度で破綻します。その破綻を数式と可視化で解剖するのが本節の主眼です。
+
+### 方向1: L1-RMSNorm — 二乗を絶対値に置き換える
+
+RMS の代わりに**平均絶対値**（MAD: Mean Absolute Deviation）で正規化する変種を考えます。
+
+$$
+s(x) = \frac{1}{n}\sum_{i=1}^{n} |x_i|, \qquad y_i = \frac{x_i}{s(x)} \cdot g_i
+$$
+
+統計量が二乗を含まず **abs と加算だけ**で計算できます。二乗器すら不要で、最もハードフレンドリーです。この L1 版も RMSNorm と同じ本質的性質を保ちます。
+
+**スケール不変性**: $s(\alpha x) = |\alpha| s(x)$ なので $y(\alpha x) = y(x)$。L2 版と同様、入力の大きさを吸収します（数値実験で $10^{-16}$ 精度で確認）。
+
+**幾何**: L2 が「$\|\hat{x}\|_2 = \sqrt{n}$ の球面」への射影だったのに対し、L1 は「$\|\hat{x}\|_1 = n$ の**L1 球面（正八面体）**」への射影になります。$\hat{x} = x / s$ とすると $\sum_i |\hat{x}_i| = \sum_i |x_i| / s = n$ が常に成り立ちます。
+
+![](/images/books/ml-distributed-experiment-collection/rmsnorm-fig4-normalization-geometry.png)
+
+上図は $n=3$ で、大きさがバラバラの入力ベクトル群がそれぞれの等ノルム面に射影される様子です。左の L2 は滑らかな球面、右の L1 は角張った正八面体（$|x|+|y|+|z|=n$ の面）に点が載ります。正規化とは「等ノルム面への射影」であり、ノルムの種類を変えると射影先の**面の形が変わる**——これが L1 と L2 の幾何的な違いです。
+
+**backward**: $s$ の勾配は $\partial |x_i| / \partial x_i = \mathrm{sign}(x_i)$ を使い、L2 と同じ論理（スケール不変 → 補正項）で導けます。
+
+$$
+\frac{\partial L}{\partial x} = \frac{1}{s}\Big(g \odot dy - \mathrm{sign}(x)\, c\Big), \qquad c = \frac{\langle dy, y\rangle}{n}
+$$
+
+L2 版の $\hat{x}$ が $\mathrm{sign}(x)$ に置き換わった形です。ここに**乗算削減の妙味**があります。補正項 $\mathrm{sign}(x)\, c$ は「スカラー $c$ を、各要素の符号ビットに応じて $+c$ か $-c$ で配るだけ」——乗算ではなく**符号選択**で済みます。残る乗算は $g \odot dy$ と全体の $1/s$ 倍のみです。
+
+### L1 と L2 の決定的な違い: backward ヤコビアンの対称性
+
+L1 版には、L2 版にない際立った性質があります。**正規化部のヤコビアンが非対称になる**のです。
+
+- L2: $J = \frac{1}{r}\big(I - \hat{x}\hat{x}^\top / n\big)$ — 外積 $\hat{x}\hat{x}^\top$ は**対称**なので $J = J^\top$
+- L1: $J = \frac{1}{s}\big(I - \hat{x}\,\mathrm{sign}(x)^\top / n\big)$ — 外積 $\hat{x}\,\mathrm{sign}(x)^\top$ は左右の因子が違うため**非対称**、$J \neq J^\top$
+
+これは可視化するとはっきりします。次の図は、支配的な恒等項 $I$ を除いた rank-1 補正項 $C = J - \frac{1}{\text{scale}} I$ だけを 3D 表示したものです（$I$ を残すと対角の尖りが支配的で補正項の構造が埋もれるため）。
+
+![](/images/books/ml-distributed-experiment-collection/rmsnorm-fig2-jacobian-symmetry.png)
+
+左の L2 は補正項が対称な椀型（$C_{ij} = C_{ji}$、数値的に $\|C - C^\top\| = 0$）。右の L1 は $\mathrm{sign}(x)$ が階段状のため、行方向と列方向で構造が食い違う非対称なリッジになります（$\|C - C^\top\| = 0.14$）。
+
+この非対称性は実務上の含意を持ちます。forward が対称ヤコビアンを持つ L2 では、VJP（backward）と JVP（forward-mode）が同じ演算子で書けます。L1 ではこれが崩れるため、forward-mode 微分を使う場合は転置を意識する必要があります。ハードフレンドリーさ（二乗を消せる）と引き換えに、この対称性を失う——これが L1 化のトレードオフです。
+
+なお L1 正規化の代償として、正規化のスケールが L2 と定数倍ずれます。ガウス分布入力では $\mathrm{RMS}/\mathrm{MAD} = \sqrt{\pi/2} \approx 1.2533$ です（数値実験で $1.257$ を確認）。ただしこの定数倍は後続のゲイン $g$ が学習で吸収するため、実用上の障害にはなりません。
+
+### 方向2: 恒等式で乗算を「二乗＋加算」に置き換える — そして失敗する
+
+L1 化しても $g \odot dy$ や $1/s$ 倍といった乗算は残ります。これらすべてを消せないか。古典的な 2 つの恒等式が候補になります。
+
+**偏極恒等式**（内積を L2 ノルムだけで）:
+
+$$
+\langle a, b\rangle = \frac{1}{4}\Big(\|a + b\|_2^2 - \|a - b\|_2^2\Big)
+$$
+
+backward で全次元を結合する唯一の内積 $\langle dy, y\rangle$ が、L2 ノルム 2 回・減算・シフト（$\div 4$）だけで書けます。乗算器ゼロです。
+
+**四分の一平方乗算**（要素積を二乗器だけで）:
+
+$$
+a \cdot b = \frac{1}{4}\Big((a + b)^2 - (a - b)^2\Big)
+$$
+
+任意の要素積が「二乗・減算・シフト」に落ちます。二乗器（$\mathrm{L2}$ の中身と同じ回路）が 1 つあれば、乗算はすべてこれで代替できる——理論上は。実際、これはアナログ計算機の時代に実在した乗算手法です。
+
+**ところが、これは低精度で壊滅的に破綻します。** float64 では機械精度で正しく動くのに（恒等式なので当然です）、fp16 では使い物になりません。理由は 2 つあり、どちらも数式から予言できます。
+
+**破綻要因1: 桁落ち（catastrophic cancellation）**。$(a+b)^2 - (a-b)^2$ は「近い大きな数どうしの引き算」です。相対誤差は入力の**アスペクト比**で決まり、条件数として書けます。
+
+$$
+\kappa(a, b) = \frac{a^2 + b^2}{2|ab|} = \cosh\!\big(\ln|a/b|\big)
+$$
+
+四分の一平方の相対誤差は概ね $u \cdot \kappa$（$u$ は丸め単位）で上から抑えられます。$a \approx b$ なら $\kappa = 1$ で最良ですが、$|a/b|$ が 1 から離れると $\kappa$ は指数的に増大します。fp16（$u = 2^{-11}$）で $|a/b| = 1000$ なら $\kappa \approx 500$、上界 $u\cdot\kappa \approx 24\%$、実測 median でも相対誤差は約 14% に達します（本節末尾の検証コード出力を参照）。
+
+この振る舞いを 3D の誤差地形として可視化します。
+
+![](/images/books/ml-distributed-experiment-collection/rmsnorm-fig1-error-terrain.png)
+
+$(\log_2|a|, \log_2|b|)$ 平面上に、四分の一平方の fp16 相対誤差を高さで描いたものです。色付きの曲面が理論値 $u \cdot \kappa$、底面の黒点が fp16 実測の median で、両者はよく一致します。対角線 $a \approx b$ に沿った**谷**が条件数最小の安全地帯、そこから両翼に離れるほど**桁落ちの斜面**を駆け上がり、右奥の**絶壁**がオーバーフロー領域（次項）です。要素積が「二つの近い大きさの数」でない限り、精度が崩れることが一目で分かります。
+
+**破綻要因2: オーバーフロー（ダイナミックレンジ半減）**。$(a+b)^2$ は入力の**二乗**なので、直接乗算 $a \cdot b$ より早くオーバーフローします。fp16 の最大値は $65504$ なので、$|a+b| > \sqrt{65504} \approx 256$ で $(a+b)^2$ が $\infty$ になります。指数部のレンジを実質半分（1 ビット分）失うのです。
+
+精度とスケールを掃引した崩壊面を見ると、この 2 要因の役割分担が明確になります。
+
+![](/images/books/ml-distributed-experiment-collection/rmsnorm-fig3-precision-collapse.png)
+
+高さが相対誤差、色がオーバーフロー率です（各点で $a, b \sim \mathcal{N}(0, 1)$ に scale を掛けた分布からサンプル）。手前の **fp32** は全スケールで安定。奥の **fp16** はスケールを上げると絶壁のようにオーバーフローで崩壊します（scale=512 でオーバーフロー率 92%）。中列の **bf16** は二律背反を示します。bf16 の仮数は 7 ビットしかなく（fp16 は 10 ビット、$u = 2^{-8}$ vs $2^{-11}$）、桁落ち誤差は fp16 より**約 8 倍悪化**します。その一方で、fp32 と同じ 8 ビット指数を持つため**オーバーフローはしません**（scale=512 でも 0%）。つまり bf16 は「レンジは救われるが桁落ちはさらに悪い」——どちらの精度でも四分の一平方は使いものにならず、低精度不適合がむしろ鮮明になります。
+
+**結論: 恒等式トリックは筋が悪い。** 皮肉なことに、四分の一平方や偏極恒等式は「乗算器を省きたい低精度ハードウェア」でこそ機能しません。float64 で機械精度一致したのは「恒等式が代数的に真」であることの再確認にすぎず、ハードウェア適性を何も保証しないのです。乗算を二乗器に**還元**しても、桁落ちとオーバーフローという別のコストに化けるだけでした。
+
+生き残る方向は明確です。恒等式で乗算を消すのではなく、(1) backward を rank-1 補正の**簡単形** $\frac{1}{r}(g \odot dy - c\hat{x})$ に代数簡約して演算数そのものを減らす（精度に中立）、(2) **L1 化**で二乗を abs に、補正を符号選択に落とす（オーバーフロー耐性はむしろ向上）。ハードフレンドリーな RMSNorm の本命は、トリッキーな乗算置換ではなく、これら地道な簡約と L1 化にあります。
+
+### 発展節の検証コード
+
+本節の主張（L1-RMSNorm の正しさ・ヤコビアン非対称性・四分の一平方の桁落ち）を再現するコードです。以下は実際の実行結果とともに示します。
+
+```python
+import numpy as np
+import torch
+
+# ===== L1-RMSNorm forward / backward =====
+def l1_forward(x, g, eps=1e-5):
+    s = np.mean(np.abs(x), axis=-1, keepdims=True) + eps   # MAD (abs + add のみ)
+    return g * (x / s), (g, s, x / s)
+
+def l1_backward(dy, x, cache):
+    g, s, xhat = cache
+    n = xhat.shape[-1]
+    c = np.sum(dy * (g * xhat), axis=-1, keepdims=True) / n  # c = <dy,y>/n
+    dx = (g * dy - np.sign(x) * c) / s                       # sign(x)·c = 符号選択
+    dg = np.sum(dy * xhat, axis=0)
+    return dx, dg
+
+rng = np.random.default_rng(0)
+B, n, eps = 4, 8, 1e-5
+x = rng.standard_normal((B, n)); g = rng.standard_normal(n); dy = rng.standard_normal((B, n))
+y, cache = l1_forward(x, g, eps); dx, dg = l1_backward(dy, x, cache)
+
+xt = torch.tensor(x, requires_grad=True); gt = torch.tensor(g, requires_grad=True)
+st = torch.mean(torch.abs(xt), dim=-1, keepdim=True) + eps
+(gt * (xt / st)).backward(torch.tensor(dy))
+print("[L1] backward vs PyTorch :", np.max(np.abs(dx - xt.grad.numpy())))
+y0, _ = l1_forward(x, g, 0.0)
+print("[L1] scale invariance    :", max(np.max(np.abs(l1_forward(a*x, g, 0.0)[0]-y0)) for a in [0.1,3,100]))
+print("[L1] ||xhat||_1 (=n) :", np.round(np.sum(np.abs(x/np.mean(np.abs(x),-1,keepdims=True)),-1), 4))
+
+# ===== ヤコビアン非対称性 (g=1): L2 対称 / L1 非対称 =====
+h = 1e-6; xi = x[0]
+def jac(fn):
+    J = np.zeros((n, n))
+    for k in range(n):
+        e = np.zeros(n); e[k] = h
+        J[:, k] = (fn((xi+e)[None])[0] - fn((xi-e)[None])[0]) / (2*h)
+    return J
+J_L2 = jac(lambda v: v / np.sqrt(np.mean(v*v, -1, keepdims=True)))
+J_L1 = jac(lambda v: v / np.mean(np.abs(v), -1, keepdims=True))
+print("[L2] 非対称度 |J-J^T| =", np.max(np.abs(J_L2 - J_L2.T)))
+print("[L1] 非対称度 |J-J^T| =", np.max(np.abs(J_L1 - J_L1.T)))
+
+# ===== 四分の一平方の桁落ち: 相対誤差 ~ u*kappa, fp16 vs bf16 =====
+def qs(a, b, prec):                           # prec: np.float16 か "bf16"
+    cast = (lambda v: np.float16(v)) if prec is np.float16 else \
+           (lambda v: float(torch.tensor(float(v), dtype=torch.bfloat16)))
+    a, b = cast(a), cast(b)
+    return cast(cast(cast(a+b)**2 - cast(a-b)**2) / 4)
+print("[QS] a*b=((a+b)^2-(a-b)^2)/4  median rel-err (fp16 vs bf16):")
+for r in [1, 10, 100, 1000]:
+    ef, eb = [], []
+    for _ in range(4000):                     # 厳密表現を避けるため乱数摂動 + 符号ランダム
+        a0 = r * (1 + 0.3*rng.standard_normal()) * rng.choice([-1, 1])
+        b0 = 1.0 * (1 + 0.3*rng.standard_normal()) * rng.choice([-1, 1])
+        ex = np.float64(a0) * np.float64(b0)
+        if abs(ex) < 1e-6: continue
+        ef.append(abs(qs(a0, b0, np.float16) - ex) / abs(ex))
+        eb.append(abs(qs(a0, b0, "bf16") - ex) / abs(ex))
+    kappa = (r**2 + 1) / (2*r)
+    print(f"  |a/b|~{r:5d}: kappa={kappa:7.1f}  fp16={np.median(ef):.2e}  "
+          f"bf16={np.median(eb):.2e}  (u*kappa[fp16]={2**-11*kappa:.2e})")
+```
+
+実行結果:
+
+```
+[L1] backward vs PyTorch : 4.44e-16
+[L1] scale invariance    : 4.44e-16
+[L1] ||xhat||_1 (=n) : [8. 8. 8. 8.]
+[L2] 非対称度 |J-J^T| = 1.67e-10      # 対称
+[L1] 非対称度 |J-J^T| = 0.557         # 非対称
+[QS] a*b=((a+b)^2-(a-b)^2)/4  median rel-err (fp16 vs bf16):
+  |a/b|~    1: kappa=    1.0  fp16=4.49e-04  bf16=3.62e-03  (u*kappa[fp16]=4.88e-04)
+  |a/b|~   10: kappa=    5.0  fp16=1.56e-03  bf16=1.22e-02  (u*kappa[fp16]=2.47e-03)
+  |a/b|~  100: kappa=   50.0  fp16=1.50e-02  bf16=1.20e-01  (u*kappa[fp16]=2.44e-02)
+  |a/b|~ 1000: kappa=  500.0  fp16=1.42e-01  bf16=1.00e+00  (u*kappa[fp16]=2.44e-01)
+```
+
+L1-RMSNorm は PyTorch と機械精度一致・スケール不変・$\|\hat{x}\|_1 = n$ を満たし、ヤコビアンは L2 が対称・L1 が非対称。四分の一平方の相対誤差は条件数 $\kappa$ に比例して増大し、fp16 では $|a/b| = 1000$ で 14% に達します。bf16 は仮数が 3 ビット少ない分、同じ条件で誤差が約 8 倍（$|a/b|=1000$ で 100%）に悪化します。すべて本文の主張どおりです。
 
 ## 参考文献
 
 - Biao Zhang, Rico Sennrich. "Root Mean Square Layer Normalization." NeurIPS 2019. [arXiv:1910.07467](https://arxiv.org/abs/1910.07467)
+- 四分の一平方乗算（quarter-square multiplication）: $ab = \frac{1}{4}((a+b)^2 - (a-b)^2)$。二乗テーブルを用いた古典的なアナログ／ディジタル乗算手法。
+- 偏極恒等式（polarization identity）: 内積をノルムで表す線形代数の基本恒等式。
+- 桁落ち（catastrophic cancellation）と条件数については数値計算の標準的な教科書（例: N. J. Higham, "Accuracy and Stability of Numerical Algorithms"）を参照。
