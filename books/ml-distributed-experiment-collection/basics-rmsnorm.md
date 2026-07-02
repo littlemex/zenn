@@ -129,58 +129,63 @@ flowchart LR
 
 なお、RMSNorm の**外側**、すなわち Attention の QKV 射影・出力射影、FFN の 2 つの線形層こそが matmul の本体（計算コストの大半）です。RMSNorm はその狭間に挟まる軽量な「スケール調整器」だと捉えると、システム全体での位置づけが正確になります。
 
-## backward（逆伝播）の導出
+## backward（逆伝播）: 微分する前に「何を伝えるべきか」
 
-学習には勾配が必要です。上流から $\partial L / \partial y_i =: (dy)_i$ が来たとき、入力 $x$ とゲイン $g$ への勾配を求めます。表記を簡潔にするため $r = \mathrm{RMS}(x) = \sqrt{\frac{1}{n}\sum_j x_j^2 + \epsilon}$、$\hat{x}_i = x_i / r$ とおきます。
+backward がやりたいのは、「出力 $y$ をこう動かしたい」という上流の要求 $dy = \partial L / \partial y$ を、「入力 $x$ をこう動かせ」という要求 $\partial L / \partial x$ に翻訳することです。RMSNorm の場合、これは連鎖律で $\delta_{ik}$ を機械的に展開しなくても、**forward の性質から直接読めます**。表記は $r = \mathrm{RMS}(x)$、$\hat{x} = x / r$ とします。
 
-### ゲイン g への勾配
+### まずゲインを剥がす（ここは自明）
 
-$y_i = g_i \hat{x}_i$ より、$g_i$ は $y_i$ にだけ効くので、
-
-$$
-\frac{\partial L}{\partial g_i} = \frac{\partial L}{\partial y_i}\cdot \hat{x}_i = (dy)_i\, \hat{x}_i
-$$
-
-実際にはミニバッチ内の全トークンで $g$ が共有されるため、トークン方向に総和します。
+$y = g \odot \hat{x}$ なので、正規化後のベクトル $\hat{x}$ が受け取る要求は $z := dy \odot g$ です。ゲイン自身への勾配は $y_i = g_i \hat{x}_i$ から即座に出ます（バッチ内で $g$ は共有なのでトークン方向に総和）。
 
 $$
 \frac{\partial L}{\partial g_i} = \sum_{\text{tokens}} (dy)_i\, \hat{x}_i
 $$
 
-### 入力 x への勾配
+残るは正規化 $x \mapsto \hat{x} = x/r$ の逆伝播だけです。
 
-まず上流勾配をゲイン込みで受けた量 $z_i := (dy)_i\, g_i = \partial L / \partial \hat{x}_i$ を定義します。$\hat{x}_i = x_i \cdot r^{-1}$ で、かつ $r$ 自身が全ての $x_j$ に依存する点に注意して連鎖律を適用します。
+### もし r が定数なら、逆スケールで終わり
 
-$r$ の偏微分は、$r^2 = \frac{1}{n}\sum_j x_j^2 + \epsilon$ を微分して
+$\hat{x} = x / r$ の $r$ を定数とみなせば、backward はただの逆スケール $\partial L/\partial x = z / r$ で終わりです。話が非自明になるのは、**$r$ 自身が $x$ に依存する**——$x$ を動かすと分母も一緒に動く——この一点だけです。ここを $\delta_{ik}$ の偏微分で押し切ることもできますが、その必要はありません。
+
+### スケール不変性が「伝えても無駄な方向」を教える
+
+ここで forward の性質を使います。RMSNorm はスケール不変、$y(\alpha x) = y(x)$ でした。これは「$x$ を**自分自身の方向** $u = x / \|x\|_2$ に沿って伸縮させても、出力は 1 ミリも動かない」という意味です。
+
+出力が動かない方向の入力変化は、損失に影響しません。ということは、その方向へ「$x$ をこう動かせ」と勾配を返しても**無意味**です。だから backward がやるべきことは 1 つ——上流の要求 $z$ から $u$ 方向の成分を捨て、残り（球面に接する方向）だけを $1/r$ 倍して返す。それが答えそのものになります。
 
 $$
-\frac{\partial r}{\partial x_k} = \frac{1}{n}\cdot\frac{x_k}{r} = \frac{\hat{x}_k}{n}
+\frac{\partial L}{\partial x} = \frac{1}{r}\big(z - \langle z, u\rangle\, u\big) = \frac{1}{r}\, P z,
+\qquad P = I - u u^\top,\quad u = \frac{x}{\|x\|_2}
 $$
 
-これを使って $\hat{x}_i = x_i / r$ を $x_k$ で微分すると、
+$P = I - u u^\top$ は「$u$ 方向を消して直交成分だけ残す」**直交射影**です。forward が「半径 $\sqrt{n}$ の球面へ射影（半径方向を捨てる）」なら、backward は「その球面の接平面へ射影（半径方向の勾配を捨てる）」。**同じ射影が順伝播と逆伝播の両方に現れます**。実際、正規化部のヤコビアンは $\frac{1}{r} P$ という対称行列で、対称だからこそ順・逆どちらの適用も同じ $\frac{1}{r} P$ を掛けるだけで済みます（数値実験で $J x = 0$ と対称性 $J = J^\top$ を確認済み。検証パート参照）。
+
+なお $u = \hat{x} / \sqrt{n}$ なので、$\hat{x}$ で書き直すと $\frac{1}{r}\big(z - \hat{x}\,\langle z, \hat{x}\rangle / n\big)$ となります。中身は同一で、実装（分母に $\epsilon$ を含む $r$ が既にある）ではこちらの形が扱いやすいので後述のコードでは $\hat{x}$ 版を使います。
+
+:::message
+「微分して確かめたい」派のために、$\delta_{ik}$ を使う厳密な連鎖律版も残しておきます（結果は上と一致）。
+:::
+
+::::details 連鎖律による厳密導出（クリックで展開）
+$z_i := (dy)_i\, g_i = \partial L / \partial \hat{x}_i$ とおきます。$\hat{x}_i = x_i r^{-1}$ で $r$ も $x$ に依存するので、まず $r^2 = \frac{1}{n}\sum_j x_j^2 + \epsilon$ を微分して $\dfrac{\partial r}{\partial x_k} = \dfrac{1}{n}\dfrac{x_k}{r} = \dfrac{\hat{x}_k}{n}$。これを使い、
 
 $$
 \frac{\partial \hat{x}_i}{\partial x_k}
 = \frac{\delta_{ik}}{r} - \frac{x_i}{r^2}\frac{\partial r}{\partial x_k}
-= \frac{\delta_{ik}}{r} - \frac{x_i}{r^2}\cdot\frac{\hat{x}_k}{n}
 = \frac{1}{r}\left(\delta_{ik} - \frac{\hat{x}_i \hat{x}_k}{n}\right)
 $$
 
-（$\delta_{ik}$ はクロネッカーのデルタ。$x_i / r = \hat{x}_i$ を使った。）したがって、
+したがって
 
 $$
 \frac{\partial L}{\partial x_k} = \sum_i z_i \frac{\partial \hat{x}_i}{\partial x_k}
-= \frac{1}{r}\left( z_k - \hat{x}_k\cdot\frac{1}{n}\sum_i z_i \hat{x}_i \right)
+= \frac{1}{r}\left( z_k - \hat{x}_k \cdot \frac{1}{n}\sum_i z_i \hat{x}_i \right)
 $$
 
-ベクトル形式でまとめると、次の簡潔な式になります。
+ベクトル形式で $\dfrac{\partial L}{\partial x} = \dfrac{1}{r}\big(z - \hat{x}\,\langle z, \hat{x}\rangle / n\big)$。$u = \hat{x}/\sqrt{n}$ を代入すれば $\frac{1}{r}(z - \langle z, u\rangle u)$ に一致し、射影として読んだ形と厳密に同じものになります。
+::::
 
-$$
-\frac{\partial L}{\partial x} = \frac{1}{r}\left( z - \hat{x}\,\frac{\langle z, \hat{x}\rangle}{n} \right),
-\qquad z = dy \odot g
-$$
-
-ここで $\langle z, \hat{x}\rangle = \sum_i z_i \hat{x}_i$ は内積です。この式の構造には明確な幾何的意味があります。第 2 項 $\hat{x}\,\langle z, \hat{x}\rangle / n$ は、上流勾配 $z$ のうち $\hat{x}$ **方向の成分を差し引く射影**になっています。RMSNorm は $x$ を半径固定の超球面に載せる操作なので、その逆伝播は「球面の半径を変える方向（＝ $\hat{x}$ 方向）の勾配成分を除去し、球面に接する方向の勾配だけを $1/r$ 倍して返す」——forward の「半径への不変性」が、backward では「半径方向勾配の除去」として現れるのです。
+### 1/r 倍 = 暗黙の学習率調整
 
 この $1/r$ 倍という因子も示唆的です。入力の大きさ $r$ が大きいほど入力への勾配は小さくなる。これが論文の言う **implicit learning rate adaptation（暗黙的な学習率調整）** の正体で、大きな活性を持つトークンほど更新が控えめになり、学習が安定します。
 
@@ -211,11 +216,11 @@ def rmsnorm_backward(dy, cache):
     return dx, dg
 ```
 
-forward は定義そのまま、backward は前節で導いた 2 本の式そのままです。`cache` に順伝播の中間量（$g, r, \hat{x}$）を保存し、逆伝播で再利用しています。
+forward は定義そのまま、backward は前節の射影の式そのままです（`dot / n` の項が $u$ 方向成分の除去、`/ r` が $1/r$ 倍に対応）。`cache` に順伝播の中間量（$g, r, \hat{x}$）を保存し、逆伝播で再利用しています。
 
 ### 正しさの検証
 
-この実装が正しいことを、3 つの独立な方法で確認します。以下は実際に手元の CPU で実行した結果です。
+この実装が正しいことを、4 つの独立な方法で確認します。以下は実際に手元の CPU で実行した結果です。
 
 **(1) 数値微分（中心差分）との一致**: 解析的勾配と、$\frac{L(x+h)-L(x-h)}{2h}$ による数値微分を比較します。
 
@@ -245,6 +250,16 @@ alpha=100.0 : max|y(ax) - y(x)| = 2.22e-16
 ```
 
 入力を 0.1〜100 倍しても出力は機械精度で不変。前節で示した re-scaling invariance が数値的にも確認できます。あわせて $\|\hat{x}\|_2 = \sqrt{n}$ も厳密に成立していることを確認しました（$n=8$ で全トークン $2.8284\ldots$）。
+
+**(4) 「スケール不変 ⟹ backward は射影」の確認**: backward セクションの主張の核心です。まず、入力方向 $u$ に沿った変化に対して出力ヤコビアン $J$ が $J x = 0$ となる（＝入力方向の勾配は伝わらない）ことを、$y(x + \alpha x)$ の $\alpha$ 微分で確認します。次に正規化部のヤコビアン $J_0$ を数値的に構成し、対称であること・$\frac{1}{r}(I - u u^\top)$ に一致することを確認します。
+
+```
+max|J x| (0 のはず) = 1.11e-10
+max|J0 - J0^T|      = 1.67e-10   # 対称
+max|J0 - (1/r)P|    = 1.66e-10   # 射影 P=I-uu^T に一致
+```
+
+$J x = 0$ が成り立つ（入力方向の勾配は消える）こと、そして backward が射影 $\frac{1}{r}(I - u u^\top)$ そのものであることが数値的に確認できました。連鎖律の展開なしに backward が導けた理由がここにあります。
 
 ### 検証コード全体
 
@@ -313,6 +328,25 @@ y0, _ = rmsnorm_forward(x, g, 0.0)
 for alpha in [0.1, 3.0, 100.0]:
     ya, _ = rmsnorm_forward(alpha * x, g, 0.0)
     print(f"alpha={alpha:6.1f}: max|y(ax)-y(x)| = {np.max(np.abs(ya - y0)):.2e}")
+
+# (4) スケール不変 => 入力方向の勾配は消える (J x = 0)、backward は射影 (1/r)(I-uu^T)
+ej = 1e-6
+yp, _ = rmsnorm_forward(x * (1 + ej), g, 0.0)
+ym, _ = rmsnorm_forward(x * (1 - ej), g, 0.0)
+print("max|J x| (0 のはず) =", np.max(np.abs((yp - ym) / (2 * ej))))  # d y(x+a x)/da|_0 = J x
+
+xi = x[0]                                     # 1 トークンで正規化部ヤコビアン J0 を構成 (g=1)
+ri = np.sqrt(np.mean(xi * xi))                # eps=0
+J0 = np.zeros((n, n))
+for k in range(n):
+    e = np.zeros(n); e[k] = h
+    yp, _ = rmsnorm_forward((xi + e)[None], np.ones(n), 0.0)
+    ym, _ = rmsnorm_forward((xi - e)[None], np.ones(n), 0.0)
+    J0[:, k] = (yp[0] - ym[0]) / (2 * h)
+ui = xi / np.linalg.norm(xi)
+P_over_r = (np.eye(n) - np.outer(ui, ui)) / ri
+print("max|J0 - J0^T|   =", np.max(np.abs(J0 - J0.T)))       # 対称
+print("max|J0 - (1/r)P| =", np.max(np.abs(J0 - P_over_r)))   # 射影に一致
 ```
 
 ## まとめ
@@ -323,7 +357,7 @@ RMSNorm の数理的な意味を、比較に頼らず本質だけを取り出す
 - **方向と大きさの分離**: 方向は入力データが、大きさはモデル（$g$）が決める。これが 2 段階構成の核心
 - **re-scaling invariance**: 入力を定数倍しても出力は不変。層間で暴走する活性の大きさを吸収するのが正規化の効き目の本体
 - **matmul の位置**: RMSNorm のコアは要素演算・reduction のみで matmul を含まない。matmul は直後の線形層に現れ、ゲイン $g$ はその重み行列の列スケーリングとして吸収できる
-- **backward**: $\partial L/\partial x = \frac{1}{r}(z - \hat{x}\,\langle z,\hat{x}\rangle/n)$。$\hat{x}$ 方向（＝半径方向）の勾配成分を除去する射影構造を持ち、$1/r$ 因子が暗黙の学習率調整として働く
+- **backward**: 微分の力技は不要。スケール不変性から「入力方向 $u$ の勾配は伝えても無駄」→除去、と読めて $\partial L/\partial x = \frac{1}{r}(z - \langle z,u\rangle u) = \frac{1}{r}Pz$（$P=I-uu^\top$）。forward の球面への射影と同じ射影が backward にも現れ、$1/r$ 因子が暗黙の学習率調整として働く
 
 すべての式は数値微分・PyTorch autograd・スケール不変性テストで裏取り済みです。
 
