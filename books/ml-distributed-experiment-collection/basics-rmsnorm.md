@@ -1,9 +1,6 @@
 ---
 title: "RMSNorm の数理: 方向の正規化と大きさのスケーリング"
-emoji: "📐"
-type: "tech"
-topics: ["RMSNorm", "Transformer", "LLM", "MachineLearning", "Normalization"]
-free: true
+free: false
 ---
 
 ## 概要
