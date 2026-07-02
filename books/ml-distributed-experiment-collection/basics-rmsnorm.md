@@ -369,6 +369,7 @@ RMSNorm 内の乗算を洗い出すと、(a) 二乗和（統計量 $r$ の計算
 
 RMS の代わりに**平均絶対値**（MAD: Mean Absolute Deviation）で正規化する変種を考えます。
 
+
 $$
 s(x) = \frac{1}{n}\sum_{i=1}^{n} |x_i|, \qquad y_i = \frac{x_i}{s(x)} \cdot g_i
 $$
