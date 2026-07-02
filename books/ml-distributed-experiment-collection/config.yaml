@@ -7,6 +7,7 @@ price: 500 # 有料の場合200〜5000
 chapters:
   - aws-hpc-ml-orchestration-comparison
   - transformer-distributed-parallelism
+  - basics-rmsnorm
 #  - pipeline-parallelism
 #  - review
 #  - background
