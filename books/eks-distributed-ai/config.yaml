@@ -1,0 +1,14 @@
+title: "EKS で始める分散 AI 基盤"
+summary: "Terraform + Karpenter で GPU/Neuron アクセラレータを動的にプロビジョニングする EKS クラスタの構築・運用ガイド"
+topics: ["EKS", "Terraform", "Karpenter", "GPU", "DistributedAI"]
+published: false
+chapters:
+  - eks-vpc-foundation
+  - eks-karpenter-setup
+  - eks-accelerator-pools
+  - eks-efa-topology
+  - eks-capacity-block
+  - eks-run-workloads
+  - eks-neuron-trainium
+  - eks-shared-storage
+  - eks-teardown-and-options
