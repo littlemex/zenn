@@ -31,25 +31,7 @@ CB を使う運用フローは次のようになる。
 
 ## 全体の中での位置付け
 
-```mermaid
-flowchart TB
-  subgraph ch13["Ch1-3"]
-    VPC["VPC"] --> EKS["EKS"] --> KP["Karpenter"] --> POOL["accelerator_pools"]
-  end
-  subgraph ch5["Ch5: このチャプター"]
-    CB_OFFER["CB offering 検索"]
-    CB_BUY["CB 購入"]
-    CB_POOL["reserved pool 追加"]
-    CB_ALARM["EventBridge 期限アラート"]
-  end
-  subgraph exec["実行"]
-    NCCL["NCCL/EFA 検証"]
-    TEARDOWN["teardown"]
-  end
-  POOL --> CB_POOL
-  CB_OFFER --> CB_BUY --> CB_POOL --> NCCL --> TEARDOWN
-  CB_POOL --> CB_ALARM
-```
+![チャプターの位置付け](/images/books/eks-distributed-ai/ch5-capacity-block.png)
 
 Ch3 までに作った `accelerator_pools` という型に、このチャプターでは「予約 ID をどう埋めるか」という運用手順を積み重ねる。プール定義そのものの構造は変わらない。
 

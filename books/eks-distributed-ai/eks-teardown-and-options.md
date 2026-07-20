@@ -20,21 +20,7 @@ title: "安全な破棄とオプション機能"
 
 ## 全体の中での位置付け
 
-```mermaid
-flowchart TB
-  subgraph build["構築 (Ch1-8)"]
-    ALL["VPC / EKS / Karpenter / Pools / Storage"]
-  end
-  subgraph ch9["Ch9: このチャプター"]
-    DRAIN["wait_for_node_drain"]
-    VPCe["VPC Endpoints (EC2/STS/SSM/S3)"]
-    DESTROY["terraform destroy"]
-    DEMO["CloudFront → ALB デモ (opt-in)"]
-  end
-  ALL --> DRAIN --> DESTROY
-  DRAIN --> VPCe
-  ALL -.-> DEMO
-```
+![チャプターの位置付け](/images/books/eks-distributed-ai/ch9-teardown.png)
 
 ## 実際に挙動を確認する
 

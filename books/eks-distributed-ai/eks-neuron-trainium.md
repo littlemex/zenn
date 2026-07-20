@@ -28,19 +28,7 @@ AMI の選び方には `ami_ssm_parameter` というフィールドを使う。`
 
 ## 全体の中での位置付け
 
-```mermaid
-flowchart TB
-  subgraph ch13["Ch1-3"]
-    POOL["accelerator_pools"]
-  end
-  subgraph ch7["Ch7: このチャプター"]
-    NEU_POOL["neuron pool (device_plugin=neuron)"]
-    NEU_ADDON["Neuron device plugin + Scheduler"]
-    NEU_AMI["Neuron AL2023 AMI"]
-  end
-  POOL --> NEU_POOL --> NEU_ADDON
-  NEU_POOL --> NEU_AMI
-```
+![チャプターの位置付け](/images/books/eks-distributed-ai/ch7-neuron-trainium.png)
 
 ## 実際に挙動を確認する
 

@@ -36,25 +36,7 @@ GPU ノードに関してもう 1 点誤解しやすいのが、GPU Operator の
 
 ## 全体の中での位置付け
 
-```mermaid
-flowchart TB
-  subgraph ch12["Ch1-2"]
-    VPC["VPC"] --> EKS["EKS"] --> KP["Karpenter"]
-  end
-  subgraph ch3["Ch3: このチャプター"]
-    POOL["accelerator_pools (terraform.tfvars)"]
-    NP["NodePool + EC2NodeClass"]
-    ADDON["GPU Operator / EFA plugin"]
-  end
-  subgraph later["Ch4-5"]
-    EFA["EFA トポロジ"]
-    CB["Capacity Block"]
-  end
-  KP --> POOL --> NP
-  POOL --> ADDON
-  NP --> EFA
-  NP --> CB
-```
+![チャプターの位置付け](/images/books/eks-distributed-ai/ch3-accelerator-pools.png)
 
 ## 実際に挙動を確認する
 

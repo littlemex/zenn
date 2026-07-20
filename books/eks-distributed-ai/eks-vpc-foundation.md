@@ -24,20 +24,7 @@ EKS 側では、コントロールプレーンに加えて m5 系インスタン
 
 このチャプターで作るのは VPC・EKS コントロールプレーン・System ノードの 3 つで、この後のチャプターで Karpenter とアクセラレータプール、各種アドオンを積み上げていく。
 
-```mermaid
-flowchart TB
-  subgraph ch1["Ch1: このチャプター"]
-    VPC["VPC (/16)"]
-    EKS["EKS コントロールプレーン"]
-    SYS["System ノード (m5 x2)"]
-  end
-  subgraph later["Ch2 以降"]
-    KP["Karpenter"]
-    POOL["accelerator_pools"]
-    ADDON["GPU Operator / EFA / Neuron"]
-  end
-  VPC --> EKS --> SYS --> KP --> POOL --> ADDON
-```
+![チャプターの位置付け](/images/books/eks-distributed-ai/ch1-vpc-foundation.png)
 
 ## 実際に挙動を確認する
 
