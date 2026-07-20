@@ -22,21 +22,7 @@ Ch1-5 で構築した基盤（EKS + Karpenter + Capacity Block + EFA）の上で
 
 ## 全体の中での位置付け
 
-```mermaid
-flowchart TB
-  subgraph "Ch1-5: 基盤構築"
-    VPC[VPC] --> EKS[EKS] --> KP[Karpenter] --> POOL[accelerator_pools]
-    POOL --> EFA[EFA 検証]
-    POOL --> CB[Capacity Block]
-  end
-  subgraph "Ch6: このチャプター"
-    RAY[KubeRay クラスタ]
-    GRPO[miles GRPO 実行]
-    VERIFY[EFA + マルチノード実証]
-  end
-  CB --> RAY --> GRPO --> VERIFY
-  EFA --> VERIFY
-```
+![チャプターの位置付け](/images/books/eks-distributed-ai/ch6-run-workloads.png)
 
 ## 実際に挙動を確認する
 
