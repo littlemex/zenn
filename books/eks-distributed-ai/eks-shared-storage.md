@@ -32,6 +32,148 @@ FSx には EFS と決定的に違う制約があります。**aws-fsx-csi-driver
 
 なお、KEDA（イベント駆動スケーリング）や Mountpoint for S3 は本章には含めません。これらはワークロード層の関心事であり、cluster-infra が提供する責務の外にあると判断しています。
 
+以降で実際の Terraform コードを引用しながら、なぜその値・その書き方にしているのかを見ていきます。対象モジュールは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/fix/eks-efa-verification-improvements/infra/eks) です。
+
+## EFS（マルチ AZ RWX）
+
+EFS は [`efs.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/efs.tf) で構成します。ファイルシステム本体はこれだけです。
+
+```hcl
+# efs.tf（抜粋）
+resource "aws_efs_file_system" "shared" {
+  count            = var.efs_enabled ? 1 : 0
+  creation_token   = "${var.cluster_name}-shared"
+  encrypted        = true
+  performance_mode = "generalPurpose"
+  throughput_mode  = "elastic" # scales with workload; no provisioned-throughput guesswork
+  ...
+}
+
+resource "aws_efs_mount_target" "shared" {
+  count           = var.efs_enabled ? length(module.vpc.private_subnets) : 0
+  file_system_id  = aws_efs_file_system.shared[0].id
+  subnet_id       = module.vpc.private_subnets[count.index]
+  security_groups = [aws_security_group.efs[0].id]
+}
+```
+
+読みどころは次の 4 点です。
+
+**`throughput_mode = "elastic"`。** プロビジョンドスループットを事前に見積もる必要がなく、ワークロードの読み書き量に合わせて自動でスケールします。HF キャッシュや NEFF の読み出しパターンは Pod の起動タイミングに依存してバースト的なので、固定のプロビジョンドスループットより elastic の方が運用の手間が少ない選択です。
+
+**private subnet ごとに 1 つのマウントターゲット。** `count = length(module.vpc.private_subnets)` で、Ch1 の VPC が持つプライベートサブネットすべてにマウントターゲットを配置します。これにより、Capacity Block の GPU/Neuron ノードがどの AZ に落ちても、同じ EFS を同じパスでマウントできます。FSx for Lustre が単一 AZ に固定される点との対比が、EFS を選ぶ決め手になります。
+
+**アクセスポイントで POSIX 権限と root path を固定する。** `aws_efs_access_point.neuron_workspace` は `posix_user`（uid/gid 0）と `root_directory`（`/neuron-workspace`、`permissions 0755`）を持ち、コンテナが root で動く前提のワークスペースをファイルシステム内に切り出します。StorageClass の動的プロビジョニング（`provisioningMode = "efs-ap"`）はこのアクセスポイントの仕組みを使って PVC ごとに新しいディレクトリを掘りますが、本章の静的 PV はこのアクセスポイント 1 つを固定で指し続けます。
+
+**CSI ドライバの削除タイミングは Karpenter のノード drain 待ちに従属する。** `aws_eks_addon.efs_csi_driver` には次のコメントが付いています。
+
+```hcl
+# Destroy ordering: null_resource.wait_for_node_drain (karpenter.tf) depends_on this
+# addon, so it is removed only after the drain-wait completes. A Pod on a draining
+# accelerator node may have an EFS-backed volume; removing the CSI driver first can stall
+# that Pod's volume unmount, which stalls the drain the wait is trying to observe.
+```
+
+CSI ドライバを先に消してしまうと、drain 中の Pod が EFS ボリュームのアンマウントに失敗し、drain 自体が終わらなくなります。`terraform destroy` の順序をこのコメント 1 つで保証している、地味だが壊れやすい依存関係です。
+
+Static Provisioning の PV（`efs_neuron_workspace_pv`）は `storageClassName = ""` にしている点も見逃せません。
+
+```hcl
+# efs.tf（抜粋）
+resource "kubectl_manifest" "efs_neuron_workspace_pv" {
+  ...
+  spec = {
+    ...
+    # Empty storageClassName marks this a statically-provisioned PV: a PVC must bind by
+    # volumeName, and the dynamic "efs-shared" StorageClass provisioner never acts on it.
+    storageClassName = ""
+    csi = {
+      driver       = "efs.csi.aws.com"
+      volumeHandle = "${aws_efs_file_system.shared[0].id}::${aws_efs_access_point.neuron_workspace[0].id}"
+    }
+  }
+}
+```
+
+同じファイルシステムに対して動的プロビジョニング用の `efs-shared` StorageClass も定義していますが、この PV は空の `storageClassName` を持つため、PVC は名前（`volumeName`）で明示的にバインドしない限りこの PV には結びつきません。動的プロビジョナーがこの PV を横取りしてバインドし直す事故を防ぐための書き方です。
+
+## FSx for Lustre と static provisioning 制約
+
+FSx は [`fsx.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/fsx.tf) で構成します。EFS との最大の違いは、**動的プロビジョニングの StorageClass が存在しない**ことです。ファイル冒頭のコメントにその理由が書かれています。
+
+```hcl
+# fsx.tf（冒頭コメント抜粋）
+# Static provisioning only (mirrors efs.tf): Terraform creates ONE filesystem and a
+# PersistentVolume with a fixed volumeHandle. There is no dynamic-provisioning StorageClass
+# here — aws-fsx-csi-driver does not support binding a StorageClass to an EXISTING
+# filesystem via a "fileSystemId" parameter (that key is not read by the driver; a PVC
+# against such a StorageClass would either error or silently provision an unwanted second
+# multi-TB filesystem).
+```
+
+`aws-fsx-csi-driver` の StorageClass は「新規にファイルシステムを作る」パラメータしか読めず、既存 FS の `fileSystemId` を渡しても無視されます。最悪の場合、意図せず 2 つ目の（TB 単位で課金される）ファイルシステムが暗黙に作られます。そのため EFS と同じ static provisioning のパターンを踏襲し、Terraform が作成した 1 つの FSx に対して固定の `volumeHandle` を持つ PV を 1 つだけ用意します。
+
+読みどころは次の 3 点です。
+
+**セキュリティグループは自己参照ルールと双方向ルールの両方が必要。** Lustre の LNET トラフィックはステートフルな SG の前提（往路を許可すれば戻りは自動で通る）に乗らず、AWS のドキュメントは SG ID ベースでの双方向ルールを明示的に要求します。`fsx.tf` は FSx 側 SG に自己参照ルール（`referenced_security_group_id = aws_security_group.fsx[0].id`）を 988 番と 1018-1023 番の両方に張り、さらに EKS ノード SG との間でも双方向にルールを張っています。
+
+```hcl
+# fsx.tf（抜粋）
+resource "aws_vpc_security_group_ingress_rule" "fsx_self_988" {
+  count                        = var.fsx_enabled ? 1 : 0
+  security_group_id            = aws_security_group.fsx[0].id
+  from_port                    = 988
+  to_port                      = 988
+  ip_protocol                  = "tcp"
+  referenced_security_group_id = aws_security_group.fsx[0].id
+}
+```
+
+この自己参照ルールを忘れると、`CreateFileSystem` が `InvalidNetworkSettings`（"do not permit Lustre LNET network traffic on port 988"）で失敗します。SG ルール自体は正しくても、FSx のネットワーク検証サービスへの**伝搬に時間がかかる**ため、`fsx.tf` は SG ルール作成後に `time_sleep.fsx_sg_propagation`（30 秒）を挟んでからファイルシステムを作成しています。
+
+```hcl
+# fsx.tf（抜粋）
+resource "time_sleep" "fsx_sg_propagation" {
+  count           = var.fsx_enabled ? 1 : 0
+  create_duration = "30s"
+  depends_on = [
+    aws_vpc_security_group_ingress_rule.fsx_self_988,
+    ...
+  ]
+}
+```
+
+コメントには「初回 apply が失敗し、再 apply では成功する」という実際の再現内容が記録されています。`depends_on` だけではAPI呼び出しの順序しか保証されず、SG ルールが検証サービスに伝搬し終わるまでは待ってくれないため、この `time_sleep` が初回 apply を決定的にしています。
+
+**静的 PV の `volumeAttributes` はキーが小文字必須。** aws-fsx-csi-driver は `dnsname` と `mountname` という小文字キーしか読みません。
+
+```hcl
+# fsx.tf（抜粋）
+volumeAttributes = {
+  dnsname   = aws_fsx_lustre_file_system.training[0].dns_name
+  mountname = aws_fsx_lustre_file_system.training[0].mount_name
+}
+```
+
+キャメルケース（`dnsName`）で書いてしまうとドライバに黙って無視され、`NodeStageVolume` が "dnsname is not provided" で失敗し Pod が `ContainerCreating` のまま止まります。`volumeHandle` はあくまで Kubernetes 側の識別子で、マウント時に AWS API を呼んで解決されるわけではないため、`dnsname`/`mountname` を PV 側に自分で埋め込む必要がある、という構造上の理由です。
+
+**IAM は `fsx:DescribeFileSystems` のみで足りる。** static provisioning では `CreateFileSystem`/`DeleteFileSystem`/`UpdateFileSystem` の権限は不要です。これらは動的プロビジョニングの専用コードパスで、固定 `volumeHandle` の PV では一度も呼ばれません。FSx は ARN スコープのリソース権限をサポートしないため `Resource = "*"` になりますが、許可するアクションそのものを 1 つに絞ることで影響範囲を抑えています。
+
+`variables.tf` のバリデーションも、この構成の落とし穴をいくつか plan 時に潰しています。
+
+```hcl
+# variables.tf（抜粋）
+variable "fsx_storage_capacity_gib" {
+  ...
+  validation {
+    condition     = var.fsx_storage_capacity_gib == 1200 || (var.fsx_storage_capacity_gib >= 2400 && var.fsx_storage_capacity_gib % 2400 == 0)
+    error_message = "fsx_storage_capacity_gib must be 1200, 2400, or a multiple of 2400 (PERSISTENT_2 SSD tier sizes)."
+  }
+}
+```
+
+PERSISTENT_2 SSD の容量は 1,200 GiB か 2,400 GiB の倍数でしか指定できないという FSx API の制約を、`terraform plan` の段階でエラーにします。これがないと、中間半端な値（例えば 3,000）を指定した場合の失敗が `CreateFileSystem` の API エラーとして apply の途中まで進んでから返ってきてしまいます。同様に `fsx_subnet_index` にも範囲チェックのバリデーションがあり、`module.vpc.private_subnets` の添字が範囲外になる前に弾かれます。
+
 ## 全体の中での位置付け
 
 本章は、Ch1〜Ch3 で作った VPC・EKS コントロールプレーン・アクセラレータノードの土台の上に、ノードのライフサイクルから独立したデータ層を積む章です。EFS と FSx はいずれも Terraform で 1 度作成すれば、その後の Karpenter によるノード入れ替えの影響を受けません。以降の章で GPU/Neuron ワークロードが HF キャッシュや NEFF、チェックポイントを読み書きする際の土台になります。
