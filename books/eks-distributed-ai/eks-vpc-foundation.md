@@ -29,7 +29,139 @@ free: true
 - **System managed node group**（m5 系 x2）: kube-system と Karpenter コントローラ自身を載せる足場です。Karpenter はここに自分のノードグループを作らない（ラベルで自己参照を避ける）ため、Karpenter が動き出すための最初の土台としてこのノードグループが要ります
 - **VPC**: 上記を収めるネットワーク
 
-この土台づくり自体は EKS の一般的な手順とほぼ同じで、特別なことはほとんどありません。ただし分散 AI 特有の注意点が 2 つあるので、そこだけ押さえておきます（詳しくは末尾の「注意」節を参照してください）。
+この土台づくり自体は EKS の一般的な手順とほぼ同じですが、分散 AI 向けに効かせている設計判断がいくつかあります。以降で実際の Terraform コードを引用しながら、なぜその値・その書き方にしているのかを見ていきます。対象モジュールは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/fix/eks-efa-verification-improvements/infra/eks) です。
+
+## VPC の設計
+
+VPC は [`vpc.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/vpc.tf) で `terraform-aws-modules/vpc/aws` モジュールを使って作ります。全体はこれだけです。
+
+```hcl
+# vpc.tf
+module "vpc" {
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "~> 5.0"
+
+  name = var.cluster_name
+  cidr = var.vpc_cidr                 # 既定 10.0.0.0/16
+
+  azs             = var.azs                  # 既定 ["us-east-2a", "us-east-2b"]
+  private_subnets = var.private_subnet_cidrs # 既定 ["10.0.0.0/18", "10.0.64.0/18"]
+  public_subnets  = var.public_subnet_cidrs  # 既定 ["10.0.254.0/24", "10.0.255.0/24"]
+
+  enable_nat_gateway     = true
+  single_nat_gateway     = true
+  one_nat_gateway_per_az = false
+
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+
+  private_subnet_tags = {
+    "karpenter.sh/discovery"                    = var.cluster_name
+    "kubernetes.io/role/internal-elb"           = "1"
+    "kubernetes.io/cluster/${var.cluster_name}" = "owned"
+  }
+  public_subnet_tags = {
+    "kubernetes.io/role/elb"                    = "1"
+    "kubernetes.io/cluster/${var.cluster_name}" = "owned"
+  }
+
+  tags = local.cluster_tags
+}
+```
+
+読みどころは次の 3 点です。
+
+**CIDR のサイジング（`/16` + `/18` x2 + `/24` x2）。** これらの既定値は [`variables.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/variables.tf) で定義しています。VPC 全体を `/16`（65,536 アドレス）、プライベートサブネットを AZ ごとに `/18`（16,384 アドレス）と大きく取り、パブリックは `/24`（256 アドレス）と小さくしています。この非対称な配分が分散 AI 向けの肝です。アクセラレータノードは VPC CNI が配る secondary IP に加え、EFA 対応インスタンスが EFA 専用 ENI を多数持ちます（`p5en.48xlarge` は 16 枚、`p5.48xlarge` は 32 枚）。1 ENI ごとに IP を消費するため、ワークロードが載るプライベートサブネットは大きく、NAT/ロードバランサーしか置かないパブリックサブネットは小さく、という配分になります。
+
+**`single_nat_gateway = true`。** NAT ゲートウェイを AZ ごとに作らず 1 つだけにしています。本番の可用性設計では AZ ごとに NAT を置きますが、実験基盤では NAT ゲートウェイの時間課金を抑えることを優先しています。プライベートサブネットからの外向き通信（イメージ pull など）はこの単一 NAT を経由します。
+
+**`private_subnet_tags` の `karpenter.sh/discovery`。** このタグが後の章で効いてきます。Karpenter は「ノードを起動してよいサブネット」をこのタグで検出します。ここで**プライベートサブネットにだけ**タグを付け、`public_subnet_tags` には付けていない点が重要です。もし共通の `tags` に含めてしまうと全サブネットに伝搬してパブリックサブネットにも付き、Karpenter がそこにノードを立ててしまいます。パブリックサブネットのノードは EC2 API への到達経路がなく `nodeadm` によるクラスタ参加に失敗するため、この付け分けは意図的です（詳細は末尾の「注意」節）。
+
+## EKS クラスタと System ノードグループ
+
+EKS 本体は [`eks.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/eks.tf) で `terraform-aws-modules/eks/aws` モジュールを使って作ります。アドオンと System ノードグループの定義が読みどころです。
+
+```hcl
+# eks.tf（抜粋）
+module "eks" {
+  source  = "terraform-aws-modules/eks/aws"
+  version = "21.24.0"
+
+  name               = var.cluster_name
+  kubernetes_version = var.kubernetes_version   # 既定 "1.35"
+
+  vpc_id     = module.vpc.vpc_id
+  subnet_ids = module.vpc.private_subnets
+
+  enable_cluster_creator_admin_permissions = true
+
+  addons = {
+    vpc-cni                = { before_compute = true }
+    kube-proxy             = {}
+    coredns                = {}
+    eks-pod-identity-agent = { before_compute = true }
+    aws-ebs-csi-driver = {
+      pod_identity_association = [{
+        role_arn        = aws_iam_role.ebs_csi.arn
+        service_account = "ebs-csi-controller-sa"
+      }]
+    }
+  }
+
+  eks_managed_node_groups = {
+    system = {
+      ami_type       = var.system_node_ami_type
+      instance_types = var.system_node_instance_types   # 既定 m5 系
+      min_size       = var.system_node_desired_size     # 既定 2
+      max_size       = var.system_node_desired_size
+      desired_size   = var.system_node_desired_size
+      labels = {
+        "karpenter.sh/controller" = "true"
+      }
+    }
+  }
+}
+```
+
+:::message
+このモジュールは `terraform-aws-eks` v21 系を使っており、引数名が `name` / `kubernetes_version` です（v20 以前の `cluster_name` / `cluster_version` ではありません）。バージョンを変える際は引数名の互換性に注意してください。
+:::
+
+**`before_compute = true` の 2 つのアドオン。** `vpc-cni` と `eks-pod-identity-agent` に `before_compute = true` を付け、ワーカーノードが起動する前にこれらを導入します。特に Pod Identity Agent は、Pod Identity で AWS 権限を得るコントローラ（次章の Karpenter や、上の `aws-ebs-csi-driver`）より先に存在していないと、それらが起動時に認証情報を取得できずクラッシュします。実際 `aws-ebs-csi-driver` には `pod_identity_association` で IAM ロールを渡しており、これが機能するには Pod Identity Agent が先にいる必要があります。順序を保証するためのフラグです。
+
+**System ノードグループの `karpenter.sh/controller` ラベル。** m5 系インスタンス（`var.system_node_ami_type` / `var.system_node_instance_types`）を `var.system_node_desired_size`（既定 2）台、`min_size = max_size = desired_size` で固定起動します。このノードグループは Karpenter が管理するのではなく、EKS Managed Node Group として常時稼働させます。`karpenter.sh/controller: "true"` というラベルを付けているのは、次章で導入する Karpenter コントローラ自身をこのノードに載せるためです。Karpenter は自分自身が動くノードは作れない（自己参照になる）ので、Karpenter を動かす最初の足場として、Karpenter の管理外のノードグループが必要になります。
+
+## Pod Identity による認証
+
+このモジュールでは、コントローラが AWS API を呼ぶための権限を **Pod Identity** で付与します。従来の IRSA（IAM Roles for Service Accounts）ではなく Pod Identity を選んでいる点が特徴です。[`iam.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/iam.tf) で Karpenter 用の IAM ロールと Pod Identity Association を作ります。
+
+```hcl
+# iam.tf（抜粋）
+module "karpenter" {
+  source  = "terraform-aws-modules/eks/aws//modules/karpenter"
+  version = "21.24.0"
+
+  cluster_name = module.eks.cluster_name
+  region       = var.region
+
+  # コントローラポリシーをマネージドではなくインライン role policy として付与
+  enable_inline_policy = true
+
+  # Pod Identity association: kube-system/karpenter SA → コントローラ role
+  create_pod_identity_association = true   # IRSA ではなく Pod Identity
+  namespace                       = local.karpenter_namespace
+  service_account                 = local.karpenter_service_account
+
+  # EC2NodeClass.spec.instanceProfile から参照する決定的なノード role 名
+  node_iam_role_use_name_prefix = false
+  node_iam_role_name            = local.karpenter_node_role_name
+  create_instance_profile       = true
+}
+```
+
+IRSA は ServiceAccount にアノテーションで IAM ロールを結び付け、OIDC プロバイダ経由で認証する方式です。これに対し Pod Identity は、IAM 側の Pod Identity Association だけで ServiceAccount とロールを結び付けられ、Kubernetes マニフェスト側にアノテーションを書かずに済みます。設定が IAM 側で完結するぶんシンプルで、この構成では Karpenter・EBS/EFS/FSx の各 CSI ドライバすべてを Pod Identity で統一しています。本章の `eks-pod-identity-agent` アドオンは、この Pod Identity を各 Pod で機能させるためのエージェントです。
+
+`enable_inline_policy = true` にも実務上の理由があります。Karpenter v1 のコントローラポリシーは約 6,172 バイトあり、AWS のマネージドポリシーのサイズ上限（6,144 バイト、変更不可）をわずかに超えて `LimitExceeded: PolicySize: 6144` で失敗します。インラインポリシー（上限 10,240 バイト）にすれば同じ権限のまま上限に収まるため、この構成ではインラインを選んでいます。
 
 ## 全体の中での位置付け
 
