@@ -3,6 +3,7 @@ summary: "Terraform + Karpenter で GPU/Neuron アクセラレータを動的に
 topics: ["EKS", "Terraform", "Karpenter", "GPU", "DistributedAI"]
 published: false
 chapters:
+  - 00-overview
   - eks-vpc-foundation
   - eks-karpenter-setup
   - eks-accelerator-pools
