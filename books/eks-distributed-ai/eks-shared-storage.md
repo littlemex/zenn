@@ -1,17 +1,17 @@
 ---
-title: "Basic08 - 共有ストレージ (EFS と FSx for Lustre)"
+title: "Basic08 - 共有ストレージ (Amazon EFS と Amazon FSx for Lustre)"
 free: true
 ---
 
-本章では、Karpenter がノードを入れ替えても失われないデータ層として、EFS（マルチ AZ の RWX キャッシュ）と FSx for Lustre（単一 AZ の高スループット・スクラッチ）を構成します。
+本章では、Karpenter がノードを入れ替えても失われないデータ層として、Amazon EFS（マルチ AZ の RWX キャッシュ）と Amazon FSx for Lustre（単一 AZ の高スループット・スクラッチ）を構成します。
 
 # 解説
 
 ## 全体構成
 
-![EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
+![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 
-本章で扱うのは、この図のうち **EFS と FSx for Lustre** の 2 つの共有ストレージです。Karpenter が起動・削除する GPU/Neuron ノードの下に、ノードのライフサイクルとは独立して存在するデータ層を用意します。
+本章で扱うのは、この図のうち **Amazon EFS と Amazon FSx for Lustre** の 2 つの共有ストレージです。Karpenter が起動・削除する GPU/Neuron ノードの下に、ノードのライフサイクルとは独立して存在するデータ層を用意します。
 
 ## これは何をするものか
 
@@ -24,19 +24,19 @@ Karpenter は consolidate（アイドルノードの回収、Ch3 で見た `cons
 
 この 2 つの用途は特性が異なるため、本章では 2 種類の共有ストレージを使い分けます。
 
-**EFS（`efs.tf`）** はマルチ AZ・ReadWriteMany（RWX）のファイルシステムです。private subnet ごとにマウントターゲットを配置するため、Capacity Block の GPU/Neuron ノードがどの AZ に居ても同じキャッシュをマウントできます。複数の推論・学習 Pod が同時に同じ HF キャッシュや NEFF を読みに来る RWX の要件にも合います。Pod Identity で `aws-efs-csi-driver` の Controller に IAM ロールを紐付け、EKS アドオンとして導入します。
+**Amazon EFS（`efs.tf`）** はマルチ AZ・ReadWriteMany（RWX）のファイルシステムです。private subnet ごとにマウントターゲットを配置するため、Capacity Block の GPU/Neuron ノードがどの AZ に居ても同じキャッシュをマウントできます。複数の推論・学習 Pod が同時に同じ HF キャッシュや NEFF を読みに来る RWX の要件にも合います。Pod Identity で `aws-efs-csi-driver` の Controller に IAM ロールを紐付け、Amazon EKS アドオンとして導入します。
 
-**FSx for Lustre（`fsx.tf`）** は単一 AZ に固定された高スループット SSD のスクラッチ領域です。PERSISTENT_2 デプロイタイプを使い、既定では無効（`fsx_enabled = false`）になっています。単一 AZ である代わりに、EFS よりも高い読み書きスループットを持ち、大規模データセットの読み出しや学習チェックポイントの書き込みに向きます。
+**Amazon FSx for Lustre（`fsx.tf`）** は単一 AZ に固定された高スループット SSD のスクラッチ領域です。PERSISTENT_2 デプロイタイプを使い、既定では無効（`fsx_enabled = false`）になっています。単一 AZ である代わりに、Amazon EFS よりも高い読み書きスループットを持ち、大規模データセットの読み出しや学習チェックポイントの書き込みに向きます。
 
-FSx には EFS と決定的に違う制約があります。**aws-fsx-csi-driver は既存のファイルシステムに対する動的プロビジョニング（StorageClass 経由での PVC バインド）に対応していません。** ドライバが読むのは新規にファイルシステムを作成するためのパラメータのみで、既存 FS の `fileSystemId` を StorageClass に渡しても無視されるか、意図しない 2 つ目の（多くの場合 TB 単位で課金される）ファイルシステムが暗黙に作られてしまいます。そのため、この構成では EFS と同じ static provisioning のパターンを踏襲し、Terraform が作成した 1 つの FSx ファイルシステムに対して固定の `volumeHandle` を持つ PersistentVolume（`fsx-training`）を 1 つだけ用意します。PVC 側はこの PV に名前でバインドします。
+Amazon FSx for Lustre には Amazon EFS と決定的に違う制約があります。**aws-fsx-csi-driver は既存のファイルシステムに対する動的プロビジョニング（StorageClass 経由での PVC バインド）に対応していません。** ドライバが読むのは新規にファイルシステムを作成するためのパラメータのみで、既存 FS の `fileSystemId` を StorageClass に渡しても無視されるか、意図しない 2 つ目の（多くの場合 TB 単位で課金される）ファイルシステムが暗黙に作られてしまいます。そのため、この構成では Amazon EFS と同じ static provisioning のパターンを踏襲し、Terraform が作成した 1 つの Amazon FSx for Lustre ファイルシステムに対して固定の `volumeHandle` を持つ PersistentVolume（`fsx-training`）を 1 つだけ用意します。PVC 側はこの PV に名前でバインドします。
 
-なお、KEDA（イベント駆動スケーリング）や Mountpoint for S3 は本章には含めません。これらはワークロード層の関心事であり、cluster-infra が提供する責務の外にあると判断しています。
+なお、KEDA（イベント駆動スケーリング）や Mountpoint for Amazon S3 は本章には含めません。これらはワークロード層の関心事であり、cluster-infra が提供する責務の外にあると判断しています。
 
 以降で実際の Terraform コードを引用しながら、なぜその値・その書き方にしているのかを見ていきます。対象モジュールは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/fix/eks-efa-verification-improvements/infra/eks) です。
 
-## EFS（マルチ AZ RWX）
+## Amazon EFS（マルチ AZ RWX）
 
-EFS は [`efs.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/efs.tf) で構成します。ファイルシステム本体はこれだけです。
+Amazon EFS は [`efs.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/efs.tf) で構成します。ファイルシステム本体はこれだけです。
 
 ```hcl
 # efs.tf（抜粋）
@@ -61,7 +61,7 @@ resource "aws_efs_mount_target" "shared" {
 
 **`throughput_mode = "elastic"`。** プロビジョンドスループットを事前に見積もる必要がなく、ワークロードの読み書き量に合わせて自動でスケールします。HF キャッシュや NEFF の読み出しパターンは Pod の起動タイミングに依存してバースト的なので、固定のプロビジョンドスループットより elastic の方が運用の手間が少ない選択です。
 
-**private subnet ごとに 1 つのマウントターゲット。** `count = length(module.vpc.private_subnets)` で、Ch1 の VPC が持つプライベートサブネットすべてにマウントターゲットを配置します。これにより、Capacity Block の GPU/Neuron ノードがどの AZ に落ちても、同じ EFS を同じパスでマウントできます。FSx for Lustre が単一 AZ に固定される点との対比が、EFS を選ぶ決め手になります。
+**private subnet ごとに 1 つのマウントターゲット。** `count = length(module.vpc.private_subnets)` で、Ch1 の VPC が持つプライベートサブネットすべてにマウントターゲットを配置します。これにより、Capacity Block の GPU/Neuron ノードがどの AZ に落ちても、同じ Amazon EFS を同じパスでマウントできます。Amazon FSx for Lustre が単一 AZ に固定される点との対比が、Amazon EFS を選ぶ決め手になります。
 
 **アクセスポイントで POSIX 権限と root path を固定する。** `aws_efs_access_point.neuron_workspace` は `posix_user`（uid/gid 0）と `root_directory`（`/neuron-workspace`、`permissions 0755`）を持ち、コンテナが root で動く前提のワークスペースをファイルシステム内に切り出します。StorageClass の動的プロビジョニング（`provisioningMode = "efs-ap"`）はこのアクセスポイントの仕組みを使って PVC ごとに新しいディレクトリを掘りますが、本章の静的 PV はこのアクセスポイント 1 つを固定で指し続けます。
 
@@ -74,7 +74,7 @@ resource "aws_efs_mount_target" "shared" {
 # that Pod's volume unmount, which stalls the drain the wait is trying to observe.
 ```
 
-CSI ドライバを先に消してしまうと、drain 中の Pod が EFS ボリュームのアンマウントに失敗し、drain 自体が終わらなくなります。`terraform destroy` の順序をこのコメント 1 つで保証している、地味だが壊れやすい依存関係です。
+CSI ドライバを先に消してしまうと、drain 中の Pod が Amazon EFS ボリュームのアンマウントに失敗し、drain 自体が終わらなくなります。`terraform destroy` の順序をこのコメント 1 つで保証している、地味だが壊れやすい依存関係です。
 
 Static Provisioning の PV（`efs_neuron_workspace_pv`）は `storageClassName = ""` にしている点も見逃せません。
 
@@ -97,9 +97,9 @@ resource "kubectl_manifest" "efs_neuron_workspace_pv" {
 
 同じファイルシステムに対して動的プロビジョニング用の `efs-shared` StorageClass も定義していますが、この PV は空の `storageClassName` を持つため、PVC は名前（`volumeName`）で明示的にバインドしない限りこの PV には結びつきません。動的プロビジョナーがこの PV を横取りしてバインドし直す事故を防ぐための書き方です。
 
-## FSx for Lustre と static provisioning 制約
+## Amazon FSx for Lustre と static provisioning 制約
 
-FSx は [`fsx.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/fsx.tf) で構成します。EFS との最大の違いは、**動的プロビジョニングの StorageClass が存在しない**ことです。ファイル冒頭のコメントにその理由が書かれています。
+Amazon FSx for Lustre は [`fsx.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/fsx.tf) で構成します。Amazon EFS との最大の違いは、**動的プロビジョニングの StorageClass が存在しない**ことです。ファイル冒頭のコメントにその理由が書かれています。
 
 ```hcl
 # fsx.tf（冒頭コメント抜粋）
@@ -111,11 +111,11 @@ FSx は [`fsx.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-
 # multi-TB filesystem).
 ```
 
-`aws-fsx-csi-driver` の StorageClass は「新規にファイルシステムを作る」パラメータしか読めず、既存 FS の `fileSystemId` を渡しても無視されます。最悪の場合、意図せず 2 つ目の（TB 単位で課金される）ファイルシステムが暗黙に作られます。そのため EFS と同じ static provisioning のパターンを踏襲し、Terraform が作成した 1 つの FSx に対して固定の `volumeHandle` を持つ PV を 1 つだけ用意します。
+`aws-fsx-csi-driver` の StorageClass は「新規にファイルシステムを作る」パラメータしか読めず、既存 FS の `fileSystemId` を渡しても無視されます。最悪の場合、意図せず 2 つ目の（TB 単位で課金される）ファイルシステムが暗黙に作られます。そのため Amazon EFS と同じ static provisioning のパターンを踏襲し、Terraform が作成した 1 つの Amazon FSx for Lustre に対して固定の `volumeHandle` を持つ PV を 1 つだけ用意します。
 
 読みどころは次の 3 点です。
 
-**セキュリティグループは自己参照ルールと双方向ルールの両方が必要。** Lustre の LNET トラフィックはステートフルな SG の前提（往路を許可すれば戻りは自動で通る）に乗らず、AWS のドキュメントは SG ID ベースでの双方向ルールを明示的に要求します。`fsx.tf` は FSx 側 SG に自己参照ルール（`referenced_security_group_id = aws_security_group.fsx[0].id`）を 988 番と 1018-1023 番の両方に張り、さらに EKS ノード SG との間でも双方向にルールを張っています。
+**セキュリティグループは自己参照ルールと双方向ルールの両方が必要。** Lustre の LNET トラフィックはステートフルな SG の前提（往路を許可すれば戻りは自動で通る）に乗らず、AWS のドキュメントは SG ID ベースでの双方向ルールを明示的に要求します。`fsx.tf` は Amazon FSx for Lustre 側 SG に自己参照ルール（`referenced_security_group_id = aws_security_group.fsx[0].id`）を 988 番と 1018-1023 番の両方に張り、さらに Amazon EKS ノード SG との間でも双方向にルールを張っています。
 
 ```hcl
 # fsx.tf（抜粋）
@@ -129,7 +129,7 @@ resource "aws_vpc_security_group_ingress_rule" "fsx_self_988" {
 }
 ```
 
-この自己参照ルールを忘れると、`CreateFileSystem` が `InvalidNetworkSettings`（"do not permit Lustre LNET network traffic on port 988"）で失敗します。SG ルール自体は正しくても、FSx のネットワーク検証サービスへの**伝搬に時間がかかる**ため、`fsx.tf` は SG ルール作成後に `time_sleep.fsx_sg_propagation`（30 秒）を挟んでからファイルシステムを作成しています。
+この自己参照ルールを忘れると、`CreateFileSystem` が `InvalidNetworkSettings`（"do not permit Lustre LNET network traffic on port 988"）で失敗します。SG ルール自体は正しくても、Amazon FSx for Lustre のネットワーク検証サービスへの**伝搬に時間がかかる**ため、`fsx.tf` は SG ルール作成後に `time_sleep.fsx_sg_propagation`（30 秒）を挟んでからファイルシステムを作成しています。
 
 ```hcl
 # fsx.tf（抜粋）
@@ -157,7 +157,7 @@ volumeAttributes = {
 
 キャメルケース（`dnsName`）で書いてしまうとドライバに黙って無視され、`NodeStageVolume` が "dnsname is not provided" で失敗し Pod が `ContainerCreating` のまま止まります。`volumeHandle` はあくまで Kubernetes 側の識別子で、マウント時に AWS API を呼んで解決されるわけではないため、`dnsname`/`mountname` を PV 側に自分で埋め込む必要がある、という構造上の理由です。
 
-**IAM は `fsx:DescribeFileSystems` のみで足りる。** static provisioning では `CreateFileSystem`/`DeleteFileSystem`/`UpdateFileSystem` の権限は不要です。これらは動的プロビジョニングの専用コードパスで、固定 `volumeHandle` の PV では一度も呼ばれません。FSx は ARN スコープのリソース権限をサポートしないため `Resource = "*"` になりますが、許可するアクションそのものを 1 つに絞ることで影響範囲を抑えています。
+**IAM は `fsx:DescribeFileSystems` のみで足りる。** static provisioning では `CreateFileSystem`/`DeleteFileSystem`/`UpdateFileSystem` の権限は不要です。これらは動的プロビジョニングの専用コードパスで、固定 `volumeHandle` の PV では一度も呼ばれません。Amazon FSx for Lustre は ARN スコープのリソース権限をサポートしないため `Resource = "*"` になりますが、許可するアクションそのものを 1 つに絞ることで影響範囲を抑えています。
 
 `variables.tf` のバリデーションも、この構成の落とし穴をいくつか plan 時に潰しています。
 
@@ -172,23 +172,23 @@ variable "fsx_storage_capacity_gib" {
 }
 ```
 
-PERSISTENT_2 SSD の容量は 1,200 GiB か 2,400 GiB の倍数でしか指定できないという FSx API の制約を、`terraform plan` の段階でエラーにします。これがないと、中間半端な値（例えば 3,000）を指定した場合の失敗が `CreateFileSystem` の API エラーとして apply の途中まで進んでから返ってきてしまいます。同様に `fsx_subnet_index` にも範囲チェックのバリデーションがあり、`module.vpc.private_subnets` の添字が範囲外になる前に弾かれます。
+PERSISTENT_2 SSD の容量は 1,200 GiB か 2,400 GiB の倍数でしか指定できないという Amazon FSx for Lustre API の制約を、`terraform plan` の段階でエラーにします。これがないと、中間半端な値（例えば 3,000）を指定した場合の失敗が `CreateFileSystem` の API エラーとして apply の途中まで進んでから返ってきてしまいます。同様に `fsx_subnet_index` にも範囲チェックのバリデーションがあり、`module.vpc.private_subnets` の添字が範囲外になる前に弾かれます。
 
 ## 全体の中での位置付け
 
-本章は、Ch1〜Ch3 で作った VPC・EKS コントロールプレーン・アクセラレータノードの土台の上に、ノードのライフサイクルから独立したデータ層を積む章です。EFS と FSx はいずれも Terraform で 1 度作成すれば、その後の Karpenter によるノード入れ替えの影響を受けません。以降の章で GPU/Neuron ワークロードが HF キャッシュや NEFF、チェックポイントを読み書きする際の土台になります。
+本章は、Ch1〜Ch3 で作った Amazon VPC・Amazon EKS コントロールプレーン・アクセラレータノードの土台の上に、ノードのライフサイクルから独立したデータ層を積む章です。Amazon EFS と Amazon FSx for Lustre はいずれも Terraform で 1 度作成すれば、その後の Karpenter によるノード入れ替えの影響を受けません。以降の章で GPU/Neuron ワークロードが HF キャッシュや NEFF、チェックポイントを読み書きする際の土台になります。
 
 ## 注意
 
-**`fsx_subnet_index` とアクセラレータプールの `zone` の不一致に注意します。** FSx for Lustre は単一 AZ にしか存在せず、別 AZ からのマウントは動作こそしますが、AZ 間データ転送コストとレイテンシが発生します。`fsx_subnet_index` は、実際に FSx を使うアクセラレータプールの `zone`（Ch3 参照）と揃えておきます。
+**`fsx_subnet_index` とアクセラレータプールの `zone` の不一致に注意します。** Amazon FSx for Lustre は単一 AZ にしか存在せず、別 AZ からのマウントは動作こそしますが、AZ 間データ転送コストとレイテンシが発生します。`fsx_subnet_index` は、実際に Amazon FSx for Lustre を使うアクセラレータプールの `zone`（Ch3 参照）と揃えておきます。
 
-**`prevent_destroy` は意図的に未設定です。** この構成は再現性を優先した使い捨て環境として設計されており、`terraform destroy` を実行すると FSx ファイルシステムとその中のデータがそのまま削除されます。NEFF や HF キャッシュのような再生成可能なデータであれば問題ありませんが、チェックポイントなど失うと困るデータを長期間保持するクラスタでは `prevent_destroy = true` を設定すべきです。
+**`prevent_destroy` は意図的に未設定です。** この構成は再現性を優先した使い捨て環境として設計されており、`terraform destroy` を実行すると Amazon FSx for Lustre ファイルシステムとその中のデータがそのまま削除されます。NEFF や HF キャッシュのような再生成可能なデータであれば問題ありませんが、チェックポイントなど失うと困るデータを長期間保持するクラスタでは `prevent_destroy = true` を設定すべきです。
 
-**FSx のサイズは 1,200 GiB か、2,400 GiB の倍数でしか指定できません。** PERSISTENT_2 SSD のストレージ容量は API レベルでこの制約を持ちます。`fsx_storage_capacity_gib` に中間半端な値（例えば 3,000）を設定すると、Terraform の変数バリデーションで即座に弾かれます。
+**Amazon FSx for Lustre のサイズは 1,200 GiB か、2,400 GiB の倍数でしか指定できません。** PERSISTENT_2 SSD のストレージ容量は API レベルでこの制約を持ちます。`fsx_storage_capacity_gib` に中間半端な値（例えば 3,000）を設定すると、Terraform の変数バリデーションで即座に弾かれます。
 
-**FSx は有効な間、容量分の課金が常時発生します。** PERSISTENT_2 SSD は使用量ではなくプロビジョニングした容量に対して課金され続けるため、常時起動しておくコストは小さくありません。学習ジョブを実行する期間だけ `fsx_enabled = true` にして apply し、終わったら `false` に戻して destroy する運用が推奨されます。
+**Amazon FSx for Lustre は有効な間、容量分の課金が常時発生します。** PERSISTENT_2 SSD は使用量ではなくプロビジョニングした容量に対して課金され続けるため、常時起動しておくコストは小さくありません。学習ジョブを実行する期間だけ `fsx_enabled = true` にして apply し、終わったら `false` に戻して destroy する運用が推奨されます。
 
-**Hugging Face からのダウンロードで 429（Too Many Requests）が出る場合があります。** 多数の Pod が同時に同じモデルを HF Hub から直接ダウンロードすると、レート制限に当たりやすくなります。対策として、事前に 1 つの Pod で EFS 上にモデルをステージングしておき、各推論 Pod はそのローカルキャッシュを読むようにします。また `HF_HUB_DISABLE_XET=1` を設定して Xet 経由の転送を無効化すると、この種のエラーが解消するケースがあります。
+**Hugging Face からのダウンロードで 429（Too Many Requests）が出る場合があります。** 多数の Pod が同時に同じモデルを HF Hub から直接ダウンロードすると、レート制限に当たりやすくなります。対策として、事前に 1 つの Pod で Amazon EFS 上にモデルをステージングしておき、各推論 Pod はそのローカルキャッシュを読むようにします。また `HF_HUB_DISABLE_XET=1` を設定して Xet 経由の転送を無効化すると、この種のエラーが解消するケースがあります。
 
 # ワークショップ実施
 
@@ -199,7 +199,7 @@ cd infra/eks
 terraform output
 ```
 
-`efs_enabled = true` は既定値なので、初回 apply 時点で EFS ファイルシステムはすでに作られています。FSx は既定で無効なので、有効にする場合は `terraform.tfvars` に `fsx_enabled = true` を追加してから `terraform apply` します。
+`efs_enabled = true` は既定値なので、初回 apply 時点で Amazon EFS ファイルシステムはすでに作られています。Amazon FSx for Lustre は既定で無効なので、有効にする場合は `terraform.tfvars` に `fsx_enabled = true` を追加してから `terraform apply` します。
 
 ## 2. PersistentVolume と PVC を確認する
 
@@ -214,7 +214,7 @@ efs-neuron-workspace   1000Gi     RWX            Retain           Bound    smoll
 fsx-training           2400Gi     RWX            Retain           Bound    default/fsx-claim              3d
 ```
 
-EFS（`efs-neuron-workspace`）と FSx（`fsx-training`）が共に `Retain` + `RWX` で `Bound` になっています。
+Amazon EFS（`efs-neuron-workspace`）と Amazon FSx for Lustre（`fsx-training`）が共に `Retain` + `RWX` で `Bound` になっています。
 
 ```bash
 kubectl get pvc -A
@@ -226,9 +226,9 @@ default       fsx-claim          Bound    fsx-training           2400Gi     RWX 
 smollm-test   efs-shared-claim   Bound    efs-neuron-workspace   1000Gi     RWX            3d
 ```
 
-どちらも `storageClassName` が空の static PV であり、動的プロビジョニングの StorageClass（`efs-shared`）とは別物である点に注意します。FSx が `RWX` なのは、複数ノードの Pod から同時にチェックポイント書き込みやデータ読み出しができるようにするためです。
+どちらも `storageClassName` が空の static PV であり、動的プロビジョニングの StorageClass（`efs-shared`）とは別物である点に注意します。Amazon FSx for Lustre が `RWX` なのは、複数ノードの Pod から同時にチェックポイント書き込みやデータ読み出しができるようにするためです。
 
-## 3. EFS 用の PVC を作成し、書き込みテストを行う
+## 3. Amazon EFS 用の PVC を作成し、書き込みテストを行う
 
 PV は Terraform で作られていますが、PVC（Pod がマウントに使う参照）は手動で作る必要があります。
 
@@ -254,7 +254,7 @@ PVC が `Bound` になったことを確認します。
 kubectl get pvc efs-claim
 ```
 
-EFS にファイルを書き込むテスト Pod を実行します。
+Amazon EFS にファイルを書き込むテスト Pod を実行します。
 
 ```bash
 kubectl run efs-test --restart=Never \
@@ -262,7 +262,7 @@ kubectl run efs-test --restart=Never \
     --overrides='{"spec":{"containers":[{"name":"efs-test","image":"busybox","command":["sh","-c","echo hello > /mnt/efs/test.txt && cat /mnt/efs/test.txt"],"volumeMounts":[{"name":"efs","mountPath":"/mnt/efs"}]}],"volumes":[{"name":"efs","persistentVolumeClaim":{"claimName":"efs-claim"}}]}}'
 ```
 
-Pod のログに `hello` が出力されれば、EFS のマウントと書き込みが成功しています。
+Pod のログに `hello` が出力されれば、Amazon EFS のマウントと書き込みが成功しています。
 
 ```bash
 kubectl logs efs-test
@@ -282,7 +282,7 @@ kubectl logs efs-test2
 
 # まとめ
 
-本章では、Karpenter によるノード入れ替えから独立したデータ層として EFS と FSx for Lustre を構成しました。EFS はマルチ AZ の RWX キャッシュとして HF キャッシュや NEFF に、FSx は単一 AZ の高スループット・スクラッチとして大規模データセットやチェックポイントに向きます。FSx は動的プロビジョニングに対応しないため static provisioning を用いる点、`fsx_subnet_index` とアクセラレータプールの `zone` を揃える点、`prevent_destroy` が未設定である点の 3 つを押さえておけば、以降の章で GPU/Neuron ワークロードがこの共有ストレージを安心して利用できます。
+本章では、Karpenter によるノード入れ替えから独立したデータ層として Amazon EFS と Amazon FSx for Lustre を構成しました。Amazon EFS はマルチ AZ の RWX キャッシュとして HF キャッシュや NEFF に、Amazon FSx for Lustre は単一 AZ の高スループット・スクラッチとして大規模データセットやチェックポイントに向きます。Amazon FSx for Lustre は動的プロビジョニングに対応しないため static provisioning を用いる点、`fsx_subnet_index` とアクセラレータプールの `zone` を揃える点、`prevent_destroy` が未設定である点の 3 つを押さえておけば、以降の章で GPU/Neuron ワークロードがこの共有ストレージを安心して利用できます。
 
 # 参考資料
 

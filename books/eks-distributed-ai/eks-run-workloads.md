@@ -3,15 +3,15 @@ title: "Basic06 - 実ワークロードで動作確認する (GRPO)"
 free: true
 ---
 
-本章では、Ch1-5 で構築した基盤（EKS + Karpenter + Capacity Block + EFA）の上で、実際の分散強化学習ワークロード（miles/GRPO）を動かします。これまでの章は個別のコマンドで基盤の各要素を確認してきましたが、本章ではその基盤の上で GPU 分散ワークロードを端から端まで動かし、マルチノード EFA 通信が本番相当の負荷で正しく機能することを実証します。
+本章では、Ch1-5 で構築した基盤（Amazon EKS + Karpenter + Capacity Block + EFA）の上で、実際の分散強化学習ワークロード（miles/GRPO）を動かします。これまでの章は個別のコマンドで基盤の各要素を確認してきましたが、本章ではその基盤の上で GPU 分散ワークロードを端から端まで動かし、マルチノード EFA 通信が本番相当の負荷で正しく機能することを実証します。
 
 # 解説
 
 ## 全体構成
 
-![EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
+![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 
-本章では、この図で組み上げてきた VPC・EKS コントロールプレーン・Karpenter・アクセラレータノード・EFA の全体を使い、その上に KubeRay 経由で実ワークロードを載せる部分を扱います。基盤そのものは変更せず、基盤が正しく機能しているかを実ワークロードで検証する章です。
+本章では、この図で組み上げてきた Amazon VPC・Amazon EKS コントロールプレーン・Karpenter・アクセラレータノード・EFA の全体を使い、その上に KubeRay 経由で実ワークロードを載せる部分を扱います。基盤そのものは変更せず、基盤が正しく機能しているかを実ワークロードで検証する章です。
 
 ## これは何をするものか
 
@@ -33,7 +33,7 @@ KubeRay が RayCluster を Capacity Block の p5en ノード上に展開し、Ra
 
 ## 全体の中での位置付け
 
-本章は基盤構築の最上層にあたります。Ch1 で作った EKS + System ノードの上に、Ch2 で Karpenter を載せ、Ch3-5 でアクセラレータノード・Capacity Block・EFA を積み上げてきました。本章ではその全部を使い切り、実ワークロードを流すことで基盤全体の妥当性を確認します。これ以降の章に進むための前提はここまでで揃っており、本章は「基盤側の作業」ではなく「基盤の検証」というスコープです。
+本章は基盤構築の最上層にあたります。Ch1 で作った Amazon EKS + System ノードの上に、Ch2 で Karpenter を載せ、Ch3-5 でアクセラレータノード・Capacity Block・EFA を積み上げてきました。本章ではその全部を使い切り、実ワークロードを流すことで基盤全体の妥当性を確認します。これ以降の章に進むための前提はここまでで揃っており、本章は「基盤側の作業」ではなく「基盤の検証」というスコープです。
 
 ## 注意
 
@@ -105,7 +105,7 @@ GRPO 実行中の NCCL ログで `via NET/Libfabric/*/GDRDMA` が出ているこ
 
 # まとめ
 
-本章では、Ch1-5 で構築した EKS + Karpenter + Capacity Block + EFA の基盤の上で、miles/GRPO による実際の分散強化学習ワークロードを最初から最後まで動かしました。KubeRay で 2 ノード 16 GPU の Ray クラスタを構成し、SGLang と Megatron-LM を統合した GRPO ループが完走することを確認し、その通信がすべて EFA 経由（busbw 190-257 GB/s）であることを実測で確認しました。`aws-ofi-nccl` の同梱と `hostNetwork: true` の指定が、EFA を実ワークロードで使う上での必須条件です。
+本章では、Ch1-5 で構築した Amazon EKS + Karpenter + Capacity Block + EFA の基盤の上で、miles/GRPO による実際の分散強化学習ワークロードを最初から最後まで動かしました。KubeRay で 2 ノード 16 GPU の Ray クラスタを構成し、SGLang と Megatron-LM を統合した GRPO ループが完走することを確認し、その通信がすべて EFA 経由（busbw 190-257 GB/s）であることを実測で確認しました。`aws-ofi-nccl` の同梱と `hostNetwork: true` の指定が、EFA を実ワークロードで使う上での必須条件です。
 
 # 参考資料
 

@@ -3,39 +3,39 @@ title: "Basic03 - accelerator_pools で GPU/Neuron ノードを追加する"
 free: true
 ---
 
-本章では、Ch1-2 で作った EKS + Karpenter の土台の上に、`accelerator_pools` という 1 つの map 変数だけで GPU/Neuron ノードを追加する仕組みを扱います。実際に GPU ノードを 1 台起動し、Pod がスケジュールされて `nvidia-smi` が通るところまでを確認します。
+本章では、Ch1-2 で作った Amazon EKS + Karpenter の土台の上に、`accelerator_pools` という 1 つの map 変数だけで GPU/Neuron ノードを追加する仕組みを扱います。実際に GPU ノードを 1 台起動し、Pod がスケジュールされて `nvidia-smi` が通るところまでを確認します。
 
 # 解説
 
 ## 全体構成
 
-![EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
+![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 
-本章で扱うのは、この図のうち Karpenter が要求に応じて起動する **GPU/Neuron アクセラレータプール**（NodePool・EC2NodeClass・GPU Operator や device plugin などの関連アドオン）の部分です。VPC・EKS コントロールプレーン・Karpenter コントローラ自体は Ch1-2 で作った前提とします。
+本章で扱うのは、この図のうち Karpenter が要求に応じて起動する **GPU/Neuron アクセラレータプール**（NodePool・EC2NodeClass・GPU Operator や device plugin などの関連アドオン）の部分です。Amazon VPC・Amazon EKS コントロールプレーン・Karpenter コントローラ自体は Ch1-2 で作った前提とします。
 
 ## これは何をするものか
 
-Ch1-2 で VPC・EKS コントロールプレーン・Karpenter コントローラという土台ができました。この土台の上に、実際に GPU や Trainium/Inferentia（Neuron）を積んだノードを Karpenter に起動させるための「型」を定義するのが本章です。
+Ch1-2 で Amazon VPC・Amazon EKS コントロールプレーン・Karpenter コントローラという土台ができました。この土台の上に、実際に GPU や AWS Trainium/AWS Inferentia（Neuron）を積んだノードを Karpenter に起動させるための「型」を定義するのが本章です。
 
 Karpenter がノードを起動するには、最低でも次の 2 つの Kubernetes リソースが必要になります。
 
 - **NodePool** — どんな条件（インスタンスタイプ、AZ、キャパシティタイプなど）のノードを、どんな taint を付けて起動するかを定義する
-- **EC2NodeClass** — そのノードの AMI、サブネット、セキュリティグループ、ブロックデバイスなど EC2 固有の設定を定義する
+- **EC2NodeClass** — そのノードの AMI、サブネット、セキュリティグループ、ブロックデバイスなど Amazon EC2 固有の設定を定義する
 
 この構成では、これら 2 リソースを GPU プールと Neuron プールで別々の Terraform リソースブロックとして書きません。代わりに `accelerator_pools` という 1 つの map 変数を用意し、map の 1 エントリごとに `for_each` で NodePool と EC2NodeClass のペアを 1 組ずつレンダリングします。つまり「プールを 1 つ増やす」という操作は、`terraform.tfvars` に map エントリを 1 つ追加するだけで完了し、`.tf` ファイル側に新しいリソースブロックを書く必要がありません。
 
-なぜ GPU と Neuron のプール定義をあえて分けずに 1 つの型に統一しているのでしょうか。Karpenter から見ると、GPU ノードも Neuron ノードも「taint の key が違うだけで形はほぼ同じノード」です。両方とも、EC2 インスタンスタイプの集合があり、単一の AZ に固定され、EFA（Elastic Fabric Adapter）を持つ場合はネットワークインターフェースの構成が必要で、専用の taint を持ち、専用の device plugin がその taint を tolerate してアクセラレータを advertise します。この共通構造をコード上でも 1 つのオブジェクト型として表現することで、片方だけ直して片方を直し忘れるという修正漏れを構造的に防いでいます。
+なぜ GPU と Neuron のプール定義をあえて分けずに 1 つの型に統一しているのでしょうか。Karpenter から見ると、GPU ノードも Neuron ノードも「taint の key が違うだけで形はほぼ同じノード」です。両方とも、Amazon EC2 インスタンスタイプの集合があり、単一の AZ に固定され、EFA（Elastic Fabric Adapter）を持つ場合はネットワークインターフェースの構成が必要で、専用の taint を持ち、専用の device plugin がその taint を tolerate してアクセラレータを advertise します。この共通構造をコード上でも 1 つのオブジェクト型として表現することで、片方だけ直して片方を直し忘れるという修正漏れを構造的に防いでいます。
 
 `accelerator_pools` の主なフィールドは次の通りです。
 
-- `instance_types` — Karpenter が起動候補にできる EC2 インスタンスタイプのリスト（例: `["g6e.12xlarge"]`）
+- `instance_types` — Karpenter が起動候補にできる Amazon EC2 インスタンスタイプのリスト（例: `["g6e.12xlarge"]`）
 - `device_plugin` — `"nvidia"` または `"neuron"`。どの device plugin がこのプールのアクセラレータを advertise するかを決める
 - `capacity_type` — `"reserved"`（Capacity Block）、`"on-demand"`、`"spot"` のいずれか
 - `zone` — このプールを固定する単一の AZ。EFA/RDMA トラフィックはサブネットを跨げないため、複数ノードにわたる collective 通信を行う場合は全ランクが同一 AZ に載っている必要がある
 
 プールの `device_plugin` フィールドから、`has_gpu_pool` / `has_neuron_pool` / `has_efa_pool` という 3 つの真偽値が自動的に導出されます。これらのフラグに応じて、NVIDIA GPU Operator・Neuron device plugin・AWS EFA device plugin という 3 種類のアドオンがそれぞれ導入されるかどうかが決まります。つまり `accelerator_pools` に GPU プールしか定義しなければ Neuron 関連のアドオンは一切入らず、Neuron プールしか定義しなければ GPU Operator は入りません。クラスタが実際に使うものだけがインストールされます。
 
-GPU ノードに関してもう 1 点誤解しやすいのが、GPU Operator の driver install 設定です。この構成では `gpu_operator_install_driver = false` がデフォルトになっています。これは EKS の AL2023 GPU AMI が NVIDIA ドライバをすでに同梱しているためで、GPU Operator はドライバをインストールする役割を持たず、device plugin・feature discovery・validator といった周辺コンポーネントのみを担当します。GPU Operator の Pod と EFA device plugin の Pod は、いずれも `nvidia.com/gpu` taint を tolerate する設定で導入されています。
+GPU ノードに関してもう 1 点誤解しやすいのが、GPU Operator の driver install 設定です。この構成では `gpu_operator_install_driver = false` がデフォルトになっています。これは Amazon EKS の AL2023 GPU AMI が NVIDIA ドライバをすでに同梱しているためで、GPU Operator はドライバをインストールする役割を持たず、device plugin・feature discovery・validator といった周辺コンポーネントのみを担当します。GPU Operator の Pod と EFA device plugin の Pod は、いずれも `nvidia.com/gpu` taint を tolerate する設定で導入されています。
 
 ここで重要な事実がもう 1 つあります。**GPU ノードに `nvidia.com/gpu: NoSchedule` という taint を打つのは NodePool であり、GPU Operator でも NVIDIA device plugin でもありません。** これは誤解されがちな点で、「device plugin が taint も一緒に管理してくれる」と思い込んでいるとハマります。もし taint が付かないと、CoreDNS のレプリカやコントローラなど、GPU を必要としない通常の CPU ワークロードがアイドル状態の GPU ノードに勝手にスケジュールされてしまいます。すると Karpenter の `consolidationPolicy: WhenEmpty` は「ノードが空ではない」と判断し続けるため、時間単価の高い GPU ノードが実質使われないまま課金され続けます。これを避けるため、この構成では NodePool 側で明示的に taint を宣言し、アドオン側とワークロード側の両方にその taint への toleration を持たせています。
 
@@ -240,7 +240,7 @@ efa_supported_instance_types = distinct(flatten([
 
 ## 全体の中での位置付け
 
-本章は、Ch1 で作った EKS コントロールプレーンと Ch2 で載せた Karpenter コントローラの上に、初めて「GPU/Neuron ノードを増やせる型」を積む章です。ここで `accelerator_pools` の型と、それに紐づく taint・アドオン・disruption ポリシーの設計を理解しておくと、後続の章で扱う共有ストレージ（EFS/FSx）や Capacity Block プールも同じ型の延長として素直に理解できます。Capacity Block（`capacity_type = "reserved"`）を使ったプールの追加は Ch5 で扱うため、本章では on-demand の最小構成から確認します。
+本章は、Ch1 で作った Amazon EKS コントロールプレーンと Ch2 で載せた Karpenter コントローラの上に、初めて「GPU/Neuron ノードを増やせる型」を積む章です。ここで `accelerator_pools` の型と、それに紐づく taint・アドオン・disruption ポリシーの設計を理解しておくと、後続の章で扱う共有ストレージ（Amazon EFS/Amazon FSx for Lustre）や Capacity Block プールも同じ型の延長として素直に理解できます。Capacity Block（`capacity_type = "reserved"`）を使ったプールの追加は Ch5 で扱うため、本章では on-demand の最小構成から確認します。
 
 ## 注意
 
@@ -298,7 +298,7 @@ kubectl run gpu-smoke --restart=Never \
 kubectl get nodeclaims -w
 ```
 
-Pod が Pending になった時点で Karpenter が `gpu-dev` NodePool の条件に合う NodeClaim を作り、EC2 インスタンスを起動します。`g6e.12xlarge` の起動から `nodeadm` でのクラスタ参加、GPU Operator の初期化まで数分かかるので、`-w` でしばらく待ちます。
+Pod が Pending になった時点で Karpenter が `gpu-dev` NodePool の条件に合う NodeClaim を作り、Amazon EC2 インスタンスを起動します。`g6e.12xlarge` の起動から `nodeadm` でのクラスタ参加、GPU Operator の初期化まで数分かかるので、`-w` でしばらく待ちます。
 
 ## 5. ノードとプールの状態を確認する
 
@@ -316,7 +316,7 @@ gpu-dev    gpu-dev     1       True    15m
 
 手順 1 で定義した `gpu-dev` に加えて `cpu` という NodePool も存在します。`cpu` は `var.cpu_nodepool_enabled = true`（既定値）で自動生成される汎用 CPU ワークロード用のプールで、`accelerator_pools` には現れません。`gpu-dev` が 1 ノード（gpu-smoke Pod が GPU を要求したため起動した）になっています。
 
-NodeClaim（実際に起動している EC2 インスタンス）を見ます。
+NodeClaim（実際に起動している Amazon EC2 インスタンス）を見ます。
 
 ```bash
 kubectl get nodeclaims
