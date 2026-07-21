@@ -31,7 +31,7 @@ free: true
 
 この土台づくり自体は Amazon EKS の一般的な手順とほぼ同じですが、分散 AI 向けに効かせている設計判断がいくつかあります。以降で実際の Terraform コードを引用しながら、なぜその値・その書き方にしているのかを見ていきます。対象モジュールは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/fix/eks-efa-verification-improvements/infra/eks) です。
 
-## VPC の設計
+## Amazon VPC の設計
 
 Amazon VPC は [`vpc.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/vpc.tf) で `terraform-aws-modules/vpc/aws` モジュールを使って作ります。全体はこれだけです。
 
@@ -77,7 +77,7 @@ module "vpc" {
 
 **`private_subnet_tags` の `karpenter.sh/discovery`。** このタグが後の章で効いてきます。Karpenter は「ノードを起動してよいサブネット」をこのタグで検出します。ここで**プライベートサブネットにだけ**タグを付け、`public_subnet_tags` には付けていない点が重要です。もし共通の `tags` に含めてしまうと全サブネットに伝搬してパブリックサブネットにも付き、Karpenter がそこにノードを立ててしまいます。パブリックサブネットのノードは Amazon EC2 API への到達経路がなく `nodeadm` によるクラスタ参加に失敗するため、この付け分けは意図的です（詳細は末尾の「注意」節）。
 
-## EKS クラスタと System ノードグループ
+## Amazon EKS クラスタと System ノードグループ
 
 Amazon EKS 本体は [`eks.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/eks.tf) で `terraform-aws-modules/eks/aws` モジュールを使って作ります。アドオンと System ノードグループの定義が読みどころです。
 

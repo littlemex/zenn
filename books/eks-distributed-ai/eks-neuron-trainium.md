@@ -1,5 +1,5 @@
 ---
-title: "Basic07 - Neuron/Trainium 対応 (設計と現状)"
+title: "Basic07 - Neuron/AWS Trainium 対応 (設計と現状)"
 free: true
 ---
 
@@ -179,7 +179,7 @@ trn2.48xlarge であれば 16 個の Trainium2 デバイスが表示されるは
 
 # まとめ
 
-本章では、Karpenter の `accelerator_pools` に Neuron（Trainium/Inferentia）を組み込む方法を扱いました。骨格は NodePool/EC2NodeClass・Neuron AL2023 AMI・Neuron device plugin の 3 つで、`device_plugin = "neuron"` と書くだけで GPU と同じ枠組みに乗ります。単一ノードでのドライバ・device plugin・スケジューリングの動作は確認済みですが、マルチノードでの Neuron over EFA collective 通信は配線上組み込まれているだけで実機検証は未完了です。NPD/DRA は Karpenter との組み合わせで非サポートである点、EFA device plugin の toleration を崩さない点、複数デバイス利用時は `neuron_enable_scheduler` を忘れない点の 3 つが実運用上の注意点です。
+本章では、Karpenter の `accelerator_pools` に Neuron（AWS Trainium/AWS Inferentia）を組み込む方法を扱いました。骨格は NodePool/EC2NodeClass・Neuron AL2023 AMI・Neuron device plugin の 3 つで、`device_plugin = "neuron"` と書くだけで GPU と同じ枠組みに乗ります。単一ノードでのドライバ・device plugin・スケジューリングの動作は確認済みですが、マルチノードでの Neuron over EFA collective 通信は配線上組み込まれているだけで実機検証は未完了です。NPD/DRA は Karpenter との組み合わせで非サポートである点、EFA device plugin の toleration を崩さない点、複数デバイス利用時は `neuron_enable_scheduler` を忘れない点の 3 つが実運用上の注意点です。
 
 # 参考資料
 

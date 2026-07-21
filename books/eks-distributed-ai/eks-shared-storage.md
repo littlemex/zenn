@@ -61,7 +61,7 @@ resource "aws_efs_mount_target" "shared" {
 
 **`throughput_mode = "elastic"`。** プロビジョンドスループットを事前に見積もる必要がなく、ワークロードの読み書き量に合わせて自動でスケールします。HF キャッシュや NEFF の読み出しパターンは Pod の起動タイミングに依存してバースト的なので、固定のプロビジョンドスループットより elastic の方が運用の手間が少ない選択です。
 
-**private subnet ごとに 1 つのマウントターゲット。** `count = length(module.vpc.private_subnets)` で、Ch1 の VPC が持つプライベートサブネットすべてにマウントターゲットを配置します。これにより、Capacity Block の GPU/Neuron ノードがどの AZ に落ちても、同じ Amazon EFS を同じパスでマウントできます。Amazon FSx for Lustre が単一 AZ に固定される点との対比が、Amazon EFS を選ぶ決め手になります。
+**private subnet ごとに 1 つのマウントターゲット。** `count = length(module.vpc.private_subnets)` で、Ch1 の Amazon VPC が持つプライベートサブネットすべてにマウントターゲットを配置します。これにより、Capacity Block の GPU/Neuron ノードがどの AZ に落ちても、同じ Amazon EFS を同じパスでマウントできます。Amazon FSx for Lustre が単一 AZ に固定される点との対比が、Amazon EFS を選ぶ決め手になります。
 
 **アクセスポイントで POSIX 権限と root path を固定する。** `aws_efs_access_point.neuron_workspace` は `posix_user`（uid/gid 0）と `root_directory`（`/neuron-workspace`、`permissions 0755`）を持ち、コンテナが root で動く前提のワークスペースをファイルシステム内に切り出します。StorageClass の動的プロビジョニング（`provisioningMode = "efs-ap"`）はこのアクセスポイントの仕組みを使って PVC ごとに新しいディレクトリを掘りますが、本章の静的 PV はこのアクセスポイント 1 つを固定で指し続けます。
 
