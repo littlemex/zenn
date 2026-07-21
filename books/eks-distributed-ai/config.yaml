@@ -5,11 +5,13 @@ published: false
 chapters:
   - 00-overview
   - eks-vpc-foundation
+  - eks-cpu-ddp
   - eks-karpenter-setup
   - eks-accelerator-pools
   - eks-efa-topology
   - eks-capacity-block
   - eks-run-workloads
+  - eks-observability
   - eks-neuron-trainium
   - eks-shared-storage
   - eks-teardown-and-options

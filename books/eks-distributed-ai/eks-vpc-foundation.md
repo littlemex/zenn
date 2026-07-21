@@ -3,7 +3,7 @@ title: "Basic01 - Amazon EKS 基盤を立てる"
 free: true
 ---
 
-本章では、分散学習・推論の実験を回すための土台として Amazon EKS クラスタを構築します。Terraform で Amazon VPC・Amazon EKS コントロールプレーン・Karpenter を動かすための System ノードグループをデプロイし、`kubectl` でノードが見えるところまでを扱います。GPU/Neuron のアクセラレータノード自体は次章以降で立てるため、ここでは「あとから何度でも実験を回せる足場」を一度だけ作ります。
+本章では、分散学習・推論の実験を回すための土台として Amazon EKS クラスタを構築します。Terraform で Amazon VPC・Amazon EKS コントロールプレーン・Karpenter を動かすための System ノードグループをデプロイし、`kubectl` でノードが見えるところまでを扱います。GPU/Neuron のアクセラレータノード自体は Ch4 以降で立てるため、ここでは「あとから何度でも実験を回せる足場」を一度だけ作ります。
 
 :::message alert
 本資料は `us-east-2` リージョンを例に説明します。実際には自身で選択したリージョンに読み替えて進めてください。コマンド中の `<region>` などのプレースホルダは自分の値に置き換えます。
@@ -21,7 +21,7 @@ free: true
 
 ## これは何をするものか
 
-本章のゴールは、GPU/Neuron を使った分散学習・推論の実験を後からいくらでも回せる「土台」を一度だけ立てることです。土台とは具体的に、Amazon EKS コントロールプレーンと、その上で Karpenter コントローラを動かすための最小構成（Amazon VPC + System ノードグループ）を指します。アクセラレータノード自体はまだ立てません。Ch3 以降で `accelerator_pools` に 1 行足すだけで GPU/Neuron ノードが要求に応じて立つよう、Karpenter の足場をここで用意しておく、という位置づけです。
+本章のゴールは、GPU/Neuron を使った分散学習・推論の実験を後からいくらでも回せる「土台」を一度だけ立てることです。土台とは具体的に、Amazon EKS コントロールプレーンと、その上で Karpenter コントローラを動かすための最小構成（Amazon VPC + System ノードグループ）を指します。アクセラレータノード自体はまだ立てません。Ch4 以降で `accelerator_pools` に 1 行足すだけで GPU/Neuron ノードが要求に応じて立つよう、Karpenter の足場をここで用意しておく、という位置づけです。
 
 構成要素は次の 3 つだけで、いずれも「実験を始める前に一度作れば、あとは触らない」部分です。
 
@@ -127,9 +127,9 @@ module "eks" {
 このモジュールは `terraform-aws-eks` v21 系を使っており、引数名が `name` / `kubernetes_version` です（v20 以前の `cluster_name` / `cluster_version` ではありません）。バージョンを変える際は引数名の互換性に注意してください。
 :::
 
-**`before_compute = true` の 2 つのアドオン。** `vpc-cni` と `eks-pod-identity-agent` に `before_compute = true` を付け、ワーカーノードが起動する前にこれらを導入します。特に Pod Identity Agent は、Pod Identity で AWS 権限を得るコントローラ（次章の Karpenter や、上の `aws-ebs-csi-driver`）より先に存在していないと、それらが起動時に認証情報を取得できずクラッシュします。実際 `aws-ebs-csi-driver` には `pod_identity_association` で IAM ロールを渡しており、これが機能するには Pod Identity Agent が先にいる必要があります。順序を保証するためのフラグです。
+**`before_compute = true` の 2 つのアドオン。** `vpc-cni` と `eks-pod-identity-agent` に `before_compute = true` を付け、ワーカーノードが起動する前にこれらを導入します。特に Pod Identity Agent は、Pod Identity で AWS 権限を得るコントローラ（Ch3 の Karpenter や、上の `aws-ebs-csi-driver`）より先に存在していないと、それらが起動時に認証情報を取得できずクラッシュします。実際 `aws-ebs-csi-driver` には `pod_identity_association` で IAM ロールを渡しており、これが機能するには Pod Identity Agent が先にいる必要があります。順序を保証するためのフラグです。
 
-**System ノードグループの `karpenter.sh/controller` ラベル。** m5 系インスタンス（`var.system_node_ami_type` / `var.system_node_instance_types`）を `var.system_node_desired_size`（既定 2）台、`min_size = max_size = desired_size` で固定起動します。このノードグループは Karpenter が管理するのではなく、Amazon EKS Managed Node Group として常時稼働させます。`karpenter.sh/controller: "true"` というラベルを付けているのは、次章で導入する Karpenter コントローラ自身をこのノードに載せるためです。Karpenter は自分自身が動くノードは作れない（自己参照になる）ので、Karpenter を動かす最初の足場として、Karpenter の管理外のノードグループが必要になります。
+**System ノードグループの `karpenter.sh/controller` ラベル。** m5 系インスタンス（`var.system_node_ami_type` / `var.system_node_instance_types`）を `var.system_node_desired_size`（既定 2）台、`min_size = max_size = desired_size` で固定起動します。このノードグループは Karpenter が管理するのではなく、Amazon EKS Managed Node Group として常時稼働させます。`karpenter.sh/controller: "true"` というラベルを付けているのは、Ch3 で導入する Karpenter コントローラ自身をこのノードに載せるためです。Karpenter は自分自身が動くノードは作れない（自己参照になる）ので、Karpenter を動かす最初の足場として、Karpenter の管理外のノードグループが必要になります。
 
 ## Pod Identity による認証
 
@@ -165,7 +165,7 @@ IRSA は ServiceAccount にアノテーションで IAM ロールを結び付け
 
 ## 全体の中での位置付け
 
-本章は基盤構築の最下層にあたります。ここで作った Amazon EKS + System ノードの上に、次章で Karpenter コントローラを載せ（Ch2）、その Karpenter が `accelerator_pools` の定義に従って GPU/Neuron ノードを起動する（Ch3 以降）、という順で積み上がっていきます。つまり本章は「まだ何も GPU が動かない」状態を作る章ですが、これ以降のすべての章がこの土台の上に成り立ちます。
+本章は基盤構築の最下層にあたります。ここで作った Amazon EKS + System ノードの上に、Ch3 で Karpenter コントローラを載せ、その Karpenter が `accelerator_pools` の定義に従って GPU/Neuron ノードを起動する（Ch4 以降）、という順で積み上がっていきます。つまり本章は「まだ何も GPU が動かない」状態を作る章ですが、これ以降のすべての章がこの土台の上に成り立ちます。
 
 ## 注意
 
@@ -181,7 +181,7 @@ IRSA は ServiceAccount にアノテーションで IAM ロールを結び付け
 
 ## 1. tfvars を準備する
 
-`terraform.tfvars.example` を `terraform.tfvars` にコピーし、`region` / `azs` / `cluster_name` を自分の環境に合わせて設定します。この段階では `accelerator_pools` は空のままで構いません（アクセラレータプールは Ch3 以降で扱います）。
+`terraform.tfvars.example` を `terraform.tfvars` にコピーし、`region` / `azs` / `cluster_name` を自分の環境に合わせて設定します。この段階では `accelerator_pools` は空のままで構いません（アクセラレータプールは Ch4 以降で扱います）。
 
 ```bash
 cd infra/eks
@@ -225,7 +225,7 @@ kubectl config current-context
 
 # まとめ
 
-本章では、分散 AI の実験を回すための土台として Amazon EKS クラスタを構築しました。作ったのは Amazon VPC・Amazon EKS コントロールプレーン・System ノードグループの 3 つで、この上に次章から Karpenter とアクセラレータプールを積み上げていきます。Amazon VPC は大きめの CIDR を確保し、`karpenter.sh/discovery` タグをパブリックサブネットに漏らさない、という 2 点だけ押さえておけば、あとは一般的な Amazon EKS 構築とほぼ同じです。
+本章では、分散 AI の実験を回すための土台として Amazon EKS クラスタを構築しました。作ったのは Amazon VPC・Amazon EKS コントロールプレーン・System ノードグループの 3 つで、この上に Ch3 から Karpenter とアクセラレータプールを積み上げていきます。Amazon VPC は大きめの CIDR を確保し、`karpenter.sh/discovery` タグをパブリックサブネットに漏らさない、という 2 点だけ押さえておけば、あとは一般的な Amazon EKS 構築とほぼ同じです。
 
 # 参考資料
 

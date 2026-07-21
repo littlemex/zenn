@@ -1,5 +1,5 @@
 ---
-title: "Basic04 - EFA でマルチノード通信を検証する"
+title: "Basic05 - EFA でマルチノード通信を検証する"
 free: true
 ---
 

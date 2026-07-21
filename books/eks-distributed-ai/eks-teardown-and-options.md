@@ -1,5 +1,5 @@
 ---
-title: "Basic09 - 安全な破棄とオプション機能"
+title: "Basic11 - 安全な破棄とオプション機能"
 free: true
 ---
 

@@ -1,5 +1,5 @@
 ---
-title: "Basic02 - Karpenter を導入する"
+title: "Basic03 - Karpenter を導入する"
 free: true
 ---
 
@@ -247,7 +247,7 @@ resource "null_resource" "wait_for_node_drain" {
 
 ## 全体の中での位置付け
 
-前章（Ch1）で用意した System ノードの上に、本章で Karpenter コントローラを載せます。Karpenter 自身はまだ何の NodePool も持たないため、この時点ではアクセラレータノードは 1 台も起動しません。次章（Ch3）で `accelerator_pools` を定義すると、その Karpenter が定義に従って GPU/Neuron ノードを起動する、という流れになります。本章は「エンジンだけ載せて、燃料はまだ入れていない」状態を作る章です。
+前章（Ch1）で用意した System ノードの上に、本章で Karpenter コントローラを載せます。Karpenter 自身はまだ何の NodePool も持たないため、この時点ではアクセラレータノードは 1 台も起動しません。次章（Ch4）で `accelerator_pools` を定義すると、その Karpenter が定義に従って GPU/Neuron ノードを起動する、という流れになります。本章は「エンジンだけ載せて、燃料はまだ入れていない」状態を作る章です。
 
 ## 注意
 
