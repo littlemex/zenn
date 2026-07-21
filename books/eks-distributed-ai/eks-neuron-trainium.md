@@ -1,5 +1,5 @@
 ---
-title: "Basic07 - Neuron/AWS Trainium 対応 (設計と現状)"
+title: "Basic09 - Neuron/Trainium 対応 (設計と現状)"
 free: true
 ---
 
@@ -15,11 +15,11 @@ free: true
 
 ## これは何をするものか
 
-Ch3 で見た `accelerator_pools` は、GPU と Neuron を「taint の key が違うだけの同じ形のノード」として 1 つの型で表現していました。本章では、その Neuron 側の実装を具体的に見ていきます。
+Ch4 で見た `accelerator_pools` は、GPU と Neuron を「taint の key が違うだけの同じ形のノード」として 1 つの型で表現していました。本章では、その Neuron 側の実装を具体的に見ていきます。
 
 Neuron 対応の骨格は 3 つの部品からできています。
 
-1. **NodePool / EC2NodeClass** — Ch3 と同じ `for_each` レンダリングを、`device_plugin = "neuron"` のプールにもそのまま適用します。GPU プール専用の分岐は存在しません。
+1. **NodePool / EC2NodeClass** — Ch4 と同じ `for_each` レンダリングを、`device_plugin = "neuron"` のプールにもそのまま適用します。GPU プール専用の分岐は存在しません。
 2. **Neuron AL2023 AMI** — AWS Trainium/AWS Inferentia のドライバ（`aws-neuronx-dkms`）は Amazon EKS Optimized AL2023 Neuron AMI にすでに同梱されています。GPU Operator が担っていた「ドライバをどうするか」という判断は Neuron 側には存在せず、AMI を正しく選ぶだけで済みます。
 3. **Neuron device plugin（Helm add-on）** — ドライバの上に乗る、Kubernetes に対して `aws.amazon.com/neuron` という resource を advertise する DaemonSet です。これだけを Helm で追加します。
 
@@ -113,7 +113,7 @@ variable "neuron_enable_scheduler" {
 
 ## 全体の中での位置付け
 
-Ch3 で作った `accelerator_pools` の型は GPU/Neuron 共通です。本章はその型に `device_plugin = "neuron"` のエントリを 1 つ追加し、`neuron-addons.tf` が条件付きで Neuron device plugin を導入するところまでを扱います。EFA を使ったマルチノード構成（Ch5 相当）とも配線上はつながっていますが、Neuron での実機検証はまだ単一ノードにとどまっており、その先は本 book の範囲外として切り出しています。
+Ch4 で作った `accelerator_pools` の型は GPU/Neuron 共通です。本章はその型に `device_plugin = "neuron"` のエントリを 1 つ追加し、`neuron-addons.tf` が条件付きで Neuron device plugin を導入するところまでを扱います。EFA を使ったマルチノード構成（Ch5 相当）とも配線上はつながっていますが、Neuron での実機検証はまだ単一ノードにとどまっており、その先は本 book の範囲外として切り出しています。
 
 ## 注意
 
@@ -143,7 +143,7 @@ trn2-serving = {
 }
 ```
 
-`device_plugin = "neuron"` に切り替えている以外、フィールドの構造は Ch3 で書いた GPU プールと同じです。`cb_reservation_id` は事前に確保した Capacity Block の予約 ID に置き換えます。
+`device_plugin = "neuron"` に切り替えている以外、フィールドの構造は Ch4 で書いた GPU プールと同じです。`cb_reservation_id` は事前に確保した Capacity Block の予約 ID に置き換えます。
 
 ## 2. apply する
 

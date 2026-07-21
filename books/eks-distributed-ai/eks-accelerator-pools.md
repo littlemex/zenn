@@ -1,9 +1,9 @@
 ---
-title: "Basic03 - accelerator_pools で GPU/Neuron ノードを追加する"
+title: "Basic04 - accelerator_pools で GPU/Neuron ノードを追加する"
 free: true
 ---
 
-本章では、Ch1-2 で作った Amazon EKS + Karpenter の土台の上に、`accelerator_pools` という 1 つの map 変数だけで GPU/Neuron ノードを追加する仕組みを扱います。実際に GPU ノードを 1 台起動し、Pod がスケジュールされて `nvidia-smi` が通るところまでを確認します。
+本章では、Ch1・Ch3 で作った Amazon EKS + Karpenter の土台の上に、`accelerator_pools` という 1 つの map 変数だけで GPU/Neuron ノードを追加する仕組みを扱います。実際に GPU ノードを 1 台起動し、Pod がスケジュールされて `nvidia-smi` が通るところまでを確認します。
 
 # 解説
 
@@ -11,11 +11,11 @@ free: true
 
 ![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 
-本章で扱うのは、この図のうち Karpenter が要求に応じて起動する **GPU/Neuron アクセラレータプール**（NodePool・EC2NodeClass・GPU Operator や device plugin などの関連アドオン）の部分です。Amazon VPC・Amazon EKS コントロールプレーン・Karpenter コントローラ自体は Ch1-2 で作った前提とします。
+本章で扱うのは、この図のうち Karpenter が要求に応じて起動する **GPU/Neuron アクセラレータプール**（NodePool・EC2NodeClass・GPU Operator や device plugin などの関連アドオン）の部分です。Amazon VPC・Amazon EKS コントロールプレーン・Karpenter コントローラ自体は Ch1・Ch3 で作った前提とします。
 
 ## これは何をするものか
 
-Ch1-2 で Amazon VPC・Amazon EKS コントロールプレーン・Karpenter コントローラという土台ができました。この土台の上に、実際に GPU や AWS Trainium/AWS Inferentia（Neuron）を積んだノードを Karpenter に起動させるための「型」を定義するのが本章です。
+Ch1・Ch3 で Amazon VPC・Amazon EKS コントロールプレーン・Karpenter コントローラという土台ができました。この土台の上に、実際に GPU や AWS Trainium/AWS Inferentia（Neuron）を積んだノードを Karpenter に起動させるための「型」を定義するのが本章です。
 
 Karpenter がノードを起動するには、最低でも次の 2 つの Kubernetes リソースが必要になります。
 
@@ -240,7 +240,7 @@ efa_supported_instance_types = distinct(flatten([
 
 ## 全体の中での位置付け
 
-本章は、Ch1 で作った Amazon EKS コントロールプレーンと Ch2 で載せた Karpenter コントローラの上に、初めて「GPU/Neuron ノードを増やせる型」を積む章です。ここで `accelerator_pools` の型と、それに紐づく taint・アドオン・disruption ポリシーの設計を理解しておくと、後続の章で扱う共有ストレージ（Amazon EFS/Amazon FSx for Lustre）や Capacity Block プールも同じ型の延長として素直に理解できます。Capacity Block（`capacity_type = "reserved"`）を使ったプールの追加は Ch5 で扱うため、本章では on-demand の最小構成から確認します。
+本章は、Ch1 で作った Amazon EKS コントロールプレーンと Ch3 で載せた Karpenter コントローラの上に、初めて「GPU/Neuron ノードを増やせる型」を積む章です。ここで `accelerator_pools` の型と、それに紐づく taint・アドオン・disruption ポリシーの設計を理解しておくと、後続の章で扱う共有ストレージ（Amazon EFS/Amazon FSx for Lustre）や Capacity Block プールも同じ型の延長として素直に理解できます。Capacity Block（`capacity_type = "reserved"`）を使ったプールの追加は Ch6 で扱うため、本章では on-demand の最小構成から確認します。
 
 ## 注意
 
@@ -342,7 +342,7 @@ ip-10-0-ww-ww.<region>...      Ready    <none>   15m   v1.35.6-eks-...     (syst
 ```
 
 :::message
-Capacity Block (reserved) プールを追加した場合は `gpu-p5en` / `reserved` として表示されます。CB プールの追加は Ch5 で扱います。
+Capacity Block (reserved) プールを追加した場合は `gpu-p5en` / `reserved` として表示されます。CB プールの追加は Ch6 で扱います。
 :::
 
 ## 6. nvidia-smi の出力を確認する
