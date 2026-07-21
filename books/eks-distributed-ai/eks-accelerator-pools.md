@@ -41,13 +41,9 @@ GPU ノードに関してもう 1 点誤解しやすいのが、GPU Operator の
 
 ノードの disruption（入れ替え・削減）ポリシーも、キャパシティタイプによって挙動が変わるように作られています。`capacity_type = "reserved"`（Capacity Block）のプールは `budgets: [{ nodes: "0" }]` を設定し、ドリフト検知による自動入れ替えも含めてノードの入れ替えを完全に止めます。Capacity Block は先払いの予約であり、多くの場合は長時間の訓練ジョブを載せるため、Karpenter が新しい AMI リリースを検知して「勝手にノードを入れ替える」ことは訓練データの損失につながりかねません。一方、on-demand/spot のプールは `consolidationPolicy: WhenEmpty` に加えて `consolidateAfter: "5m"`（デフォルト）を設定し、5 分間アイドルなノードは自動的に回収されるようにしています。
 
-## 全体の中との位置付け
+## 全体の中での位置付け
 
 本章は、Ch1 で作った EKS コントロールプレーンと Ch2 で載せた Karpenter コントローラの上に、初めて「GPU/Neuron ノードを増やせる型」を積む章です。ここで `accelerator_pools` の型と、それに紐づく taint・アドオン・disruption ポリシーの設計を理解しておくと、後続の章で扱う共有ストレージ（EFS/FSx）や Capacity Block プールも同じ型の延長として素直に理解できます。Capacity Block（`capacity_type = "reserved"`）を使ったプールの追加は Ch5 で扱うため、本章では on-demand の最小構成から確認します。
-
-## 実際に挙動を確認する
-
-`terraform.tfvars` の `accelerator_pools` に GPU プールのエントリを 1 つ追加して `terraform apply` すると、新しい `.tf` ファイルを 1 行も書かずに NodePool・EC2NodeClass と、必要なアドオン（GPU Operator、EFA が必要なインスタンスタイプであれば EFA device plugin）が一式導入されます。GPU を要求する Pod をデプロイすると、Karpenter がその条件に合う NodeClaim を作って EC2 インスタンスを起動し、`nodeadm` でのクラスタ参加、GPU Operator の初期化を経て、数分後には `nvidia-smi` が通る状態になります。具体的な手順と実機出力は後述の「ワークショップ実施」で確認します。
 
 ## 注意
 

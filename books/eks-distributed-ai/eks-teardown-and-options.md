@@ -29,19 +29,6 @@ free: true
 
 本章は基盤構築の最終章にあたります。Ch1 から積み上げてきた VPC・EKS コントロールプレーン・Karpenter・各アクセラレータプール・共有ストレージを、課金を取り残さずに安全に取り壊す方法を扱います。また、これまでの章では触れなかった「外部からアクセスする経路」をオプション機能として最後に足すことで、基盤の上にアプリケーションを公開する際の考え方も示します。破棄とオプション機能は独立した話題ですが、いずれも「基盤を運用し続ける中で、いつか必要になる」という共通点で本章にまとめています。
 
-## 実際に挙動を確認する
-
-`04-teardown.sh --destroy` を実行すると、`terraform destroy` の中で `wait_for_node_drain` のポーリングログが流れます。
-
-```
-wait_for_node_drain: waiting for Karpenter to terminate all accelerator NodeClaims...
-wait_for_node_drain: 1 NodeClaim(s) still present (attempt 3/180)...
-wait_for_node_drain: no NodeClaim(s) remain.
-wait_for_node_drain: waiting for Karpenter to clear EC2NodeClass finalizers (best-effort)...
-```
-
-このログが出ている間、Karpenter コントローラや GPU Operator はまだ destroy されません。単一ノードの構成であれば概ね 9 分前後で `NodeClaim` が 0 件になります。具体的な実行手順は後述の「ワークショップ実施」で扱います。
-
 ## 注意
 
 **destroy 実行環境の PATH に `bash`・`aws` CLI・`kubectl` が必要です。** いずれか欠けると provisioner はポーリングせずエラー終了します。確認できずに進んで課金を取り残すより destroy を止める意図的な安全側の設計であり、`aws ec2 describe-instances` で孤立インスタンスを確認してから再実行します。
