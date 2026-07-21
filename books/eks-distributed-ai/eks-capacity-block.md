@@ -291,9 +291,13 @@ kubectl get nodeclaims -l karpenter.sh/nodepool=gpu-p5en
 
 ## 5. マルチノードなら NCCL/EFA を検証する
 
+検証用の MPIJob を作る namespace として、Basic01 で用意した作業用 namespace を使います（開き直した場合に備えて冪等に用意し直します）。
+
 ```bash
+export NAMESPACE=distai
+kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
 ./03-verify-nccl.sh --nodes 2 --gpus-per-node 8 \
-  --namespace <ns> --image <nccl-tests-image>
+  --namespace "$NAMESPACE" --image <nccl-tests-image>
 ```
 
 MPIJob を使って 2 ノード間の `all_reduce_perf` を実行し、busbw（EFA 経由の実効帯域）を確認します。単体ノードの NVLink 内帯域だけでなく、CB で確保した複数ノードが実際に EFA/RDMA で正しく通信できているかをここで確かめます。
@@ -318,7 +322,7 @@ cb_expiry_sns_topic_arn = "arn:aws:sns:<region>:<account>:distai-eks-<name>-cb-e
 ## 7. teardown する
 
 ```bash
-./04-teardown.sh --namespace <ns> --nodepool gpu-p5en
+./04-teardown.sh --namespace "$NAMESPACE" --nodepool gpu-p5en
 ```
 
 Deployment/StatefulSet/Job/MPIJob を削除し、GPU Pod が完全に終了したのを確認したうえで Karpenter の NodePool を削除します。CB のノード自体は予約期間の終了時に AWS 側で強制回収されるため、このスクリプトは「ワークロードを安全に退避させる」ところまでを担当します。クラスタ全体を壊す `terraform destroy` は `--destroy` を明示した場合のみ実行されます。

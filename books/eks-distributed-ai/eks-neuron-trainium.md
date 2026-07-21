@@ -157,14 +157,15 @@ terraform apply
 ## 3. Neuron probe pod で device plugin の advertise を確認する
 
 ```bash
-NAMESPACE=<namespace>
+export NAMESPACE=distai
+kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
 sed "s/__NAMESPACE__/${NAMESPACE}/g" manifests/neuron-probe-pod.yaml.tpl | kubectl apply -f -
 ```
 
 このプローブ Pod は `trn2-serving` の NodePool に `nodeSelector` で固定され、`aws.amazon.com/neuron` taint と `vpc.amazonaws.com/efa` taint への toleration を持ちます。Pod が `Running` になったら、内部で `neuron-ls` を実行してデバイスが正しく列挙されるか確認します。
 
 ```bash
-kubectl -n $NAMESPACE exec neuron-probe -- neuron-ls
+kubectl -n "$NAMESPACE" exec neuron-probe -- neuron-ls
 ```
 
 trn2.48xlarge であれば 16 個の Trainium2 デバイスが表示されるはずです。これが確認できれば、「AMI にドライバが載っている」「device plugin がリソースを advertise している」「Pod がそのリソースを要求してスケジュールされる」という一連の流れが単一ノードでは通っていることになります。
