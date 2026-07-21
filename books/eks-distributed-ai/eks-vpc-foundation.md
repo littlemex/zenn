@@ -35,18 +35,6 @@ free: true
 
 本章は基盤構築の最下層にあたります。ここで作った EKS + System ノードの上に、次章で Karpenter コントローラを載せ（Ch2）、その Karpenter が `accelerator_pools` の定義に従って GPU/Neuron ノードを起動する（Ch3 以降）、という順で積み上がっていきます。つまり本章は「まだ何も GPU が動かない」状態を作る章ですが、これ以降のすべての章がこの土台の上に成り立ちます。
 
-## 実際に挙動を確認する
-
-`terraform apply` が完了すると、System ノードグループの m5 系ノードが 2 台 `Ready` になります。この時点ではまだ Karpenter も GPU/Neuron ノードも存在しないため、`kubectl get nodes` で見えるのはこの 2 台だけです。
-
-```
-NAME                            STATUS   ROLES    AGE   VERSION
-ip-10-0-xx-xx.<region>...      Ready    <none>   5m    v1.35.x-eks-...
-ip-10-0-yy-yy.<region>...      Ready    <none>   5m    v1.35.x-eks-...
-```
-
-この 2 台が Karpenter コントローラと kube-system の載る足場になります。具体的な確認コマンドは後述の「ワークショップ実施」で扱います。
-
 ## 注意
 
 分散 AI 特有の落とし穴が 2 つあります。いずれも一度ハマると原因特定に時間がかかるため、最初に押さえておきます。

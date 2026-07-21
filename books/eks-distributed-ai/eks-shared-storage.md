@@ -36,17 +36,6 @@ FSx には EFS と決定的に違う制約があります。**aws-fsx-csi-driver
 
 本章は、Ch1〜Ch3 で作った VPC・EKS コントロールプレーン・アクセラレータノードの土台の上に、ノードのライフサイクルから独立したデータ層を積む章です。EFS と FSx はいずれも Terraform で 1 度作成すれば、その後の Karpenter によるノード入れ替えの影響を受けません。以降の章で GPU/Neuron ワークロードが HF キャッシュや NEFF、チェックポイントを読み書きする際の土台になります。
 
-## 実際に挙動を確認する
-
-`efs_enabled = true` は既定値のため、初回 `terraform apply` の時点で EFS ファイルシステムはすでに作られています。この状態で `kubectl get pv` を実行すると、次のように EFS 用の PersistentVolume が `Bound` で確認できます。
-
-```
-NAME                   CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM                          AGE
-efs-neuron-workspace   1000Gi     RWX            Retain           Bound    smollm-test/efs-shared-claim   3d
-```
-
-FSx を有効化した場合は、これに加えて `fsx-training` という PV も `Bound` で並びます。具体的な確認手順とテストは後述の「ワークショップ実施」で扱います。
-
 ## 注意
 
 **`fsx_subnet_index` とアクセラレータプールの `zone` の不一致に注意します。** FSx for Lustre は単一 AZ にしか存在せず、別 AZ からのマウントは動作こそしますが、AZ 間データ転送コストとレイテンシが発生します。`fsx_subnet_index` は、実際に FSx を使うアクセラレータプールの `zone`（Ch3 参照）と揃えておきます。

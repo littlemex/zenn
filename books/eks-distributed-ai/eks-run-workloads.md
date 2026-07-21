@@ -35,111 +35,6 @@ KubeRay が RayCluster を Capacity Block の p5en ノード上に展開し、Ra
 
 本章は基盤構築の最上層にあたります。Ch1 で作った EKS + System ノードの上に、Ch2 で Karpenter を載せ、Ch3-5 でアクセラレータノード・Capacity Block・EFA を積み上げてきました。本章ではその全部を使い切り、実ワークロードを流すことで基盤全体の妥当性を確認します。これ以降の章に進むための前提はここまでで揃っており、本章は「基盤側の作業」ではなく「基盤の検証」というスコープです。
 
-## 実際に挙動を確認する
-
-### 前提
-
-- Ch5 で Capacity Block の p5en x2 が稼働していること
-- miles イメージが ECR に push 済みであること（イメージビルドは [miles test case の README](https://github.com/littlemex/distributed-ai/blob/8d0d062/2026-07-19-miles-training-inference-mismatch/3.test_cases/pytorch/miles/README.md) に記載）
-
-### 1. EFA の 2 ノード通信を検証する
-
-GRPO を動かす前に、NCCL が EFA を使えていることを先に確認しておきます。miles イメージには `aws-ofi-nccl` プラグインが含まれているため、`torchrun` で直接確認できます。
-
-```bash
-# 2 つの Pod を p5en ノードに 1 つずつ配置し、torchrun で NCCL all-reduce を実行
-# Pod 内から:
-FI_PROVIDER=efa \
-NCCL_DEBUG=INFO \
-NCCL_DEBUG_SUBSYS=INIT,NET \
-NCCL_SOCKET_IFNAME=eth0 \
-torchrun --nnodes 2 --node_rank <0|1> --nproc_per_node 8 \
-  --master_addr <rank0-pod-ip> --master_port 29500 bench.py
-```
-
-確認ポイントは次の 3 点です。
-
-- ログに `NET/OFI Selected provider is efa, fabric is efa-direct` が出る
-- `[send] via NET/Libfabric/*/GDRDMA` — GPU Direct RDMA が有効
-- `NET/Socket` が一切出ない（TCP fallback なし）
-
-実測値（2 ノード p5en.48xlarge、H200 x16、EFA 15 使用。Ch4 と同一環境での計測）:
-
-| メッセージサイズ | algbw | busbw |
-|---|---|---|
-| 64 MB | 101.5 GB/s | 190.3 GB/s |
-| 256 MB | 100.5 GB/s | 188.5 GB/s |
-| 1024 MB | 127.2 GB/s | 238.4 GB/s |
-| 4096 MB | 135.8 GB/s | 254.7 GB/s |
-| 8192 MB | 137.1 GB/s | 257.1 GB/s |
-
-busbw 190-257 GB/s は TCP（~10 GB/s）の 20-25 倍であり、EFA が正しく動作している直接的な証拠です。
-
-### 2. KubeRay クラスタをデプロイする
-
-miles は Ray を使って SGLang（推論）と Megatron（訓練）を協調させます。RayCluster manifest をデプロイします。
-
-```bash
-kubectl apply -f kubernetes/raycluster.yaml
-kubectl get raycluster
-```
-
-期待される出力:
-```
-NAME        DESIRED WORKERS   AVAILABLE WORKERS   CPUS   MEMORY   GPUS   STATUS   AGE
-miles-ray   2                 2                   182    3608Gi   16     ready    5m
-```
-
-16 GPU（8 GPU x 2 ノード）が Ray クラスタに参加していれば OK です。
-
-Ray dashboard で状態を確認します。
-
-```bash
-kubectl port-forward svc/miles-ray-head-svc 8265:8265
-# http://localhost:8265 で 16 GPU が見える
-```
-
-### 3. GRPO を実行する
-
-miles の GRPO ループを Ray Job として投入します。
-
-```bash
-# 環境変数ファイルを読み込み（モデル名、ハイパーパラメータ等）
-source env_vars.colocated.example
-
-# Ray Job submit
-ray job submit --address http://localhost:10001 -- \
-  python -m miles.train \
-    --model $MODEL \
-    --dataset $DATASET \
-    --num-rollouts $NUM_ROLLOUTS \
-    --colocated
-```
-
-確認ポイントは次の 3 点です。
-
-- `rollout SUCCEEDED` のログが出る（SGLang が推論を完了した）
-- Megatron の backward pass でグラデーションが計算される
-- `raw_reward` が表示される（報酬関数が動作している証拠）
-
-実測参考（Qwen3-4B、colocated、2 ノード 16 GPU、3 cycles）:
-```
-[rank 0] rollout 0 SUCCEEDED, raw_reward=0.48
-[rank 0] rollout 1 SUCCEEDED, raw_reward=0.52
-[rank 0] rollout 2 SUCCEEDED, raw_reward=0.49
-```
-
-### 4. EFA 利用を確認する
-
-GRPO 実行中の NCCL ログ（`NCCL_DEBUG=INFO` を設定した場合）で、inter-node の all-reduce が EFA 経由であることを確認します。
-
-```
-NET/OFI Selected provider is efa, fabric is efa-direct (found 8 nics)
-Channel 00/0 : 3[3] -> 14[6] [send] via NET/Libfabric/3/GDRDMA
-```
-
-`NET/Socket` や `Using internal network plugin` が出ていたら TCP fallback しており、Ch4 の注意点（EFA SG の egress self-ref、`NCCL_SOCKET_IFNAME`、`aws-ofi-nccl` の有無）を再確認します。
-
 ## 注意
 
 **miles イメージには `aws-ofi-nccl` が必須です。** PyTorch の標準イメージには NCCL は入っていますが `aws-ofi-nccl`（EFA 用の NCCL ネットワークプラグイン）は入っていません。これが無いと NCCL は `internal network plugin`（= TCP/Socket）しか使えず、EFA リソースをリクエストしていても帯域は 1/20 以下になります。miles の Dockerfile にはこのプラグインが含まれています。
@@ -164,7 +59,7 @@ kubectl get nodes -l karpenter.sh/nodepool=<accelerator-nodepool-name>
 
 ## 2. EFA 通信を検証する
 
-「実際に挙動を確認する」節の手順 1 に従い、2 ノード間で `torchrun` による NCCL all-reduce を実行します。
+GRPO を投入する前に、2 ノード間で `torchrun` による NCCL all-reduce を実行し、EFA 通信が成立していることを先に確認します（Ch4「EFA でマルチノード通信を検証する」と同じ検証です）。
 
 ```bash
 FI_PROVIDER=efa \

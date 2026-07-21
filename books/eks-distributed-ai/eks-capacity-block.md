@@ -37,36 +37,6 @@ CB を使う運用フローは次のようになります。
 
 Ch3 までに作った `accelerator_pools` という型に、本章では「予約 ID をどう埋めるか」という運用手順を積み重ねます。プール定義そのものの構造は変わりません。CB は容量調達の一手段であり、NodePool/NodeClass の設計自体には手を入れないという点が、この章を Ch3〜Ch4 の続きとして位置づける根拠になります。
 
-## 実際に挙動を確認する
-
-`02-post-purchase.sh` で得たブロックを `terraform.tfvars` に貼り付けて `terraform apply` すると、`capacity-block.tf` が `cb_reservation_id` から実際の予約情報を自動解決します。`data "external"` で `aws ec2 describe-capacity-reservations` を呼び、以下の 3 値を予約から取得します。
-
-- **end_date**: EventBridge アラームの発火時刻に使います。`cb_end_date` を tfvars に明記していない場合、予約の `EndDate` から自動導出されます（明記すれば上書きも可能です）
-- **availability_zone**: プールの `zone` と一致しているか検証します
-- **state**: `active` でなければ警告します（`scheduled` や `expired` ではノードが起動しません）
-
-この自動導出により、`02-post-purchase.sh` で得た `cr-...` さえ書けば、終了日時や AZ を手コピーする必要がありません。
-
-apply が完了すると、CB 由来の reserved ノードが `Ready` になります。実機出力（p5en x2 の CB 環境）は次のとおりです。
-
-```
-NAME                            STATUS   ROLES    AGE   VERSION
-ip-10-0-xx-xx.<region>...      Ready    <none>   21h   v1.35.6-eks-...
-ip-10-0-yy-yy.<region>...      Ready    <none>   18h   v1.35.6-eks-...
-```
-
-NodeClaim でも確認できます。
-
-```
-NAME             TYPE            CAPACITY    ZONE         READY   AGE
-gpu-p5en-aaaaa   p5en.48xlarge   reserved    us-east-2a   True    18h
-gpu-p5en-bbbbb   p5en.48xlarge   reserved    us-east-2a   True    21h
-```
-
-`CAPACITY = reserved` が Capacity Block 由来であることを示し、`ZONE` が単一 AZ に固定されていることも確認できます。具体的な確認コマンドは後述の「ワークショップ実施」で扱います。
-
-Terraform の `check` ブロックは state/zone の不整合を **WARNING として** 表示しますが、**apply を止めません**。これは意図的な設計です。もし state が `expired` に変わったタイミングで `check` が NodePool の `for_each` をゲートしてしまうと、NodePool リソース自体が破壊される（稼働中の Pod が突然消える）ことになるためです。`check` はあくまで「確認してから proceed せよ」という視覚的なシグナルという位置づけです。
-
 ## 注意
 
 分散 AI 特有の落とし穴が 4 つあります。いずれも一度ハマると原因特定に時間がかかるため、最初に押さえておきます。
