@@ -241,11 +241,12 @@ kubectl patch ec2nodeclass <name> --type=merge -p '{"metadata":{"finalizers":[]}
 
 ## 1. アクセラレータプールだけをドレインする
 
-`04-teardown.sh` は既定で、指定した namespace の Deployment/StatefulSet/Job/MPIJob を削除し、GPU Pod の終了を確認したうえで Karpenter の NodePool を削除します。
+`04-teardown.sh` は既定で、指定した namespace の Deployment/StatefulSet/Job/MPIJob を削除し、GPU Pod の終了を確認したうえで Karpenter の NodePool を削除します。ここで指定するのは、Basic01 以降のワークショップで使ってきた作業用 namespace（本 book では `distai`）です。
 
 ```bash
 cd infra/eks/scripts
-./04-teardown.sh --namespace <namespace>
+export NAMESPACE=distai
+./04-teardown.sh --namespace "$NAMESPACE"
 ```
 
 ## 2. ドレインの過程を観察する
@@ -259,7 +260,7 @@ kubectl get nodeclaims -w
 ## 3. クラスタ全体を破棄する
 
 ```bash
-./04-teardown.sh --namespace <namespace> --destroy
+./04-teardown.sh --namespace "$NAMESPACE" --destroy
 ```
 
 `terraform destroy` の中で、前節で示した `wait_for_node_drain` のポーリングログが流れます。ログが `no NodeClaim(s) remain.` に達してから、Karpenter コントローラや GPU Operator などノードに紐づくコントローラの破棄に進みます。

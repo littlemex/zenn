@@ -211,7 +211,20 @@ kubectl get nodes
 
 `kubectl get nodes` で m5 系のノードが 2 台 `Ready` 状態で表示されれば、System ノードグループの起動は成功です。
 
-## 4. context を確認する習慣をつける
+## 4. 作業用の namespace を作る
+
+この book のワークショップ（Basic02 以降）では、学習 Job や推論サーバーなどのワークロードを `default` ではなく専用の namespace に作ります。あとで「この namespace ごと消せば実験の後片付けが済む」ようにするためです。本 book では作業用 namespace を `distai` に統一して進めます。
+
+以降の各章のコマンドはこの `NAMESPACE` 変数を前提にしているので、ターミナルを開き直したら都度この 2 行を実行してください。`kubectl create namespace` を `--dry-run` 経由の `apply` にしているのは、すでに存在していてもエラーにならないようにするため（冪等）です。
+
+```bash
+export NAMESPACE=distai
+kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+```
+
+`namespace/distai created`（初回）または `namespace/distai unchanged`（2 回目以降）と表示されれば準備完了です。本 book では最後まで同じ `distai` を使います（後片付けの Basic11 もこの namespace を対象にします）。
+
+## 5. context を確認する習慣をつける
 
 ```bash
 kubectl config current-context
@@ -225,7 +238,7 @@ kubectl config current-context
 
 # まとめ
 
-本章では、分散 AI の実験を回すための土台として Amazon EKS クラスタを構築しました。作ったのは Amazon VPC・Amazon EKS コントロールプレーン・System ノードグループの 3 つで、この上に Ch3 から Karpenter とアクセラレータプールを積み上げていきます。Amazon VPC は大きめの CIDR を確保し、`karpenter.sh/discovery` タグをパブリックサブネットに漏らさない、という 2 点だけ押さえておけば、あとは一般的な Amazon EKS 構築とほぼ同じです。
+本章では、分散 AI の実験を回すための土台として Amazon EKS クラスタを構築し、以降のワークショップで使う作業用 namespace `distai` を作成しました。作ったのは Amazon VPC・Amazon EKS コントロールプレーン・System ノードグループの 3 つで、この上に Ch3 から Karpenter とアクセラレータプールを積み上げていきます。Amazon VPC は大きめの CIDR を確保し、`karpenter.sh/discovery` タグをパブリックサブネットに漏らさない、という 2 点だけ押さえておけば、あとは一般的な Amazon EKS 構築とほぼ同じです。
 
 # 参考資料
 

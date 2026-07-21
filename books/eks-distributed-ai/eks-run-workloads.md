@@ -41,33 +41,41 @@ free: true
 
 # ワークショップ実施
 
-## 1. vLLM の Deployment を投入する
+## 1. 作業用 namespace を用意する
+
+Basic01 で作った作業用 namespace を使います。ターミナルを開き直した場合に備えて、ここで冪等に用意し直しておきます（すでに存在していてもエラーになりません）。
+
+```bash
+export NAMESPACE=distai
+kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+```
+
+## 2. vLLM の Deployment を投入する
 
 雛形をレンダリングして適用します。`__NODE_ROLE__` は GPU プール名（Basic04 で定義したもの、例 `gpu-dev`）に置き換えます。
 
 ```bash
-NAMESPACE=<your-namespace>
 MODEL=Qwen/Qwen2.5-0.5B-Instruct     # ゲートなし・小型
 sed -e "s/__NAMESPACE__/${NAMESPACE}/g" -e "s#__MODEL__#${MODEL}#g" \
     -e "s/__NODE_ROLE__/gpu-dev/g" \
     gpu-serving-vllm.yaml.tpl | kubectl apply -f -
 ```
 
-## 2. GPU ノードの起動と Pod の Ready を待つ
+## 3. GPU ノードの起動と Pod の Ready を待つ
 
 ```bash
 kubectl get nodeclaims -w        # gpu プールの NodeClaim が起動 → Ready
-kubectl -n <your-namespace> rollout status deploy/gpu-vllm --timeout=15m
+kubectl -n "$NAMESPACE" rollout status deploy/gpu-vllm --timeout=15m
 ```
 
 GPU ノードの起動（数分）、vLLM イメージの pull、モデルのロードを経て、Pod が `1/1 Running` になります。
 
-## 3. OpenAI 互換 API を叩く
+## 4. OpenAI 互換 API を叩く
 
 port-forward してモデル一覧と推論を確認します。
 
 ```bash
-kubectl -n <your-namespace> port-forward svc/gpu-vllm 8000:8000 &
+kubectl -n "$NAMESPACE" port-forward svc/gpu-vllm 8000:8000 &
 curl -s localhost:8000/v1/models | python3 -m json.tool
 ```
 
@@ -98,13 +106,13 @@ curl -s localhost:8000/v1/chat/completions \
 
 応答本文と `usage`（`prompt_tokens` / `completion_tokens` / `total_tokens`）が返れば、g6e / g5 クラスの 1 枚の GPU で vLLM の推論が動いていることが確認できます（実測で prompt 36 / completion 31 / total 67 トークンの応答を確認）。
 
-## 4. 後片付け
+## 5. 後片付け
 
 推論サーバーを止めれば、GPU ノードは `consolidateAfter`（既定 5 分）のアイドル後に Karpenter が自動回収します。on-demand なので使った分だけの課金です。
 
 ```bash
-kubectl delete deploy gpu-vllm -n <your-namespace>
-kubectl delete svc gpu-vllm -n <your-namespace>
+kubectl delete deploy gpu-vllm -n "$NAMESPACE"
+kubectl delete svc gpu-vllm -n "$NAMESPACE"
 kubectl get nodeclaims -w        # GPU ノードが消えるのを確認
 ```
 
