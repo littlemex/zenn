@@ -9,7 +9,7 @@ free: true
 
 ## 全体構成
 
-![EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
+![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 
 本章で扱うのは、この図のうち Karpenter が起動するアクセラレータノード同士を結ぶ EFA ネットワークの部分です。ノードそのものの起動は前章までで完了しているため、ここでは「起動したノードの EFA が正しく使えているか」を確認します。
 
@@ -146,7 +146,7 @@ resource "aws_security_group_rule" "efa_node_ingress_self" {
   source_security_group_id = aws_security_group.efa_node.id
 }
 
-# Egress: 通常の IP トラフィック（S3, ECR 等）
+# Egress: 通常の IP トラフィック（Amazon S3, Amazon ECR 等）
 resource "aws_security_group_rule" "efa_node_egress_all" {
   security_group_id = aws_security_group.efa_node.id
   type               = "egress"
