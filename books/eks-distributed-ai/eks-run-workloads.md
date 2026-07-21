@@ -1,28 +1,39 @@
 ---
-title: "実ワークロードで動作確認 — GRPO on 2-node EFA"
+title: "Basic06 - 実ワークロードで動作確認する (GRPO)"
+free: true
 ---
 
-## メインテーマ
+本章では、Ch1-5 で構築した基盤（EKS + Karpenter + Capacity Block + EFA）の上で、実際の分散強化学習ワークロード（miles/GRPO）を動かします。これまでの章は個別のコマンドで基盤の各要素を確認してきましたが、本章ではその基盤の上で GPU 分散ワークロードを端から端まで動かし、マルチノード EFA 通信が本番相当の負荷で正しく機能することを実証します。
 
-Ch1-5 で構築した基盤（EKS + Karpenter + Capacity Block + EFA）の上で、実際の分散強化学習ワークロード（miles/GRPO）を動かし、マルチノード EFA 通信が本番相当の負荷で正しく機能することを確認する。
+# 解説
+
+## 全体構成
+
+![EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
+
+本章では、この図で組み上げてきた VPC・EKS コントロールプレーン・Karpenter・アクセラレータノード・EFA の全体を使い、その上に KubeRay 経由で実ワークロードを載せる部分を扱います。基盤そのものは変更せず、基盤が正しく機能しているかを実ワークロードで検証する章です。
 
 ## これは何をするものか
 
-ここまでのチャプターでは「基盤が正しく構成されているか」を個別のコマンドで確認してきた。このチャプターでは、その基盤の上で実際の GPU 分散ワークロードを端から端まで動かし、以下を実証する:
+このチャプターでは、2 ノード 16 GPU（p5en x2）にまたがる分散強化学習ループを最初から最後まで動かし、以下を実証します。
 
-- 2 ノード 16 GPU（p5en x2）にまたがる NCCL all-reduce が EFA 経由で動く
-- KubeRay を使った Ray クラスタが CB ノード上で正しく構成される
+- 2 ノード 16 GPU にまたがる NCCL all-reduce が EFA 経由で動く
+- KubeRay を使った Ray クラスタが Capacity Block ノード上で正しく構成される
 - SGLang（推論）と Megatron-LM（訓練）を統合した GRPO ループが完走する
 
-使用するのは [miles](https://github.com/radixark/miles) — SLIME のフォークで、Megatron + SGLang + Ray による GRPO（Group Relative Policy Optimization）を実装したフレームワーク。
+使用するのは [miles](https://github.com/radixark/miles) です。SLIME のフォークで、Megatron + SGLang + Ray による GRPO（Group Relative Policy Optimization）を実装したフレームワークです。
+
+![実ワークロード実行構成 KubeRay + miles GRPO](/images/books/eks-distributed-ai/arch-workload.png)
+
+KubeRay が RayCluster を Capacity Block の p5en ノード上に展開し、Ray Job として投入された miles の GRPO ループの中で、SGLang（推論）と Megatron-LM（訓練）の重みが weight sync され、ノード間の勾配同期と重み転送が EFA 経由の NCCL で行われます。
 
 :::message
-このチャプターの目的は「基盤が動く」ことの実証であり、GRPO の詳細な解説やハイパーパラメータチューニングは扱わない。ワークロード自体の詳細は [distributed-ai リポジトリの miles test case](https://github.com/littlemex/distributed-ai/tree/8d0d062/2026-07-19-miles-training-inference-mismatch/3.test_cases/pytorch/miles) を参照。
+このチャプターの目的は「基盤が動く」ことの実証であり、GRPO の詳細な解説やハイパーパラメータチューニングは扱いません。ワークロード自体の詳細は [distributed-ai リポジトリの miles test case](https://github.com/littlemex/distributed-ai/tree/8d0d062/2026-07-19-miles-training-inference-mismatch/3.test_cases/pytorch/miles) を参照してください。
 :::
 
 ## 全体の中での位置付け
 
-![チャプターの位置付け](/images/books/eks-distributed-ai/ch6-run-workloads.png)
+本章は基盤構築の最上層にあたります。Ch1 で作った EKS + System ノードの上に、Ch2 で Karpenter を載せ、Ch3-5 でアクセラレータノード・Capacity Block・EFA を積み上げてきました。本章ではその全部を使い切り、実ワークロードを流すことで基盤全体の妥当性を確認します。これ以降の章に進むための前提はここまでで揃っており、本章は「基盤側の作業」ではなく「基盤の検証」というスコープです。
 
 ## 実際に挙動を確認する
 
@@ -33,7 +44,7 @@ Ch1-5 で構築した基盤（EKS + Karpenter + Capacity Block + EFA）の上で
 
 ### 1. EFA の 2 ノード通信を検証する
 
-GRPO を動かす前に、NCCL が EFA を使えていることを先に確認しておく。miles イメージには `aws-ofi-nccl` プラグインが含まれているため、`torchrun` で直接確認できる:
+GRPO を動かす前に、NCCL が EFA を使えていることを先に確認しておきます。miles イメージには `aws-ofi-nccl` プラグインが含まれているため、`torchrun` で直接確認できます。
 
 ```bash
 # 2 つの Pod を p5en ノードに 1 つずつ配置し、torchrun で NCCL all-reduce を実行
@@ -46,7 +57,8 @@ torchrun --nnodes 2 --node_rank <0|1> --nproc_per_node 8 \
   --master_addr <rank0-pod-ip> --master_port 29500 bench.py
 ```
 
-確認ポイント:
+確認ポイントは次の 3 点です。
+
 - ログに `NET/OFI Selected provider is efa, fabric is efa-direct` が出る
 - `[send] via NET/Libfabric/*/GDRDMA` — GPU Direct RDMA が有効
 - `NET/Socket` が一切出ない（TCP fallback なし）
@@ -61,11 +73,11 @@ torchrun --nnodes 2 --node_rank <0|1> --nproc_per_node 8 \
 | 4096 MB | 135.8 GB/s | 254.7 GB/s |
 | 8192 MB | 137.1 GB/s | 257.1 GB/s |
 
-busbw 190-257 GB/s は TCP（~10 GB/s）の 20-25 倍であり、EFA が正しく動作している直接的な証拠。
+busbw 190-257 GB/s は TCP（~10 GB/s）の 20-25 倍であり、EFA が正しく動作している直接的な証拠です。
 
 ### 2. KubeRay クラスタをデプロイする
 
-miles は Ray を使って SGLang（推論）と Megatron（訓練）を協調させる。RayCluster manifest をデプロイする:
+miles は Ray を使って SGLang（推論）と Megatron（訓練）を協調させます。RayCluster manifest をデプロイします。
 
 ```bash
 kubectl apply -f kubernetes/raycluster.yaml
@@ -78,9 +90,10 @@ NAME        DESIRED WORKERS   AVAILABLE WORKERS   CPUS   MEMORY   GPUS   STATUS 
 miles-ray   2                 2                   182    3608Gi   16     ready    5m
 ```
 
-16 GPU（8 GPU x 2 ノード）が Ray クラスタに参加していれば OK。
+16 GPU（8 GPU x 2 ノード）が Ray クラスタに参加していれば OK です。
 
-Ray dashboard で状態を確認:
+Ray dashboard で状態を確認します。
+
 ```bash
 kubectl port-forward svc/miles-ray-head-svc 8265:8265
 # http://localhost:8265 で 16 GPU が見える
@@ -88,7 +101,7 @@ kubectl port-forward svc/miles-ray-head-svc 8265:8265
 
 ### 3. GRPO を実行する
 
-miles の GRPO ループを Ray Job として投入:
+miles の GRPO ループを Ray Job として投入します。
 
 ```bash
 # 環境変数ファイルを読み込み（モデル名、ハイパーパラメータ等）
@@ -103,7 +116,8 @@ ray job submit --address http://localhost:10001 -- \
     --colocated
 ```
 
-確認ポイント:
+確認ポイントは次の 3 点です。
+
 - `rollout SUCCEEDED` のログが出る（SGLang が推論を完了した）
 - Megatron の backward pass でグラデーションが計算される
 - `raw_reward` が表示される（報酬関数が動作している証拠）
@@ -117,21 +131,91 @@ ray job submit --address http://localhost:10001 -- \
 
 ### 4. EFA 利用を確認する
 
-GRPO 実行中の NCCL ログ（`NCCL_DEBUG=INFO` を設定した場合）で、inter-node の all-reduce が EFA 経由であることを確認:
+GRPO 実行中の NCCL ログ（`NCCL_DEBUG=INFO` を設定した場合）で、inter-node の all-reduce が EFA 経由であることを確認します。
 
 ```
 NET/OFI Selected provider is efa, fabric is efa-direct (found 8 nics)
 Channel 00/0 : 3[3] -> 14[6] [send] via NET/Libfabric/3/GDRDMA
 ```
 
-`NET/Socket` や `Using internal network plugin` が出ていたら TCP fallback しており、Ch4 の注意点（EFA SG の egress self-ref、`NCCL_SOCKET_IFNAME`、`aws-ofi-nccl` の有無）を再確認する。
+`NET/Socket` や `Using internal network plugin` が出ていたら TCP fallback しており、Ch4 の注意点（EFA SG の egress self-ref、`NCCL_SOCKET_IFNAME`、`aws-ofi-nccl` の有無）を再確認します。
 
-## 注意点
+## 注意
 
-**miles イメージには `aws-ofi-nccl` が必須。** PyTorch の標準イメージには NCCL は入っているが `aws-ofi-nccl`（EFA 用の NCCL ネットワークプラグイン）は入っていない。これが無いと NCCL は `internal network plugin`（= TCP/Socket）しか使えず、EFA リソースをリクエストしていても帯域は 1/20 以下になる。miles の Dockerfile にはこのプラグインが含まれている。
+**miles イメージには `aws-ofi-nccl` が必須です。** PyTorch の標準イメージには NCCL は入っていますが `aws-ofi-nccl`（EFA 用の NCCL ネットワークプラグイン）は入っていません。これが無いと NCCL は `internal network plugin`（= TCP/Socket）しか使えず、EFA リソースをリクエストしていても帯域は 1/20 以下になります。miles の Dockerfile にはこのプラグインが含まれています。
 
-**`hostNetwork: true` が EFA に必要。** EFA の SRD トラフィックは Pod のネットワーク名前空間を経由できない。Worker Pod は `hostNetwork: true` で起動し、ホストの EFA インターフェースを直接使う必要がある。ポート衝突を避けるため、sshd は 2222 で動かす。
+**`hostNetwork: true` が EFA に必要です。** EFA の SRD トラフィックは Pod のネットワーク名前空間を経由できません。Worker Pod は `hostNetwork: true` で起動し、ホストの EFA インターフェースを直接使う必要があります。ポート衝突を避けるため、sshd は 2222 で動かします。
 
-**`MASTER_ADDR` は Worker-0 の Pod DNS 名を使う。** MPI Operator 経由の場合は `<job-name>-worker-0.<job-name>.<namespace>.svc` の形式。torchrun 方式の場合は Pod IP を直接使える。
+**`MASTER_ADDR` は Worker-0 の Pod DNS 名を使います。** MPI Operator 経由の場合は `<job-name>-worker-0.<job-name>.<namespace>.svc` の形式です。torchrun 方式の場合は Pod IP を直接使えます。
 
-**GRPO の詳細な手順はこの book のスコープ外。** miles の config 設定、モデル選択、データセット準備などの詳細は [distributed-ai リポジトリ](https://github.com/littlemex/distributed-ai/tree/8d0d062/2026-07-19-miles-training-inference-mismatch/3.test_cases/pytorch/miles) を参照。この chapter の目的はあくまで「基盤が正しく動いている」ことの実証である。
+**GRPO の詳細な手順はこの book のスコープ外です。** miles の config 設定、モデル選択、データセット準備などの詳細は [distributed-ai リポジトリの miles test case](https://github.com/littlemex/distributed-ai/tree/8d0d062/2026-07-19-miles-training-inference-mismatch/3.test_cases/pytorch/miles) を参照してください。この chapter の目的はあくまで「基盤が正しく動いている」ことの実証です。
+
+# ワークショップ実施
+
+## 1. 前提を確認する
+
+Ch5 で作成した Capacity Block の p5en x2 が `Ready` になっていることを確認します。
+
+```bash
+kubectl get nodes -l karpenter.sh/nodepool=<accelerator-nodepool-name>
+```
+
+2 台の p5en ノードが `Ready` であれば進めます。まだ揃っていない場合は Ch5 に戻って Capacity Block の予約状況を確認してください。
+
+## 2. EFA 通信を検証する
+
+「実際に挙動を確認する」節の手順 1 に従い、2 ノード間で `torchrun` による NCCL all-reduce を実行します。
+
+```bash
+FI_PROVIDER=efa \
+NCCL_DEBUG=INFO \
+NCCL_DEBUG_SUBSYS=INIT,NET \
+NCCL_SOCKET_IFNAME=eth0 \
+torchrun --nnodes 2 --node_rank <0|1> --nproc_per_node 8 \
+  --master_addr <rank0-pod-ip> --master_port 29500 bench.py
+```
+
+ログに `NET/OFI Selected provider is efa` が出て `NET/Socket` が出ないことを確認します。
+
+:::message alert
+`NET/Socket` が出ている場合は EFA が使われず TCP fallback しています。ワークロードは動きますが帯域が 1/20 以下になるため、次のステップに進む前に Ch4 の EFA セキュリティグループ設定を見直してください。
+:::
+
+## 3. KubeRay クラスタをデプロイする
+
+```bash
+kubectl apply -f kubernetes/raycluster.yaml
+kubectl get raycluster
+```
+
+`AVAILABLE WORKERS` が `DESIRED WORKERS` と一致し、`GPUS` が 16 になっていることを確認します。
+
+## 4. GRPO を投入する
+
+```bash
+source env_vars.colocated.example
+ray job submit --address http://localhost:10001 -- \
+  python -m miles.train \
+    --model $MODEL \
+    --dataset $DATASET \
+    --num-rollouts $NUM_ROLLOUTS \
+    --colocated
+```
+
+`rollout SUCCEEDED` と `raw_reward` がログに出力されれば、SGLang による推論と Megatron による訓練が正しく協調して動いています。
+
+## 5. EFA 利用を最終確認する
+
+GRPO 実行中の NCCL ログで `via NET/Libfabric/*/GDRDMA` が出ていることを確認します。これが出ていれば、実ワークロードの重み転送・勾配同期がすべて EFA 経由で行われていることの確定的な証拠になります。
+
+# まとめ
+
+本章では、Ch1-5 で構築した EKS + Karpenter + Capacity Block + EFA の基盤の上で、miles/GRPO による実際の分散強化学習ワークロードを最初から最後まで動かしました。KubeRay で 2 ノード 16 GPU の Ray クラスタを構成し、SGLang と Megatron-LM を統合した GRPO ループが完走することを確認し、その通信がすべて EFA 経由（busbw 190-257 GB/s）であることを実測で確認しました。`aws-ofi-nccl` の同梱と `hostNetwork: true` の指定が、EFA を実ワークロードで使う上での必須条件です。
+
+# 参考資料
+
+- [miles (radixark/miles)](https://github.com/radixark/miles)
+- [distributed-ai リポジトリの miles test case](https://github.com/littlemex/distributed-ai/tree/8d0d062/2026-07-19-miles-training-inference-mismatch/3.test_cases/pytorch/miles)
+- [miles test case の README（イメージビルド手順）](https://github.com/littlemex/distributed-ai/blob/8d0d062/2026-07-19-miles-training-inference-mismatch/3.test_cases/pytorch/miles/README.md)
+- [対象モジュール infra/eks](https://github.com/littlemex/distributed-ai/tree/main/infra/eks)
+- [AWS OFI NCCL Plugin](https://github.com/aws/aws-ofi-nccl)
