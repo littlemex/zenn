@@ -1,0 +1,221 @@
+---
+title: "vLLM Neuron プラグイン v0.21 を Trainium で実際に動かして分かったこと 全機能ふりかえり"
+emoji: "🔥"
+type: "tech"
+topics: ["AWS", "Neuron", "Trainium", "vLLM", "LLM"]
+published: false
+---
+
+## この記事について
+
+2026 年 7 月 20 日、AWS Trainium 向けの推論スタックである vLLM Neuron プラグインが `v0.21.0.1.0.0` としてリリースされました。NxD Inference への依存をなくし、モデル実装をプラグイン内部に持つ新アーキテクチャへ刷新された、大きな節目のリリースです。リリースノートは公式の [GitHub Releases](https://github.com/vllm-project/vllm-neuron/releases/tag/v0.21.0.1.0.0) にまとまっています。
+
+この記事は、そのリリースに含まれる機能を **単一の `trn2.3xlarge`（NeuronCore 4 個、HBM 96GB）で片っ端から実際に動かしてみた記録** です。ドキュメントを読むだけでは分からない「実際に起動するとどこで止まるか」「どの設定が本当に効くのか」を、実測値とソースコードの該当箇所つきで広く浅く整理しました。
+
+内部アーキテクチャ（torch.compile と FX graph、NKI カーネルの詳細など）には軽くだけ触れます。踏み込んだ内部解説は別記事に譲ります。
+
+対象読者は、Trainium での LLM 推論を検討していて「vLLM Neuron v0.21 で結局どこまで動くのか」を知りたい方です。
+
+:::message
+バージョンは記事執筆時点で vLLM Neuron `v0.21.0.1.0.0`、vLLM `0.21.0`、Neuron SDK `2.31.0` です。Neuron 周辺は変化が速いため、最新の状況は必ず公式ドキュメントで確認してください。参照した実装は、リリースタグ `v0.21.0.1.0.0`（commit `ae6c10e`）時点のものです。
+:::
+
+## 結論サマリ
+
+先に全体像を評価表で示します。今回はネットワークをまたぐ Disaggregated Inference を除き、単一の `trn2.3xlarge` で実機検証しました。
+
+| 機能 | 判定 | ひとことメモ |
+|------|:----:|------|
+| 環境構築 | ○ | pip 直インストールは詰まる。DLAMI 同梱の venv を使うのが正解 |
+| torch.compile + コンパイルキャッシュ | ◎ | cold 249 秒 → warm 再起動 140 秒。効くノブは `VLLM_CACHE_ROOT` |
+| Segmented Prefill（長文） | ◎ | 6183 トークンのプロンプトを 2 セグメントで正しく処理 |
+| Automatic Prefix Caching | ○ | 機能するが、レイテンシ削減はセグメント境界に量子化される |
+| Structured Outputs / Tool Calling | ○ | 動くが `--no-async-scheduling` が必須 |
+| GPT-OSS 20B（MoE）推論 | ◎ | Trn2 では BF16 で動く。当初 Trn3 専用と誤認していた |
+| Wide Expert Parallelism | ○ | full EP はホストメモリ不足。ep_degree=2 なら動く |
+| EAGLE3 投機的デコード | ◎ | AWS 提供の speculator なら動く。コミュニティ版は重み非互換 |
+| マルチモーダル（Qwen3-VL） | ◎ | 4B なら画像認識まで動く。32B はメモリ的に厳しい |
+| CPU モード / NKI シミュレータ / CPU コンパイル | ◎ | NeuronCore なしで動作 |
+| Production Metrics / Profiler API | ◎ | `/metrics` は 390 行、`/start_profile` も応答 |
+| Out-of-tree モデル統合 | ◎ | synthetic モデルで generate() まで通る |
+| Disaggregated Inference（NiXL） | 未検証 | 2 ノード + EFA が必須。単一ノードでは検証不可 |
+
+正直に書くと、13 カテゴリのうち単一ノードで完全に動いたのが大半で、ワークアラウンドが要ったものが数個、そして物理的に単一ノードでは無理なものが 1 個という結果でした。以下、それぞれを実際に動かした視点で見ていきます。
+
+## v0.21 の構造をざっくりだけ
+
+詳細は別記事に回しますが、動かす上で理解しておくと納得しやすい点だけ触れます。
+
+v0.21 の最大の変更は、NxD Inference ライブラリへの依存をやめ、モデル実装をプラグイン内部（`vllm_neuron/model/` 配下）に持ったことです。登録済みモデルは [`vllm_neuron/model/registry.py`](https://github.com/vllm-project/vllm-neuron/blob/ae6c10eff6ec748e958045241aaca0288e8ddaa8/vllm_neuron/model/registry.py) を見ると分かり、`LlamaForCausalLM`、`GptOssForCausalLM`、`Eagle3LlamaForCausalLM`、`Qwen3VLForConditionalGeneration` の 4 つです。
+
+推論時の流れは、PyTorch の `torch.compile` を `vllm_neuron` バックエンドで呼び、モデルの `forward()` を FX graph としてトレースし、XLA/HLO を経由して Neuron Compiler が NEFF（Neuron 実行バイナリ）を生成する、というものです。ここで重要なのが、この NEFF 生成が起動時のウォームアップで走り、そのぶん初回起動が長くなるという点です。この「コンパイルとの付き合い方」が Trainium 運用の肝になります（後述します）。
+
+FX graph より下、NKI カーネルや XLA lowering の中身は別記事で扱います。
+
+## 環境構築 最初の関門
+
+公式のセットアップ手順は [setup-guide](https://github.com/vllm-project/vllm-neuron/blob/ae6c10eff6ec748e958045241aaca0288e8ddaa8/docs/getting-started/setup-guide.md) にあり、ソースからの pip インストール（Option A）、DLAMI 同梱 venv（Option B）、コンテナ（Option C）の 3 経路が示されています。
+
+ここで最初に詰まりました。Option A のとおり `pip install -e .` をすると、vLLM `0.21.0` は torch `2.11.0` に固定されているのに、一般配布されている `torch-neuronx` の最新は torch 2.9 ベースで、torch を 2.9 に引き戻してしまいます。結果として実行時に `neuron` デバイス型が未登録という `RuntimeError` で起動できませんでした。`requirements/core.txt` に Neuron ランタイムの依存が宣言されていないことが背景にあります。
+
+解決策は Option B、つまり DLAMI に同梱された専用 venv をそのまま使うことでした。パスは以下です。
+
+```bash
+source /opt/aws_neuronx_venv_pytorch_inference_vllm_0_21_0_1_0_0/bin/activate
+```
+
+この venv には torch `2.11.0` と `libtorch_neuronx_lite 2.11.0`、vLLM `0.21.0`、vllm_neuron `0.21.0.1.0.0`、NKI `0.5.0` という整合の取れた組み合わせが入っています。torch 2.11 に対応する Neuron ランタイムは `libtorch-neuronx-lite` として別系統で配布されており、汎用の `torch-neuronx` とは別物です。この 2 つの配布物を混ぜたことが失敗の原因でした。実機で確認したポイントとして、DLAMI の venv を使うのが現時点で最も再現性が高いです。
+
+もう一点、`trn2.3xlarge` には EFA 型の ENI が付いていないため、TP=4 で起動すると EFA アフィニティ設定で worker が落ちます。これは正確性の要件ではなくホスト側の CPU/NUMA 最適化なので、環境変数で無効化できます。
+
+```bash
+export NEURON_SKIP_EFA_AFFINITY=1
+```
+
+面白いのは、この回避策はソースコード自身が案内している点です。[`hardware_config.py`](https://github.com/vllm-project/vllm-neuron/blob/ae6c10eff6ec748e958045241aaca0288e8ddaa8/vllm_neuron/utils/hardware_config.py#L182) のエラーメッセージに「EFA affinity is a CPU performance optimization, not a correctness requirement」と書かれており、[`neuron_worker.py`](https://github.com/vllm-project/vllm-neuron/blob/ae6c10eff6ec748e958045241aaca0288e8ddaa8/vllm_neuron/vllm/worker/neuron_worker.py#L515) の該当ガードで環境変数が効くようになっています。EFA を積んだ `trn2.48xlarge` などへ流用するときは、この設定を外す点だけ注意してください。
+
+## コンパイルキャッシュ 初回の長い待ち時間との付き合い方
+
+Trainium 運用で最初に体感するのが、初回起動の長さです。起動時のウォームアップで各バケットサイズぶんの NEFF をコンパイルするため、モデルによっては数分単位で待たされます。ここでコンパイルキャッシュが効いてきます。
+
+Llama 3.1 8B（TP=4）で、同じ `VLLM_CACHE_ROOT` を指定して cold 起動と warm 再起動を比較しました。実機で計測した結果は次のとおりです。
+
+- cold 起動（キャッシュ空）: ready まで 249 秒、コンパイルイベント 9 回
+- warm 再起動（同じキャッシュ）: ready まで 140 秒、全 worker で「Local cache hit ... Skipping graph capture」のログ、NEFF ファイル数は変化なし
+
+再起動が 44 パーセント速くなり、ログからもコンパイラが呼ばれていないことが直接確認できました。設定を変えて（`max-num-batched-tokens` を変更して）再起動すると、ちゃんと再コンパイルが走ることも確認したので、キャッシュキーは設定を正しく識別しています。偽ヒットはありません。
+
+ここで実機ならではの発見がありました。ドキュメント（[features-guide](https://github.com/vllm-project/vllm-neuron/blob/ae6c10eff6ec748e958045241aaca0288e8ddaa8/docs/guides/features-guide.md) と [reference-configuration](https://github.com/vllm-project/vllm-neuron/blob/ae6c10eff6ec748e958045241aaca0288e8ddaa8/docs/guides/reference-configuration.md)）は `NEURON_COMPILED_ARTIFACTS` という環境変数をキャッシュ制御のノブとして繰り返し案内しています。ところが実際に設定しても効きませんでした。インストール済みパッケージ全体を検索しても `NEURON_COMPILED_ARTIFACTS` はコード側で一切参照されておらず、無言で無視される変数でした。
+
+キャッシュの場所を実際に制御しているのは `VLLM_CACHE_ROOT` です。[`envs.py`](https://github.com/vllm-project/vllm-neuron/blob/ae6c10eff6ec748e958045241aaca0288e8ddaa8/vllm_neuron/envs.py#L341) の `get_neuron_compile_cache_dir()` を読むと、`VLLM_CACHE_ROOT` が設定されていれば `$VLLM_CACHE_ROOT/neuron/compile_cache` を返す実装になっています。実機で `VLLM_CACHE_ROOT` を別ディレクトリに向けると、確かにキャッシュ出力先が変わることを確認しました。ドキュメントが実装と食い違っている箇所なので、キャッシュを永続化したいときは `VLLM_CACHE_ROOT` を使ってください。
+
+```bash
+export VLLM_CACHE_ROOT=/work/neuron_cache   # ここに NEFF が永続化される
+```
+
+## Segmented Prefill 長文コンテキストの捌き方
+
+長いプロンプトを扱うとき、全長ぶんの巨大な NEFF を 1 つコンパイルするのは非現実的です。v0.21 は Segmented Prefill によって、プロンプトを `max_num_batched_tokens` 単位のセグメントに分割し、反復的に処理します。設計は [prefix-caching の design ドキュメント](https://github.com/vllm-project/vllm-neuron/blob/ae6c10eff6ec748e958045241aaca0288e8ddaa8/docs/design/vllm/prefix-caching.md) にまとまっています。
+
+Llama 3.1 8B（`max-model-len 8192`、`max-num-batched-tokens 4096`）で、6183 トークンのプロンプトを投入しました。`ceil(6183 / 4096) = 2` なのでプリフィルが 2 セグメントに分割されます。実機で確認したところ、セグメント境界をまたいでも出力は正しく、末尾の質問（フランスの首都）にきちんと Paris と答えました。長文を単一の巨大 NEFF なしに捌けることが確認できました。
+
+設定上の注意として、`kv_segment_size_buckets` は現時点で 1 個の値しか指定できません。複数指定すると「Only one segment size is currently supported」で起動に失敗します。この点は実機で確認しました。
+
+## Automatic Prefix Caching 効くが効き方に癖がある
+
+Prefix Caching はデフォルトで有効です。共有プレフィックス（システムプロンプトや RAG コンテキスト）の KV キャッシュを再利用し、TTFT を縮めます。
+
+まず機能面は問題ありませんでした。同じプレフィックスで temperature=0 の greedy 生成を繰り返すと、出力はバイト単位で一致し、答えも正しいままでした。壊れた出力を返すことはありません。
+
+一方で TTFT の効き方には癖があります。当初、1200 トークン程度のプロンプトで cold と warm を比べたところ、TTFT に差が出ませんでした（どちらも約 1.14 秒）。原因はプリフィルのバケット構造にあります。プロンプトが単一の 4096 バケット内に収まると、プリフィルは 1 パスで完結し、キャッシュヒットしても実行される NEFF のサイズは変わらないため、実時間は変わりません。
+
+そこでプロンプトを 5252 トークンに伸ばし、2 セグメントにまたがるようにして計測し直しました。
+
+- cold（毎回ユニークなプレフィックス、2 セグメント）: TTFT 中央値 2.265 秒
+- warm（共有プレフィックスがキャッシュ済み、残りわずか）: TTFT 中央値 1.146 秒
+
+約 1.98 倍の高速化が見えました。メカニズムは、キャッシュヒットで計算済みトークンが前進し、残りのアクティブトークンが少なくなってセグメントの反復回数が減る、というものです。GPU の vLLM ではキャッシュ削減が連続的に効くのに対し、Neuron ではセグメントやバケットの境界に量子化されるのがポイントです。効果を測りたいときは、プロンプトがバケットをまたぐ設計にする必要があります。
+
+実装面では、Prefix Caching は Segmented Prefill が有効であることを前提にしています。[`neuron_model_runner.py`](https://github.com/vllm-project/vllm-neuron/blob/ae6c10eff6ec748e958045241aaca0288e8ddaa8/vllm_neuron/vllm/worker/neuron_model_runner.py#L669) に「Automatic Prefix Caching (APC) requires segmented prefill to be enabled」というガードがあり、`max_num_batched_tokens` がサポート値かつ `max_model_len` 未満でないと起動に失敗します。両者を同じ値にすると single-shot prefill になって Segmented Prefill が無効化され、APC と衝突する点は実機でハマったところです。
+
+## Structured Outputs と Tool Calling 制約つきで動く
+
+JSON スキーマに沿った構造化出力と、関数呼び出し（Tool Calling）も動きました。オンデバイスで文法由来のビットマスクをロジットに適用してスキーマ準拠を保証する仕組みで、設計は [features-guide](https://github.com/vllm-project/vllm-neuron/blob/ae6c10eff6ec748e958045241aaca0288e8ddaa8/docs/guides/features-guide.md) に記載があります。
+
+実機では、`response_format` に JSON スキーマを渡すと `{"city": "Tokyo", "population": 38}` のようにスキーマ準拠の JSON が返り、余計なキーも付きませんでした。Tool Calling も、天気取得ツールを定義して問い合わせると `get_weather(city=Melbourne)` という tool_call を正しく生成しました。
+
+ここで重要な制約が 2 つあります。1 つ目は、構造化出力は非同期スケジューリングと排他だという点です。デフォルトのまま構造化出力を要求すると、[`neuron_model_runner.py`](https://github.com/vllm-project/vllm-neuron/blob/ae6c10eff6ec748e958045241aaca0288e8ddaa8/vllm_neuron/vllm/worker/neuron_model_runner.py#L5259) の「Structured outputs with async scheduling is not supported」というアサーションで落ちます。起動時に `--no-async-scheduling` を付ける必要があります。2 つ目は、構造化出力を使うには `additional_config` の `neuron_config.enable_structured_outputs` を `true` にする必要があることです。この 2 つはエラーメッセージが親切に教えてくれるので、実機で順に対応できました。
+
+```bash
+python3 -m vllm.entrypoints.openai.api_server \
+  --model meta-llama/Llama-3.1-8B-Instruct \
+  --tensor-parallel-size 4 --max-model-len 8192 --max-num-batched-tokens 4096 \
+  --no-async-scheduling \
+  --enable-auto-tool-choice --tool-call-parser llama3_json \
+  --additional-config '{"neuron_config": {"enable_structured_outputs": true}}'
+```
+
+## GPT-OSS 20B の MoE 推論 Trn2 でも動く
+
+ここは実際に動かして認識を改めた部分です。当初、`openai/gpt-oss-20b` の config に MXFP4 量子化が指定されていて Trn2 では ModelConfig 検証に弾かれるため、「GPT-OSS は Trn3 専用で Trn2 では検証できない」と誤って結論づけていました。
+
+正しくは、Trn3 専用なのは MXFP4 という量子化形式だけで、GPT-OSS というモデル自体は Trn2 では BF16 で動きます。[model-recipes の gpt-oss ドキュメント](https://github.com/vllm-project/vllm-neuron/blob/ae6c10eff6ec748e958045241aaca0288e8ddaa8/docs/model-recipes/gpt-oss.md) にも「On Trn2, both models run in BF16. MXFP4 is Trn3 only.」と明記されています。ソースの [`gpt_oss/factory.py`](https://github.com/vllm-project/vllm-neuron/blob/ae6c10eff6ec748e958045241aaca0288e8ddaa8/vllm_neuron/model/gpt_oss/factory.py#L46) を見ると、`quantization` が `bf16` なら `model_bf16.py` を、`mxfp4` なら `model_mxfp4.py` を選ぶ分岐になっており、`mxfp4` かつ `trn2` は明示的にエラーになります。
+
+私が見落としていた正しい起動法は、`--hf-overrides` で HuggingFace config 側の量子化宣言を消し、`neuron_config` で BF16 を指定することでした。手順は [gpt-oss のチュートリアル](https://github.com/vllm-project/vllm-neuron/blob/ae6c10eff6ec748e958045241aaca0288e8ddaa8/docs/tutorials/tutorial-gpt-oss.md) に記載があります。
+
+```bash
+python3 -m vllm.entrypoints.openai.api_server \
+  --model openai/gpt-oss-20b --tensor-parallel-size 4 \
+  --hf-overrides '{"quantization_config": {}}' \
+  --additional-config '{"neuron_config": {"quantization": "bf16", "num_batched_tokens_buckets": [4096], "num_seqs_buckets": [4]}}'
+```
+
+これで `trn2.3xlarge` 上で GPT-OSS 20B が BF16 で起動し、実推論できました。試しに「17 times 23?」と聞くと 391 と正しく答え、MoE のルーティングを含めて正常に動くことを確認しました。ドキュメントの記述を鵜呑みにせず、自分の手で回してみて初めて誤解に気づけた例です。
+
+## Wide Expert Parallelism ホストメモリとの兼ね合い
+
+MoE モデルのエキスパートをランクに分散する Expert Parallelism も試しました。設計は [expert_parallelism の design ドキュメント](https://github.com/vllm-project/vllm-neuron/blob/ae6c10eff6ec748e958045241aaca0288e8ddaa8/docs/design/parallelism/expert_parallelism.md) にあります。`--enable-expert-parallel` を付けると起動します。
+
+`--enable-expert-parallel` だけを付けると `ep_degree` はデフォルトで TP と同じ（full EP）になります。このとき、ワーカーが `Worker_TP0_EP0` から `Worker_TP3_EP3` という名前で起動し、EP が degree=4 で効いていることが分かります。ところが full EP（ep_degree=4）で GPT-OSS 20B をコンパイルすると、各ランクがエキスパート分散の巨大なグラフをコンパイルするためホスト側の RAM が足りず、Neuron Compiler が `[F137] neuronx-cc was forcibly killed - insufficient system memory` で落ちました。
+
+そこで `ep_degree=2`（TP=4 とのハイブリッド並列）に下げたところ、6 個の HLO を無事コンパイルし切り、実推論まで通りました。推論も「17×23」に 391 と正答しました。full EP が `trn2.3xlarge` のホストメモリに対して重すぎるだけで、EP という機能自体は Trn2 で動くことが確認できました。
+
+## EAGLE3 投機的デコード speculator の相性が肝
+
+ドラフトモデルが先読みし、ターゲットモデルが一括検証する EAGLE3 投機的デコードも動きました。ただし、ここは speculator（ドラフトモデル）の選択で大きくハマりました。
+
+最初、コミュニティで広く使われている Llama 用の EAGLE3 speculator を試したところ、2 つの問題に当たりました。1 つは、そのモデルが safetensors 形式ではなく `.bin` 形式だったため、Neuron 側のローダーが読めなかったことです。もう 1 つは、safetensors に変換しても重みのキー構造が Neuron の EAGLE3 実装の期待と根本的に異なっていたことです。Neuron 側は `model.embed_tokens.weight` や `model.layers.N.*` という命名を期待するのに対し、コミュニティ版は `midlayer.*` や `fc.weight`、`d2t`、`t2d` という別構造でした。単純なリネームでは埋まらない非互換です。
+
+正解は、AWS がテストした speculator を使うことでした。公式の [features-guide](https://github.com/vllm-project/vllm-neuron/blob/ae6c10eff6ec748e958045241aaca0288e8ddaa8/docs/guides/features-guide.md) の例で示されている `RedHatAI/gpt-oss-20b-speculator.eagle3` を、ターゲットの GPT-OSS 20B と組み合わせたところ、ドラフトモデルの safetensors が問題なくロードされ、ドラフトとターゲットの二段コンパイルも完走しました。
+
+実機では、投機的デコードのメトリクスまで取れました。5 トークン先読み設定で、41 回のドラフト生成に対し、生成された 205 個のドラフトトークンのうち 23 個が受理されました。位置別の受理数は先頭ほど多く（position 0 が 17、position 1 が 5、position 2 が 1）、これは先読みが進むほど当たりにくくなるという EAGLE3 の典型的な挙動です。speculator は AWS 提供のものを使う、というのが実機で得た教訓です。
+
+なお、EAGLE3 も非同期スケジューリングと排他で、`--speculative-config` を指定すると自動的に非同期スケジューリングが無効になります。
+
+## マルチモーダル Qwen3-VL は小型なら Trn2 で動く
+
+画像とテキストを扱うマルチモーダルも試しました。公式チュートリアルは [Qwen3-VL 32B](https://github.com/vllm-project/vllm-neuron/blob/ae6c10eff6ec748e958045241aaca0288e8ddaa8/docs/tutorials/tutorial-qwen3-vl-32b.md) を `trn2.48xlarge`（TP=16）で動かす例です。32B は 96GB HBM には載りきらないので、小型の `Qwen/Qwen3-VL-4B-Instruct` で試しました。
+
+`vision_neuron_config` で vision エンコーダの設定（`num_vision_tokens_buckets` と `vision_attention_block_size`）を指定して起動すると、vision エンコーダとテキストデコーダの両方のグラフがコンパイルされました。実機で、赤い 64x64 の画像を渡して「What color is this image?」と聞いたところ、Red と正しく答えました。vision エンコーダの並列を含め、マルチモーダル推論が `trn2.3xlarge` で動くことを確認できました。モデルサイズさえ収まれば、機能自体は小型ノードでも検証できます。
+
+## CPU だけで開発する Trainium がなくても始められる
+
+v0.21 のうれしい点として、NeuronCore がなくても開発できるモードがあります。手順は [cpu-development](https://github.com/vllm-project/vllm-neuron/blob/ae6c10eff6ec748e958045241aaca0288e8ddaa8/docs/model-dev/cpu-development.md) と [nki_cpu_simulator](https://github.com/vllm-project/vllm-neuron/blob/ae6c10eff6ec748e958045241aaca0288e8ddaa8/docs/model-dev/nki_cpu_simulator.md) にまとまっています。
+
+実機（といっても NeuronCore を使わない CPU 側）で次の 3 つを確認しました。
+
+1 つ目は CPU モードです。`VLLM_NEURON_CPU_MODE=1` を設定すると、テンソル演算を CPU で走らせ、重みのマッピングや形状不一致を NeuronCore なしで検出できます。
+
+2 つ目は NKI CPU シミュレータです。`NKI_SIMULATOR=1` を合わせて設定すると、NKI カーネルを NumPy バックエンドで実行できます。試しに簡単な加算カーネルと `exp(mul)` カーネルを書いてシミュレータで実行し、torch の参照実装と数値が一致する（誤差 0.00）ことを確認しました。カーネルの正しさをハードウェアなしで検証できます。
+
+3 つ目は CPU コンパイルです。`VLLM_NEURON_CPU_COMPILE=1` と `NEURON_PLATFORM_TARGET_OVERRIDE=trn2` を設定すると、NeuronCore なしで NEFF を事前生成できます。実機では 6 個の NEFF（合計 93MB）が CPU 側で生成されました。ここで一点ハマったのが、`neuronx-cc` が PATH に通っていないと最終段の NEFF コンパイルで失敗する点です。実装の [`compile/backend.py`](https://github.com/vllm-project/vllm-neuron/blob/ae6c10eff6ec748e958045241aaca0288e8ddaa8/vllm_neuron/compile/backend.py) が `shutil.which("neuronx-cc")` でコンパイラを探すため、venv を activate して PATH を通しておく必要があります。
+
+この CPU 開発フローは、コンパイル用の安価な CPU インスタンスで NEFF を作り、共有キャッシュ経由で Trainium インスタンスに配る、という運用にもつながります。コスト意識の高いチームには効いてくる機能です。
+
+## メトリクスとプロファイラ 運用に必要なものは揃っている
+
+運用面も見ておきました。`/metrics` エンドポイントは Prometheus 互換で、ヒストグラムを含む 390 行のメトリクスを返しました。vLLM 本家と同じ感覚でモニタリングできます。
+
+プロファイラ API も、`--profiler-config '{"profiler": "cuda"}'` を付けると `/start_profile` と `/stop_profile` のエンドポイントが生えます。手順は [how-to-profile-workloads](https://github.com/vllm-project/vllm-neuron/blob/ae6c10eff6ec748e958045241aaca0288e8ddaa8/docs/guides/how-to-profile-workloads.md) にあります。実機で start と stop を叩くと、いずれも HTTP 200 で応答し、オーケストレーションは正しく動きました。実際のプロファイルデータ収集には追加のメモリや `NEURON_RT_INSPECT_ENABLE` などの設定が要りそうな挙動でしたが、API レイヤーは機能しています。
+
+## Out-of-tree モデル統合 synthetic モデルで契約を確認
+
+新しいモデルをプラグインに載せる仕組みも用意されています。手順は [onboarding-models](https://github.com/vllm-project/vllm-neuron/blob/ae6c10eff6ec748e958045241aaca0288e8ddaa8/docs/model-dev/onboarding-models.md) にあります。
+
+実際に本物のモデルを一から書くのは重いので、プラグイン付属の synthetic モデル（重みなしで KV キャッシュの埋め込みと検証だけを行うテスト用モデル）で、オンボーディングの契約が通るかを確認しました。CPU モードで `VLLM_NEURON_SYNTHETIC_MODEL=1` を設定して `LLM.generate()` を呼ぶと、モデル解決から `get_kv_spec()`、`bind_kv_cache()`、プリフィルとデコードの `forward()`、そして generate によるトークン生成まで一連の契約がすべて通り、8 トークンを生成しました。KV キャッシュも全レイヤー全ヘッドで期待値と一致していました。新モデルを載せる際の骨格は、この synthetic モデルが良い雛形になります。
+
+## インスタンスサイズの話 48xlarge は本当に必要か
+
+今回の検証で見えた実務的な結論として、`trn2.48xlarge` のような大型ノードが本質的に必要なのは、ネットワークをまたぐ Disaggregated Inference（NiXL による prefill/decode 分離）だけでした。これは 2 インスタンスと EFA（RDMA）が前提で、単一ノードでは原理的に検証できません。トポロジは [disaggregated-inference の design ドキュメント](https://github.com/vllm-project/vllm-neuron/blob/ae6c10eff6ec748e958045241aaca0288e8ddaa8/docs/design/vllm/disaggregated-inference.md) にまとまっています。
+
+逆に言えば、それ以外の機能は `trn2.3xlarge` で一通り検証できました。full EP のような重いコンパイルはホスト RAM 次第ですが `ep_degree` を下げれば回避でき、超大型モデルはメモリ次第ですが機能自体は小型モデルで確認できます。まず小さいノードで機能を押さえ、スケールやマルチノードが要る段階で大きいノードに移る、という進め方が現実的だと感じました。
+
+## まとめ どんなときに今使えるか
+
+vLLM Neuron v0.21 を単一の `trn2.3xlarge` で片っ端から動かしてみて、次の手応えを得ました。
+
+基本的な推論、コンパイルキャッシュ、長文の Segmented Prefill、Prefix Caching、構造化出力とツール呼び出し、メトリクスとプロファイラ、CPU 開発フローは、素直に動きました。MoE の GPT-OSS、Expert Parallelism、EAGLE3 投機的デコード、マルチモーダルといった v0.21 の目玉機能も、設定と speculator の選び方さえ押さえれば単一ノードで動かせました。Disaggregated Inference だけは 2 ノードと EFA が要るので、そこはノード構成の話になります。
+
+一方で、ドキュメントと実装が食い違う箇所（`NEURON_COMPILED_ARTIFACTS` が効かない、正しくは `VLLM_CACHE_ROOT`）や、非同期スケジューリングとの排他制約、speculator の重み互換性など、実際に動かさないと気づけない落とし穴もいくつかありました。Beta のリリースであることを踏まえると、まずは小さいノードで機能を確かめ、ドキュメントの記述もソースで裏を取りながら進めるのが安全です。
+
+内部アーキテクチャの踏み込んだ解説（torch.compile と XLA lowering、NKI カーネル、KV Block API との整合など）は別記事で扱います。この記事が、Trainium での LLM 推論を検討している方の地図になれば幸いです。
