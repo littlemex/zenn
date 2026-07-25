@@ -1,0 +1,36 @@
+<mxfile host="app.diagrams.net"><diagram id="bafdhf53-a03j" name="QJLと角度集中"><mxGraphModel dx="1200" dy="800" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1120" pageHeight="640" math="0" shadow="0">
+  <root>
+    <mxCell id="0" />
+    <mxCell id="1" parent="0" />
+    <mxCell id="p4t" value="2 つの直感: 符号だけで内積が復元でき、角度は高次元で集中する" style="text;html=1;fontSize=22;fontStyle=1;fontColor=#1B4332;align=center;verticalAlign=middle;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="40" y="18" width="1040" height="38" as="geometry" />
+    </mxCell>
+    <mxCell id="qbox" value="&lt;b&gt;QJL: なぜ符号 1 ビットで内積が不偏推定できるか&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#2D6A4F;strokeWidth=2;fontSize=15;fontColor=#1B4332;verticalAlign=top;align=center;spacingTop=10;arcSize=6;" vertex="1" parent="1">
+      <mxGeometry x="50" y="72" width="500" height="510" as="geometry" />
+    </mxCell>
+    <mxCell id="qc" value="" style="ellipse;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#95D5B2;strokeWidth=2;" vertex="1" parent="1"><mxGeometry x="180" y="130" width="240" height="240" as="geometry" /></mxCell>
+    <mxCell id="qx" style="endArrow=block;html=1;strokeColor=#40916C;strokeWidth=3;endFill=1;" edge="1" parent="1"><mxGeometry relative="1" as="geometry"><mxPoint x="300" y="250" as="sourcePoint" /><mxPoint x="400" y="180" as="targetPoint" /></mxGeometry></mxCell>
+    <mxCell id="qxl" value="x" style="text;html=1;fontSize=16;fontStyle=1;fontColor=#1B4332;" vertex="1" parent="1"><mxGeometry x="402" y="164" width="20" height="20" as="geometry" /></mxCell>
+    <mxCell id="qy" style="endArrow=block;html=1;strokeColor=#E76F51;strokeWidth=3;endFill=1;" edge="1" parent="1"><mxGeometry relative="1" as="geometry"><mxPoint x="300" y="250" as="sourcePoint" /><mxPoint x="370" y="340" as="targetPoint" /></mxGeometry></mxCell>
+    <mxCell id="qyl" value="y" style="text;html=1;fontSize=16;fontStyle=1;fontColor=#9C2A1E;" vertex="1" parent="1"><mxGeometry x="372" y="338" width="20" height="20" as="geometry" /></mxCell>
+    <mxCell id="qh1" style="endArrow=none;html=1;strokeColor=#ADB5BD;strokeWidth=1.5;dashed=1;" edge="1" parent="1"><mxGeometry relative="1" as="geometry"><mxPoint x="210" y="310" as="sourcePoint" /><mxPoint x="390" y="190" as="targetPoint" /></mxGeometry></mxCell>
+    <mxCell id="qh2" style="endArrow=none;html=1;strokeColor=#ADB5BD;strokeWidth=1.5;dashed=1;" edge="1" parent="1"><mxGeometry relative="1" as="geometry"><mxPoint x="220" y="160" as="sourcePoint" /><mxPoint x="385" y="345" as="targetPoint" /></mxGeometry></mxCell>
+    <mxCell id="qhlab" value="ランダムな超平面 sᵢ" style="text;html=1;fontSize=11;fontColor=#868E96;align=center;" vertex="1" parent="1"><mxGeometry x="185" y="132" width="120" height="16" as="geometry" /></mxCell>
+    <mxCell id="qcap" value="ランダムな方向 sᵢ の超平面 (灰破線) が x と y を同じ側に分けるか否かは、両者の成す角 θ に比例する。sign(sᵢ·x) を多数のランダム方向で平均すると、符号の情報だけから角度 (内積) が復元される。係数 √(π/2) が符号関数の期待値を補正して推定は不偏になり、分散は d 個の平均で π/(2d)∥y∥² に減衰する (大数の法則)。" style="text;html=1;fontSize=13;fontColor=#1B4332;align=left;verticalAlign=top;whiteSpace=wrap;spacingLeft=12;spacingRight=12;" vertex="1" parent="1">
+      <mxGeometry x="70" y="390" width="460" height="180" as="geometry" />
+    </mxCell>
+    <mxCell id="abox" value="&lt;b&gt;PolarQuant: なぜ角度が集中し、少ビットで足りるか&lt;/b&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#2D6A4F;strokeWidth=2;fontSize=15;fontColor=#1B4332;verticalAlign=top;align=center;spacingTop=10;arcSize=6;" vertex="1" parent="1">
+      <mxGeometry x="580" y="72" width="500" height="510" as="geometry" />
+    </mxCell>
+    <mxCell id="axaxis" style="endArrow=block;html=1;strokeColor=#495057;strokeWidth=2;endFill=1;" edge="1" parent="1"><mxGeometry relative="1" as="geometry"><mxPoint x="640" y="360" as="sourcePoint" /><mxPoint x="1040" y="360" as="targetPoint" /></mxGeometry></mxCell>
+    <mxCell id="ayaxis" style="endArrow=block;html=1;strokeColor=#495057;strokeWidth=2;endFill=1;" edge="1" parent="1"><mxGeometry relative="1" as="geometry"><mxPoint x="660" y="380" as="sourcePoint" /><mxPoint x="660" y="130" as="targetPoint" /></mxGeometry></mxCell>
+    <mxCell id="alow" value="" style="curved=1;endArrow=none;html=1;strokeColor=#95D5B2;strokeWidth=3;" edge="1" parent="1"><mxGeometry relative="1" as="geometry"><mxPoint x="675" y="358" as="sourcePoint" /><mxPoint x="1020" y="358" as="targetPoint" /><Array as="points"><mxPoint x="790" y="305" /><mxPoint x="850" y="298" /><mxPoint x="920" y="305" /></Array></mxGeometry></mxCell>
+    <mxCell id="ahigh" value="" style="curved=1;endArrow=none;html=1;strokeColor=#2D6A4F;strokeWidth=3.5;" edge="1" parent="1"><mxGeometry relative="1" as="geometry"><mxPoint x="800" y="358" as="sourcePoint" /><mxPoint x="900" y="358" as="targetPoint" /><Array as="points"><mxPoint x="835" y="155" /><mxPoint x="865" y="155" /></Array></mxGeometry></mxCell>
+    <mxCell id="apeak" style="endArrow=none;html=1;strokeColor=#ADB5BD;strokeWidth=1.5;dashed=1;" edge="1" parent="1"><mxGeometry relative="1" as="geometry"><mxPoint x="850" y="160" as="sourcePoint" /><mxPoint x="850" y="360" as="targetPoint" /></mxGeometry></mxCell>
+    <mxCell id="apeakl" value="π/4" style="text;html=1;fontSize=14;fontColor=#2D6A4F;align=center;" vertex="1" parent="1"><mxGeometry x="830" y="364" width="40" height="20" as="geometry" /></mxCell>
+    <mxCell id="ahighl" value="高次元 d 大&lt;br&gt;(鋭いピーク)" style="text;html=1;fontSize=13;fontColor=#2D6A4F;align=center;fontStyle=1;whiteSpace=wrap;" vertex="1" parent="1"><mxGeometry x="880" y="160" width="110" height="40" as="geometry" /></mxCell>
+    <mxCell id="alowl" value="低次元&lt;br&gt;(広い分布)" style="text;html=1;fontSize=13;fontColor=#52B788;align=center;whiteSpace=wrap;" vertex="1" parent="1"><mxGeometry x="930" y="270" width="90" height="40" as="geometry" /></mxCell>
+    <mxCell id="axl" value="角度 θ" style="text;html=1;fontSize=13;fontColor=#495057;align=center;" vertex="1" parent="1"><mxGeometry x="985" y="366" width="50" height="20" as="geometry" /></mxCell>
+    <mxCell id="acap" value="角度の密度 f(θ) ∝ sin^{d-1}(2θ) は、次元 d が上がるほど平均 π/4 の周りに鋭く集中する (分散 O(1/d)、標準偏差 O(1/√d))。分布が狭い範囲に固まるので、2〜4 ビットの一様量子化でも高精度で表現できる。ランダム前処理がこの集中を作り出す装置である。" style="text;html=1;fontSize=13;fontColor=#1B4332;align=left;verticalAlign=top;whiteSpace=wrap;spacingLeft=12;spacingRight=12;" vertex="1" parent="1"><mxGeometry x="600" y="410" width="460" height="160" as="geometry" /></mxCell>
+  </root>
+</mxGraphModel></diagram></mxfile>

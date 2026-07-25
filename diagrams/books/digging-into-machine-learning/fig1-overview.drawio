@@ -1,0 +1,46 @@
+<mxfile host="app.diagrams.net">
+  <diagram id="overview" name="全体像">
+    <mxGraphModel dx="1200" dy="800" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1120" pageHeight="640" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="title" value="TurboQuant / PolarQuant を貫く一本の思想" style="text;html=1;fontSize=26;fontStyle=1;fontColor=#1B4332;align=center;verticalAlign=middle;whiteSpace=wrap;" vertex="1" parent="1">
+          <mxGeometry x="60" y="24" width="1000" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="subtitle" value="未知で最悪の入力を、ランダム回転で既知分布に変え、その分布に最適な量子化を設計し、情報理論の下界と突き合わせる" style="text;html=1;fontSize=15;fontColor=#40916C;align=center;verticalAlign=middle;whiteSpace=wrap;" vertex="1" parent="1">
+          <mxGeometry x="60" y="70" width="1000" height="24" as="geometry"/>
+        </mxCell>
+        <mxCell id="b1" value="&lt;b&gt;入力ベクトル x&lt;/b&gt;&lt;br&gt;&lt;br&gt;分布は未知・最悪ケース&lt;br&gt;外れ値チャネルもあり得る" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D8F3DC;strokeColor=#40916C;strokeWidth=2;fontSize=14;fontColor=#1B4332;verticalAlign=middle;align=center;arcSize=8;spacing=6;" vertex="1" parent="1">
+          <mxGeometry x="60" y="150" width="220" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="b2" value="&lt;b&gt;ランダム回転 Π&lt;/b&gt;&lt;br&gt;&lt;br&gt;内積・ノルムを厳密に保つ&lt;br&gt;Πx は球面上に一様分布&lt;br&gt;→ 既知分布 (Beta / Gauss)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#B7E4C7;strokeColor=#2D6A4F;strokeWidth=2;fontSize=14;fontColor=#1B4332;verticalAlign=middle;align=center;arcSize=8;spacing=6;" vertex="1" parent="1">
+          <mxGeometry x="330" y="150" width="220" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="b3" value="&lt;b&gt;既知分布に最適な量子化&lt;/b&gt;&lt;br&gt;&lt;br&gt;Lloyd-Max (連続 k-means)&lt;br&gt;座標は高次元でほぼ独立&lt;br&gt;→ スカラー量子化に分解" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#95D5B2;strokeColor=#2D6A4F;strokeWidth=2;fontSize=14;fontColor=#1B4332;verticalAlign=middle;align=center;arcSize=8;spacing=6;" vertex="1" parent="1">
+          <mxGeometry x="600" y="150" width="220" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="b4" value="&lt;b&gt;Shannon 下界と比較&lt;/b&gt;&lt;br&gt;&lt;br&gt;D(B) ≥ 1/4^b&lt;br&gt;達成歪み ≤ (√3π/2)/4^b&lt;br&gt;→ 定数倍 2.7x の近似最適" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#52B788;strokeColor=#1B4332;strokeWidth=2;fontSize=14;fontColor=#FFFFFF;verticalAlign=middle;align=center;arcSize=8;spacing=6;" vertex="1" parent="1">
+          <mxGeometry x="870" y="150" width="220" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="a1" style="endArrow=block;html=1;strokeColor=#2D6A4F;strokeWidth=2.5;endFill=1;" edge="1" parent="1" source="b1" target="b2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="a2" style="endArrow=block;html=1;strokeColor=#2D6A4F;strokeWidth=2.5;endFill=1;" edge="1" parent="1" source="b2" target="b3"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="a3" style="endArrow=block;html=1;strokeColor=#2D6A4F;strokeWidth=2.5;endFill=1;" edge="1" parent="1" source="b3" target="b4"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="lane_stat" value="&lt;b&gt;数理統計&lt;/b&gt;&lt;br&gt;&lt;br&gt;集中不等式・Beta 分布・座標の near-independence・大数の法則が、回転後の分布と最適量子化を支える" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#95D5B2;strokeWidth=2;dashed=1;fontSize=13;fontColor=#1B4332;verticalAlign=middle;align=center;spacing=10;arcSize=6;" vertex="1" parent="1">
+          <mxGeometry x="330" y="300" width="490" height="86" as="geometry"/>
+        </mxCell>
+        <mxCell id="lane_it" value="&lt;b&gt;情報理論&lt;/b&gt;&lt;br&gt;&lt;br&gt;Shannon 源符号化 / レート歪み理論が達成可能な歪みの下界を与える" style="rounded=1;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#52B788;strokeWidth=2;dashed=1;fontSize=13;fontColor=#1B4332;verticalAlign=middle;align=center;spacing=10;arcSize=6;" vertex="1" parent="1">
+          <mxGeometry x="870" y="300" width="220" height="86" as="geometry"/>
+        </mxCell>
+        <mxCell id="split" value="この後、目的に応じて 2 つの道具立てに分岐する" style="text;html=1;fontSize=15;fontStyle=1;fontColor=#1B4332;align=center;whiteSpace=wrap;" vertex="1" parent="1">
+          <mxGeometry x="60" y="418" width="1000" height="26" as="geometry"/>
+        </mxCell>
+        <mxCell id="br_tq" value="&lt;b&gt;TurboQuant&lt;/b&gt;&lt;br&gt;&lt;br&gt;スカラー量子化 (MSE) + 残差への QJL で不偏内積&lt;br&gt;近似最適を情報理論的に証明" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D8F3DC;strokeColor=#2D6A4F;strokeWidth=2;fontSize=14;fontColor=#1B4332;verticalAlign=middle;align=center;arcSize=10;spacing=8;" vertex="1" parent="1">
+          <mxGeometry x="150" y="460" width="380" height="110" as="geometry"/>
+        </mxCell>
+        <mxCell id="br_pq" value="&lt;b&gt;PolarQuant&lt;/b&gt;&lt;br&gt;&lt;br&gt;極座標へ再帰変換し角度を量子化&lt;br&gt;角度が集中 → 正規化不要でハードウェアフレンドリー" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D8F3DC;strokeColor=#2D6A4F;strokeWidth=2;fontSize=14;fontColor=#1B4332;verticalAlign=middle;align=center;arcSize=10;spacing=8;" vertex="1" parent="1">
+          <mxGeometry x="600" y="460" width="380" height="110" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
