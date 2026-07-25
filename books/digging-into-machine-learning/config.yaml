@@ -1,0 +1,8 @@
+title: "Digging into Machine Learning"
+summary: "機械学習の論文・実装・検証を自分で掘り下げ、整理していく本。第 1 章では KV-Cache 圧縮の TurboQuant と PolarQuant を、Shannon の源符号化理論とランダム射影の視点から一気通貫で解説する。"
+topics: ["機械学習", "情報理論", "数理統計", "LLM", "量子化"]
+published: false
+price: 5000 # 有料の場合200〜5000
+# 本に含めるチャプターを順番に並べましょう
+chapters:
+  - turboquant-polarquant
