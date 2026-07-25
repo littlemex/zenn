@@ -1,0 +1,43 @@
+<mxfile host="app.diagrams.net"><diagram id="dnregubw-sq0g" name="TurboQuant 2段構成"><mxGraphModel dx="1200" dy="800" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1120" pageHeight="660" math="0" shadow="0">
+  <root>
+    <mxCell id="0" />
+    <mxCell id="1" parent="0" />
+    <mxCell id="p3t" value="TurboQuant の 2 段構成: MSE 量子化 + 残差への QJL で不偏内積" style="text;html=1;fontSize=22;fontStyle=1;fontColor=#1B4332;align=center;verticalAlign=middle;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="40" y="18" width="1040" height="38" as="geometry" />
+    </mxCell>
+    <mxCell id="s1" value="&lt;b&gt;① MSE 量子化 (b-1 ビット)&lt;/b&gt;&lt;br&gt;&lt;br&gt;回転 Πx → 各座標を最近傍セントロイドに丸める&lt;br&gt;(Beta 分布に最適な Lloyd-Max)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#B7E4C7;strokeColor=#2D6A4F;strokeWidth=2;fontSize=13;fontColor=#1B4332;verticalAlign=middle;align=center;arcSize=8;spacing=6;" vertex="1" parent="1">
+      <mxGeometry x="50" y="80" width="235" height="140" as="geometry" />
+    </mxCell>
+    <mxCell id="s2" value="&lt;b&gt;② 残差を計算&lt;/b&gt;&lt;br&gt;&lt;br&gt;r = x − Q⁻¹(Q(x))&lt;br&gt;残差の L2 ノルムは小さい&lt;br&gt;(捨てた情報がここに残る)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#95D5B2;strokeColor=#2D6A4F;strokeWidth=2;fontSize=13;fontColor=#1B4332;verticalAlign=middle;align=center;arcSize=8;spacing=6;" vertex="1" parent="1">
+      <mxGeometry x="335" y="80" width="235" height="140" as="geometry" />
+    </mxCell>
+    <mxCell id="s3" value="&lt;b&gt;③ 残差に QJL (1 ビット)&lt;/b&gt;&lt;br&gt;&lt;br&gt;sign(S·r) で符号だけ残す&lt;br&gt;不偏な内積推定を回復&lt;br&gt;∥r∥₂ を別途保持" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#52B788;strokeColor=#1B4332;strokeWidth=2;fontSize=13;fontColor=#FFFFFF;verticalAlign=middle;align=center;arcSize=8;spacing=6;" vertex="1" parent="1">
+      <mxGeometry x="620" y="80" width="235" height="140" as="geometry" />
+    </mxCell>
+    <mxCell id="s4" value="&lt;b&gt;④ 復元&lt;/b&gt;&lt;br&gt;&lt;br&gt;x̃_mse + ∥r∥₂ · Q⁻¹_qjl(Q_qjl(r))&lt;br&gt;係数ビットは b + ∥r∥ の 1 スカラー&lt;br&gt;(不偏な内積推定)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#40916C;strokeColor=#1B4332;strokeWidth=2;fontSize=13;fontColor=#FFFFFF;verticalAlign=middle;align=center;arcSize=8;spacing=6;" vertex="1" parent="1"><mxGeometry x="905" y="80" width="175" height="140" as="geometry" /></mxCell>
+    <mxCell id="e1" style="endArrow=block;html=1;strokeColor=#2D6A4F;strokeWidth=2.5;endFill=1;" edge="1" parent="1" source="s1" target="s2"><mxGeometry relative="1" as="geometry" /></mxCell>
+    <mxCell id="e2" style="endArrow=block;html=1;strokeColor=#2D6A4F;strokeWidth=2.5;endFill=1;" edge="1" parent="1" source="s2" target="s3"><mxGeometry relative="1" as="geometry" /></mxCell>
+    <mxCell id="e3" style="endArrow=block;html=1;strokeColor=#2D6A4F;strokeWidth=2.5;endFill=1;" edge="1" parent="1" source="s3" target="s4"><mxGeometry relative="1" as="geometry" /></mxCell>
+    <mxCell id="why1" value="なぜ 2 段か: MSE 最適量子化は内積にバイアス (b=1 で 2/π 倍) を持つ。残差を不偏な QJL で拾い直すことでバイアスを消す。" style="text;html=1;fontSize=13;fontColor=#40916C;align=center;verticalAlign=middle;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="50" y="230" width="1030" height="30" as="geometry" />
+    </mxCell>
+    <mxCell id="bt" value="情報理論的な位置づけ: Shannon 下界への肉薄" style="text;html=1;fontSize=18;fontStyle=1;fontColor=#1B4332;align=center;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="40" y="288" width="1040" height="30" as="geometry" />
+    </mxCell>
+    <mxCell id="lb" value="&lt;b&gt;Shannon 下界 (情報理論の限界)&lt;/b&gt;&lt;br&gt;&lt;br&gt;D(B) ≥ 1 / 4^b&lt;br&gt;どんな量子化器もこれを下回れない" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D8F3DC;strokeColor=#1B4332;strokeWidth=2;fontSize=14;fontColor=#1B4332;verticalAlign=middle;align=center;dashed=1;arcSize=10;spacing=6;" vertex="1" parent="1">
+      <mxGeometry x="110" y="335" width="360" height="100" as="geometry" />
+    </mxCell>
+    <mxCell id="ub" value="&lt;b&gt;TurboQuant の達成歪み&lt;/b&gt;&lt;br&gt;&lt;br&gt;D ≤ (√3π/2) · 1 / 4^b&lt;br&gt;正しい漸近則 1/4^b を定数倍で達成" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#95D5B2;strokeColor=#1B4332;strokeWidth=2;fontSize=14;fontColor=#1B4332;verticalAlign=middle;align=center;arcSize=10;spacing=6;" vertex="1" parent="1">
+      <mxGeometry x="650" y="335" width="360" height="100" as="geometry" />
+    </mxCell>
+    <mxCell id="gap" value="&lt;b&gt;比 = √3π/2 ≈ 2.7 倍&lt;/b&gt;&lt;br&gt;(b=1 では約 1.45 倍)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#52B788;strokeColor=#1B4332;strokeWidth=2;fontSize=13;fontColor=#FFFFFF;verticalAlign=middle;align=center;arcSize=12;spacing=4;" vertex="1" parent="1">
+      <mxGeometry x="490" y="345" width="140" height="80" as="geometry" />
+    </mxCell>
+    <mxCell id="ge1" style="endArrow=classic;startArrow=classic;html=1;strokeColor=#2D6A4F;strokeWidth=2;" edge="1" parent="1" source="lb" target="gap"><mxGeometry relative="1" as="geometry" /></mxCell>
+    <mxCell id="ge2" style="endArrow=classic;startArrow=classic;html=1;strokeColor=#2D6A4F;strokeWidth=2;" edge="1" parent="1" source="gap" target="ub"><mxGeometry relative="1" as="geometry" /></mxCell>
+    <mxCell id="note" value="1 ビット増えるごとに歪みは 1/4 に減る (係数 1/4^b)。この指数的な減衰こそが情報理論の与える正しいスケーリングであり、TurboQuant はそれを全ビット幅で同時に定数倍で満たす (universal property = 名前の &quot;Turbo&quot; の由来)。" style="text;html=1;fontSize=13;fontColor=#1B4332;align=center;verticalAlign=middle;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="90" y="450" width="940" height="60" as="geometry" />
+    </mxCell>
+    <mxCell id="expt" value="実務メモ: vLLM 実測では復元コストによりスループット 20-34% 低下。デフォルトは今も FP8。TurboQuant の出番は FP8 では容量が足りない超長コンテキスト。" style="text;html=1;fontSize=13;fontColor=#7F5539;align=center;verticalAlign=middle;fontStyle=2;whiteSpace=wrap;" vertex="1" parent="1"><mxGeometry x="60" y="520" width="1000" height="40" as="geometry" /></mxCell>
+  </root>
+</mxGraphModel></diagram></mxfile>
