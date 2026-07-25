@@ -15,7 +15,7 @@ free: false
 
 本稿の全体像を一枚にすると次のようになる。ランダム回転で既知分布を作り、そこに最適量子化を設計し、Shannon 下界と突き合わせる、という一本の背骨が両論文を貫いている。
 
-![TurboQuant / PolarQuant を貫く一本の思想](/images/books/reading-ml-papers-from-first-principles/fig1-overview.png)
+![TurboQuant / PolarQuant を貫く一本の思想](/images/books/digging-into-machine-learning/fig1-overview.png)
 
 ## 前提知識: 量子化はレート歪み問題である
 
@@ -177,7 +177,7 @@ $$
 
 QJL の「超平面のどちら側か」という 1 ビットに角度が漏れ出る直感と、後述する PolarQuant の「角度は $\pi/4$ に集中する」直感を並べると次のようになる。
 
-![QJL の超平面直感と PolarQuant の角度集中](/images/books/reading-ml-papers-from-first-principles/fig4-qjl.png)
+![QJL の超平面直感と PolarQuant の角度集中](/images/books/digging-into-machine-learning/fig4-qjl.png)
 
 実はこの不偏性は、準1級の道具 2 つで検算できる。$S$ の第 $i$ 行を $s_i$ とし、$U = \langle y, s_i \rangle$、$V = \langle s_i, x \rangle$ と置くと、$(U, V)$ は共分散 $\mathrm{Cov}(U, V) = \langle y, x \rangle$、$\mathrm{Var}(V) = \|x\|_2^2 = 1$ の 2 変量正規に従う。2 変量正規では条件付き期待値が回帰直線 $\mathbb{E}[U \mid V] = \mathrm{Cov}(U, V) \cdot V$ になるので、
 
@@ -209,7 +209,7 @@ $$
 
 2 段構成 (MSE 量子化 + 残差への QJL) と、達成歪みが Shannon 下界に定数倍で張り付く様子を図にすると次の通りである。
 
-![TurboQuant の 2 段構成と Shannon 下界への肉薄](/images/books/reading-ml-papers-from-first-principles/fig3-twostage.png)
+![TurboQuant の 2 段構成と Shannon 下界への肉薄](/images/books/digging-into-machine-learning/fig3-twostage.png)
 
 17 倍もビット換算すればわずか 2 ビット強の差である。MSE の場合と同様に、低ビット幅ではこの上界をさらに精密化でき、$\|y\|_2 = 1$ として $b = 1, 2, 3, 4$ で $D_{\mathrm{prod}} \approx 1.57/d, 0.56/d, 0.18/d, 0.047/d$ となる (一般の上界式に $b=1$ を代入した $4.27/d$ より小さい精密値である)。
 
@@ -231,7 +231,7 @@ $$
 
 直交座標の独立量子化と極座標の量子化を比べると、なぜ極座標が有利かが見えてくる。
 
-![なぜ極座標か: 直交座標と極座標の比較](/images/books/reading-ml-papers-from-first-principles/fig2-polar.png)
+![なぜ極座標か: 直交座標と極座標の比較](/images/books/digging-into-machine-learning/fig2-polar.png)
 
 ### 再帰的極座標変換
 
