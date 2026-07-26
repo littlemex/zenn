@@ -32,11 +32,11 @@ Amazon FSx for Lustre には Amazon EFS と決定的に違う制約がありま�
 
 なお、KEDA（イベント駆動スケーリング）や Mountpoint for Amazon S3 は本章には含めません。これらはワークロード層の関心事であり、cluster-infra が提供する責務の外にあると判断しています。
 
-以降で実際の Terraform コードを引用しながら、なぜその値・その書き方にしているのかを見ていきます。対象モジュールは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/fix/eks-efa-verification-improvements/infra/eks) です。
+以降で実際の Terraform コードを引用しながら、なぜその値・その書き方にしているのかを見ていきます。対象モジュールは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks) です。
 
 ## Amazon EFS（マルチ AZ RWX）
 
-Amazon EFS は [`efs.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/efs.tf) で構成します。ファイルシステム本体はこれだけです。
+Amazon EFS は [`efs.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/efs.tf) で構成します。ファイルシステム本体はこれだけです。
 
 ```hcl
 # efs.tf（抜粋）
@@ -99,7 +99,7 @@ resource "kubectl_manifest" "efs_neuron_workspace_pv" {
 
 ## Amazon FSx for Lustre と static provisioning 制約
 
-Amazon FSx for Lustre は [`fsx.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/fsx.tf) で構成します。Amazon EFS との最大の違いは、**動的プロビジョニングの StorageClass が存在しない**ことです。ファイル冒頭のコメントにその理由が書かれています。
+Amazon FSx for Lustre は [`fsx.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/fsx.tf) で構成します。Amazon EFS との最大の違いは、**動的プロビジョニングの StorageClass が存在しない**ことです。ファイル冒頭のコメントにその理由が書かれています。
 
 ```hcl
 # fsx.tf（冒頭コメント抜粋）

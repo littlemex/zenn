@@ -52,7 +52,7 @@ kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -
 
 ## 2. vLLM の Deployment を投入する
 
-チャートをレンダリングして適用します。`nodeRole` は GPU プール名（Basic04 で定義したもの、例 `gpu-dev`）に置き換えます。
+この章では vLLM の公式イメージ `vllm/vllm-openai` をそのまま使うため、自前でのイメージビルドは不要です（`charts/experiments` の `gpuServingVllm.image` の既定値が公式イメージを指しています）。チャートをレンダリングして適用します。`nodeRole` は GPU プール名（Basic04 で定義したもの、例 `gpu-dev`）に置き換えます。
 
 ```bash
 cd infra/eks
@@ -63,6 +63,10 @@ helm template exp charts/experiments -n "$NAMESPACE" \
     --set gpuServingVllm.nodeRole=gpu-dev \
     | kubectl apply -f -
 ```
+
+:::message
+既定のイメージタグは `vllm/vllm-openai:latest` です。バージョンによって必要な GPU メモリや挙動が変わることがあるため、再現性が要る場合は `--set gpuServingVllm.image=vllm/vllm-openai:<固定タグ>` で明示的にピン留めしておくと安全です。
+:::
 
 ## 3. GPU ノードの起動と Pod の Ready を待つ
 
@@ -111,7 +115,7 @@ curl -s localhost:8000/v1/chat/completions \
 
 ## 5. 後片付け
 
-推論サーバーを止めれば、GPU ノードは `consolidateAfter`（既定 5 分）のアイドル後に Karpenter が自動回収します。on-demand なので使った分だけの課金です。
+推論サーバーを止めれば、GPU ノードは `consolidateAfter`（本構成の NodePool では 5 分に設定）のアイドル後に Karpenter が自動回収します。on-demand なので使った分だけの課金です。
 
 ```bash
 kubectl delete deploy gpu-vllm -n "$NAMESPACE"

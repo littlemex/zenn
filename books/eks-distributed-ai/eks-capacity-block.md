@@ -33,7 +33,7 @@ CB を使う運用フローは次のようになります。
 
 最後にコストの話をしておきます。CB は前払いで、購入後のキャンセルや返金はできません。p5en.48xlarge を 24 時間予約するだけで数百ドルから千ドル台のオーダーの upfront fee がかかります。したがって、CB を買う前に g6e のような On-Demand で十分に手が届く GPU インスタンスでコードとマニフェストの動作を検証しておき、CB は「動作確認済みのジョブを、確保した本番規模のアクセラレータに載せる」という最後のステップに使うのが安全な段階的アプローチになります。
 
-対象モジュールは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/fix/eks-efa-verification-improvements/infra/eks) です。以降で実際の Terraform コードを引用しながら、予約メタデータの自動導出・期限アラートの組み立て方を見ていきます。
+対象モジュールは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks) です。以降で実際の Terraform コードを引用しながら、予約メタデータの自動導出・期限アラートの組み立て方を見ていきます。
 
 ## 予約 ID（cr-...）の安全な取り扱い
 
@@ -54,7 +54,7 @@ accelerator_pools = {
 }
 ```
 
-ここで最も事故につながりやすいのは、`cb_reservation_id` を書いたのに `capacity_type` を `"reserved"` にし忘れる、あるいはその逆というミスです。[`variables.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/variables.tf) の `accelerator_pools` には、この 2 方向のミスをそれぞれ弾く `validation` ブロックが用意されています。
+ここで最も事故につながりやすいのは、`cb_reservation_id` を書いたのに `capacity_type` を `"reserved"` にし忘れる、あるいはその逆というミスです。[`variables.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/variables.tf) の `accelerator_pools` には、この 2 方向のミスをそれぞれ弾く `validation` ブロックが用意されています。
 
 ```hcl
 # variables.tf（抜粋、accelerator_pools の validation）
@@ -81,11 +81,11 @@ validation {
 
 `cr-...` は AWS アカウントと予約に固有の値です。本書では実際の値を書かず、上記のように `cr-0123456789abcdef0` のようなプレースホルダで統一しています。実際の運用でも `cr-...` はリポジトリにコミットせず、`terraform.tfvars`（`.gitignore` の対象とする）のような環境固有の設定ファイルにのみ書くことを徹底してください。
 
-`cr-...` を正しく渡せば、あとは手で入力する項目はほとんど残りません。前述の [`capacity-block.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/capacity-block.tf) の `data "external" "capacity_reservations"` が `cb_reservation_id` だけから予約の `end_date`・`availability_zone`・`state` を自動的に読み取り、期限アラートや AZ 整合性チェックに使います。したがって `terraform.tfvars` に手で書く CB 関連の値は、原則 `cb_reservation_id` と `capacity_type = "reserved"` の 2 つだけで済みます。
+`cr-...` を正しく渡せば、あとは手で入力する項目はほとんど残りません。前述の [`capacity-block.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/capacity-block.tf) の `data "external" "capacity_reservations"` が `cb_reservation_id` だけから予約の `end_date`・`availability_zone`・`state` を自動的に読み取り、期限アラートや AZ 整合性チェックに使います。したがって `terraform.tfvars` に手で書く CB 関連の値は、原則 `cb_reservation_id` と `capacity_type = "reserved"` の 2 つだけで済みます。
 
 ## 予約メタデータの自動導出（capacity-block.tf）
 
-[`capacity-block.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/capacity-block.tf) は、`accelerator_pools` に書いた `cb_reservation_id`（`cr-...`）だけから、その予約の終了時刻・AZ・状態を自動的に読み取ります。
+[`capacity-block.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/capacity-block.tf) は、`accelerator_pools` に書いた `cb_reservation_id`（`cr-...`）だけから、その予約の終了時刻・AZ・状態を自動的に読み取ります。
 
 ```hcl
 # capacity-block.tf（抜粋）
@@ -116,7 +116,7 @@ locals {
 
 読みどころは次の 3 点です。
 
-**AWS provider に `aws_ec2_capacity_reservation` data source が存在しない。** 購入側の `aws_ec2_capacity_block_offering` はありますが、既存の予約を読み取る data source は用意されていません。そのため `data "external"` で [`describe_capacity_reservations.sh`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/scripts/describe_capacity_reservations.sh) を呼び、`aws ec2 describe-capacity-reservations` の結果を `"<予約ID>.end_date"` のようなフラットな文字列マップに整形して Terraform に戻しています。external data source はネストした値を返せない制約があるための形です。
+**AWS provider に `aws_ec2_capacity_reservation` data source が存在しない。** 購入側の `aws_ec2_capacity_block_offering` はありますが、既存の予約を読み取る data source は用意されていません。そのため `data "external"` で [`describe_capacity_reservations.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/describe_capacity_reservations.sh) を呼び、`aws ec2 describe-capacity-reservations` の結果を `"<予約ID>.end_date"` のようなフラットな文字列マップに整形して Terraform に戻しています。external data source はネストした値を返せない制約があるための形です。
 
 **`depends_on` を付けていない。** コメントにもある通り、この `data` ブロックの入力は `var` の値だけで決まるため、plan 時点で値が確定します。`depends_on` を付けてしまうと解決が apply まで遅延し、`end_date`/`zone` が plan 時点では unknown になってしまうため、意図的に付けていません。
 
@@ -149,11 +149,11 @@ check "capacity_block_ready" {
 
 ここで重要なのは、**`check` ブロックは条件を満たさなくても plan/apply を WARNING で通す**という Terraform の仕様です。「アサーションだから当然 apply を止める」と考えると誤りで、この構成でもあえて「止めない」設計を選んでいます。理由はコメントにある通りで、もし CB の `state` を NodePool の `for_each` の条件に使ってハードゲート化すると、CB が後から `expired` に変わった瞬間に `for_each` の対象から外れて **NodePool ごと DESTROY される**という、警告よりもずっと悪い結果を招きます。したがって `check` ブロックはあくまで「気づくための仕掛け」であり、apply を止める防波堤ではありません。
 
-一方、同じモジュールの [`variables.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/variables.tf) にある `validation` ブロック（`cb_end_date` の UTC 必須や、`capacity_type` と `cb_reservation_id` の組み合わせチェックなど）は、こちらは条件を満たさないと **plan 自体を失敗させる**、正真正銘のフェイルファストです。同じ「CB がらみのチェック」でも、構造的に検証できるもの（tfvars の書き方の誤り）は `validation` でハードに止め、外部の実行時状態（CB の `state` や実際の AZ）に依存するものは `check` でソフトに警告する、という役割分担になっています。
+一方、同じモジュールの [`variables.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/variables.tf) にある `validation` ブロック（`cb_end_date` の UTC 必須や、`capacity_type` と `cb_reservation_id` の組み合わせチェックなど）は、こちらは条件を満たさないと **plan 自体を失敗させる**、正真正銘のフェイルファストです。同じ「CB がらみのチェック」でも、構造的に検証できるもの（tfvars の書き方の誤り）は `validation` でハードに止め、外部の実行時状態（CB の `state` や実際の AZ）に依存するものは `check` でソフトに警告する、という役割分担になっています。
 
 ## 期限アラート（eventbridge-cb-alarm.tf）
 
-[`eventbridge-cb-alarm.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/eventbridge-cb-alarm.tf) は、`capacity-block.tf` が導出した `local.pool_cb_end_date` から、プールごとに 1 つの one-shot な Amazon EventBridge Scheduler ルールを組み立てます。
+[`eventbridge-cb-alarm.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/eventbridge-cb-alarm.tf) は、`capacity-block.tf` が導出した `local.pool_cb_end_date` から、プールごとに 1 つの one-shot な Amazon EventBridge Scheduler ルールを組み立てます。
 
 ```hcl
 # eventbridge-cb-alarm.tf（抜粋）

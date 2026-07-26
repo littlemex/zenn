@@ -32,11 +32,11 @@ Karpenter の EC2NodeClass は、`spec.networkInterfaces` を省略すると単�
 
 この宣言はインスタンスタイプごとにカード枚数とレイアウトが異なるため、手書きは事故の温床になります。
 
-この宣言をプールごとに手書きすると、カード枚数を 1 つ間違えるだけで事故になります。以降では、この宣言を自動生成している実コードを引用しながら、設計意図を見ていきます。対象モジュールは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/fix/eks-efa-verification-improvements/infra/eks) です。
+この宣言をプールごとに手書きすると、カード枚数を 1 つ間違えるだけで事故になります。以降では、この宣言を自動生成している実コードを引用しながら、設計意図を見ていきます。対象モジュールは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks) です。
 
 ## EFA トポロジのルックアップテーブル
 
-[`locals.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/locals.tf) にインスタンスタイプ別のカード枚数テーブルを置き、pool の `instance_types` から EFA トポロジを自動導出します。
+[`locals.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/locals.tf) にインスタンスタイプ別のカード枚数テーブルを置き、pool の `instance_types` から EFA トポロジを自動導出します。
 
 ```hcl
 # locals.tf
@@ -99,7 +99,7 @@ Pod が `vpc.amazonaws.com/efa: 16` をリクエストすると、15 しか広�
 
 ## networkInterfaces の自動生成
 
-`pool_efa` で解決したトポロジを、Karpenter の EC2NodeClass が要求する `spec.networkInterfaces` の配列に変換するのが [`karpenter-resources.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/karpenter-resources.tf) の `pool_network_interfaces` です。
+`pool_efa` で解決したトポロジを、Karpenter の EC2NodeClass が要求する `spec.networkInterfaces` の配列に変換するのが [`karpenter-resources.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/karpenter-resources.tf) の `pool_network_interfaces` です。
 
 ```hcl
 # karpenter-resources.tf
@@ -129,7 +129,7 @@ pool_network_interfaces = {
 
 ## EFA セキュリティグループ — egress self-ref が必須
 
-これがこのモジュールで実測から得られた最も重要な知見です。[`sg.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/sg.tf) で定義しています。
+これがこのモジュールで実測から得られた最も重要な知見です。[`sg.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/sg.tf) で定義しています。
 
 EFA の SRD トラフィックは**通常の IP トラフィックではありません**。そのため、SG の egress ルールに `0.0.0.0/0` の CIDR を設定しても、SRD パケットは許可されません。必要なのは ingress と egress の**両方に self-referencing all-traffic ルール**を持つことです。
 
@@ -219,7 +219,7 @@ precondition {
 
 ## EFA device plugin の supportedInstanceLabels 自動導出
 
-EFA を Pod にリソースとして見せるのは `aws-efa-k8s-device-plugin` の DaemonSet です。この chart は `supportedInstanceLabels` に列挙されたインスタンスタイプにしか nodeAffinity でスケジュールされず、chart デフォルトの一覧には g6e.12xlarge のような一部の EFA 対応タイプが含まれていません。デフォルトのままだとそのタイプのノードにはプラグインが乗らず、`vpc.amazonaws.com/efa` が永久に広告されないという、Guard 3 と同種の「静かなフォールバック」が device plugin 側でも起こり得ます。[`gpu-addons.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/gpu-addons.tf) はこれをクラスタが実際に使う pool から動的に導出することで防いでいます。
+EFA を Pod にリソースとして見せるのは `aws-efa-k8s-device-plugin` の DaemonSet です。この chart は `supportedInstanceLabels` に列挙されたインスタンスタイプにしか nodeAffinity でスケジュールされず、chart デフォルトの一覧には g6e.12xlarge のような一部の EFA 対応タイプが含まれていません。デフォルトのままだとそのタイプのノードにはプラグインが乗らず、`vpc.amazonaws.com/efa` が永久に広告されないという、Guard 3 と同種の「静かなフォールバック」が device plugin 側でも起こり得ます。[`gpu-addons.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/gpu-addons.tf) はこれをクラスタが実際に使う pool から動的に導出することで防いでいます。
 
 ```hcl
 # gpu-addons.tf

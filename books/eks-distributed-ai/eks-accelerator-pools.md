@@ -41,11 +41,11 @@ GPU ノードに関してもう 1 点誤解しやすいのが、GPU Operator の
 
 ノードの disruption（入れ替え・削減）ポリシーも、キャパシティタイプによって挙動が変わるように作られています。`capacity_type = "reserved"`（Capacity Block）のプールは `budgets: [{ nodes: "0" }]` を設定し、ドリフト検知による自動入れ替えも含めてノードの入れ替えを完全に止めます。Capacity Block は先払いの予約であり、多くの場合は長時間の訓練ジョブを載せるため、Karpenter が新しい AMI リリースを検知して「勝手にノードを入れ替える」ことは訓練データの損失につながりかねません。一方、on-demand/spot のプールは `consolidationPolicy: WhenEmpty` に加えて `consolidateAfter: "5m"`（デフォルト）を設定し、5 分間アイドルなノードは自動的に回収されるようにしています。
 
-対象モジュールは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/fix/eks-efa-verification-improvements/infra/eks) です。以降で実際の Terraform コードを引用しながら、`accelerator_pools` という 1 つの map 変数がどう `variables.tf` のバリデーション・`locals.tf` の EFA トポロジ導出・`karpenter-resources.tf` の `for_each` レンダリングという 3 段構造で処理されているかを見ていきます。
+対象モジュールは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks) です。以降で実際の Terraform コードを引用しながら、`accelerator_pools` という 1 つの map 変数がどう `variables.tf` のバリデーション・`locals.tf` の EFA トポロジ導出・`karpenter-resources.tf` の `for_each` レンダリングという 3 段構造で処理されているかを見ていきます。
 
 ## accelerator_pools 変数のスキーマ
 
-`accelerator_pools` の型定義は [`variables.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/variables.tf) にあります。フィールドの一部を抜粋します。
+`accelerator_pools` の型定義は [`variables.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/variables.tf) にあります。フィールドの一部を抜粋します。
 
 ```hcl
 # variables.tf（抜粋）
@@ -100,9 +100,9 @@ validation {
 
 ## NodePool と EC2NodeClass の生成
 
-`accelerator_pools` の各エントリから NodePool と EC2NodeClass を生成する処理は [`karpenter-resources.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/karpenter-resources.tf) にあります。2 つの `kubectl_manifest` リソースが、どちらも `for_each = var.accelerator_pools` で 1 プール 1 リソースを生成します。
+`accelerator_pools` の各エントリから NodePool と EC2NodeClass を生成する処理は [`karpenter-resources.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/karpenter-resources.tf) にあります。2 つの `kubectl_manifest` リソースが、どちらも `for_each = var.accelerator_pools` で 1 プール 1 リソースを生成します。
 
-まず EFA のネットワークインターフェース構成です。EFA トポロジ（カード数と multi-card かどうか）は [`locals.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/locals.tf) の `efa_capability` というルックアップテーブルから instance type ごとに自動導出されます。
+まず EFA のネットワークインターフェース構成です。EFA トポロジ（カード数と multi-card かどうか）は [`locals.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/locals.tf) の `efa_capability` というルックアップテーブルから instance type ごとに自動導出されます。
 
 ```hcl
 # locals.tf（抜粋）
@@ -199,7 +199,7 @@ disruption = {
 
 ## 条件付きアドオン（has_gpu_pool など）
 
-`has_gpu_pool` / `has_neuron_pool` / `has_efa_pool` の 3 つの真偽値は [`locals.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/locals.tf) で `accelerator_pools` から導出されます。
+`has_gpu_pool` / `has_neuron_pool` / `has_efa_pool` の 3 つの真偽値は [`locals.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/locals.tf) で `accelerator_pools` から導出されます。
 
 ```hcl
 # locals.tf（抜粋）
@@ -210,7 +210,7 @@ has_efa_pool    = length([for k, e in local.pool_efa : k if e.count > 0]) > 0
 
 `has_gpu_pool`/`has_neuron_pool` は `device_plugin` フィールドを見るだけですが、`has_efa_pool` は `device_plugin` ではなく EFA トポロジ導出後の `pool_efa[k].count` を見ています。つまりプールが GPU でも Neuron でも、EFA なしの instance type（`g5` など）しか使っていなければ EFA device plugin は入りません。
 
-この 3 つのフラグを実際に使っているのが [`gpu-addons.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/gpu-addons.tf) です。
+この 3 つのフラグを実際に使っているのが [`gpu-addons.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/gpu-addons.tf) です。
 
 ```hcl
 # gpu-addons.tf（抜粋）
