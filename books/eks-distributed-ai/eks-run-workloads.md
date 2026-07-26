@@ -23,7 +23,7 @@ free: true
 
 [vLLM](https://github.com/vllm-project/vllm) は、PagedAttention による高スループットな LLM 推論エンジンです。OpenAI 互換の HTTP API（`/v1/models`、`/v1/chat/completions` など）を提供するため、既存の OpenAI クライアントからそのまま呼び出せます。
 
-本章では、vLLM の公式イメージ `vllm/vllm-openai` を Kubernetes の `Deployment` として GPU ノードに載せ、軽量モデル `Qwen/Qwen2.5-0.5B-Instruct`（ゲートなし・小型で 1 枚の GPU に収まる）をサービングします。モジュールには GPU 向けの雛形 [`gpu-serving-vllm.yaml.tpl`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/manifests/gpu-serving-vllm.yaml.tpl) があり、`nodeSelector` でアクセラレータプールに載せ、`nvidia.com/gpu: 1` をリクエストします。
+本章では、vLLM の公式イメージ `vllm/vllm-openai` を Kubernetes の `Deployment` として GPU ノードに載せ、軽量モデル `Qwen/Qwen2.5-0.5B-Instruct`（ゲートなし・小型で 1 枚の GPU に収まる）をサービングします。Helm チャート [`charts/experiments`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/charts/experiments) の `gpuServingVllm` ワークロードが GPU 向けの雛形で、`nodeSelector` でアクセラレータプールに載せ、`nvidia.com/gpu: 1` をリクエストします。
 
 推論は 1 ノードで完結するため、EFA も Capacity Block も要りません。Basic04 で `accelerator_pools` に GPU プールを定義してあれば、そのプールに Pod を投げるだけで Karpenter が GPU ノードを 1 台起動し、その上で vLLM が立ち上がります。
 
@@ -52,13 +52,16 @@ kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -
 
 ## 2. vLLM の Deployment を投入する
 
-雛形をレンダリングして適用します。`__NODE_ROLE__` は GPU プール名（Basic04 で定義したもの、例 `gpu-dev`）に置き換えます。
+チャートをレンダリングして適用します。`nodeRole` は GPU プール名（Basic04 で定義したもの、例 `gpu-dev`）に置き換えます。
 
 ```bash
+cd infra/eks
 MODEL=Qwen/Qwen2.5-0.5B-Instruct     # ゲートなし・小型
-sed -e "s/__NAMESPACE__/${NAMESPACE}/g" -e "s#__MODEL__#${MODEL}#g" \
-    -e "s/__NODE_ROLE__/gpu-dev/g" \
-    gpu-serving-vllm.yaml.tpl | kubectl apply -f -
+helm template exp charts/experiments -n "$NAMESPACE" \
+    --set gpuServingVllm.enabled=true \
+    --set gpuServingVllm.model="$MODEL" \
+    --set gpuServingVllm.nodeRole=gpu-dev \
+    | kubectl apply -f -
 ```
 
 ## 3. GPU ノードの起動と Pod の Ready を待つ
@@ -125,4 +128,4 @@ kubectl get nodeclaims -w        # GPU ノードが消えるのを確認
 - [vLLM](https://github.com/vllm-project/vllm)
 - [vLLM OpenAI-Compatible Server](https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html)
 - [Qwen2.5-0.5B-Instruct](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct)
-- [対象マニフェスト gpu-serving-vllm.yaml.tpl](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/manifests/gpu-serving-vllm.yaml.tpl)
+- [対象ワークロード gpuServingVllm（charts/experiments）](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/gpu-serving-vllm.yaml)
