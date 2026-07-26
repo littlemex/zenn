@@ -32,7 +32,7 @@ DDP の通信バックエンドには 2 種類あります。
 
 起動には `torchrun` を使います。`torchrun --standalone --nproc_per_node=2` とすると、1 ノード内に 2 つのプロセス（rank 0, rank 1）を立て、それぞれに `RANK` / `WORLD_SIZE` / `LOCAL_RANK` などの環境変数を自動で設定してくれます。MPI Operator のような追加コンポーネントは不要で、Kubernetes の素の `batch/v1` Job として実行できるのが本章の手軽さのポイントです。
 
-使うマニフェストはモジュール内蔵の [`cpu-gpu-torchrun-train.yaml.tpl`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/manifests/cpu-gpu-torchrun-train.yaml.tpl) です。このテンプレートは CPU（gloo）と GPU（nccl）の両対応で、同じ `train_smollm.py` を使い回します。CPU 版では GPU リソースをリクエストせず、`node-role: cpu` の nodeSelector で System ノード相当の CPU プールに Pod を載せます。
+使うワークロードは Helm チャート [`charts/experiments`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/charts/experiments) の `torchrunTrain` です。このワークロードは CPU（gloo）と GPU（nccl）の両対応で、同じ `train_smollm.py` を使い回します。CPU 版では GPU リソースをリクエストせず、`node-role: cpu` の nodeSelector で System ノード相当の CPU プールに Pod を載せます。適用は `helm template ... | kubectl apply -f -` で行い、`helm install` は使いません（このチャートは release 管理をせず、レンダリングして手で適用する実験カタログという位置づけです）。
 
 ## 全体の中での位置付け
 
@@ -57,15 +57,21 @@ kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -
 
 ## 2. CPU DDP の Job を投入する
 
-テンプレートを CPU（gloo）設定でレンダリングして適用します。`__NPROC__=2` は 1 ノード内に立てる rank 数です。
+チャートを CPU（gloo）設定でレンダリングして適用します。`nprocPerNode=2` は 1 ノード内に立てる rank 数です。
 
 ```bash
+cd infra/eks
 IMAGE=<account>.dkr.ecr.<region>.amazonaws.com/mpijob-hf-sample:v1
-sed -e "s/__NAMESPACE__/${NAMESPACE}/g" -e "s#__MPIJOB_IMAGE__#${IMAGE}#g" \
-    -e "s/__NODE_ROLE__/cpu/g" -e "s/__NPROC__/2/g" -e "s/__BACKEND__/gloo/g" \
-    -e '/__GPU_RESOURCES_IF_NEEDED__/d' -e '/__GPU_TOLERATIONS_IF_NEEDED__/d' \
-    cpu-gpu-torchrun-train.yaml.tpl | kubectl apply -f -
+helm template exp charts/experiments -n "$NAMESPACE" \
+    --set torchrunTrain.enabled=true \
+    --set torchrunTrain.image="$IMAGE" \
+    --set torchrunTrain.backend=gloo \
+    --set torchrunTrain.nodeRole=cpu \
+    --set torchrunTrain.nprocPerNode=2 \
+    | kubectl apply -f -
 ```
+
+GPU（nccl）で動かす場合は `--set torchrunTrain.backend=nccl --set torchrunTrain.nodeRole=<GPU プール名> --set torchrunTrain.gpu.enabled=true --set torchrunTrain.gpu.count=1 --set torchrunTrain.nprocPerNode=1` に切り替えます（`nprocPerNode` は GPU 数と一致させます）。
 
 ## 3. 学習ログを確認する
 
@@ -124,4 +130,4 @@ kubectl delete job smollm-torchrun -n "$NAMESPACE"
 - [PyTorch DistributedDataParallel](https://pytorch.org/docs/stable/notes/ddp.html)
 - [torchrun (Elastic Launch)](https://pytorch.org/docs/stable/elastic/run.html)
 - [awslabs/awsome-distributed-training の DDP テストケース](https://github.com/awslabs/awsome-distributed-training/tree/main/3.test_cases/pytorch/ddp)
-- [対象マニフェスト cpu-gpu-torchrun-train.yaml.tpl](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/manifests/cpu-gpu-torchrun-train.yaml.tpl)
+- [対象ワークロード torchrunTrain（charts/experiments）](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/torchrun-train.yaml)

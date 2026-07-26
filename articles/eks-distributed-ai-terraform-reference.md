@@ -18,7 +18,7 @@ https://github.com/littlemex/distributed-ai/tree/main/infra/eks
 - EFA（Elastic Fabric Adapter）のトポロジをインスタンスタイプごとに手作業で書くのは事故が起きやすいので自動導出したい
 - `terraform destroy` がアクセラレータノードを取り残して課金が止まらない、という事故を構造的に防ぎたい
 
-記事の主眼は「`accelerator_pools` という1つの map 変数で全アクセラレータプールを表現する」という設計と、その裏にある VPC / Karpenter / アドオン / ストレージの全体アーキテクチャである。Trainium 対応は「設計上は入っているが検証未了」という位置づけで簡潔に触れる。
+記事の主眼は「`accelerator_pools` という1つの map 変数で全アクセラレータプールを表現する」という設計と、その裏にある VPC / Karpenter / アドオン / ストレージの全体アーキテクチャである。Trainium については、trn2.48xlarge を 2 台束ねた EFA 越しのマルチノード DDP まで実機で確認できているので、その結果にも触れる。
 
 ## 全体アーキテクチャ
 
@@ -55,7 +55,8 @@ VPC (/16 — GPU/Neuron ノード + EFA-only ENI が IP を大量消費するた
 | `vpc-endpoints.tf` | EC2/STS/SSM の Interface VPC エンドポイント |
 | `eventbridge-cb-alarm.tf` | CB 期限前アラーム |
 | `scripts/` | CB ライフサイクル用ヘルパースクリプト（00〜04） |
-| `manifests/` | ワークロードのテンプレート・マニフェスト |
+| `charts/experiments/` | 実験ワークロードの Helm チャート（probe / NCCL・Neuron ベンチ / DDP 訓練 / vLLM サービング） |
+| `manifests/` | Terraform が直接参照するマニフェスト（MPI Operator のベンダリング済み YAML など） |
 
 ### VPC / サブネット設計 — なぜ /16 が必要か
 
@@ -317,10 +318,11 @@ FSDP のケースでは NCCL のログに `NET/OFI Selected provider is efa` が
 
 ## 今後の展望
 
-Neuron（Trainium）についてはシングルノードの device plugin 連携は確認済みだが、マルチノードでの EFA 越しの Neuron 集合通信は**設計上組み込まれているが未検証**である。EFA device plugin の toleration には Neuron の taint が含まれており、`trn2.48xlarge` の EFA トポロジもルックアップテーブルには入っている。実際にマルチノードの CB を確保して NCCL 相当の集合通信（Neuron Collective Communication Library）を検証するのが次のステップになる。
+Neuron（Trainium）については、シングルノードの device plugin 連携に加えて、**trn2.48xlarge を 2 台束ねた EFA 越しのマルチノード DDP まで実機で確認済み**である。torch-neuronx による world_size=64（2 ノード × 32 論理コア）の all-reduce と、公式サンプルの MNIST MLP を DDP で流すワークロードがともに完走し、EFA が使われていることを libfabric のプロバイダ選択ログ（`Opened fabric: efa-direct`）とホストの RDMA 書き込みカウンタの両面から確認した。途中、ホストのドライバ（`aws-neuronx-dkms`）とコンテナ内ランタイムの `zerocopy` ioctl の ABI 不一致で `nrt_init` が失敗するハマりどころも踏んでおり、その回避策（`NEURON_RT_DBG_ZEROCOPY=0`）と恒久対処（AMI のドライバを DLC の SDK に揃える）まで含めて Zenn book 側に記録した。
 
 その他、残っているテーマは以下のとおり。
 
+- GPU 側のマルチノード NCCL 集合通信（p5en 等）の実測。現時点では p5en の Capacity Block 在庫が確保できておらず未実施で、在庫が出次第 `charts/experiments` の `ncclSshd` ワークロードで検証する
 - slime 本家（miles フォーク元）での GRPO マルチノード実行を追試する
 - Amazon SageMaker HyperPod on EKS との連携・比較を、実運用ワークロードで深掘りする
 - CB の購入〜運用〜期限管理までのスクリプト群をさらに堅牢化する
