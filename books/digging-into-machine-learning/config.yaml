@@ -6,3 +6,5 @@ price: 500 # 有料の場合200〜5000
 # 本に含めるチャプターを順番に並べましょう
 chapters:
   - turboquant-polarquant
+  - llm2026-overview
+  - llm2026-elements
