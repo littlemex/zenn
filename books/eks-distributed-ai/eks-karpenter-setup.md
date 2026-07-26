@@ -27,11 +27,11 @@ Karpenter は、スケジュールできずに `Pending` のままになって�
 
 3 つ目は Spot 中断への対応です。Karpenter は SQS の interruption queue を経由して、Spot インスタンスの中断通知や AWS のヘルスイベント、リバランス推奨を受け取り、対象ノード上の Pod を強制終了ではなく graceful に drain してから終了させます。この queue と、通知を queue に流す Amazon EventBridge ルールの作成も、Karpenter 導入の一部として行います。
 
-以降で実際の Terraform コードを引用しながら、なぜその値・その書き方にしているのかを見ていきます。対象ファイルは [`karpenter.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/karpenter.tf) と [`iam.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/iam.tf) です。
+以降で実際の Terraform コードを引用しながら、なぜその値・その書き方にしているのかを見ていきます。対象ファイルは [`karpenter.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/karpenter.tf) と [`iam.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/iam.tf) です。
 
 ## CRD を別チャートで管理する
 
-CRD のインストールは [`karpenter.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/karpenter.tf) で、コントローラ本体とは別の `helm_release` として行います。
+CRD のインストールは [`karpenter.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/karpenter.tf) で、コントローラ本体とは別の `helm_release` として行います。
 
 ```hcl
 # karpenter.tf（抜粋）
@@ -146,7 +146,7 @@ resource "helm_release" "karpenter" {
 
 ## Pod Identity と interruption queue（iam.tf）
 
-Karpenter コントローラ用の IAM ロール・Pod Identity association・SQS queue はすべて [`iam.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/iam.tf) の `module "karpenter"` に集約されています。
+Karpenter コントローラ用の IAM ロール・Pod Identity association・SQS queue はすべて [`iam.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/iam.tf) の `module "karpenter"` に集約されています。
 
 ```hcl
 # iam.tf（抜粋）

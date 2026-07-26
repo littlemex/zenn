@@ -15,13 +15,13 @@ free: true
 
 ## これは何をするものか
 
-Ch4 で見た `accelerator_pools` は、GPU と Neuron を「taint の key が違うだけの同じ形のノード」として 1 つの型で表現していました。本章では、その Neuron 側の実装を具体的に見ていきます。
+Basic04 で見た `accelerator_pools` は、GPU と Neuron を「taint の key が違うだけの同じ形のノード」として 1 つの型で表現していました。本章では、その Neuron 側の実装を具体的に見ていきます。
 
 Neuron 対応の骨格は 3 つの部品からできています。
 
-1. **NodePool / EC2NodeClass** — Ch4 と同じ `for_each` レンダリングを、`device_plugin = "neuron"` のプールにもそのまま適用します。GPU プール専用の分岐は存在しません。
+1. **NodePool / EC2NodeClass** — Basic04 と同じ `for_each` レンダリングを、`device_plugin = "neuron"` のプールにもそのまま適用します。GPU プール専用の分岐は存在しません。
 2. **Neuron AL2023 AMI** — AWS Trainium/AWS Inferentia のドライバ（`aws-neuronx-dkms`）は Amazon EKS Optimized AL2023 Neuron AMI にすでに同梱されています。GPU Operator が担っていた「ドライバをどうするか」という判断は Neuron 側には存在せず、AMI を正しく選ぶだけで済みます。
-3. **Neuron device plugin（Helm add-on）** — ドライバの上に乗る、Kubernetes に対して `aws.amazon.com/neuron` という resource を advertise する DaemonSet です。これだけを Helm で追加します。
+3. **Neuron device plugin**（Helm add-on） — ドライバの上に乗る、Kubernetes に対して `aws.amazon.com/neuron` という resource を advertise する DaemonSet です。これだけを Helm で追加します。
 
 `neuron-addons.tf` では、`neuron-helm-chart`（`oci://public.ecr.aws/neuron/neuron-helm-chart`）を `local.has_neuron_pool`（`accelerator_pools` の中に `device_plugin = "neuron"` のエントリが 1 つでもあるかどうか）で条件付き導入しています。GPU のみのクラスタではこのリソースは 0 個になり、何も入りません。
 
@@ -78,7 +78,7 @@ has_gpu_pool    = length([for k, p in var.accelerator_pools : k if p.device_plug
 has_neuron_pool = length([for k, p in var.accelerator_pools : k if p.device_plugin == "neuron"]) > 0
 ```
 
-`accelerator_pools` を舐めて `device_plugin == "neuron"` のエントリが 1 つでもあれば `true` になる、というだけの単純な集計です。この値を `helm_release.neuron` の `count` にそのまま使っているのが読みどころで、GPU プールしか定義していないクラスタでは `count = 0` となり、`neuron-helm-chart` は一切 apply されません。逆に Neuron プールを 1 つ追加した瞬間、次の `terraform apply` でこの Helm リリースが生えてきます。GPU/Neuron の両方を使う混在クラスタでは、`has_gpu_pool` と `has_neuron_pool` がともに `true` になり両方の add-on が入ります。
+`accelerator_pools` の全エントリを走査して `device_plugin == "neuron"` のものが 1 つでもあれば `true` になる、というだけの単純な集計です。この値を `helm_release.neuron` の `count` にそのまま使っているのが読みどころで、GPU プールしか定義していないクラスタでは `count = 0` となり、`neuron-helm-chart` は一切 apply されません。逆に Neuron プールを 1 つ追加すると、次の `terraform apply` でこの Helm リリースが追加されます。GPU/Neuron の両方を使う混在クラスタでは、`has_gpu_pool` と `has_neuron_pool` がともに `true` になり両方の add-on が入ります。
 
 `neuron_helm_values` の中身も 3 点だけです。
 
@@ -113,13 +113,13 @@ variable "neuron_enable_scheduler" {
 
 ## 全体の中での位置付け
 
-Ch4 で作った `accelerator_pools` の型は GPU/Neuron 共通です。本章はその型に `device_plugin = "neuron"` のエントリを 1 つ追加し、`neuron-addons.tf` が条件付きで Neuron device plugin を導入するところから始めて、Ch5 で見た EFA を使ったマルチノード構成を Neuron 側でも実際に動かすところまでを扱います。GPU 側では NCCL がその役割を担っていましたが、Neuron では torch-neuronx（PyTorch/XLA バックエンド）と Neuron 用の collective 通信ライブラリがその役割を担います。
+Basic04 で作った `accelerator_pools` の型は GPU/Neuron 共通です。本章はその型に `device_plugin = "neuron"` のエントリを 1 つ追加し、`neuron-addons.tf` が条件付きで Neuron device plugin を導入するところから始めて、Basic05 で見た EFA を使ったマルチノード構成を Neuron 側でも実際に動かすところまでを扱います。GPU 側では NCCL がその役割を担っていましたが、Neuron では torch-neuronx（PyTorch/XLA バックエンド）と Neuron 用の collective 通信ライブラリがその役割を担います。
 
 ## 注意
 
 **Karpenter + Neuron の NPD/DRA は非サポートです。** `neuron-helm-chart` の Node Problem Detector（NPD）と Dynamic Resource Allocation（DRA、Kubernetes 1.30+ のデバイス割り当て API）はこの構成では明示的に無効化しています。Karpenter がノードのライフサイクルを管理する構成では、Neuron の NPD/DRA は組み合わせとして未サポートのため、有効化しません。
 
-**EFA device plugin の toleration に `aws.amazon.com/neuron` を含めないと詰みます。** EFA device plugin は GPU と Neuron の両方のプールで共有される 1 つの DaemonSet であり、その toleration に Neuron taint が入っていなければ trn2 ノードには乗れません。乗れなければ `vpc.amazonaws.com/efa` がそのノードで一切 advertise されず、EFA を要求する Pod は理由の分かりにくい Pending のまま止まります。この構成ではすでに toleration に含めてありますが、自分で device plugin の設定を変更する場合はここを崩さないよう注意してください。
+**EFA device plugin の toleration には必ず `aws.amazon.com/neuron` を含めてください。** EFA device plugin は GPU と Neuron の両方のプールで共有される 1 つの DaemonSet であり、その toleration に Neuron taint が入っていなければ trn2 ノードには乗れません。乗れなければ `vpc.amazonaws.com/efa` がそのノードで一切 advertise されず、EFA を要求する Pod は理由の分かりにくい Pending のまま止まります。この構成ではすでに toleration に含めてありますが、自分で device plugin の設定を変更する場合はここを崩さないよう注意してください。
 
 **Neuron Scheduler Extension を入れ忘れると多デバイス割り当てが崩れる可能性があります。** 複数の Neuron デバイスを跨ぐテンソル並列のワークロードを流すのに `neuron_enable_scheduler` を `false`（デフォルト）のままにすると、contiguous な device ID 割り当てが保証されません。単一デバイスの推論だけなら気にする必要はありませんが、複数デバイスをまとめて使う構成に切り替えるときは、このフラグを忘れずに `true` にしてください。
 
@@ -141,11 +141,11 @@ trn2 = {
   cb_end_date       = "<RFC3339 UTC の期限>"
 }
 
-# 16 デバイス x LNC=2 = 32 論理コアを 1 プロセスで束ねるので Scheduler Extension を有効化
+# 複数の Neuron デバイスを 1 プロセスから跨いで使うので Scheduler Extension を有効化
 neuron_enable_scheduler = true
 ```
 
-`device_plugin = "neuron"` に切り替えている以外、フィールドの構造は Ch4 で書いた GPU プールと同じです。`cb_reservation_id` は事前に確保した Capacity Block の予約 ID に置き換えます。プール名（map のキー）が Karpenter のノードラベル `node-role=<プール名>` になる点は後で使うので覚えておいてください。ここでは `trn2` としています。
+`device_plugin = "neuron"` に切り替えている以外、フィールドの構造は Basic04 で書いた GPU プールと同じです。`cb_reservation_id` は事前に確保した Capacity Block の予約 ID に置き換えます。プール名（map のキー）が Karpenter のノードラベル `node-role=<プール名>` になる点は後で使うので覚えておいてください。ここでは `trn2` としています。
 
 ## 2. apply する
 
@@ -174,7 +174,7 @@ helm template exp charts/experiments -n "$NAMESPACE" \
 kubectl -n "$NAMESPACE" exec neuron-probe -- neuron-ls
 ```
 
-trn2.48xlarge では 16 個の Trainium2 デバイスが表示されます。ノードの allocatable を見ると、device plugin が `aws.amazon.com/neuron: 16`、`aws.amazon.com/neuroncore: 64`、`vpc.amazonaws.com/efa: 15` を advertise していることが確認できます。EFA が 16 枚のカードに対して 15 なのは、カード 0 がノードの IP を担うため、Pod がスケジュール要求に使える枚数はそれを除いた 15 になるからです。
+trn2.48xlarge では 16 個の Trainium2 デバイスが表示されます。ノードの allocatable を見ると、device plugin が `aws.amazon.com/neuron: 16`、`aws.amazon.com/neuroncore: 64`、`vpc.amazonaws.com/efa: 15` を advertise していることが確認できます。この `neuroncore: 64` は、後述する LNC=2 のもとでの論理 NeuronCore 数です。EFA が 16 枚のカードに対して 15 なのは、この構成ではネットワークカード 0 をノードの IP を担う ENA として構成し、残る 15 枚を EFA 専用インターフェースとして立てているためです（EC2 の制約上、カード 0 のインターフェースは ENA を含む必要があります）。したがって Pod がスケジュール要求に使える EFA は 15 枚になります。実際に要求できる枚数はインスタンスタイプとノードの起動時構成で決まるので、`terraform output accelerator_pool_efa_schedulable` の値か、ノードの allocatable を直接確認するのが確実です。
 
 :::message
 Karpenter は hugepages を「新しいノードをどのインスタンスタイプで立てるか」の判断材料として扱いません。そのため、まだ対象ノードが存在せずプロビジョニングを誘発するプローブ Pod で `hugepages-2Mi` を要求すると、Karpenter が「条件を満たすインスタンスタイプがない」と誤判定して NodeClaim を作らず、Pod が永久に Pending になります。プローブでは hugepages を要求しないのはこのためです。一方、次の 2 ノード DDP は起動済みのノードに対して適用するので hugepages を要求できます。
@@ -207,7 +207,9 @@ kubectl -n $NS exec neuron-client -- bash -lc \
 
 `chown -R root:root /root/.ssh` を忘れると、sshd の StrictModes が所有者不一致を理由に鍵を拒否するので必ず入れてください。
 
-Pod の IP を確認し、両ノードで `torchrun` を起動します。1 ノードあたりの並列数（`--nproc-per-node`）は 32 です。trn2.48xlarge は 16 デバイス × デバイスあたり 4 NeuronCore で物理 64 コアですが、この構成は LNC（logical NeuronCore config）=2 で動いており、2 つの物理コアが 1 論理コアに束ねられるため、1 ノードあたりの論理コアは 32 になります。2 ノードで world_size は 64 です。
+Pod の IP を確認し、両ノードで `torchrun` を起動します。1 ノードあたりの並列数（`--nproc-per-node`）は 32 で、2 ノードで world_size は 64 になります。
+
+ここで並列数の数え方を整理しておきます。trn2.48xlarge は 16 個の Trainium2 デバイスを積んでおり、Trainium2 は 1 デバイスあたり 8 個の物理 NeuronCore を持つため、物理 NeuronCore は合計 128 個です。この構成は LNC（logical NeuronCore config）=2 で動いており、2 つの物理コアが 1 論理コアに束ねられます。その結果、1 ノードあたりの論理 NeuronCore は 64 個になります。これは手順 3 で device plugin が advertise していた `aws.amazon.com/neuroncore: 64` と一致します。この検証では 1 ノードあたり 32 プロセス（`--nproc-per-node=32`）で起動しており、論理コアをすべて使い切る構成（`--nproc-per-node=64`）ではなく、疎通と DDP の成立を確認するためのスモーク構成である点に注意してください。プロセス数を変える場合は、この後のワークロードの `nprocPerNode` の値も合わせて調整します。
 
 ```bash
 kubectl -n $NS get pods -o wide   # server / client の IP を確認
@@ -241,14 +243,14 @@ kubectl -n $NS exec neuron-server -- bash -lc "cd /opt/test && \
 
 「2 ノードで通信が成立した」だけでは、その通信が EFA を通ったのか TCP にフォールバックしたのか分かりません。EFA が使われている証拠を 2 つの角度から確認します。
 
-1 つ目は libfabric のログです。`FI_LOG_LEVEL=info` を付けて実行すると、プロバイダ選択のログに次の行が現れます。
+1 つ目は libfabric のログです。`FI_LOG_LEVEL=info` を付けて実行すると、次のようなログが現れます。
 
 ```
-libfabric: registering provider: efa (204.0)
-libfabric: Opened fabric: efa-direct
+libfabric:...:core:core:ofi_register_provider():526<info> registering provider: efa (204.0)
+libfabric:...:core:core:fi_fabric_():1588<info> Opened fabric: efa-direct
 ```
 
-`efa` プロバイダが選択され、`efa-direct` ファブリックが開かれています。TCP フォールバックであれば `tcp` プロバイダが選ばれます。
+ここで注意したいのは、`registering provider: efa` の行だけでは EFA が使われた証拠にならないことです。この `registering provider:` 行は libfabric がビルドに含む全プロバイダについて初期化時に出力するもので、実際のログには `efa` に加えて `lnx` や `off_coll` などの行も並びます。TCP にフォールバックした場合でも `registering provider: efa` 自体は出力されます。実際に EFA のファブリックが開かれた証拠になるのは `Opened fabric: efa-direct` の行の方です。全 64 プロセスがこの行を出力しており、`efa-direct`（libfabric がデバイス機能を直接公開するファブリック）越しに通信が確立したことを裏付けています。
 
 2 つ目はホスト側の EFA NIC の RDMA 書き込みカウンタです。実行の前後で `/sys/class/infiniband/rdmap*/ports/1/hw_counters/rdma_write_bytes` を読むと、両ノードでほぼ対称に 0 から 2.5 億バイト超まで増加します。片方向でなく双方向に RDMA write が成立していること、そして複数の EFA NIC で同時に増えていて単一 NIC がボトルネックになっていないことも確認できます。
 
@@ -270,11 +272,11 @@ TDRV:dmem_buf_copyin  Copy from buffer to memory failed
 
 **Karpenter + Neuron の NPD/DRA は非サポートです。** 前掲のとおり、`neuron-helm-chart` の NPD/DRA はこの構成では無効化しています。
 
-**Capacity Block の期限に注意してください。** trn2 のような高性能インスタンスは Capacity Block で確保することが多く、期限が来るとインスタンスは自動的に回収されます（実際、今回の検証でも期限の少し前にインスタンスが `shutting-down` に入りました）。長時間の実験は期限に余裕を持って始め、`cb_end_date` を設定して期限前アラート（Ch7 参照）を受け取れるようにしておくと安全です。
+**Capacity Block の期限に注意してください。** trn2 のような高性能インスタンスは Capacity Block で確保することが多く、期限が来るとインスタンスは自動的に回収されます（実際、今回の検証でも期限の少し前にインスタンスが `shutting-down` に入りました）。長時間の実験は期限に余裕を持って始め、`cb_end_date` を設定して期限前アラート（Basic06 参照）を受け取れるようにしておくと安全です。
 
 # まとめ
 
-本章では、Karpenter の `accelerator_pools` に Neuron（AWS Trainium/AWS Inferentia）を組み込み、trn2.48xlarge 2 台での EFA 越しマルチノード DDP まで実機で確認しました。骨格は NodePool/EC2NodeClass・Neuron AL2023 AMI・Neuron device plugin の 3 つで、`device_plugin = "neuron"` と書くだけで GPU と同じ枠組みに乗ります。単一ノードでのデバイス認識に加え、2 ノード・world_size=64 の all-reduce と公式 MNIST MLP の DDP がともに完走し、EFA が使われていることを libfabric のプロバイダ選択ログとホストの RDMA 書き込みカウンタの両面から確認できました。実運用上の注意点は、ドライバとランタイムの zerocopy ABI 不一致（`NEURON_RT_DBG_ZEROCOPY=0` で暫定回避）、NPD/DRA が Karpenter と非サポートである点、EFA device plugin の toleration を崩さない点、複数デバイス利用時は `neuron_enable_scheduler` を忘れない点の 4 つです。
+本章では、Karpenter の `accelerator_pools` に Neuron（AWS Trainium/AWS Inferentia）を組み込み、trn2.48xlarge 2 台での EFA 越しマルチノード DDP まで実機で確認しました。骨格は NodePool/EC2NodeClass・Neuron AL2023 AMI・Neuron device plugin の 3 つで、`device_plugin = "neuron"` と書くだけで GPU と同じ枠組みに乗ります。単一ノードでのデバイス認識に加え、2 ノード・world_size=64 の all-reduce と公式 MNIST MLP の DDP がともに完走し、EFA が使われていることを libfabric が `efa-direct` ファブリックを開いたログとホストの RDMA 書き込みカウンタの両面から確認できました。実運用上の注意点は、ドライバとランタイムの zerocopy ABI 不一致（`NEURON_RT_DBG_ZEROCOPY=0` で暫定回避）、NPD/DRA が Karpenter と非サポートである点、EFA device plugin の toleration を崩さない点、複数デバイス利用時は `neuron_enable_scheduler` を忘れない点の 4 つです。
 
 # 参考資料
 

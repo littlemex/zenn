@@ -29,11 +29,11 @@ free: true
 - **System managed node group**（m5 系 x2）: kube-system と Karpenter コントローラ自身を載せる足場です。Karpenter はここに自分のノードグループを作らない（ラベルで自己参照を避ける）ため、Karpenter が動き出すための最初の土台としてこのノードグループが要ります
 - **Amazon VPC**: 上記を収めるネットワーク
 
-この土台づくり自体は Amazon EKS の一般的な手順とほぼ同じですが、分散 AI 向けに効かせている設計判断がいくつかあります。以降で実際の Terraform コードを引用しながら、なぜその値・その書き方にしているのかを見ていきます。対象モジュールは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/fix/eks-efa-verification-improvements/infra/eks) です。
+この土台づくり自体は Amazon EKS の一般的な手順とほぼ同じですが、分散 AI 向けに効かせている設計判断がいくつかあります。以降で実際の Terraform コードを引用しながら、なぜその値・その書き方にしているのかを見ていきます。対象モジュールは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks) です。
 
 ## Amazon VPC の設計
 
-Amazon VPC は [`vpc.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/vpc.tf) で `terraform-aws-modules/vpc/aws` モジュールを使って作ります。全体はこれだけです。
+Amazon VPC は [`vpc.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/vpc.tf) で `terraform-aws-modules/vpc/aws` モジュールを使って作ります。全体はこれだけです。
 
 ```hcl
 # vpc.tf
@@ -71,7 +71,7 @@ module "vpc" {
 
 読みどころは次の 3 点です。
 
-**CIDR のサイジング（`/16` + `/18` x2 + `/24` x2）。** これらの既定値は [`variables.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/variables.tf) で定義しています。Amazon VPC 全体を `/16`（65,536 アドレス）、プライベートサブネットを AZ ごとに `/18`（16,384 アドレス）と大きく取り、パブリックは `/24`（256 アドレス）と小さくしています。この非対称な配分が分散 AI 向けの肝です。アクセラレータノードは VPC CNI が配る secondary IP に加え、EFA 対応インスタンスが EFA 専用 ENI を多数持ちます（`p5en.48xlarge` は 16 枚、`p5.48xlarge` は 32 枚）。1 ENI ごとに IP を消費するため、ワークロードが載るプライベートサブネットは大きく、NAT/ロードバランサーしか置かないパブリックサブネットは小さく、という配分になります。
+**CIDR のサイジング（`/16` + `/18` x2 + `/24` x2）。** これらの既定値は [`variables.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/variables.tf) で定義しています。Amazon VPC 全体を `/16`（65,536 アドレス）、プライベートサブネットを AZ ごとに `/18`（16,384 アドレス）と大きく取り、パブリックは `/24`（256 アドレス）と小さくしています。この非対称な配分が分散 AI 向けの肝です。アクセラレータノードは VPC CNI が配る secondary IP に加え、EFA 対応インスタンスが EFA 専用 ENI を多数持ちます（`p5en.48xlarge` は 16 枚、`p5.48xlarge` は 32 枚）。1 ENI ごとに IP を消費するため、ワークロードが載るプライベートサブネットは大きく、NAT/ロードバランサーしか置かないパブリックサブネットは小さく、という配分になります。
 
 **`single_nat_gateway = true`。** NAT ゲートウェイを AZ ごとに作らず 1 つだけにしています。本番の可用性設計では AZ ごとに NAT を置きますが、実験基盤では NAT ゲートウェイの時間課金を抑えることを優先しています。プライベートサブネットからの外向き通信（イメージ pull など）はこの単一 NAT を経由します。
 
@@ -79,7 +79,7 @@ module "vpc" {
 
 ## Amazon EKS クラスタと System ノードグループ
 
-Amazon EKS 本体は [`eks.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/eks.tf) で `terraform-aws-modules/eks/aws` モジュールを使って作ります。アドオンと System ノードグループの定義が読みどころです。
+Amazon EKS 本体は [`eks.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/eks.tf) で `terraform-aws-modules/eks/aws` モジュールを使って作ります。アドオンと System ノードグループの定義が読みどころです。
 
 ```hcl
 # eks.tf（抜粋）
@@ -133,7 +133,7 @@ module "eks" {
 
 ## Pod Identity による認証
 
-このモジュールでは、コントローラが AWS API を呼ぶための権限を **Pod Identity** で付与します。従来の IRSA（IAM Roles for Service Accounts）ではなく Pod Identity を選んでいる点が特徴です。[`iam.tf`](https://github.com/littlemex/distributed-ai/blob/fix/eks-efa-verification-improvements/infra/eks/iam.tf) で Karpenter 用の IAM ロールと Pod Identity Association を作ります。
+このモジュールでは、コントローラが AWS API を呼ぶための権限を **Pod Identity** で付与します。従来の IRSA（IAM Roles for Service Accounts）ではなく Pod Identity を選んでいる点が特徴です。[`iam.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/iam.tf) で Karpenter 用の IAM ロールと Pod Identity Association を作ります。
 
 ```hcl
 # iam.tf（抜粋）

@@ -9,7 +9,7 @@ free: true
 
 対象モジュールは以下のリポジトリです。
 
-https://github.com/littlemex/distributed-ai/tree/fix/eks-efa-verification-improvements/infra/eks
+https://github.com/littlemex/distributed-ai/tree/main/infra/eks
 
 # なぜ Amazon EKS なのか — 推論と学習の両方を回す基盤として
 
@@ -73,7 +73,7 @@ Slurm が劣っているという話ではありません。単一の大規模�
 
 # 参考資料
 
-- [対象モジュール infra/eks](https://github.com/littlemex/distributed-ai/tree/fix/eks-efa-verification-improvements/infra/eks)
+- [対象モジュール infra/eks](https://github.com/littlemex/distributed-ai/tree/main/infra/eks)
 - [Amazon EKS ユーザーガイド](https://docs.aws.amazon.com/eks/latest/userguide/what-is-eks.html)
 - [Karpenter 公式ドキュメント](https://karpenter.sh/)
 - [awslabs/awsome-distributed-training](https://github.com/awslabs/awsome-distributed-training)

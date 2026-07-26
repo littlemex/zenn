@@ -23,10 +23,10 @@ free: true
 
 分散学習の最も基本的な形が DDP（DistributedDataParallel）です。DDP では、同じモデルの複製を複数のプロセス（rank）が持ち、各 rank が異なるデータのミニバッチで勾配を計算し、その勾配を全 rank で平均（all-reduce）してからモデルを更新します。これにより、実質的なバッチサイズを rank 数だけ増やして学習を高速化します。
 
-DDP の通信バックエンドには 2 種類あります。
+DDP の通信バックエンドにはいくつか種類がありますが、本章で押さえておきたいのは次の 2 つです。
 
-- **gloo**: CPU 上で動く。GPU 不要
-- **nccl**: NVIDIA GPU 上で動く。GPU 間の高速な集合通信（後続の章で EFA と組み合わせる）
+- **gloo**: CPU 上で動きます。GPU は不要です
+- **nccl**: NVIDIA GPU 上で動き、GPU 間の高速な集合通信を担います（後続の章で EFA と組み合わせます）
 
 本章では **gloo backend** を使い、CPU ノード 1 台の中で複数プロセスを立てて DDP を動かします。学習対象は軽量な言語モデル `HuggingFaceTB/SmolLM2-135M` で、`databricks/databricks-dolly-15k` データセットの一部を使ってファインチューニングします。
 
@@ -36,7 +36,7 @@ DDP の通信バックエンドには 2 種類あります。
 
 ## 全体の中での位置付け
 
-本章は基盤の一番低いところにある「動作確認の入口」です。Basic01 で Amazon EKS の土台を立てた直後、まだ Karpenter も GPU ノードも無い状態で実行できます。ここで DDP の仕組み（複数 rank・勾配の all-reduce・rank 0 だけがモデルを保存する挙動）を CPU で体験しておくと、Basic05（EFA）や Basic07（GPU での本格ワークロード）で登場する nccl backend・マルチノード通信が「gloo を GPU + EFA に置き換えたもの」として素直に理解できます。
+本章は基盤の一番低いところにある「動作確認の入口」です。Basic01 で Amazon EKS の土台を立てた直後、まだ Karpenter も GPU ノードも無い状態で実行できます。ここで DDP の仕組み（複数 rank・勾配の all-reduce・rank 0 だけがモデルを保存する挙動）を CPU で体験しておくと、後続の章で登場する nccl backend やマルチノード通信（Basic05 の EFA、Basic09 の Neuron 2 ノード DDP など）が「gloo を GPU + EFA に置き換えたもの」として素直に理解できます。
 
 ## 注意
 
@@ -55,13 +55,26 @@ export NAMESPACE=distai
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
 ```
 
-## 2. CPU DDP の Job を投入する
+## 2. 学習用イメージを用意する
 
-チャートを CPU（gloo）設定でレンダリングして適用します。`nprocPerNode=2` は 1 ノード内に立てる rank 数です。
+このワークロードは、`train_smollm.py` と HF Trainer スタック（`transformers` / `datasets` / `accelerate`）を焼き込んだ専用イメージ `mpijob-hf-sample` を使います。Dockerfile とビルド手順はリポジトリの [`infra/eks/manifests/mpijob-image/`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/manifests/mpijob-image) に置いてあります。同ディレクトリの `README.md` に、ECR リポジトリの作成・`finch`（または `docker`）でのビルド・push までのコマンドがまとまっているので、それに沿って自分の ECR に push しておきます。
+
+```bash
+# infra/eks/manifests/mpijob-image/README.md の手順どおりに build & push すると
+# 次の URI のイメージができる（<account>/<region> は自分の値に置き換える）
+IMAGE=<account>.dkr.ecr.<region>.amazonaws.com/mpijob-hf-sample:v1
+```
+
+:::message
+イメージ名に `mpijob` とありますが、本章では MPI は使いません。同じイメージを MPIJob 版のワークロード（後続の章）と共用しているため、この名前を流用しています。本章は `torchrun` の `batch/v1` Job として動きます。
+:::
+
+## 3. CPU DDP の Job を投入する
+
+チャートを CPU（gloo）設定でレンダリングして適用します。`nprocPerNode=2` は 1 ノード内に立てる rank 数です。前のステップで push したイメージの URI を `torchrunTrain.image` に渡します。
 
 ```bash
 cd infra/eks
-IMAGE=<account>.dkr.ecr.<region>.amazonaws.com/mpijob-hf-sample:v1
 helm template exp charts/experiments -n "$NAMESPACE" \
     --set torchrunTrain.enabled=true \
     --set torchrunTrain.image="$IMAGE" \
@@ -73,7 +86,7 @@ helm template exp charts/experiments -n "$NAMESPACE" \
 
 GPU（nccl）で動かす場合は `--set torchrunTrain.backend=nccl --set torchrunTrain.nodeRole=<GPU プール名> --set torchrunTrain.gpu.enabled=true --set torchrunTrain.gpu.count=1 --set torchrunTrain.nprocPerNode=1` に切り替えます（`nprocPerNode` は GPU 数と一致させます）。
 
-## 3. 学習ログを確認する
+## 4. 学習ログを確認する
 
 ```bash
 kubectl logs -f job/smollm-torchrun -n "$NAMESPACE"
@@ -101,7 +114,7 @@ kubectl logs -f job/smollm-torchrun -n "$NAMESPACE"
 
 loss が 3.82 → 1.14 に下がっており、2 rank が勾配を all-reduce しながら学習が進んでいることが確認できます。
 
-## 4. 完了とモデル保存を確認する
+## 5. 完了とモデル保存を確認する
 
 ```
 [rank 0/2] saving final model to /tmp/output/final
@@ -115,7 +128,7 @@ loss が 3.82 → 1.14 に下がっており、2 rank が勾配を all-reduce �
 kubectl wait --for=condition=complete job/smollm-torchrun -n "$NAMESPACE" --timeout=20m
 ```
 
-## 5. 後片付け
+## 6. 後片付け
 
 ```bash
 kubectl delete job smollm-torchrun -n "$NAMESPACE"
