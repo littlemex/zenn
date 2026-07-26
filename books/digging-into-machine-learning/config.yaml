@@ -8,3 +8,4 @@ chapters:
   - turboquant-polarquant
   - llm2026-overview
   - llm2026-elements
+  - serving-disaggregation
