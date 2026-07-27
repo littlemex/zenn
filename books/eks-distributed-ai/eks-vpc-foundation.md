@@ -71,9 +71,9 @@ module "vpc" {
 
 読みどころは次の 3 点です。
 
-**CIDR のサイジング（`/16` + `/18` x2 + `/24` x2）。** これらの既定値は [`variables.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/variables.tf) で定義しています。Amazon VPC 全体を `/16`（65,536 アドレス）、プライベートサブネットを AZ ごとに `/18`（16,384 アドレス）と大きく取り、パブリックは `/24`（256 アドレス）と小さくしています。この非対称な配分が分散 AI 向けの肝です。アクセラレータノードは VPC CNI が配る secondary IP に加え、EFA 対応インスタンスが EFA 専用 ENI を多数持ちます（`p5en.48xlarge` は 16 枚、`p5.48xlarge` は 32 枚）。1 ENI ごとに IP を消費するため、ワークロードが載るプライベートサブネットは大きく、NAT/ロードバランサーしか置かないパブリックサブネットは小さく、という配分になります。
+**CIDR のサイジング（`/16` + `/18` x2 + `/24` x2）。** これらの既定値は [`variables.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/variables.tf) で定義しています。Amazon VPC 全体を `/16`（65,536 アドレス）、プライベートサブネットを AZ ごとに `/18`（16,384 アドレス）と大きく取り、パブリックは `/24`（256 アドレス）と小さくしています。この非対称な配分が分散 AI 向けの肝です。IP を大量に消費する主因は VPC CNI で、Pod 用のセカンダリ IP をノードごとにあらかじめ確保します（プレフィックス委譲では `/28` = 16 IP 単位）。EFA 対応インスタンスは物理ネットワークカードを多数持ちますが（`p5en.48xlarge` は 16 枚）、この構成のように残りのカードを EFA 専用（`interfaceType: efa-only`）で立てると、ノードの IP を持つのはプライマリインターフェイス 1 枚だけになり、EFA 専用カードはサブネットの IP を一切消費しません（IP を扱わないインターフェイスだからです）。つまり IP 消費を押し上げるのは EFA のカード枚数ではなく VPC CNI であり、ワークロードが載るプライベートサブネットは大きく、NAT/ロードバランサーしか置かないパブリックサブネットは小さく、という配分になります。
 
-**`single_nat_gateway = true`。** NAT ゲートウェイを AZ ごとに作らず 1 つだけにしています。本番の可用性設計では AZ ごとに NAT を置きますが、実験基盤では NAT ゲートウェイの時間課金を抑えることを優先しています。プライベートサブネットからの外向き通信（イメージ pull など）はこの単一 NAT を経由します。
+**`single_nat_gateway = true`。** NAT ゲートウェイを AZ ごとに作らず 1 つだけにしています。本番の可用性設計では、AZ 障害の影響を切り離すためと、AZ をまたぐ転送料金を避けるために AZ ごとに NAT を置きます。ところがこの基盤では、EFA の集団通信も FSx for Lustre も Capacity Block も単一 AZ が前提で、性能を出したいワークロードは自然と 1 つの AZ に集まります。そのため計算そのものが単一 AZ に寄っており、その AZ に NAT を同居させる限り、AZ ごとに NAT を分ける 2 つの利点はどちらも効きません。ただしこの判断には見落としてはならない前提があります。`terraform-aws-modules/vpc` の `single_nat_gateway = true` は先頭のパブリックサブネット、つまり `azs` の先頭 AZ に NAT を 1 つ作ります。計算ノードが別の AZ にいると外向き通信が毎回 AZ をまたぎ、転送料金と障害分離の不利益をむしろ恒常的に抱え込みます。したがって Capacity Block で確保した AZ を `azs` の先頭に置き、NAT が計算ノードと同じ AZ に作られるようそろえる必要があります。プライベートサブネットからの外向き通信（イメージ pull など）はこの単一 NAT を経由し、Amazon S3 は Gateway エンドポイント、Amazon ECR などは Interface エンドポイントを併用して NAT 経由の通信量そのものを減らしています。
 
 **`private_subnet_tags` の `karpenter.sh/discovery`。** このタグが後の章で効いてきます。Karpenter は「ノードを起動してよいサブネット」をこのタグで検出します。ここで**プライベートサブネットにだけ**タグを付け、`public_subnet_tags` には付けていない点が重要です。もし共通の `tags` に含めてしまうと全サブネットに伝搬してパブリックサブネットにも付き、Karpenter がそこにノードを立ててしまいます。パブリックサブネットのノードは Amazon EC2 API への到達経路がなく `nodeadm` によるクラスタ参加に失敗するため、この付け分けは意図的です（詳細は末尾の「注意」節）。
 
@@ -171,7 +171,7 @@ IRSA は ServiceAccount にアノテーションで IAM ロールを結び付け
 
 分散 AI 特有の落とし穴が 2 つあります。いずれも一度ハマると原因特定に時間がかかるため、最初に押さえておきます。
 
-**注意 1: Amazon VPC の IP アドレスは大きめに確保する。** アクセラレータノードは通常の CPU ノードより桁違いに IP を消費します。VPC CNI がノードごとに secondary IP を配るのに加え、EFA（Elastic Fabric Adapter）対応インスタンスは EFA 専用 ENI を多数持ちます（`p5en.48xlarge` は 16 枚、`p5.48xlarge` は 32 枚）。ENI 1 枚ごとに IP を消費するため、小さな CIDR だとノード数台で枯渇し、最悪 Amazon EKS コントロールプレーンが管理 ENI を置けず `IMPAIRED`（`InsufficientFreeAddresses`）に陥ります。後から広げにくい失敗なので、この構成では Amazon VPC を `/16`、プライベートサブネットを AZ ごとに `/18` と大きめに取り、パブリックは NAT/LB 用途のみなので `/24` にしています。「パブリックは小さく、プライベートは大きく」は `awslabs/awsome-distributed-ai` の HyperPod-EKS リファレンスにも見られる原則です。
+**注意 1: Amazon VPC の IP アドレスは大きめに確保する。** アクセラレータノードは通常の CPU ノードより桁違いに IP を消費します。主因は VPC CNI で、Pod 用の secondary IP をノードごとに大量に先取りします（プレフィックス委譲では `/28` = 16 IP 単位で確保）。EFA（Elastic Fabric Adapter）対応インスタンスは物理ネットワークカードを多数持ちますが（`p5en.48xlarge` は 16 枚）、ノードの IP を持つのはプライマリインターフェイス 1 枚だけで、残りは IP を消費しない EFA 専用（`interfaceType: efa-only`）です。したがって IP を食い潰すのは EFA のカード枚数ではなく VPC CNI であり、小さな CIDR だと数台のノードで枯渇し、最悪 Amazon EKS コントロールプレーンが管理 ENI を置けず `IMPAIRED`（`InsufficientFreeAddresses`）に陥ります。後から広げにくい失敗なので、この構成では Amazon VPC を `/16`、プライベートサブネットを AZ ごとに `/18` と大きめに取り、パブリックは NAT/LB 用途のみなので `/24` にしています。「パブリックは小さく、プライベートは大きく」は `awslabs/awsome-distributed-ai` の HyperPod-EKS リファレンスにも見られる原則です。
 
 **注意 2: `karpenter.sh/discovery` タグをパブリックサブネットに漏らさない。** このタグは Karpenter が「ノードを起動してよいサブネット」を検出するための目印です。Amazon VPC モジュールの共通タグに含めてしまうと全サブネットに伝搬し、パブリックサブネットにも付いてしまいます。すると Karpenter がパブリックサブネットにノードを立て、そのノードは IGW 経由のルートしか持たず Amazon EC2 API に到達できないため `nodeadm` によるクラスタ参加に失敗して詰みます。この構成ではこのタグをプライベートサブネットとノードセキュリティグループにだけ明示的に付け、Amazon VPC 共通タグからは意図的に外しています。
 
@@ -205,11 +205,19 @@ terraform apply   # 完了まで概ね 15 分程度
 ## 3. kubeconfig を設定してノードを確認する
 
 ```bash
-aws eks update-kubeconfig --name "$(terraform output -raw cluster_name)" --region <region>
+# terraform.tfvars に aws_profile を設定した場合は、同じ profile をここでも渡します
+# （または事前に export AWS_PROFILE=<name>）。素の [default] で認証している場合は
+# --profile を省略します。
+aws eks update-kubeconfig --name "$(terraform output -raw cluster_name)" \
+  --region <region> --profile <tfvars と同じ profile>
 kubectl get nodes
 ```
 
 `kubectl get nodes` で m5 系のノードが 2 台 `Ready` 状態で表示されれば、System ノードグループの起動は成功です。
+
+:::message alert
+`kubectl` が `Unauthorized`（`error: You must be logged in to the server`）で弾かれる場合、原因はほぼ 2 つです。1 つ目は、`terraform apply` を実行したプリンシパルと `kubectl` を実行するプリンシパルが食い違っているケースです。`enable_cluster_creator_admin_permissions = true` はクラスタを作成したプリンシパルにだけ管理者権限を与えるため、`apply` を名前付き profile（AWS SSO や assume-role）で実行したのに `update-kubeconfig` を素の `[default]` で叩くと、両者が別プリンシパルになり弾かれます。`aws sts get-caller-identity` で両者のプリンシパルを確認します。assume-role の場合はセッション名部分が違っていても問題なく、`assumed-role/<ロール名>` までが一致していれば認証は通ります（アクセスエントリは基底の IAM ロール ARN 単位でマッチするためです）。一致していなければ `update-kubeconfig` に `apply` と同じ `--profile` を渡す（または `export AWS_PROFILE`）と解消します。自分のロールが登録済みかは `aws eks list-access-entries --cluster-name <name>` でも確認できます。2 つ目は、`apply` 直後にアクセスエントリがまだ認証レイヤに伝播していないケースで、この場合は 1〜2 分待って再実行すれば通ります。
+:::
 
 ## 4. 作業用の namespace を作る
 
@@ -243,6 +251,6 @@ kubectl config current-context
 # 参考資料
 
 - [Amazon EKS ユーザーガイド](https://docs.aws.amazon.com/eks/latest/userguide/what-is-eks.html)
-- [awslabs/awsome-distributed-ai](https://github.com/awslabs/awsome-distributed-training)（Amazon VPC サイジングの参考にした HyperPod-EKS リファレンス）
+- [awslabs/awsome-distributed-ai](https://github.com/awslabs/awsome-distributed-ai)（Amazon VPC サイジングの参考にした HyperPod-EKS リファレンス）
 - [Amazon EKS Pod Identity](https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html)
 - [対象モジュール infra/eks](https://github.com/littlemex/distributed-ai/tree/main/infra/eks)
