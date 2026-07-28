@@ -48,11 +48,12 @@ accelerator_pools = {
     instance_types    = ["p5en.48xlarge"]
     device_plugin     = "nvidia"
     capacity_type     = "reserved"
-    zone              = "us-east-2a"
-    cb_reservation_id = "cr-0123456789abcdef0"
+    cb_reservation_id = "cr-0123456789abcdef0" # zone はこの予約から導出される
   }
 }
 ```
+
+`zone` を書いていない点に注目してください。`reserved` プールの AZ は Capacity Block の予約から自動導出される（`az.tf` が予約の AZ を読み取る）ため、通常は手書きしません。これにより、後日 CB が別の AZ に移っても、差し替えるのは新しい `cb_reservation_id` の 1 行だけで済みます。特定の AZ に固定したい特殊なケースだけ `zone` を明示指定でき、その値が予約の AZ と食い違うと後述の `check` ブロックが警告します。
 
 ここで最も事故につながりやすいのは、`cb_reservation_id` を書いたのに `capacity_type` を `"reserved"` にし忘れる、あるいはその逆というミスです。[`variables.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/variables.tf) の `accelerator_pools` には、この 2 方向のミスをそれぞれ弾く `validation` ブロックが用意されています。
 
@@ -138,14 +139,14 @@ check "capacity_block_ready" {
   assert {
     condition = alltrue([
       for k, p in local.cb_reserved_pools :
-      local.pool_cb_zone[k] == "" || local.pool_cb_zone[k] == p.zone
+      p.zone == "" || local.pool_cb_zone[k] == "" || local.pool_cb_zone[k] == p.zone
     ])
-    error_message = "A reserved pool's zone does not match its Capacity Block's AZ. ..."
+    error_message = "A reserved pool sets an explicit zone that does not match its Capacity Block's AZ. ... Clear the pool's zone (leave it \"\") to inherit the CB's AZ automatically, or fix it to match."
   }
 }
 ```
 
-1 つ目の assert は CB がまだ `scheduled`（開始前）や `expired`（終了後）のまま apply されようとしていないかを見ます。2 つ目は、tfvars に手で書いた `zone` と、予約が実際に確保している AZ が食い違っていないかを見ます。
+1 つ目の assert は CB がまだ `scheduled`（開始前）や `expired`（終了後）のまま apply されようとしていないかを見ます。2 つ目は、プールに**明示指定した** `zone` と、予約が実際に確保している AZ が食い違っていないかを見ます。条件式の先頭が `p.zone == ""` で短絡している点が肝で、`zone` を書かない既定のプールでは `local.pool_zone` が予約の AZ をそのまま読み取るため食い違いようがなく、この assert は素通りします。警告が意味を持つのは、導出される AZ をあえて明示指定で上書きしようとして、その値が予約の AZ と矛盾した場合だけです（このとき Karpenter はゾーン要件と `capacityReservationSelectorTerms` が衝突してノードを起動できません）。
 
 ここで重要なのは、**`check` ブロックは条件を満たさなくても plan/apply を WARNING で通す**という Terraform の仕様です。「アサーションだから当然 apply を止める」と考えると誤りで、この構成でもあえて「止めない」設計を選んでいます。理由はコメントにある通りで、もし CB の `state` を NodePool の `for_each` の条件に使ってハードゲート化すると、CB が後から `expired` に変わった瞬間に `for_each` の対象から外れて **NodePool ごと DESTROY される**という、警告よりもずっと悪い結果を招きます。したがって `check` ブロックはあくまで「気づくための仕掛け」であり、apply を止める防波堤ではありません。
 
@@ -258,7 +259,6 @@ CB の購入は前払いで、キャンセルや返金はできません。`00-c
   --cr-id cr-0123456789abcdef0 \
   --end-date 2026-07-21T12:00:00Z \
   --instance-type p5en.48xlarge \
-  --zone us-east-2a \
   --pool gpu-p5en
 ```
 
@@ -269,14 +269,13 @@ gpu-p5en = {
   instance_types    = ["p5en.48xlarge"]
   device_plugin     = "nvidia"
   capacity_type     = "reserved"
-  zone              = "us-east-2a"
-  cb_reservation_id = "cr-0123456789abcdef0"
+  cb_reservation_id = "cr-0123456789abcdef0"   # zone はこの予約から導出
   cb_end_date       = "2026-07-21T12:00:00Z"
   volume_size       = "500Gi"
 }
 ```
 
-出力されたブロックを `terraform.tfvars` の `accelerator_pools` に貼り付けます。
+`zone` は含まれません。前述のとおり `reserved` プールの AZ は予約から導出されるため、スクリプトも既定では `zone` 行を出しません。特定の AZ に固定したい場合だけ `--zone <az>` を渡すと、その明示指定を含んだブロックが出力されます。出力されたブロックを `terraform.tfvars` の `accelerator_pools` に貼り付けます。
 
 ## 4. apply してノードを確認する
 

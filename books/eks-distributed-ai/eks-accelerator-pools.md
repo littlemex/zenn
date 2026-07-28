@@ -31,7 +31,7 @@ Karpenter がノードを起動するには、最低でも次の 2 つの Kubern
 - `instance_types` — Karpenter が起動候補にできる Amazon EC2 インスタンスタイプのリスト（例: `["g6e.12xlarge"]`）
 - `device_plugin` — `"nvidia"` または `"neuron"`。どの device plugin がこのプールのアクセラレータを advertise するかを決める
 - `capacity_type` — `"reserved"`（Capacity Block）、`"on-demand"`、`"spot"` のいずれか
-- `zone` — このプールを固定する単一の AZ。EFA/RDMA トラフィックはサブネットを跨げないため、複数ノードにわたる collective 通信を行う場合は全ランクが同一 AZ に載っている必要がある
+- `zone`（optional）— このプールを固定する単一の AZ。EFA/RDMA トラフィックはサブネットを跨げないため、複数ノードにわたる collective 通信を行う場合は全ランクが同一 AZ に載っている必要がある。通常は書かず、`reserved` なら Capacity Block の AZ、on-demand/spot なら先頭 AZ（`local.azs[0]`）に自動導出される。特定の AZ に固定したいときだけ明示指定する
 
 プールの `device_plugin` フィールドから、`has_gpu_pool` / `has_neuron_pool` / `has_efa_pool` という 3 つの真偽値が自動的に導出されます。これらのフラグに応じて、NVIDIA GPU Operator・Neuron device plugin・AWS EFA device plugin という 3 種類のアドオンがそれぞれ導入されるかどうかが決まります。つまり `accelerator_pools` に GPU プールしか定義しなければ Neuron 関連のアドオンは一切入らず、Neuron プールしか定義しなければ GPU Operator は入りません。クラスタが実際に使うものだけがインストールされます。
 
@@ -55,7 +55,7 @@ variable "accelerator_pools" {
     instance_types = list(string)
     device_plugin  = string # "nvidia" | "neuron"
     capacity_type  = string # "reserved" | "on-demand" | "spot"
-    zone           = string
+    zone           = optional(string, "") # "" = 導出（reserved → CB の AZ、on-demand/spot → azs[0]）
     efa_interface_count = optional(number, -1)
     efa_multi_card      = optional(bool, null)
     cb_reservation_id = optional(string, "")
@@ -76,7 +76,7 @@ variable "accelerator_pools" {
 }
 ```
 
-`instance_types` / `device_plugin` / `capacity_type` / `zone` の 4 つだけが必須で、残りはすべて `optional()` です。`efa_interface_count = -1` と `efa_multi_card = null` が既定値になっている点に注目してください。この 2 つは「明示しなければ EFA トポロジを instance type から自動導出する」というシグナルであり、具体的な導出ロジックは次節の `locals.tf` で見ます。
+必須は `instance_types` / `device_plugin` / `capacity_type` の 3 つだけで、残りはすべて `optional()` です。`zone` も既定 `""`（導出）で optional に降格しており、書かなければ `reserved` は Capacity Block の AZ を、on-demand/spot は先頭 AZ（`local.azs[0]`）を自動的に採ります（導出ロジックは `az.tf` の `local.pool_zone`。詳細は Ch6 と、既に見た Basic01 の AZ 自動導出）。`efa_interface_count = -1` と `efa_multi_card = null` が既定値になっている点にも注目してください。この 2 つは「明示しなければ EFA トポロジを instance type から自動導出する」というシグナルであり、具体的な導出ロジックは次節の `locals.tf` で見ます。`zone` を明示しても「解決後の AZ が VPC の AZ に含まれること」はこの変数の `validation` では検査せず（`local.azs` はデータソース由来で validation から参照できないため）、`az.tf` の precondition で plan 時に検査します。
 
 この変数には 11 個の `validation` ブロックが積まれており、本章の「注意」節で挙げた落とし穴のほとんどは、実際にはここで plan 時に弾かれます。代表的なものを 2 つ引用します。
 
@@ -184,7 +184,7 @@ taints = [{
 requirements = [
   { key = "karpenter.sh/capacity-type",        operator = "In", values = [each.value.capacity_type] },
   { key = "node.kubernetes.io/instance-type",  operator = "In", values = each.value.instance_types },
-  { key = "topology.kubernetes.io/zone",       operator = "In", values = [each.value.zone] },
+  { key = "topology.kubernetes.io/zone",       operator = "In", values = [local.pool_zone[each.key]] },
   { key = "kubernetes.io/arch",                operator = "In", values = [each.value.arch] },
 ]
 ...
@@ -195,7 +195,7 @@ disruption = {
 }
 ```
 
-`taints` を組み立てているのはこのブロックだけです。GPU Operator も NVIDIA device plugin も taint を付けないという「解説」節の説明の裏付けがここにあります。`disruption.budgets` は `capacity_type == "reserved"` のときだけ `nodes = "0"` に固定され、それ以外は Karpenter v1 の既定である 10% budget のままです。コメントには、Karpenter v1 の drift 検知は `consolidationPolicy` と無関係に働くため、`expireAfter`/`consolidateAfter` を `"Never"` にするだけでは新しい AMI リリース時にノードが入れ替えられてしまう、budget を 0 に固定して初めて完全に止まる、という理由が明記されています。
+ゾーン制約に渡しているのが `each.value.zone`（tfvars に書いた値）ではなく `local.pool_zone[each.key]`（`az.tf` で解決済みの AZ）である点が肝で、`zone` を書かなくても Karpenter は導出後の単一 AZ にきちんと固定されます。`taints` を組み立てているのはこのブロックだけです。GPU Operator も NVIDIA device plugin も taint を付けないという「解説」節の説明の裏付けがここにあります。`disruption.budgets` は `capacity_type == "reserved"` のときだけ `nodes = "0"` に固定され、それ以外は Karpenter v1 の既定である 10% budget のままです。コメントには、Karpenter v1 の drift 検知は `consolidationPolicy` と無関係に働くため、`expireAfter`/`consolidateAfter` を `"Never"` にするだけでは新しい AMI リリース時にノードが入れ替えられてしまう、budget を 0 に固定して初めて完全に止まる、という理由が明記されています。
 
 ## 条件付きアドオン（has_gpu_pool など）
 
@@ -248,7 +248,7 @@ efa_supported_instance_types = distinct(flatten([
 
 **1 プール内の instance_types は同じ EFA トポロジでなければなりません。** 1 つのプールに対して生成されるネットワークインターフェース構成は 1 つしかないため、例えば同じプールに `g6e.12xlarge`（EFA 1 枚・単一カード）と `p5en.48xlarge`（EFA 16 枚・複数カード）を混在させると、EFA カード構成が食い違い、plan/apply 時のバリデーションで reject されます。異なる EFA トポロジのインスタンスタイプを両方使いたい場合は、プールを分けます。
 
-**`InsufficientInstanceCapacity` への対処。** 指定した AZ・インスタンスタイプの組み合わせで空き容量がない場合、Karpenter はノードを起動できずに再試行を続けます。対処法は 2 つあります。1 つは `zone` を別の AZ に変えることです。もう 1 つは `instance_types` に同じ EFA トポロジを持つ別サイズ（例えば `g6e.12xlarge` に加えて `g6e.24xlarge` も追加する）を並べ、Karpenter に選択肢を与えることです。
+**`InsufficientInstanceCapacity` への対処。** 導出された（あるいは明示した）AZ・インスタンスタイプの組み合わせで空き容量がない場合、Karpenter はノードを起動できずに再試行を続けます。対処法は 2 つあります。1 つは `zone` を明示指定して別の AZ に変えることです（on-demand/spot は既定で先頭 AZ に導出されるため、他の AZ を試すには明示が要ります。reserved は Capacity Block の AZ に固定なので、この対処は on-demand/spot 向けです）。もう 1 つは `instance_types` に同じ EFA トポロジを持つ別サイズ（例えば `g6e.12xlarge` に加えて `g6e.24xlarge` も追加する）を並べ、Karpenter に選択肢を与えることです。
 
 **GPU Operator の初期化には数分かかります。** ノードが `Ready` になった直後は、GPU Operator の feature discovery・device plugin がまだ起動しきっていないことが多く、`nvidia.com/gpu` という resource がまだ advertise されていない時間帯があります。この間に GPU を要求する Pod をスケジュールしようとすると一時的に Pending のままになりますが、これは異常ではなく、数分待てば解消します。
 
@@ -266,12 +266,12 @@ accelerator_pools = {
     instance_types = ["g6e.12xlarge"]
     device_plugin  = "nvidia"
     capacity_type  = "on-demand"
-    zone           = "<az>"
+    # zone を書かなければ先頭 AZ（local.azs[0]）に自動導出される
   }
 }
 ```
 
-`zone` は `azs` に含まれる値でなければなりません。他のフィールド（`efa_interface_count` や `volume_size` など）はすべて optional なので、まずはこの最小構成で動かしてみます。
+`zone` は書いていません。on-demand なので先頭 AZ に自動導出されます。特定の AZ に固定したいときだけ明示指定でき、その値は解決後の AZ（`local.azs`）に含まれていなければなりません（含まれない場合は `az.tf` の precondition が plan 時に弾きます）。他のフィールド（`efa_interface_count` や `volume_size` など）もすべて optional なので、まずはこの最小構成で動かしてみます。
 
 ## 2. apply する
 

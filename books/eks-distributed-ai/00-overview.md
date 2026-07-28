@@ -31,7 +31,7 @@ free: true
 | CPU/GPU/Neuron の動的確保 | 高価な資源は使うときだけ立てて即返したい | Karpenter が Pod の要求に応じノードを起動・回収する (Basic03) |
 | マルチノード集団通信 | 1 台に載らないモデルを複数ノードで学習する | EFA と NCCL/Neuron を単一 AZ 内で束ねる (Basic05・09) |
 | 予約枠 (Capacity Block) の活用 | 大規模 GPU は予約なしでは確保が事実上困難 | 予約の購入から期限監視までを組み込む (Basic06) |
-| 共有ストレージ | モデルやデータを複数 Pod で共有する | Amazon EFS と Amazon FSx for Lustre を使い分ける (Basic10) |
+| 共有ストレージ | モデルやデータを複数 Pod で共有する | 単一 AZ の Amazon FSx (OpenZFS と Lustre) を既定に据える (Basic10) |
 | 課金を残さない破棄 | 実験が終わったら安全に消したい | ドレイン待機と VPC エンドポイントで孤立ノードを防ぐ (Basic11) |
 
 Kubernetes はもともと「多様なサービスを動的にスケジュールする」ためのプラットフォームです。推論サーバーは Deployment や KubeRay の Service として、学習ジョブは Job や MPIJob として、すべて同じクラスタ上で宣言的に扱えます。GPU/Neuron ノードは Karpenter が Pod の要求に応じて動的に起動し、使い終われば自動で回収します。だから、上の要求を一度に満たす土台として Amazon EKS を選びました。一度この基盤を立てておけば、あとは Pod を投げるだけで、事前学習・ファインチューニング・推論サービング・強化学習のいずれも同じクラスタで実験できます。
@@ -73,7 +73,7 @@ Slurm や AWS ParallelCluster に慣れた方は、「ログインノードは�
 - 軽量 vLLM (OpenAI 互換サーバー) による GPU 推論の動作確認 (Basic07)
 - Prometheus と Grafana による GPU メトリクスの可視化 (Basic08)
 - AWS Trainium/AWS Inferentia (Neuron) 対応の設計 (Basic09)
-- 共有ストレージ Amazon EFS / Amazon FSx for Lustre の使い分け (Basic10)
+- 単一 AZ の Amazon FSx (OpenZFS と Lustre) を既定に据える共有ストレージ設計 (Basic10)
 - 課金を取り残さない安全な破棄と、オプションの公開エンドポイント (Basic11)
 
 # 必要なもの
@@ -89,11 +89,11 @@ Slurm や AWS ParallelCluster に慣れた方は、「ログインノードは�
 
 # アーキテクチャ概要
 
-この book 全体で構築する分散 AI 基盤の全体像です。Amazon VPC の中に 2 つの AZ を張り、Amazon EKS コントロールプレーンの下で Karpenter が GPU/Neuron の各 NodePool を要求に応じて起動します。共有ストレージ (Amazon EFS / Amazon FSx) や Capacity Block の期限監視 (Amazon EventBridge から Amazon SNS) といった周辺サービスも含みます。
+この book 全体で構築する分散 AI 基盤の全体像です。Amazon VPC はリージョンの全 AZ にまたがって張り、Amazon EKS コントロールプレーンの下で Karpenter が GPU/Neuron の各 NodePool を要求に応じて起動します。共有ストレージ (既定は単一 AZ の Amazon FSx for OpenZFS と Amazon FSx for Lustre) や Capacity Block の期限監視 (Amazon EventBridge から Amazon SNS) といった周辺サービスも含みます。
 
 ![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 
-全体図では作図の都合で共有ストレージを左の AZ-B に配置していますが、実際には FSx for Lustre は計算ノードと同じ AZ に作成します。Amazon EFS はマルチ AZ 対応なのでどちらの AZ からでもマウントできます。
+全体図では作図の都合で共有ストレージを左の AZ-B に配置していますが、実際には既定の FSx (OpenZFS と Lustre) はいずれも単一 AZ で、計算ノードと同じ AZ に作成します。計算が EFA や Capacity Block の都合で 1 つの AZ に寄るため、共有ストレージも同じ AZ に置くのが既定です (この設計判断は Basic01 と Basic10 で扱います)。マルチ AZ 対応の Amazon EFS は、AZ をまたぐ再スケジュールでキャッシュを引き継ぎたい特定用途のための opt-in として残しています。
 
 各コンポーネントは Basic01 以降の各章で 1 つずつ、実際の Terraform コードを引用しながら解説します。全体像を頭に入れたうえで、まずは Basic01 で土台となる Amazon EKS クラスタを立てるところから始めましょう。
 
