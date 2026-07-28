@@ -31,7 +31,7 @@ NVIDIA GPU と AWS Trainium/Inferentia (Neuron) を同じ Amazon EKS クラス�
 | 共有ストレージ | モデルやデータを複数 Pod で共有する | Amazon EFS と Amazon FSx for Lustre を使い分ける |
 | 安全な破棄 | 実験が終わったら課金を残さず消したい | 破棄順序の制御とドレイン待機で孤立ノードを防ぐ |
 
-全体像を 1 枚にすると次の図になります。VPC の中に 2 つの AZ を張り、EKS コントロールプレーンの下で Karpenter が GPU/Neuron の NodePool を動的に起動し、共有ストレージや Capacity Block の期限監視といった周辺サービスも含めた構成です。
+全体像を 1 枚にすると次の図になります。VPC はリージョンの全 AZ にまたがって張り、EKS コントロールプレーンの下で Karpenter が GPU/Neuron の NodePool を動的に起動し、共有ストレージや Capacity Block の期限監視といった周辺サービスも含めた構成です。
 
 ![EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 

@@ -3,7 +3,7 @@ title: "Basic01 - Amazon EKS 基盤を立てる"
 free: true
 ---
 
-本章では、分散学習・推論の実験を回すための土台として Amazon EKS クラスタを構築します。Terraform で Amazon VPC・Amazon EKS コントロールプレーン・Karpenter を動かすための System ノードグループをデプロイし、`kubectl` でノードが見えるところまでを扱います。GPU/Neuron のアクセラレータノード自体は Ch4 以降で立てるため、ここでは「あとから何度でも実験を回せる足場」を一度だけ作ります。
+本章では、分散学習・推論の実験を回すための土台として Amazon EKS クラスタを構築します。Terraform で Amazon VPC・Amazon EKS コントロールプレーン・Karpenter を動かすための System ノードグループをデプロイし、`kubectl` でノードが見えるところまでを扱います。GPU/Neuron のアクセラレータノード自体は Basic04 以降で立てるため、ここでは「あとから何度でも実験を回せる足場」を一度だけ作ります。
 
 :::message alert
 本資料は `us-east-2` リージョンを例に説明します。実際には自身で選択したリージョンに読み替えて進めてください。コマンド中の `<region>` などのプレースホルダは自分の値に置き換えます。
@@ -13,23 +13,21 @@ free: true
 
 ## 全体構成
 
-この book 全体で構築する分散 AI 基盤の全体像です。Amazon VPC の中に 2 つの AZ を張り、Amazon EKS コントロールプレーンの下で Karpenter が GPU/Neuron の各 NodePool を要求に応じて起動します。共有ストレージ（Amazon EFS / Amazon FSx for Lustre）や Capacity Block の期限監視（Amazon EventBridge → Amazon SNS）といった周辺サービスも含めた構成です。各コンポーネントは以降の章で 1 つずつ扱います。
+この book 全体で構築する分散 AI 基盤の全体像です。Amazon VPC は複数の AZ にまたがって張り、Amazon EKS コントロールプレーンの下で Karpenter が GPU/Neuron の各 NodePool を要求に応じて起動します。共有ストレージ（既定は単一 AZ の Amazon FSx for OpenZFS と FSx for Lustre）や Capacity Block の期限監視（Amazon EventBridge → Amazon SNS）といった周辺サービスも含めた構成です。各コンポーネントは以降の章で 1 つずつ扱います。
 
 ![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 
-本章で作るのは、この図のうち **Amazon VPC・Amazon EKS コントロールプレーン・System ノードグループ** の 3 つだけです。アクセラレータノードや各種アドオンは後続の章で積み上げていきます。
+本章の `terraform apply` は、この基盤のクラスタスコープの土台を一度に立ち上げます。図のうち中核となる **Amazon VPC・Amazon EKS コントロールプレーン・System ノードグループ** に加え、その上で動く Karpenter コントローラ・各 CSI ドライバ・Kubeflow Training Operator・共有ストレージ（既定の FSx）まで、後続の章で使う基盤コンポーネントが同じ apply で揃います（後述の「基盤層が恒久管理するもの、しないもの」を参照）。本章で詳しく解説するのは中核の 3 つで、残りは各コンポーネントの章で 1 つずつ扱います。唯一まだ立たないのは GPU/Neuron のアクセラレータ「ノード」で、`accelerator_pools` が空の本章では起動せず、Basic04 以降で 1 行足して立てます。
 
 ## これは何をするものか
 
-本章のゴールは、GPU/Neuron を使った分散学習・推論の実験を後からいくらでも回せる「土台」を一度だけ立てることです。土台とは具体的に、Amazon EKS コントロールプレーンと、その上で Karpenter コントローラを動かすための最小構成（Amazon VPC + System ノードグループ）を指します。アクセラレータノード自体はまだ立てません。Ch4 以降で `accelerator_pools` に 1 行足すだけで GPU/Neuron ノードが要求に応じて立つよう、Karpenter の足場をここで用意しておく、という位置づけです。
-
-構成要素は次の 3 つだけで、いずれも「実験を始める前に一度作れば、あとは触らない」部分です。
+本章のゴールは、GPU/Neuron を使った分散学習・推論の実験を後からいくらでも回せる「土台」を一度だけ立てることです。この土台は 1 回の `terraform apply` でクラスタスコープの基盤コンポーネント（Karpenter・CSI ドライバ・Kubeflow Training Operator・共有ストレージ）まで含めて揃いますが、本章で中身に踏み込んで解説するのは、その最も中核となる次の 3 つです。いずれも「実験を始める前に一度作れば、あとは触らない」部分です。
 
 - **Amazon EKS コントロールプレーン**（Kubernetes 1.35 / Pod Identity）
-- **System managed node group**（m5 系 x2）: kube-system と Karpenter コントローラ自身を載せる足場です。Karpenter はここに自分のノードグループを作らない（ラベルで自己参照を避ける）ため、Karpenter が動き出すための最初の土台としてこのノードグループが要ります
-- **Amazon VPC**: 上記を収めるネットワーク
+- **System managed node group**（m5 系 x2）: kube-system と Karpenter コントローラ自身を載せる足場です。Karpenter コントローラを Karpenter 管理下のノードに載せると、ゼロからの起動や自ノードの回収で自己参照の問題が起きるため公式に非推奨で、Karpenter が動き出すための最初の土台としてこの管理外のノードグループが要ります
+- **Amazon VPC**: 上記を収めるネットワークです
 
-この土台づくり自体は Amazon EKS の一般的な手順とほぼ同じですが、分散 AI 向けに効かせている設計判断がいくつかあります。以降で実際の Terraform コードを引用しながら、なぜその値・その書き方にしているのかを見ていきます。対象モジュールは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks) です。
+アクセラレータ「ノード」自体はまだ立てません。Basic04 以降で `accelerator_pools` に 1 行足すだけで GPU/Neuron ノードが要求に応じて立つよう、それを動かす Karpenter の足場をこの apply で用意しておく、という位置づけです。この土台づくり自体は Amazon EKS の一般的な手順とほぼ同じですが、分散 AI 向けに効かせている設計判断がいくつかあります。以降で実際の Terraform コードを引用しながら、なぜその値・その書き方にしているのかを見ていきます。対象モジュールは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks) です。
 
 ## Amazon VPC の設計
 
@@ -42,11 +40,11 @@ module "vpc" {
   version = "~> 5.0"
 
   name = var.cluster_name
-  cidr = var.vpc_cidr                 # 既定 10.0.0.0/16
+  cidr = var.vpc_cidr        # 既定 10.0.0.0/16
 
-  azs             = var.azs                  # 既定 ["us-east-2a", "us-east-2b"]
-  private_subnets = var.private_subnet_cidrs # 既定 ["10.0.0.0/18", "10.0.64.0/18"]
-  public_subnets  = var.public_subnet_cidrs  # 既定 ["10.0.254.0/24", "10.0.255.0/24"]
+  azs             = local.azs             # 既定はリージョンの全標準 AZ（az.tf で導出）
+  private_subnets = local.private_subnets # vpc_cidr の下半分から AZ ごとに /18 級を導出
+  public_subnets  = local.public_subnets  # vpc_cidr の上半分から AZ ごとに /24 を導出
 
   enable_nat_gateway     = true
   single_nat_gateway     = true
@@ -69,13 +67,13 @@ module "vpc" {
 }
 ```
 
-読みどころは次の 3 点です。
+ここで `azs` / `private_subnets` / `public_subnets` に渡している 3 つの `local.*` が、この構成の設計上の肝です。いずれも [`az.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/az.tf) で `var.region` と `var.vpc_cidr` から自動導出しており、通常のデプロイでは AZ もサブネット CIDR も一切手書きしません。tfvars に書くのは `region` とプールのインスタンスタイプだけで済みます。読みどころは AZ とサブネットの自動導出・`single_nat_gateway`・`private_subnet_tags` の 3 点です。
 
-**CIDR のサイジング（`/16` + `/18` x2 + `/24` x2）。** これらの既定値は [`variables.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/variables.tf) で定義しています。Amazon VPC 全体を `/16`（65,536 アドレス）、プライベートサブネットを AZ ごとに `/18`（16,384 アドレス）と大きく取り、パブリックは `/24`（256 アドレス）と小さくしています。この非対称な配分が分散 AI 向けの肝です。IP を大量に消費する主因は VPC CNI で、Pod 用のセカンダリ IP をノードごとにあらかじめ確保します（プレフィックス委譲では `/28` = 16 IP 単位）。EFA 対応インスタンスは物理ネットワークカードを多数持ちますが（`p5en.48xlarge` は 16 枚）、この構成のように残りのカードを EFA 専用（`interfaceType: efa-only`）で立てると、ノードの IP を持つのはプライマリインターフェイス 1 枚だけになり、EFA 専用カードはサブネットの IP を一切消費しません（IP を扱わないインターフェイスだからです）。つまり IP 消費を押し上げるのは EFA のカード枚数ではなく VPC CNI であり、ワークロードが載るプライベートサブネットは大きく、NAT/ロードバランサーしか置かないパブリックサブネットは小さく、という配分になります。
+**AZ とサブネット CIDR の自動導出**: `local.azs` は `var.azs` が `null`（既定）ならそのリージョンの標準 AZ（Local Zone や Wavelength を除く、`opt-in-not-required` の AZ）を `sort` して全件返します。`us-west-2` や `us-east-2` なら 4 つの AZ すべてに VPC がまたがります。サブネット CIDR も `var.private_subnet_cidrs` / `var.public_subnet_cidrs` が `null`（既定）なら `var.vpc_cidr` から AZ ごとに 1 つずつ切り出します。プライベートは VPC の下半分（`/16` なら `10.0.0.0/17`）を AZ 数で等分し、パブリックは上半分から `/24` を AZ ごとに取ります。AZ が 2 つならプライベートは `/18`、4 つなら `/19`、というように AZ 数に追随してサイズが決まるため、サブネット一覧が AZ 一覧と食い違う余地がありません。この「プライベートは大きく、パブリックは小さく」という非対称な配分が分散 AI 向けの肝です。IP を大量に消費する主因は VPC CNI で、Pod 用のセカンダリ IP をノードごとにあらかじめ確保します（プレフィックス委譲では `/28` = 16 IP 単位）。EFA 対応インスタンスは物理ネットワークカードを多数持ちます（`p5en.48xlarge` は 16 枚）。この構成のように残りのカードを EFA 専用（`interfaceType: efa-only`）で立てると、ノードの IP を持つのはプライマリインターフェイス 1 枚だけになり、EFA 専用カードはサブネットの IP を一切消費しません。つまり IP 消費を押し上げるのは EFA のカード枚数ではなく VPC CNI であり、ワークロードが載るプライベートサブネットは大きく、NAT/ロードバランサーしか置かないパブリックサブネットは小さく、という配分になります。特定の AZ 集合に固定したい、あるいは CIDR を明示指定したい場合だけ `var.azs` / `var.private_subnet_cidrs` / `var.public_subnet_cidrs` で上書きでき、その際は解決後の AZ ごとにちょうど 1 つずつ CIDR を与えます（過不足は `az.tf` の precondition が検出します）。
 
-**`single_nat_gateway = true`。** NAT ゲートウェイを AZ ごとに作らず 1 つだけにしています。本番の可用性設計では、AZ 障害の影響を切り離すためと、AZ をまたぐ転送料金を避けるために AZ ごとに NAT を置きます。ところがこの基盤では、EFA の集団通信も FSx for Lustre も Capacity Block も単一 AZ が前提で、性能を出したいワークロードは自然と 1 つの AZ に集まります。そのため計算そのものが単一 AZ に寄っており、その AZ に NAT を同居させる限り、AZ ごとに NAT を分ける 2 つの利点はどちらも効きません。ただしこの判断には見落としてはならない前提があります。`terraform-aws-modules/vpc` の `single_nat_gateway = true` は先頭のパブリックサブネット、つまり `azs` の先頭 AZ に NAT を 1 つ作ります。計算ノードが別の AZ にいると外向き通信が毎回 AZ をまたぎ、転送料金と障害分離の不利益をむしろ恒常的に抱え込みます。したがって Capacity Block で確保した AZ を `azs` の先頭に置き、NAT が計算ノードと同じ AZ に作られるようそろえる必要があります。プライベートサブネットからの外向き通信（イメージ pull など）はこの単一 NAT を経由し、Amazon S3 は Gateway エンドポイント、Amazon ECR などは Interface エンドポイントを併用して NAT 経由の通信量そのものを減らしています。
+**`single_nat_gateway = true` の意味**: NAT ゲートウェイを AZ ごとに作らず 1 つだけにしています。本番の可用性設計では、AZ 障害の影響を切り離すためと、AZ をまたぐ転送料金を避けるために AZ ごとに NAT を置きます。ところがこの基盤では、EFA の集団通信も FSx for Lustre も Capacity Block も単一 AZ が前提で、性能を出したいワークロードは自然と 1 つの AZ に集まります。そのため計算そのものが単一 AZ に寄っており、その AZ に NAT を同居させる限り、AZ ごとに NAT を分ける 2 つの利点はどちらも効きません。ただし NAT がどの AZ に作られるかは意識しておく必要があります。`terraform-aws-modules/vpc` の `single_nat_gateway = true` は先頭のパブリックサブネット、つまり `local.azs` の先頭 AZ に NAT を 1 つ作ります。オンデマンド/スポットのプールは `zone` を書かなければこの先頭 AZ に導出されるため、NAT と同じ AZ に載り外向き通信は AZ をまたぎません。一方 Capacity Block のプールは予約が確保された AZ に固定されるので、それが先頭 AZ と異なると外向き通信（イメージ pull など）が AZ をまたぎます。この基盤は「予約が動いても VPC がリージョン全 AZ をまたぐので必ず対応するサブネットがある」ことを優先して単一 NAT を許容しますが、CB のプールと NAT を同じ AZ にそろえたい場合は `var.azs` で CB の AZ を先頭に並べれば同居させられます。プライベートサブネットからの外向き通信はこの単一 NAT を経由し、Amazon S3 は Gateway エンドポイント、Amazon ECR などは Interface エンドポイントを併用して NAT 経由の通信量そのものを減らしています。
 
-**`private_subnet_tags` の `karpenter.sh/discovery`。** このタグが後の章で効いてきます。Karpenter は「ノードを起動してよいサブネット」をこのタグで検出します。ここで**プライベートサブネットにだけ**タグを付け、`public_subnet_tags` には付けていない点が重要です。もし共通の `tags` に含めてしまうと全サブネットに伝搬してパブリックサブネットにも付き、Karpenter がそこにノードを立ててしまいます。パブリックサブネットのノードは Amazon EC2 API への到達経路がなく `nodeadm` によるクラスタ参加に失敗するため、この付け分けは意図的です（詳細は末尾の「注意」節）。
+**`private_subnet_tags` の `karpenter.sh/discovery`**: このタグが後の章で効いてきます。Karpenter は「ノードを起動してよいサブネット」をこのタグで検出します。ここで**プライベートサブネットにだけ**タグを付け、`public_subnet_tags` には付けていない点が重要です。もし共通の `tags` に含めてしまうと全サブネットに伝搬してパブリックサブネットにも付き、Karpenter がそこにノードを立ててしまいます。この構成はパブリックサブネットにパブリック IP を自動付与しない設定なので、そこに立ったノードは外向きの到達経路を持たず、`nodeadm` によるクラスタ参加に失敗します。この付け分けは意図的です（詳細は末尾の「注意」節）。
 
 ## Amazon EKS クラスタと System ノードグループ
 
@@ -127,9 +125,9 @@ module "eks" {
 このモジュールは `terraform-aws-eks` v21 系を使っており、引数名が `name` / `kubernetes_version` です（v20 以前の `cluster_name` / `cluster_version` ではありません）。バージョンを変える際は引数名の互換性に注意してください。
 :::
 
-**`before_compute = true` の 2 つのアドオン。** `vpc-cni` と `eks-pod-identity-agent` に `before_compute = true` を付け、ワーカーノードが起動する前にこれらを導入します。特に Pod Identity Agent は、Pod Identity で AWS 権限を得るコントローラ（Ch3 の Karpenter や、上の `aws-ebs-csi-driver`）より先に存在していないと、それらが起動時に認証情報を取得できずクラッシュします。実際 `aws-ebs-csi-driver` には `pod_identity_association` で IAM ロールを渡しており、これが機能するには Pod Identity Agent が先にいる必要があります。順序を保証するためのフラグです。
+**`before_compute = true` の 2 つのアドオン**: `vpc-cni` と `eks-pod-identity-agent` に `before_compute = true` を付け、ワーカーノードが起動する前にこれらを導入します。特に Pod Identity Agent は、Pod Identity で AWS 権限を得るコントローラ（Karpenter や、上の `aws-ebs-csi-driver`）より先に存在していないと、それらが起動時に認証情報を取得できずクラッシュします。実際 `aws-ebs-csi-driver` には `pod_identity_association` で IAM ロールを渡しており、これが機能するには Pod Identity Agent が先にいる必要があります。順序を保証するためのフラグです。
 
-**System ノードグループの `karpenter.sh/controller` ラベル。** m5 系インスタンス（`var.system_node_ami_type` / `var.system_node_instance_types`）を `var.system_node_desired_size`（既定 2）台、`min_size = max_size = desired_size` で固定起動します。このノードグループは Karpenter が管理するのではなく、Amazon EKS Managed Node Group として常時稼働させます。`karpenter.sh/controller: "true"` というラベルを付けているのは、Ch3 で導入する Karpenter コントローラ自身をこのノードに載せるためです。Karpenter は自分自身が動くノードは作れない（自己参照になる）ので、Karpenter を動かす最初の足場として、Karpenter の管理外のノードグループが必要になります。
+**System ノードグループの `karpenter.sh/controller` ラベル**: m5 系インスタンス（`var.system_node_ami_type` / `var.system_node_instance_types`）を `var.system_node_desired_size`（既定 2）台、`min_size = max_size = desired_size` で固定起動します。このノードグループは Karpenter が管理するのではなく、Amazon EKS Managed Node Group として常時稼働させます。`karpenter.sh/controller: "true"` というラベルを付けているのは、本章の apply で導入される Karpenter コントローラ自身をこのノードに載せるためです（Karpenter の仕組みは Basic03 で解説します）。Karpenter コントローラを Karpenter 管理下のノードに載せるのは前述のとおり非推奨なので、Karpenter を動かす最初の足場として、Karpenter の管理外のノードグループが必要になります。
 
 ## Pod Identity による認証
 
@@ -159,13 +157,23 @@ module "karpenter" {
 }
 ```
 
-IRSA は ServiceAccount にアノテーションで IAM ロールを結び付け、OIDC プロバイダ経由で認証する方式です。これに対し Pod Identity は、IAM 側の Pod Identity Association だけで ServiceAccount とロールを結び付けられ、Kubernetes マニフェスト側にアノテーションを書かずに済みます。設定が IAM 側で完結するぶんシンプルで、この構成では Karpenter・EBS/Amazon EFS/Amazon FSx for Lustre の各 CSI ドライバすべてを Pod Identity で統一しています。本章の `eks-pod-identity-agent` アドオンは、この Pod Identity を各 Pod で機能させるためのエージェントです。
+IRSA は ServiceAccount にアノテーションで IAM ロールを結び付け、OIDC プロバイダ経由で認証する方式です。これに対し Pod Identity は、IAM 側の Pod Identity Association だけで ServiceAccount とロールを結び付けられ、Kubernetes マニフェスト側にアノテーションを書かずに済みます。設定が IAM 側で完結するぶんシンプルで、この構成では Karpenter・EBS/Amazon FSx（OpenZFS・Lustre）/Amazon EFS の各 CSI ドライバすべてを Pod Identity で統一しています。本章の `eks-pod-identity-agent` アドオンは、この Pod Identity を各 Pod で機能させるためのエージェントです。
 
-`enable_inline_policy = true` にも実務上の理由があります。Karpenter v1 のコントローラポリシーは約 6,172 バイトあり、AWS のマネージドポリシーのサイズ上限（6,144 バイト、変更不可）をわずかに超えて `LimitExceeded: PolicySize: 6144` で失敗します。インラインポリシー（上限 10,240 バイト）にすれば同じ権限のまま上限に収まるため、この構成ではインラインを選んでいます。
+`enable_inline_policy = true` にも実務上の理由があります。Karpenter v1 のコントローラポリシーは、AWS のマネージドポリシーのサイズ上限（空白を除いて 6,144 文字、変更不可）をわずかに超え、`LimitExceeded: PolicySize: 6144` で失敗します。ロールに直接付けるインラインポリシー（上限 10,240 文字）にすれば同じ権限のまま上限に収まるため、この構成ではインラインを選んでいます。
+
+## 基盤層が恒久管理するもの、しないもの
+
+本章から Basic11 まで積み上げる各層には、貫いている 1 つの原則があります。クラスタスコープで複数のワークロードが共有し、消えると学習/推論 Pod が動かなくなるもの、具体的には CSI ドライバ・Kubeflow Training Operator・Karpenter コントローラ・共有ストレージの静的 PV は、Pod と同じ寿命で作っては消すのではなく、クラスタの基盤として Terraform が恒久管理します。一方、namespace や PVC、実際に流す学習 Job そのもののように、特定のワークロードと運命を共にする namespace スコープの資材は、ワークショップ側で `kubectl` や Helm で作ります。以降の章で Pod を動かすとき「Basic01 の `terraform apply` の時点でもう揃っている」と繰り返し書けるのは、前者を基盤層に寄せているからです。
+
+この原則からいくつかの設計判断が導かれます。
+
+- **ストレージは CSI ドライバとファイルシステム本体を分離します**: ドライバは実行前提なので基盤層に属し、EBS・FSx（OpenZFS・Lustre）・EFS のいずれも無条件で常設します。ファイルシステム本体と静的 PV の作成はワークロード側の選択なので、`openzfs_enabled` などのフラグで制御します。既定では OpenZFS と Lustre を作り、EFS は本体を作らずドライバだけ常設します。この分離により、あとで EFS が要るときはアドオン導入からではなくファイルシステムを 1 つ足すだけで済みます（詳細は Basic10）。
+- **共有ストレージの既定は単一 AZ の FSx です**: FSx for OpenZFS には Multi-AZ 構成も選べますが（Lustre は単一 AZ のみ）、この基盤では意図的に単一 AZ を既定にしています。理由は前述の `single_nat_gateway` と同じで、EFA・FSx for Lustre・Capacity Block を前提とする学習系ワークロードでは計算が 1 つの AZ に寄るため、ストレージだけをマルチ AZ にしても可用性は活きず、単価だけが上がります。AZ 障害に備えた成果物の長期保全は、ストレージのマルチ AZ 化ではなくチェックポイントの Amazon S3 退避で担うのが実務の定石です。逆に、可用性のためマルチ AZ 配置が定石になる推論サービングや、AZ をまたいでキャッシュを共有したい特定用途のためには、EFS を opt-in の選択肢として残しています（詳細は Basic10）。なお本章の Amazon VPC を複数 AZ で張るのは Amazon EKS コントロールプレーンが 2 AZ 以上のサブネットを要求するためと、Capacity Block がどの AZ に落ちても対応するサブネットが必ずあるようにするためで、計算を複数 AZ に分散させるためではありません。アクセラレータプールはそれぞれ単一 AZ に固定します（予約プールは Capacity Block の AZ、オンデマンド/スポットは先頭 AZ に自動導出され、明示指定で上書きもできます。Basic02 の CPU 検証だけは軽量なので AZ 固定していません）。
+- **Argo CD などの CD 機構は常設しません**: この基盤で流すワークロードは、適用しては消す使い捨ての実験カタログで、継続的に同期し続けるべき長命なデプロイ対象がありません。実行前提はすでに Terraform 側に揃っているため、残る作業は Helm でレンダリングして `kubectl apply` するだけで足り、release 履歴や drift 検出を担う CD コンポーネントは基盤層に要りません。CD 機構が無いのは欠落ではなく、この使い方から導かれる設計判断で、GitOps を継続運用したい場合はこの基盤の上に利用者が追加する層になります。
 
 ## 全体の中での位置付け
 
-本章は基盤構築の最下層にあたります。ここで作った Amazon EKS + System ノードの上に、Ch3 で Karpenter コントローラを載せ、その Karpenter が `accelerator_pools` の定義に従って GPU/Neuron ノードを起動する（Ch4 以降）、という順で積み上がっていきます。つまり本章は「まだ何も GPU が動かない」状態を作る章ですが、これ以降のすべての章がこの土台の上に成り立ちます。
+本章は基盤構築の最下層にあたります。本章の apply で Karpenter コントローラは System ノードの上にすでに載っており、Basic03 でその仕組みを解説したうえで、`accelerator_pools` に定義を足すと Karpenter が GPU/Neuron ノードを起動する（Basic04 以降）、という順で積み上がっていきます。つまり本章は「基盤は揃っているが、まだ GPU ノードだけが動いていない」状態を作る章で、これ以降のすべての章がこの土台の上に成り立ちます。
 
 ## 注意
 
@@ -173,33 +181,39 @@ IRSA は ServiceAccount にアノテーションで IAM ロールを結び付け
 
 **注意 1: Amazon VPC の IP アドレスは大きめに確保する。** アクセラレータノードは通常の CPU ノードより桁違いに IP を消費します。主因は VPC CNI で、Pod 用の secondary IP をノードごとに大量に先取りします（プレフィックス委譲では `/28` = 16 IP 単位で確保）。EFA（Elastic Fabric Adapter）対応インスタンスは物理ネットワークカードを多数持ちますが（`p5en.48xlarge` は 16 枚）、ノードの IP を持つのはプライマリインターフェイス 1 枚だけで、残りは IP を消費しない EFA 専用（`interfaceType: efa-only`）です。したがって IP を食い潰すのは EFA のカード枚数ではなく VPC CNI であり、小さな CIDR だと数台のノードで枯渇し、最悪 Amazon EKS コントロールプレーンが管理 ENI を置けず `IMPAIRED`（`InsufficientFreeAddresses`）に陥ります。後から広げにくい失敗なので、この構成では Amazon VPC を `/16`、プライベートサブネットを AZ ごとに `/18` と大きめに取り、パブリックは NAT/LB 用途のみなので `/24` にしています。「パブリックは小さく、プライベートは大きく」は `awslabs/awsome-distributed-ai` の HyperPod-EKS リファレンスにも見られる原則です。
 
-**注意 2: `karpenter.sh/discovery` タグをパブリックサブネットに漏らさない。** このタグは Karpenter が「ノードを起動してよいサブネット」を検出するための目印です。Amazon VPC モジュールの共通タグに含めてしまうと全サブネットに伝搬し、パブリックサブネットにも付いてしまいます。すると Karpenter がパブリックサブネットにノードを立て、そのノードは IGW 経由のルートしか持たず Amazon EC2 API に到達できないため `nodeadm` によるクラスタ参加に失敗して詰みます。この構成ではこのタグをプライベートサブネットとノードセキュリティグループにだけ明示的に付け、Amazon VPC 共通タグからは意図的に外しています。
+**注意 2: `karpenter.sh/discovery` タグをパブリックサブネットに漏らさない。** このタグは Karpenter が「ノードを起動してよいサブネット」を検出するための目印です。Amazon VPC モジュールの共通タグに含めてしまうと全サブネットに伝搬し、パブリックサブネットにも付いてしまいます。すると Karpenter がパブリックサブネットにノードを立てますが、この構成はパブリック IP を自動付与しない設定のため、そのノードは外向きの到達経路を持たず `nodeadm` によるクラスタ参加に失敗して詰みます。この構成ではこのタグをプライベートサブネットとノードセキュリティグループにだけ明示的に付け、Amazon VPC 共通タグからは意図的に外しています。
 
-なお、必須アドオン `vpc-cni` と `eks-pod-identity-agent` は `before_compute = true` でワーカーノード起動前に導入します。特に Pod Identity Agent は、Pod Identity で権限を得るコントローラ（EBS CSI ドライバなど）より先に存在していないと、そのコントローラが起動時に Amazon EC2 IMDS ロールを見つけられずクラッシュし、アドオンが `CREATING` のまま止まります。
+なお、`vpc-cni` と `eks-pod-identity-agent` に `before_compute = true` を付ける狙いは別々です。`vpc-cni` はノードが Pod にセカンダリ IP を配って `Ready` になるための CNI なので、ノード起動前に入っている必要があります。`eks-pod-identity-agent` は Pod Identity の認証経路を成立させるためです。Pod Identity では、Pod Identity Association を持つ ServiceAccount の Pod が作られるとき、EKS コントロールプレーン側のミューテーティング Webhook が認証情報エンドポイントの URI（環境変数 `AWS_CONTAINER_CREDENTIALS_FULL_URI`）とトークンファイル（`AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE`）を Pod に注入し、実際の認証情報はノード上の Pod Identity Agent がそのリンクローカルのエンドポイントで提供します。したがってエージェントが先に存在していないと、Pod Identity で権限を得るコントローラ（EBS CSI ドライバなど）は起動時にこのエンドポイントへ到達できずクラッシュし、その Pod が揃わないアドオンはヘルスチェックに失敗して `DEGRADED` に陥ります。
 
 # ワークショップ実施
 
-## 1. tfvars を準備する
+## 1. リポジトリを clone して tfvars を準備する
 
-`terraform.tfvars.example` を `terraform.tfvars` にコピーし、`region` / `azs` / `cluster_name` を自分の環境に合わせて設定します。この段階では `accelerator_pools` は空のままで構いません（アクセラレータプールは Ch4 以降で扱います）。
+まず、この book が対象とするリポジトリを clone します。以降の章もこの作業ディレクトリを前提に進めます。
 
 ```bash
-cd infra/eks
+git clone https://github.com/littlemex/distributed-ai.git
+cd distributed-ai/infra/eks
+```
+
+続いて `terraform.tfvars.example` を `terraform.tfvars` にコピーし、`region` と `cluster_name` を自分の環境に合わせて設定します。AZ もサブネット CIDR も `region` から自動導出されるので、この段階で書くのはこの 2 つだけです。`accelerator_pools` も空のままで構いません（アクセラレータプールは Basic04 以降で扱います）。
+
+```bash
 cp terraform.tfvars.example terraform.tfvars
-# terraform.tfvars を編集: region, azs, cluster_name
+# terraform.tfvars を編集: region, cluster_name
 ```
 
 ## 2. apply する
 
 ```bash
 terraform init
-terraform apply   # 完了まで概ね 15 分程度
+terraform apply   # 完了まで概ね 20〜30 分程度
 ```
 
-`terraform apply` の内訳は、Amazon VPC・NAT ゲートウェイ・Amazon EKS コントロールプレーン・System ノードグループの作成です。コントロールプレーンの起動が最も時間を要します。
+`terraform apply` は、Amazon VPC・NAT ゲートウェイ・Amazon EKS コントロールプレーン・System ノードグループに加えて、その上で動く Karpenter コントローラ・各 CSI ドライバ・Kubeflow Training Operator・共有ストレージ（既定の FSx）まで、クラスタスコープの基盤を一度に作ります。`accelerator_pools` が空なので GPU/Neuron ノードだけは立ちません。所要時間が大きいのはコントロールプレーンの起動と FSx ファイルシステム（特に FSx for Lustre）の作成で、いずれも単独で 10〜15 分級です。両者は VPC さえできれば並行して作られるため単純な足し算にはなりませんが、それでも全体では 20〜30 分程度を見ておくと安全です。
 
 :::message
-`terraform apply` は 15 分ほどかかります。コントロールプレーンが `ACTIVE` になるまで待ちましょう。
+`terraform apply` は 20〜30 分ほどかかります（コントロールプレーンと FSx の作成が支配的です）。コントロールプレーンが `ACTIVE` になり、FSx ファイルシステムが `AVAILABLE` になるまで待ちましょう。
 :::
 
 ## 3. kubeconfig を設定してノードを確認する
@@ -240,13 +254,13 @@ kubectl config current-context
 
 今の時点では地味に見えますが、操作対象のクラスタやリソースが増える後続の章で事故を防ぐための習慣として、ここで身につけておきます。マルチクラスタ環境では、別クラスタ用に context を切り替えたまま元のつもりで操作してしまう事故が起きやすいため、破壊的な操作の前には必ずこのコマンドで対象クラスタを確認します。
 
-:::message alert
-`azs` / `private_subnet_cidrs` / `public_subnet_cidrs` の 3 つの配列は長さを揃えてください。長さが食い違うとサブネットを持たない AZ が生まれ、そこにアクセラレータプールを割り当てると Pod が永久に `Pending` になります。この構成では plan 時のバリデーションで配列長の不一致を検出します。
+:::message
+既定では AZ もサブネット CIDR も `region` と `vpc_cidr` から自動導出されるため、通常はここで手を加える必要はありません。`var.azs` / `var.private_subnet_cidrs` / `var.public_subnet_cidrs` を明示指定して上書きする場合だけ、解決後の AZ ごとにちょうど 1 つずつ CIDR を与えてください。長さが食い違うとサブネットを持たない AZ が生まれ、そこにアクセラレータプールを割り当てると Pod が永久に `Pending` になります。この不整合は `az.tf` の precondition（サブネット数と AZ 数の一致、各プールの解決後 AZ が VPC の AZ に含まれること、など）が plan 時に検出して apply を止めます。
 :::
 
 # まとめ
 
-本章では、分散 AI の実験を回すための土台として Amazon EKS クラスタを構築し、以降のワークショップで使う作業用 namespace `distai` を作成しました。作ったのは Amazon VPC・Amazon EKS コントロールプレーン・System ノードグループの 3 つで、この上に Ch3 から Karpenter とアクセラレータプールを積み上げていきます。Amazon VPC は大きめの CIDR を確保し、`karpenter.sh/discovery` タグをパブリックサブネットに漏らさない、という 2 点だけ押さえておけば、あとは一般的な Amazon EKS 構築とほぼ同じです。
+本章では、分散 AI の実験を回すための土台として Amazon EKS クラスタを構築し、以降のワークショップで使う作業用 namespace `distai` を作成しました。中核として作ったのは Amazon VPC・Amazon EKS コントロールプレーン・System ノードグループの 3 つで、同じ apply で載る Karpenter を Basic03 で掘り下げ、Basic04 以降でアクセラレータプールを積み上げていきます。Amazon VPC は大きめの CIDR を確保し、`karpenter.sh/discovery` タグをパブリックサブネットに漏らさない、という 2 点だけ押さえておけば、あとは一般的な Amazon EKS 構築とほぼ同じです。そして本章から一貫する設計原則が 2 つあります。第一に、クラスタスコープで複数のワークロードが共有する実行時依存（CSI ドライバ・オペレータ・共有ストレージの静的 PV）は Terraform が恒久管理します。第二に、計算が単一 AZ に寄る学習基盤ではストレージも単一 AZ に揃えます。この 2 つを押さえておくと、以降の章で「もう揃っている」と繰り返し書ける理由が腑に落ちるはずです。
 
 # 参考資料
 

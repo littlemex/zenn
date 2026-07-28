@@ -136,8 +136,7 @@ trn2 = {
   instance_types    = ["trn2.48xlarge"]
   device_plugin     = "neuron"
   capacity_type     = "reserved"
-  zone              = "<az>"
-  cb_reservation_id = "<capacity-block-reservation-id>"
+  cb_reservation_id = "<capacity-block-reservation-id>" # zone はこの予約から導出
   cb_end_date       = "<RFC3339 UTC の期限>"
 }
 
@@ -145,7 +144,7 @@ trn2 = {
 neuron_enable_scheduler = true
 ```
 
-`device_plugin = "neuron"` に切り替えている以外、フィールドの構造は Basic04 で書いた GPU プールと同じです。`cb_reservation_id` は事前に確保した Capacity Block の予約 ID に置き換えます。プール名（map のキー）が Karpenter のノードラベル `node-role=<プール名>` になる点は後で使うので覚えておいてください。ここでは `trn2` としています。
+`device_plugin = "neuron"` に切り替えている以外、フィールドの構造は Basic04 で書いた GPU プールと同じです。`cb_reservation_id` は事前に確保した Capacity Block の予約 ID に置き換えます。`zone` は書いていません。`reserved` プールの AZ は予約から自動導出される（`az.tf` が予約の AZ を読み取る）ので、trn2 プールでも Basic06 の GPU プールと同じく手書き不要です。プール名（map のキー）が Karpenter のノードラベル `node-role=<プール名>` になる点は後で使うので覚えておいてください。ここでは `trn2` としています。
 
 ## 2. apply する
 
