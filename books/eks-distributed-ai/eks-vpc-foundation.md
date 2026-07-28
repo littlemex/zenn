@@ -196,19 +196,28 @@ git clone https://github.com/littlemex/distributed-ai.git
 cd distributed-ai/infra/eks
 ```
 
-続いて `terraform.tfvars.example` を `terraform.tfvars` にコピーし、`region` と `cluster_name` を自分の環境に合わせて設定します。AZ もサブネット CIDR も `region` から自動導出されるので、この段階で書くのはこの 2 つだけです。`accelerator_pools` も空のままで構いません（アクセラレータプールは Basic04 以降で扱います）。
+続いて `terraform.tfvars.example` を `terraform.tfvars` にコピーし、`region` と `cluster_name` を自分の環境に合わせて設定します。AZ もサブネット CIDR も `region` から自動導出されるので、この段階で書くのはこの 2 つだけです。`accelerator_pools` も空のままで構いません（アクセラレータプールは Basic04 以降で扱います）。名前付き profile（AWS SSO や assume-role）で認証している場合は、`aws_profile` にその profile 名も設定します。この値を設定しておくと、Terraform が aws/helm/kubectl の各 provider と CLI ヘルパーすべてに同じ profile を渡すため、以降の操作が同一プリンシパルで実行されます。あわせて `expected_account_id` にデプロイ先の 12 桁のアカウント ID を設定しておくことを強く推奨します。この値を設定すると、認証情報が別のアカウントを指したまま apply しようとしたときに plan の段階で停止するため、profile の取り違えでクラスタを別アカウントに作ってしまう事故を未然に防げます。自分のアカウント ID は `aws sts get-caller-identity --query Account --output text` で確認できます。
 
 ```bash
 cp terraform.tfvars.example terraform.tfvars
-# terraform.tfvars を編集: region, cluster_name
+# terraform.tfvars を編集: region, cluster_name, expected_account_id
+# （名前付き profile なら aws_profile も）
 ```
 
 ## 2. apply する
 
+apply の前に、Terraform が実際にどのプリンシパルで認証するかを必ず確認します。ここを取り違えると、同じ `cluster_name` でも意図しないアカウントに二重にクラスタを作りかけたり、既存クラスタの一部リソースを作り直そうとして `EntityAlreadyExists` で apply が途中失敗したりします。tfvars に `aws_profile` を設定した場合、Terraform は環境変数 `AWS_PROFILE` より tfvars の値を優先するため、確認コマンドにも同じ profile を明示的に渡します。
+
 ```bash
+# tfvars の aws_profile と同じ profile を明示して、Terraform が使うプリンシパルを確認します
+aws sts get-caller-identity --profile <tfvars と同じ profile>   # Account と ARN が意図どおりか確認
 terraform init
-terraform apply   # 完了まで概ね 20〜30 分程度
+terraform apply
 ```
+
+:::message alert
+`terraform apply` は state に記録されたリソースだけを管理し、state に無いリソースが AWS 側に存在するかどうかは確認しません。このため profile の取り違え方によって 2 種類の事故が起きます。1 つ目は、state が空（またはそのリソースを未追跡）のまま、既にリソースが存在するアカウントに profile が向くケースです。IAM ロール・KMS エイリアス・CloudWatch ロググループのように名前に一意制約があるリソースは `EntityAlreadyExists` で失敗し、FSx ファイルシステムのように名前の一意制約が無いリソースはエラーにならず二重作成されて課金が始まります（apply が途中で失敗しても、並行して作成が始まった FSx はそのまま完成まで走り切ります）。2 つ目は、state にリソースが記録済みのまま別アカウントに profile が向くケースで、この場合は Terraform が「管理下のリソースがすべて消えた」と判断し、エラーも出さずに丸ごと作り直します。後者はエラーで止まらないぶん気づきにくく、より危険です。重複作成された FSx はコンソールで `fs-` から始まる ID を確認して手動で削除しない限り課金が続くため、apply の前に必ず `aws sts get-caller-identity` で Account と ARN を確認してください。step 1 で `expected_account_id` を設定しておけば、認証情報が別アカウントを指したまま apply しようとしても plan の段階で停止するので、この事故そのものを起こさせない歯止めになります。
+:::
 
 `terraform apply` は、Amazon VPC・NAT ゲートウェイ・Amazon EKS コントロールプレーン・System ノードグループに加えて、その上で動く Karpenter コントローラ・各 CSI ドライバ・Kubeflow Training Operator・共有ストレージ（既定の FSx）まで、クラスタスコープの基盤を一度に作ります。`accelerator_pools` が空なので GPU/Neuron ノードだけは立ちません。所要時間が大きいのはコントロールプレーンの起動と FSx ファイルシステム（特に FSx for Lustre）の作成で、いずれも単独で 10〜15 分級です。両者は VPC さえできれば並行して作られるため単純な足し算にはなりませんが、それでも全体では 20〜30 分程度を見ておくと安全です。
 
