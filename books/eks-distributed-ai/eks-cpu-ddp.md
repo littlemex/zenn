@@ -97,13 +97,30 @@ kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -
 
 ## 2. 学習用イメージを用意する
 
-2 つのワークロードは、MNIST MLP を DDP で学習する `ddp.py` を焼き込んだ専用イメージ `ddp-sample` を共用します。`ddp.py` は [awslabs/awsome-distributed-ai の DDP サンプル](https://github.com/awslabs/awsome-distributed-ai/tree/main/3.test_cases/pytorch/ddp) をベースに、保存先を共有 PVC へ寄せて adapt したものです。rendezvous は awsome と同じ etcd 方式を採用しています。Dockerfile とビルド手順はリポジトリの [`infra/eks/manifests/ddp-sample/`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/manifests/ddp-sample) に置いてあります。同ディレクトリの `README.md` に、ECR リポジトリの作成・`finch`（または `docker`）でのビルド・push までのコマンドがまとまっているので、それに沿って自分の ECR に push しておきます。
+2 つのワークロードは、MNIST MLP を DDP で学習する `ddp.py` を焼き込んだ専用イメージ `ddp-sample` を共用します。`ddp.py` は [awslabs/awsome-distributed-ai の DDP サンプル](https://github.com/awslabs/awsome-distributed-ai/tree/main/3.test_cases/pytorch/ddp) をベースに、保存先を共有 PVC へ寄せて adapt したものです。rendezvous は awsome と同じ etcd 方式を採用しています。Dockerfile はリポジトリの [`infra/eks/manifests/ddp-sample/`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/manifests/ddp-sample) に置いてあります。
+
+アカウント ID とリージョンは今の認証情報とクラスタから自動で引けるので、以下をそのまま実行すれば ECR リポジトリの作成・build・push まで一通り済みます（`<account>` などを手で書き換える必要はありません）。イメージタグには追跡しやすいように git の短縮ハッシュを使います。
 
 ```bash
-# infra/eks/manifests/ddp-sample/README.md の手順どおりに build & push すると
-# 次の URI のイメージができる（<account>/<region> は自分の値に置き換える）
-IMAGE=<account>.dkr.ecr.<region>.amazonaws.com/ddp-sample:<tag>
+cd infra/eks
+ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+REGION=$(aws configure get region || echo us-west-2)
+TAG=$(git rev-parse --short HEAD)
+IMAGE=${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/ddp-sample:${TAG}
+
+# ECR リポジトリを用意（既にあれば何もしない）
+aws ecr describe-repositories --repository-names ddp-sample --region "$REGION" >/dev/null 2>&1 \
+  || aws ecr create-repository --repository-name ddp-sample --region "$REGION" \
+       --image-scanning-configuration scanOnPush=true
+
+# build & push（Apple Silicon から x86_64 ノード向けに --platform linux/amd64 が必要）
+aws ecr get-login-password --region "$REGION" \
+  | finch login --username AWS --password-stdin "${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com"
+finch build --platform linux/amd64 -t "$IMAGE" manifests/ddp-sample
+finch push "$IMAGE"
 ```
+
+`finch` の代わりに `docker` を使う場合も、`finch` を `docker` に置き換えるだけでコマンドは同じです。以降のステップではここで作った `$IMAGE` をそのまま参照します。
 
 :::message
 このイメージには sshd も Open MPI も etcd サーバーも入りません。`torch` と `torchvision` は PyTorch のベースイメージに同梱されており、唯一の追加は etcd rendezvous 用のクライアントライブラリ（`python-etcd`）だけです。etcd サーバー自体は別の Pod として Helm チャートが namespace 内に立てます。
