@@ -267,6 +267,23 @@ kubectl config current-context
 既定では AZ もサブネット CIDR も `region` と `vpc_cidr` から自動導出されるため、通常はここで手を加える必要はありません。`var.azs` / `var.private_subnet_cidrs` / `var.public_subnet_cidrs` を明示指定して上書きする場合だけ、解決後の AZ ごとにちょうど 1 つずつ CIDR を与えてください。長さが食い違うとサブネットを持たない AZ が生まれ、そこにアクセラレータプールを割り当てると Pod が永久に `Pending` になります。この不整合は `az.tf` の precondition（サブネット数と AZ 数の一致、各プールの解決後 AZ が VPC の AZ に含まれること、など）が plan 時に検出して apply を止めます。
 :::
 
+## 6. (任意) スモークテストで動作確認する
+
+リポジトリの [`infra/eks/tests/`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/tests) にインフラ層のスモークテストが用意されています。実行は任意ですが、初回構築後やモジュール変更後に回すと「apply は通ったが何かが壊れている」を早期に検出できます。基盤テストは GPU ノードを起動せず約 1 分で完了します。
+
+```bash
+cd infra/eks/tests
+
+# 基盤テスト: control-plane / system-nodes / karpenter / training-operator /
+#            csi-drivers / storage-mount (FSx read/write)
+./run-tests.sh --profile <tfvars と同じ profile>
+
+# GPU テストも含める場合 (Karpenter がノードを起動するため 5-10 分)
+./run-tests.sh --with-gpu --profile <tfvars と同じ profile> --gpu-count 4
+```
+
+基盤テストが全 PASS であれば、Karpenter・CSI ドライバ・Training Operator・共有ストレージが正常に機能しており、Basic02 以降のワークショップに進む準備ができています。GPU テストの `--gpu-count` には NodePool のインスタンスタイプが持つ GPU 枚数を渡します（g6e.12xlarge なら 4、p5en.48xlarge なら 8）。GPU テストで ICE（InsufficientInstanceCapacity）により起動できない場合は AWS 側のキャパシティ問題であり、インフラの不具合ではありません。
+
 # まとめ
 
 本章では、分散 AI の実験を回すための土台として Amazon EKS クラスタを構築し、以降のワークショップで使う作業用 namespace `distai` を作成しました。中核として作ったのは Amazon VPC・Amazon EKS コントロールプレーン・System ノードグループの 3 つで、同じ apply で載る Karpenter を Basic03 で掘り下げ、Basic04 以降でアクセラレータプールを積み上げていきます。Amazon VPC は大きめの CIDR を確保し、`karpenter.sh/discovery` タグをパブリックサブネットに漏らさない、という 2 点だけ押さえておけば、あとは一般的な Amazon EKS 構築とほぼ同じです。そして本章から一貫する設計原則が 2 つあります。第一に、クラスタスコープで複数のワークロードが共有する実行時依存（CSI ドライバ・オペレータ・共有ストレージの静的 PV）は Terraform が恒久管理します。第二に、計算が単一 AZ に寄る学習基盤ではストレージも単一 AZ に揃えます。この 2 つを押さえておくと、以降の章で「もう揃っている」と繰り返し書ける理由が腑に落ちるはずです。
