@@ -99,31 +99,44 @@ kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -
 
 2 つのワークロードは、MNIST MLP を DDP で学習する `ddp.py` を焼き込んだ専用イメージ `ddp-sample` を共用します。`ddp.py` は [awslabs/awsome-distributed-ai の DDP サンプル](https://github.com/awslabs/awsome-distributed-ai/tree/main/3.test_cases/pytorch/ddp) をベースに、保存先を共有 PVC へ寄せて adapt したものです。rendezvous は awsome と同じ etcd 方式を採用しています。Dockerfile はリポジトリの [`infra/eks/manifests/ddp-sample/`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/manifests/ddp-sample) に置いてあります。
 
-アカウント ID とリージョンは今の認証情報とクラスタから自動で引けるので、以下をそのまま実行すれば ECR リポジトリの作成・build・push まで一通り済みます（`<account>` などを手で書き換える必要はありません）。イメージタグには追跡しやすいように git の短縮ハッシュを使います。
+このイメージのビルドは、手元の Docker に頼らずクラスタ内で完結させます。Basic01 の `terraform apply`（`image_builder_enabled` が既定で有効）で、ビルド用の Amazon ECR リポジトリ・IAM ロール・Pod Identity・専用 namespace（`image-builder`）がすでに用意されています。ビルド自体は [Kaniko](https://github.com/GoogleContainerTools/kaniko) の Job で行い、公開リポジトリから直接ソースを取得して Dockerfile をビルドし、ECR に push します。ECR 認証は Pod Identity 経由で解決されるため、`docker login` も認証情報の受け渡しも要りません。ビルドの起動は学習 Job と同じく Helm チャートのレンダリングで行います。
+
+ビルド先の ECR URL は Terraform の出力から取得できます。イメージタグはワークショップ用に `v1` を使います（再ビルドするときは `v2` のようにタグを進めると、`latest` のキャッシュ問題を避けられます）。
 
 ```bash
 cd infra/eks
-ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
-REGION=$(aws configure get region || echo us-west-2)
-TAG=$(git rev-parse --short HEAD)
-IMAGE=${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/ddp-sample:${TAG}
+ECR_URL=$(terraform output -raw ddp_sample_ecr_url)
+IMAGE=${ECR_URL}:v1
 
-# ECR リポジトリを用意（既にあれば何もしない）
-aws ecr describe-repositories --repository-names ddp-sample --region "$REGION" >/dev/null 2>&1 \
-  || aws ecr create-repository --repository-name ddp-sample --region "$REGION" \
-       --image-scanning-configuration scanOnPush=true
+# クラスタ内で Kaniko ビルド Job を起動
+helm template exp charts/experiments -n "$NAMESPACE" \
+    --set imageBuild.enabled=true \
+    --set imageBuild.repository="$ECR_URL" \
+    --set imageBuild.tag=v1 \
+    -s templates/image-build-ddp-sample.yaml \
+    | kubectl apply -f -
 
-# build & push（Apple Silicon から x86_64 ノード向けに --platform linux/amd64 が必要）
-aws ecr get-login-password --region "$REGION" \
-  | finch login --username AWS --password-stdin "${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com"
-finch build --platform linux/amd64 -t "$IMAGE" manifests/ddp-sample
-finch push "$IMAGE"
+# ビルド完了を待つ（初回は CPU ノード起動とベースイメージ pull で 10 分ほどかかります）
+kubectl -n image-builder wait --for=condition=complete \
+    job/build-ddp-sample-v1 --timeout=30m
 ```
 
-`finch` の代わりに `docker` を使う場合も、`finch` を `docker` に置き換えるだけでコマンドは同じです。以降のステップではここで作った `$IMAGE` をそのまま参照します。
+進捗やエラーはビルド Job のログで確認できます。
+
+```bash
+kubectl -n image-builder logs -f job/build-ddp-sample-v1
+```
 
 :::message
 このイメージには sshd も Open MPI も etcd サーバーも入りません。`torch` と `torchvision` は PyTorch のベースイメージに同梱されており、唯一の追加は etcd rendezvous 用のクライアントライブラリ（`python-etcd`）だけです。etcd サーバー自体は別の Pod として Helm チャートが namespace 内に立てます。
+:::
+
+:::message
+どうしても手元でビルドしたい場合は、[`infra/eks/manifests/ddp-sample/README.md`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/manifests/ddp-sample) に `docker`（または `finch`）でのビルド・push 手順があります。その場合は `terraform apply` 時に `image_builder_enabled = false` にしてクラスタ内ビルドの機構を作らないようにもできますが、既定のクラスタ内ビルドで完結するのでこの節では使いません。
+:::
+
+:::message
+Kaniko はベースイメージをノードのローカルディスク上に展開してビルドします。ビルド中のピークディスクはおおよそ push 後イメージサイズの 4〜5 倍で、`ddp-sample`（push 後約 3GB）は共有 CPU ノードプールの既定 50Gi ルートに収まります。数十 GB 級の重いイメージ（独自 CUDA 拡張入りの学習イメージなど）を扱う場合は、`terraform apply` 時に `image_builder_dedicated_pool = true` を設定すると、NVMe インスタンスストアを束ねた大容量ローカルディスクのビルド専用ノードプール（taint で隔離、ビルドが終われば自動で 0 台に戻る）が用意されます。その際は Helm 側で `--set imageBuild.dedicatedPool.enabled=true --set imageBuild.ephemeralStorage=150Gi` のように専用プールを指定します。共有ファイルシステム（FSx や NFS）をビルド作業領域に使うことはできません。Kaniko の展開先はノードのルートに固定されており、ネットワークストレージ上ではファイル属性の扱いで壊れたイメージが生成される恐れがあるためです。
 :::
 
 続いて、後半で使う Kubeflow Training Operator が入っていることを確認します。Basic01 の `terraform apply`（`training_operator_enabled` が既定で有効）で v1.9.0 が導入済みのはずなので、PyTorchJob の CRD が見えることだけ確かめておきます。
@@ -134,17 +147,28 @@ kubectl get crd pytorchjobs.kubeflow.org
 
 ## 3. 単一ノードで torchrun を動かす（前半）
 
-まず 1 ノードの中で 2 プロセスの DDP を動かします。`gpu.enabled` を付けないのでこのまま CPU（gloo）で動きます。`nprocPerNode=2` は 1 ノード内に立てる rank 数です。前のステップで push したイメージの URI を `torchrunTrain.image` に渡します。
+まず 1 ノードの中で 2 プロセスの DDP を動かします。`gpu.enabled` を付けないのでこのまま CPU（gloo）で動きます。`nprocPerNode=2` は 1 ノード内に立てる rank 数です。前のステップでビルドしたイメージの URI を `torchrunTrain.image` に渡します。共有ストレージは Basic01 で作成済みの `openzfs-claim` PVC を再利用するため、`sharedStorage.existingClaimName` に渡します。
 
 ```bash
 cd infra/eks
 helm template exp charts/experiments -n "$NAMESPACE" \
+    --set sharedStorage.existingClaimName=openzfs-claim \
     --set torchrunTrain.enabled=true \
     --set torchrunTrain.image="$IMAGE" \
     --set torchrunTrain.backend=gloo \
     --set torchrunTrain.nodeRole=cpu \
     --set torchrunTrain.nprocPerNode=2 \
     | kubectl apply -f -
+```
+
+:::message
+`sharedStorage.existingClaimName` を渡すのは、共有ストレージの静的 PersistentVolume（`openzfs-shared`）が 1 つしかなく、1 つの PVC にしかバインドできないためです。Basic01 で `openzfs-claim` がこの PV を掴んでいるので、チャートに新しい PVC を作らせるとバインド先が無く永久に `Pending` になります。既存の PVC を再利用するようこの値を渡すと、その競合を避けられます。
+:::
+
+Pod が `Running` になるまでログは出ません。まずスケジュールされたことを確認してからログを追います（初回は CPU ノード起動とイメージ pull で数分かかります）。
+
+```bash
+kubectl get pods -n "$NAMESPACE" -l job-name=ddp-torchrun -w
 ```
 
 学習ログを確認します。
@@ -179,6 +203,7 @@ kubectl delete job ddp-torchrun -n "$NAMESPACE"
 
 ```bash
 helm template exp charts/experiments -n "$NAMESPACE" \
+    --set sharedStorage.existingClaimName=openzfs-claim \
     --set pytorchjobTrain.enabled=true \
     --set pytorchjobTrain.image="$IMAGE" \
     --set pytorchjobTrain.backend=gloo \
@@ -261,6 +286,7 @@ kubectl delete pytorchjob ddp-pytorchjob -n "$NAMESPACE"
 ```bash
 # 単一ノード torchrun を 1 GPU で
 helm template exp charts/experiments -n "$NAMESPACE" \
+    --set sharedStorage.existingClaimName=openzfs-claim \
     --set torchrunTrain.enabled=true --set torchrunTrain.image="$IMAGE" \
     --set torchrunTrain.backend=nccl --set torchrunTrain.nodeRole=<GPU プール名> \
     --set torchrunTrain.gpu.enabled=true --set torchrunTrain.gpu.count=1 \
