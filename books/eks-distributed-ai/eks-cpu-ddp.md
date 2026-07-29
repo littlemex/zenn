@@ -185,17 +185,16 @@ helm template exp charts/experiments -n "$NAMESPACE" \
 `sharedStorage.existingClaimName` を渡すのは、共有ストレージの静的 PersistentVolume（`openzfs-shared`）が 1 つしかなく、1 つの PVC にしかバインドできないためです。Basic01 で `openzfs-claim` がこの PV を掴んでいるので、チャートに新しい PVC を作らせるとバインド先が無く永久に `Pending` になります。既存の PVC を再利用するようこの値を渡すと、その競合を避けられます。
 :::
 
-Pod が `Running` になるまでログは出ません。まずスケジュールされたことを確認してからログを追います（初回は CPU ノード起動とイメージ pull で数分かかります）。
+Pod が `Running` になるまでログは出ません。初回は CPU ノードの起動とイメージ pull で数分かかるので、`kubectl wait` で Pod が Ready になるのを待ってから、続けてログを追います。
 
 ```bash
-kubectl get pods -n "$NAMESPACE" -l job-name=ddp-torchrun -w
+kubectl wait --for=condition=ready pod -l job-name=ddp-torchrun -n "$NAMESPACE" --timeout=10m
+kubectl logs -f -l job-name=ddp-torchrun -n "$NAMESPACE"
 ```
 
-学習ログを確認します。
-
-```bash
-kubectl logs -f job/ddp-torchrun -n "$NAMESPACE"
-```
+:::message alert
+`kubectl logs -f`（`-f` は follow）は、走行中の Pod にストリーム接続してログを追うコマンドです。Job が完了した後に `-f` を付けて実行すると、追従先の走行中 Pod が無いため `error: timed out waiting for the condition` になります（ビルドや学習の失敗ではありません）。さらに Job の Pod は完了後に短時間で回収されるため、`-f` を外しても `pods ... not found` でログが取れないことがあります。ログはあくまで Pod が `Running` の間に追うものと考え、上記のように `kubectl wait` で Ready を待ってすぐ follow するのが確実です。完了後に成功を確かめる方法は後述します。
+:::
 
 2 つの rank は同じ 1 つのログストリームに出力するため、両者の行が入り混じって流れます。各 rank が backend の選択・データのロード・各エポックの loss を出すので、同じ形式の行が rank 0 と rank 1 の両方から出ます。
 
@@ -214,6 +213,18 @@ kubectl logs -f job/ddp-torchrun -n "$NAMESPACE"
 
 ```bash
 kubectl wait --for=condition=complete job/ddp-torchrun -n "$NAMESPACE" --timeout=30m
+```
+
+ログを追い損ねても、学習結果は共有ストレージに残るので完了を確認できます。`ddp.py` が rank 0 で保存したスナップショットが `/shared` にあるかを、同じ PVC をマウントした使い捨ての Pod から覗きます。
+
+```bash
+kubectl run peek --rm -it --restart=Never --image=busybox:1.36 -n "$NAMESPACE" \
+  --overrides='{"spec":{"containers":[{"name":"peek","image":"busybox:1.36","command":["ls","-lh","/shared/output/torchrun-gloo"],"volumeMounts":[{"name":"s","mountPath":"/shared"}]}],"volumes":[{"name":"s","persistentVolumeClaim":{"claimName":"openzfs-claim"}}]}}'
+```
+
+`snapshot.pt` が表示されれば、DDP 学習は完走してモデルが保存されています。確認できたら Job を削除します。
+
+```bash
 kubectl delete job ddp-torchrun -n "$NAMESPACE"
 ```
 
@@ -245,9 +256,10 @@ kubectl get pods -n "$NAMESPACE" -o wide -l training.kubeflow.org/job-name=ddp-p
 kubectl get pytorchjob ddp-pytorchjob -n "$NAMESPACE" -w
 ```
 
-rank 0 が載る Worker-0 のログを追います。
+rank 0 が載る Worker-0 のログを追います。前半と同じく、ログは Pod が `Running` の間に追います。Worker-0 が Ready になるのを待ってから follow すると取りこぼしません（完了後は Pod が回収されて `logs -f` が `timed out` になります。前半の step 3 の注意書きを参照してください）。
 
 ```bash
+kubectl wait --for=condition=ready pod ddp-pytorchjob-worker-0 -n "$NAMESPACE" --timeout=15m
 kubectl logs -f ddp-pytorchjob-worker-0 -n "$NAMESPACE"
 ```
 
@@ -293,7 +305,16 @@ Worker-1 では rank 1 が同じく gloo backend で起動し、rank 0 の MNIST
 Worker の 1 つが 1 回だけ再起動（RESTARTS が 1）することがありますが、これは異常ではありません。etcd が起動する前やイメージ pull が遅れている間に Worker が rendezvous に到達できないと一度終了し、`restartPolicy: OnFailure` によって再試行して合流します。etcd は Worker とは独立に動いているため、再起動した Worker は etcd に再接続するだけで rendezvous をやり直せます。テンプレートは意図的に `Never` ではなく `OnFailure` を使っています。ただし再試行は `elasticPolicy.maxRestarts: 100` で打ち切られます。
 :::
 
-確認できたら削除します。
+ログを追い損ねても、PyTorchJob が `Succeeded` になったことと、共有ストレージ上のスナップショットで完了を確認できます。
+
+```bash
+kubectl get pytorchjob ddp-pytorchjob -n "$NAMESPACE" \
+  -o jsonpath='{.status.conditions[?(@.type=="Succeeded")].status}{"\n"}'
+kubectl run peek --rm -it --restart=Never --image=busybox:1.36 -n "$NAMESPACE" \
+  --overrides='{"spec":{"containers":[{"name":"peek","image":"busybox:1.36","command":["ls","-lh","/shared/output/pytorchjob-gloo"],"volumeMounts":[{"name":"s","mountPath":"/shared"}]}],"volumes":[{"name":"s","persistentVolumeClaim":{"claimName":"openzfs-claim"}}]}}'
+```
+
+前者が `True` を返し、後者に `snapshot.pt` があれば、2 ノードの分散学習は完走しています。確認できたら削除します。
 
 ```bash
 kubectl delete pytorchjob ddp-pytorchjob -n "$NAMESPACE"
