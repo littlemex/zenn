@@ -373,7 +373,7 @@ env:
     value: "efa"
 ```
 
-`NCCL_SOCKET_IFNAME` は**除外パターン**（`^` で始まる）で書きます。`efa0,efa1,...` のような許可リスト方式だと、NCCL が EFA インターフェースを見つけられず TCP fallback する場合があります。
+`NCCL_SOCKET_IFNAME` は `^` で始まる**除外パターン**で書きます。`efa0,efa1,...` のような許可リスト方式だと、NCCL が EFA インターフェースを見つけられず TCP fallback する場合があります。
 
 # まとめ
 

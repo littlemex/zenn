@@ -11,7 +11,7 @@ free: true
 
 ![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 
-本章で扱うのは、この図のうち Karpenter が要求に応じて起動する **GPU/Neuron アクセラレータプール**（NodePool・EC2NodeClass・GPU Operator や device plugin などの関連アドオン）の部分です。Amazon VPC・Amazon EKS コントロールプレーン・Karpenter コントローラ自体は Ch1・Ch3 で作った前提とします。
+本章で扱うのは、この図のうち Karpenter が要求に応じて起動する **GPU/Neuron アクセラレータプール** の部分です。具体的には NodePool・EC2NodeClass・GPU Operator や device plugin などの関連アドオンを指します。Amazon VPC・Amazon EKS コントロールプレーン・Karpenter コントローラ自体は Ch1・Ch3 で作った前提とします。
 
 ## これは何をするものか
 
