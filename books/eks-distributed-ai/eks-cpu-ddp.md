@@ -91,6 +91,10 @@ export NAMESPACE=distai
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
 ```
 
+:::message
+本章のワークショップ全体を一発で実行するスクリプトが [`infra/eks/scripts/run-basic02.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/run-basic02.sh) に用意されています。ECR リポ作成・イメージ build/push・torchrun・PyTorchJob のすべてを自動で行い、完了後にクリーンアップします。以下の手順を個別に実行する代わりに、`./scripts/run-basic02.sh` を使うこともできます。手動で 1 ステップずつ確認したい場合は以下の手順に従ってください。
+:::
+
 ## 2. 学習用イメージを用意する
 
 2 つのワークロードは、MNIST MLP を DDP で学習する `ddp.py` を焼き込んだ専用イメージ `ddp-sample` を共用します。`ddp.py` は [awslabs/awsome-distributed-ai の DDP サンプル](https://github.com/awslabs/awsome-distributed-ai/tree/main/3.test_cases/pytorch/ddp) をベースに、保存先を共有 PVC へ寄せて adapt したものです。rendezvous は awsome と同じ etcd 方式を採用しています。Dockerfile とビルド手順はリポジトリの [`infra/eks/manifests/ddp-sample/`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/manifests/ddp-sample) に置いてあります。同ディレクトリの `README.md` に、ECR リポジトリの作成・`finch`（または `docker`）でのビルド・push までのコマンドがまとまっているので、それに沿って自分の ECR に push しておきます。
