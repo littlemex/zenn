@@ -60,7 +60,7 @@ PyTorchJob を使ううえで 1 つだけ知っておきたい癖があります
 
 ## 学習結果の保存先と共有ストレージ
 
-本章の 2 つのワークロードは、MNIST のデータと学習スナップショットを共有ストレージに保存します。既定の保存先は **Amazon FSx for OpenZFS**（単一 AZ の NFS 共有）です。ストレージの詳細は Basic10 で扱いますが、`openzfs_enabled` が既定で有効なため、Basic01 の `terraform apply` の時点でファイルシステムと静的 PersistentVolume（`openzfs-shared`）はすでに作られています。本章では、Helm チャートがこの既存の PV に PVC（`shared-claim`）で名前バインドし、コンテナの `/shared` にマウントして使います。
+本章の 2 つのワークロードは、MNIST のデータと学習スナップショットを共有ストレージに保存します。既定の保存先は **Amazon FSx for OpenZFS**（単一 AZ の NFS 共有）です。ストレージの詳細は Basic10 で扱いますが、`openzfs_enabled` が既定で有効なため、Basic01 の `terraform apply` の時点でファイルシステムと静的 PersistentVolume（`openzfs-shared`）はすでに作られています。本章では、Basic01 で作成済みの PVC（`openzfs-claim`）をそのまま再利用し、コンテナの `/shared` にマウントして使います（Helm の `sharedStorage.existingClaimName` で指定します）。
 
 後半の複数ノード PyTorchJob では、スナップショットの保存を担う rank 0 がどの Worker になるかが etcd rendezvous で動的に決まります。そのため、どのノードから書かれても同じ場所に成果物が集まる共有ストレージ（ReadWriteMany）が要ります。単一ノードの torchrun でも同じ共有ストレージを使い、入口から同じ `/shared` 規約に揃えておくと 2 段目への流れが素直になります。共有ファイルシステム上での同時書き込みによる破損を避けるため、`ddp.py` は MNIST のダウンロードを rank 0 だけが行い（他 rank は barrier で待って同じ実体を読む）、スナップショットの書き込みも rank 0 に限定しています。
 
@@ -71,6 +71,26 @@ PyTorchJob を使ううえで 1 つだけ知っておきたい癖があります
 :::
 
 なお静的 PV は 1 つの PVC としか結び付けられません。namespace やチャートを消して作り直すと、古い PVC への参照（claimRef）が PV 側に残って `Released` のまま再バインドできず Pod が Pending で止まることがあります。その場合の復旧やストレージの詳細は Basic10 で扱います。
+
+## 学習用イメージをクラスタ内でビルドする
+
+学習ワークロードには `ddp.py` を焼き込んだコンテナイメージが要ります。素直なやり方は手元の `docker build` で作って ECR に push することですが、これは「手元に Docker があり、しかも EKS ノードと同じ x86_64 向けにクロスビルドできる」という前提を各利用者に強いてしまいます。Apple Silicon の Mac ではプラットフォーム指定を忘れて arm64 イメージを作り、ノード上で `exec format error` になる、という事故も定番です。この基盤では、その前提を持ち込まずにイメージのビルドもクラスタ内で完結させます。
+
+ビルドには [Kaniko](https://github.com/GoogleContainerTools/kaniko) を使います。Kaniko は Docker デーモンや特権コンテナを必要とせず、通常の Pod の中で Dockerfile を解釈してイメージをビルドし、レジストリに push できるツールです。Docker デーモンが要らないのは、Kaniko がベースイメージを自分のコンテナのファイルシステムに展開し、Dockerfile の各命令をユーザー空間で実行したうえで、命令ごとにファイルシステムのスナップショットを取って差分をレイヤ化するためです。本章ではこの Kaniko を 1 回限りの Kubernetes Job として起動します。特別なオペレータや常設のビルドサーバーは要らず、学習 Job と同じ「レンダリングして `kubectl apply` する」操作モデルにそのまま乗ります。
+
+:::message
+Kaniko 本家（`GoogleContainerTools/kaniko`）はメンテナンスが終了し、リポジトリはアーカイブされています。この基盤ではイメージをバージョン（ダイジェスト）で固定して動作を検証しているため引き続き利用できますが、Kaniko はビルドツールとして差し替え可能な部品と位置づけています。将来的には BuildKit（rootless モード）や buildah、Chainguard によるフォークなどへ移行する選択肢があり、その場合も Job としての起動方法や以降の手順は変わりません。
+:::
+
+ビルドの土台は Basic01 の `terraform apply` の時点で用意されています（`image_builder_enabled` が既定で有効）。具体的には、ビルド先の Amazon ECR リポジトリ・Kaniko に ECR への push 権限を与える IAM ロール・その紐付けを担う Pod Identity・ビルド専用の namespace（`image-builder`）と ServiceAccount です。ここでも Basic01 と同じ設計原則が効いています。すなわち Terraform は「機構」だけを恒久管理し、実際のビルド Job という「実行」はワークショップ側でカタログから適用します。これは Kubeflow Training Operator は Terraform が入れるが学習 Job 自体は作らない、という切り分けと同じ構図です。
+
+認証の流れが Kaniko とクラスタ内ビルドの肝です。ECR への push には ECR のログイントークンが要りますが、この基盤では **Pod Identity** がそれを透過的に解決します。`image-builder` の ServiceAccount には Pod Identity Association で IAM ロールが結び付いており、この SA で動く Pod には認証情報を取得するためのエンドポイント情報が自動で注入されます。Kaniko の公式イメージには Amazon ECR 用の認証ヘルパー（`amazon-ecr-credential-helper`）が同梱されていて、push 先が ECR の URI であればこのヘルパーが呼ばれます。ヘルパーはまず Pod Identity 経由で AWS の一時認証情報を取得し、その認証情報で `ecr:GetAuthorizationToken` を呼んで ECR のログイントークンに交換し、レジストリに push します。結果として、`docker login` も認証情報ファイルの受け渡しも一切書かずに、push まで通ります。この一時認証情報のトークンファイル方式に対応するには比較的新しいバージョンのヘルパーが要るため、この基盤では検証済みの Kaniko イメージをダイジェストで固定しています。
+
+ソースの取得も Kaniko に任せます。この book のリポジトリは公開されているので、Kaniko の Git コンテキスト機能で clone からビルドまでを 1 コンテナで完結でき、ソースを取得するための init コンテナや事前の `git clone` は要りません。
+
+イメージのサイズには注意が要ります。Kaniko はベースイメージをノードのローカルディスクに展開してビルドするため、ビルド中に一時的に大きなディスクを消費します。この消費はノードの ephemeral-storage としてカウントされるので、ビルド Job には `ephemeral-storage` の requests/limits を設定して同居 Pod が eviction されるのを防いでいます（テンプレートに含まれています）。ピーク時のディスク使用量は、展開後の非圧縮ファイルシステムとスナップショットの中間 tar と push 用の圧縮レイヤの合計で、イメージの内容に依存しますが目安として push 後サイズの 4〜5 倍程度です。本章の `ddp-sample` は push 後で約 3GB なので、CPU ノードの既定のルートディスク（50GiB）に十分収まります。数十 GB 級の重いイメージを扱う場合は、ビルド専用の大容量ノードプールを opt-in で用意する仕組みも入れてあります（詳細はワークショップ手順の該当箇所で触れます）。
+
+この展開先はノードのローカルディスクに固定されており、FSx や NFS のような共有ファイルシステムには移せません。Kaniko はベースイメージをコンテナのルートファイルシステム直下に展開しますが、この `/` はコンテナランタイムがノードローカルのストレージに用意するもので差し替えられないためです。仮にネットワークストレージ上でビルドできたとしても、拡張属性（file capabilities）の非対応やタイムスタンプ精度の違いによるスナップショット差分検出の不整合から、壊れたイメージが生成される恐れがあります。ビルドの一時領域は常にローカルディスクを使うのが正解です。
 
 ## 実行時の注意点
 
