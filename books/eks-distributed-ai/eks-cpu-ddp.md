@@ -48,21 +48,21 @@ DDP の通信バックエンドにはいくつか種類がありますが、本�
 
 複数ノードの PyTorch 学習を Kubernetes で動かす方法として、かつては MPIJob（MPI Operator）に torchrun を載せる構成もよく使われました。MPIJob 自体は Open MPI 以外に Intel MPI や MPICH も扱える汎用的なものです。ただし Launcher Pod が各 Worker へ SSH でログインして起動コマンドを撒く前提です。そのため PyTorch の DDP に流用すると、コンテナに sshd を仕込み SSH 鍵を配るという、PyTorch 本来は要らない足回りを抱え込みます。
 
-一方 PyTorchJob は PyTorch の分散学習そのもののために作られた operator です。SSH も Open MPI も不要で、torchrun の集合点は operator が配線します。[awslabs/awsome-distributed-ai の DDP サンプル](https://github.com/awslabs/awsome-distributed-ai/tree/main/3.test_cases/pytorch/ddp/kubernetes) も、この PyTorchJob を使っています。本 book でも、独自の足回りを持たない PyTorchJob に一本化しています。なお、この AWS サンプルは集合点の管理に別途 etcd を立てる rendezvous を使いますが、本 book では外部コンポーネントを増やさずに済む c10d rendezvous（Worker-0 自身が集合点になる方式、後述）を採用している点が違います。
+一方 PyTorchJob は PyTorch の分散学習そのもののために作られた operator です。SSH も Open MPI も不要で、torchrun の集合点は operator が配線します。[awslabs/awsome-distributed-ai の DDP サンプル](https://github.com/awslabs/awsome-distributed-ai/tree/main/3.test_cases/pytorch/ddp/kubernetes) も、この PyTorchJob を使っています。本 book でも、独自の足回りを持たない PyTorchJob に一本化しています。この AWS サンプルと同じく、本 book でも集合点の管理に etcd を使います（後述）。etcd は Worker のライフサイクルから独立した集合点ストアで、任意の Worker が再起動しても残りが再 rendezvous できます。固定サイズの学習なら c10d（Worker-0 自身が TCP ストアを持つ方式）でも十分ですが、リファレンスとの対応関係を保つためと elastic 化への布石として etcd を採用しています。
 
 PyTorchJob を使ううえで 1 つだけ知っておきたい癖があります。少し込み入るので 3 つに分けて説明します。
 
 **1. env が注入される条件について**: PyTorchJob は Master と Worker の 2 種類のレプリカを持てますが、Training Operator が `MASTER_ADDR` / `RANK` / `WORLD_SIZE` を Pod の環境変数として注入するのは、Master レプリカを定義したときだけです。本 book のように Worker だけで構成すると、これらは注入されません。
 
-**2. c10d rendezvous による集合点の配線**: そこで `spec.elasticPolicy` を付けると、operator が torchrun 標準の集合点情報（`PET_RDZV_BACKEND=c10d` と `PET_RDZV_ENDPOINT=<job>-worker-0:23456`）を各 Worker に注入します。`PET_*` は torchrun（TorchElastic）が読む環境変数の接頭辞です。c10d は PyTorch 標準の分散通信基盤で、ここでは Worker-0 上に立つ TCP ストアを集合点として使う rendezvous バックエンドを指します。torchrun はこの情報を読んで Worker-0 を集合点に選び、各ノードの rank を動的に割り当て、そのうえで `RANK` / `WORLD_SIZE` / `LOCAL_RANK` / `MASTER_ADDR` / `MASTER_PORT` を各学習プロセスへ再エクスポートします。`ddp.py` はこの再エクスポートされた値を、引数なしの `init_process_group()` による env:// rendezvous で読み取ります。集合点の在り処は env（`PET_RDZV_*`）経由で受け取りますが、ノード数は command に静的に書かれた `--nnodes`（= `workers`）で決まります。
+**2. etcd rendezvous による集合点の配線**: そこで `spec.elasticPolicy` を付けると、operator が torchrun の集合点情報（`PET_RDZV_BACKEND=etcd` と `PET_RDZV_ENDPOINT=etcd:2379`）を各 Worker に注入します。`PET_*` は torchrun（TorchElastic）が読む環境変数の接頭辞です。etcd は Helm チャートが同じ namespace に立てる軽量な KVS で、学習 Pod とは独立に rendezvous 状態を保持します。torchrun はこの情報を読んで etcd 経由で各ノードの rank を動的に割り当て、そのうえで `RANK` / `WORLD_SIZE` / `LOCAL_RANK` / `MASTER_ADDR` / `MASTER_PORT` を各学習プロセスへ再エクスポートします。`ddp.py` はこの再エクスポートされた値を、引数なしの `init_process_group()` による env:// rendezvous で読み取ります。集合点の在り処は env（`PET_RDZV_*`）経由で受け取りますが、ノード数は command に静的に書かれた `--nnodes`（= `workers`）で決まります。
 
-**3. `elasticPolicy` という名前について**: 名前に反して、本章ではオートスケールが目的ではありません。`minReplicas == maxReplicas == workers` で台数を固定し、集合点を配線するためだけに使います。
+**3. `elasticPolicy` という名前について**: 名前に反して、本章ではオートスケールが目的ではありません。`minReplicas == maxReplicas == workers` で台数を固定し、etcd への集合点配線と Worker restart tolerance（`maxRestarts`）のために使います。
 
 ## 学習結果の保存先と共有ストレージ
 
 本章の 2 つのワークロードは、MNIST のデータと学習スナップショットを共有ストレージに保存します。既定の保存先は **Amazon FSx for OpenZFS**（単一 AZ の NFS 共有）です。ストレージの詳細は Basic10 で扱いますが、`openzfs_enabled` が既定で有効なため、Basic01 の `terraform apply` の時点でファイルシステムと静的 PersistentVolume（`openzfs-shared`）はすでに作られています。本章では、Helm チャートがこの既存の PV に PVC（`shared-claim`）で名前バインドし、コンテナの `/shared` にマウントして使います。
 
-後半の複数ノード PyTorchJob では、スナップショットの保存を担う rank 0 がどの Worker になるかが c10d rendezvous で動的に決まります。そのため、どのノードから書かれても同じ場所に成果物が集まる共有ストレージ（ReadWriteMany）が要ります。単一ノードの torchrun でも同じ共有ストレージを使い、入口から同じ `/shared` 規約に揃えておくと 2 段目への流れが素直になります。共有ファイルシステム上での同時書き込みによる破損を避けるため、`ddp.py` は MNIST のダウンロードを rank 0 だけが行い（他 rank は barrier で待って同じ実体を読む）、スナップショットの書き込みも rank 0 に限定しています。
+後半の複数ノード PyTorchJob では、スナップショットの保存を担う rank 0 がどの Worker になるかが etcd rendezvous で動的に決まります。そのため、どのノードから書かれても同じ場所に成果物が集まる共有ストレージ（ReadWriteMany）が要ります。単一ノードの torchrun でも同じ共有ストレージを使い、入口から同じ `/shared` 規約に揃えておくと 2 段目への流れが素直になります。共有ファイルシステム上での同時書き込みによる破損を避けるため、`ddp.py` は MNIST のダウンロードを rank 0 だけが行い（他 rank は barrier で待って同じ実体を読む）、スナップショットの書き込みも rank 0 に限定しています。
 
 保存先は Helm の `sharedStorage.backend` で切り替えられます。既定の `openzfs`（FSx for OpenZFS、汎用の共有ホーム）のほかに、高スループットのスクラッチ領域が要るときは `fsx`（FSx for Lustre）、リージョン規模のマルチ AZ 共有が要るときは `efs`（Amazon EFS）を選べます。3 つのバックエンドはいずれも Terraform 側で静的 PV が用意される設計で、選んだバックエンドの `var.<x>_enabled` が有効になっている必要があります。既定で `openzfs` と `fsx` は有効、`efs` は無効（ドライバのみ常設）です。
 
@@ -93,7 +93,7 @@ kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -
 
 ## 2. 学習用イメージを用意する
 
-2 つのワークロードは、MNIST MLP を DDP で学習する `ddp.py` を焼き込んだ専用イメージ `ddp-sample` を共用します。`ddp.py` は [awslabs/awsome-distributed-ai の DDP サンプル](https://github.com/awslabs/awsome-distributed-ai/tree/main/3.test_cases/pytorch/ddp) をベースに、集合点を etcd から c10d へ、保存先を共有 PVC へ寄せて adapt したものです。Dockerfile とビルド手順はリポジトリの [`infra/eks/manifests/ddp-sample/`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/manifests/ddp-sample) に置いてあります。同ディレクトリの `README.md` に、ECR リポジトリの作成・`finch`（または `docker`）でのビルド・push までのコマンドがまとまっているので、それに沿って自分の ECR に push しておきます。
+2 つのワークロードは、MNIST MLP を DDP で学習する `ddp.py` を焼き込んだ専用イメージ `ddp-sample` を共用します。`ddp.py` は [awslabs/awsome-distributed-ai の DDP サンプル](https://github.com/awslabs/awsome-distributed-ai/tree/main/3.test_cases/pytorch/ddp) をベースに、保存先を共有 PVC へ寄せて adapt したものです。rendezvous は awsome と同じ etcd 方式を採用しています。Dockerfile とビルド手順はリポジトリの [`infra/eks/manifests/ddp-sample/`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/manifests/ddp-sample) に置いてあります。同ディレクトリの `README.md` に、ECR リポジトリの作成・`finch`（または `docker`）でのビルド・push までのコマンドがまとまっているので、それに沿って自分の ECR に push しておきます。
 
 ```bash
 # infra/eks/manifests/ddp-sample/README.md の手順どおりに build & push すると
@@ -102,7 +102,7 @@ IMAGE=<account>.dkr.ecr.<region>.amazonaws.com/ddp-sample:<tag>
 ```
 
 :::message
-解説で述べたとおり、このイメージには sshd も Open MPI も etcd も入りません。`torch` と `torchvision` は PyTorch のベースイメージに同梱されており、MNIST と MLP はそれ以外に何も要らないので、追加の pip 層は 1 つもありません。ベースイメージにスクリプトを 1 つ足しただけの最小構成です。
+このイメージには sshd も Open MPI も etcd サーバーも入りません。`torch` と `torchvision` は PyTorch のベースイメージに同梱されており、唯一の追加は etcd rendezvous 用のクライアントライブラリ（`python-etcd`）だけです。etcd サーバー自体は別の Pod として Helm チャートが namespace 内に立てます。
 :::
 
 続いて、後半で使う Kubeflow Training Operator が入っていることを確認します。Basic01 の `terraform apply`（`training_operator_enabled` が既定で有効）で v1.9.0 が導入済みのはずなので、PyTorchJob の CRD が見えることだけ確かめておきます。
@@ -154,7 +154,7 @@ kubectl delete job ddp-torchrun -n "$NAMESPACE"
 
 ## 4. 複数ノードで PyTorchJob を動かす（後半）
 
-次に、同じ学習を 2 ノードにまたがる PyTorchJob で動かします。`workers=2` が Worker Pod の台数、`nprocPerNode=1` が各 Worker 内のプロセス数です。テンプレートには `topologyKey: kubernetes.io/hostname` の podAntiAffinity が入っているので、2 つの Worker Pod は必ず別ノードに分かれて配置されます（結果として Worker Pod 数 = ノード数になります）。前半と違い、rank の割り当てと集合点の配線は Training Operator と torchrun の c10d rendezvous に任せます。
+次に、同じ学習を 2 ノードにまたがる PyTorchJob で動かします。`workers=2` が Worker Pod の台数、`nprocPerNode=1` が各 Worker 内のプロセス数です。テンプレートには `topologyKey: kubernetes.io/hostname` の podAntiAffinity が入っているので、2 つの Worker Pod は必ず別ノードに分かれて配置されます（結果として Worker Pod 数 = ノード数になります）。前半と違い、rank の割り当てと集合点の配線は Training Operator と torchrun の etcd rendezvous に任せます。Helm チャートが同じ namespace に etcd Deployment + Service を自動で立てるため、追加の手作業は不要です。
 
 ```bash
 helm template exp charts/experiments -n "$NAMESPACE" \
@@ -224,7 +224,7 @@ Worker-1 では rank 1 が同じく gloo backend で起動し、rank 0 の MNIST
 :::
 
 :::message
-Worker の 1 つが 1 回だけ再起動（RESTARTS が 1）することがありますが、これは異常ではありません。Worker-0 のイメージ pull が遅れている間に他の Worker が集合点へ先に到達すると `RendezvousConnectionError` で一度終了し、`restartPolicy: OnFailure` によって再試行して合流します。テンプレートは意図的に `Never` ではなく `OnFailure` を使っています。ただし再試行は `elasticPolicy.maxRestarts: 3` で打ち切られ、それを超えると Job 全体が `Failed` になります。イメージ pull が極端に遅い環境ではこの上限に達し得ます。
+Worker の 1 つが 1 回だけ再起動（RESTARTS が 1）することがありますが、これは異常ではありません。etcd が起動する前やイメージ pull が遅れている間に Worker が rendezvous に到達できないと一度終了し、`restartPolicy: OnFailure` によって再試行して合流します。etcd は Worker とは独立に動いているため、再起動した Worker は etcd に再接続するだけで rendezvous をやり直せます。テンプレートは意図的に `Never` ではなく `OnFailure` を使っています。ただし再試行は `elasticPolicy.maxRestarts: 100` で打ち切られます。
 :::
 
 確認できたら削除します。
@@ -252,7 +252,7 @@ helm template exp charts/experiments -n "$NAMESPACE" \
 
 # まとめ
 
-本章では、GPU を使わずに Amazon EKS の CPU ノード上で MNIST MLP の DDP 学習を 2 段構えで動かしました。前半はオペレータ不要の `torchrun`（`batch/v1` Job）で 1 ノード内の 2 プロセスを走らせ、後半は Kubeflow の PyTorchJob で 2 ノードにまたがる分散学習を走らせました。いずれも gloo backend で動かし、loss が減少すること、そして rank 0 のみがスナップショットを共有ストレージに保存するという DDP の基本動作を確認しました。複数ノードの PyTorch 学習には、SSH の足回りが要る MPIJob 構成ではなく、PyTorch のために作られた PyTorchJob を使い、Worker だけの構成では `spec.elasticPolicy` で torchrun の c10d 集合点を配線する、という勘所も押さえました。共有ストレージは既定で単一 AZ の FSx for OpenZFS を使い、その選定理由（計算が単一 AZ に寄る基盤ではマルチ AZ 共有は活きない）も見ました。次章 Basic03 で Karpenter を掘り下げ、Basic04 以降でこの DDP を GPU（nccl backend）に載せ替え、さらに EFA でマルチノードに広げていきます。
+本章では、GPU を使わずに Amazon EKS の CPU ノード上で MNIST MLP の DDP 学習を 2 段構えで動かしました。前半はオペレータ不要の `torchrun`（`batch/v1` Job）で 1 ノード内の 2 プロセスを走らせ、後半は Kubeflow の PyTorchJob で 2 ノードにまたがる分散学習を走らせました。いずれも gloo backend で動かし、loss が減少すること、そして rank 0 のみがスナップショットを共有ストレージに保存するという DDP の基本動作を確認しました。複数ノードの PyTorch 学習には、SSH の足回りが要る MPIJob 構成ではなく、PyTorch のために作られた PyTorchJob を使い、Worker だけの構成では `spec.elasticPolicy` で etcd rendezvous を配線する、という勘所も押さえました。共有ストレージは既定で単一 AZ の FSx for OpenZFS を使い、その選定理由（計算が単一 AZ に寄る基盤ではマルチ AZ 共有は活きない）も見ました。次章 Basic03 で Karpenter を掘り下げ、Basic04 以降でこの DDP を GPU（nccl backend）に載せ替え、さらに EFA でマルチノードに広げていきます。
 
 # 参考資料
 
