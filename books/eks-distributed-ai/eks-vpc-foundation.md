@@ -23,8 +23,8 @@ free: true
 
 本章のゴールは、GPU/Neuron を使った分散学習・推論の実験を後からいくらでも回せる「土台」を一度だけ立てることです。この土台は 1 回の `terraform apply` でクラスタスコープの基盤コンポーネント（Karpenter・CSI ドライバ・Kubeflow Training Operator・共有ストレージ）まで含めて揃いますが、本章で中身に踏み込んで解説するのは、その最も中核となる次の 3 つです。いずれも「実験を始める前に一度作れば、あとは触らない」部分です。
 
-- **Amazon EKS コントロールプレーン**（Kubernetes 1.35 / Pod Identity）
-- **System managed node group**（m5 系 x2）: kube-system と Karpenter コントローラ自身を載せる足場です。Karpenter コントローラを Karpenter 管理下のノードに載せると、ゼロからの起動や自ノードの回収で自己参照の問題が起きるため公式に非推奨で、Karpenter が動き出すための最初の土台としてこの管理外のノードグループが要ります
+- **Amazon EKS コントロールプレーン**: Kubernetes 1.35 と Pod Identity を使います
+- **System managed node group**: m5 系を 2 台、kube-system と Karpenter コントローラ自身を載せる足場として起動します。Karpenter コントローラを Karpenter 管理下のノードに載せると、ゼロからの起動や自ノードの回収で自己参照の問題が起きるため公式に非推奨で、Karpenter が動き出すための最初の土台としてこの管理外のノードグループが要ります
 - **Amazon VPC**: 上記を収めるネットワークです
 
 アクセラレータ「ノード」自体はまだ立てません。Basic04 以降で `accelerator_pools` に 1 行足すだけで GPU/Neuron ノードが要求に応じて立つよう、それを動かす Karpenter の足場をこの apply で用意しておく、という位置づけです。この土台づくり自体は Amazon EKS の一般的な手順とほぼ同じですが、分散 AI 向けに効かせている設計判断がいくつかあります。以降で実際の Terraform コードを引用しながら、なぜその値・その書き方にしているのかを見ていきます。対象モジュールは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks) です。

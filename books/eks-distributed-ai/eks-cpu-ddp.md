@@ -60,7 +60,7 @@ PyTorchJob を使ううえで 1 つだけ知っておきたい癖があります
 
 ## 学習結果の保存先と共有ストレージ
 
-本章の 2 つのワークロードは、MNIST のデータと学習スナップショットを共有ストレージに保存します。既定の保存先は **Amazon FSx for OpenZFS**（単一 AZ の NFS 共有）です。ストレージの詳細は Basic10 で扱いますが、`openzfs_enabled` が既定で有効なため、Basic01 の `terraform apply` の時点でファイルシステムと静的 PersistentVolume（`openzfs-shared`）はすでに作られています。本章では、Basic01 で作成済みの PVC（`openzfs-claim`）をそのまま再利用し、コンテナの `/shared` にマウントして使います（Helm の `sharedStorage.existingClaimName` で指定します）。
+本章の 2 つのワークロードは、MNIST のデータと学習スナップショットを共有ストレージに保存します。既定の保存先は単一 AZ の NFS 共有である **Amazon FSx for OpenZFS** です。ストレージの詳細は Basic10 で扱いますが、`openzfs_enabled` が既定で有効なため、Basic01 の `terraform apply` の時点でファイルシステムと静的 PersistentVolume（`openzfs-shared`）はすでに作られています。本章では、Basic01 で作成済みの PVC（`openzfs-claim`）をそのまま再利用し、コンテナの `/shared` にマウントして使います（Helm の `sharedStorage.existingClaimName` で指定します）。
 
 後半の複数ノード PyTorchJob では、スナップショットの保存を担う rank 0 がどの Worker になるかが etcd rendezvous で動的に決まります。そのため、どのノードから書かれても同じ場所に成果物が集まる共有ストレージ（ReadWriteMany）が要ります。単一ノードの torchrun でも同じ共有ストレージを使い、入口から同じ `/shared` 規約に揃えておくと 2 段目への流れが素直になります。共有ファイルシステム上での同時書き込みによる破損を避けるため、`ddp.py` は MNIST のダウンロードを rank 0 だけが行い（他 rank は barrier で待って同じ実体を読む）、スナップショットの書き込みも rank 0 に限定しています。
 

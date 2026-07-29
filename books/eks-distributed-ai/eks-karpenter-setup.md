@@ -9,7 +9,7 @@ free: true
 
 ## 全体構成
 
-この book 全体の構成のうち、本章で扱うのは Amazon EKS コントロールプレーンと System ノードの上で動く **Karpenter コントローラ**（および CRD・SQS interruption queue）です。Karpenter は次章以降で定義する NodePool を読み取り、要求に応じて GPU/Neuron ノードを起動します。
+この book 全体の構成のうち、本章で扱うのは Amazon EKS コントロールプレーンと System ノードの上で動く **Karpenter コントローラ** と、その CRD・SQS interruption queue です。Karpenter は次章以降で定義する NodePool を読み取り、要求に応じて GPU/Neuron ノードを起動します。
 
 ![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 
