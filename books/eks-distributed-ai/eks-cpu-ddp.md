@@ -1,32 +1,28 @@
 ---
-title: "Basic02 - CPU で分散学習を体験する (torchrun と PyTorchJob)"
+title: "Basic02 - CPU で分散学習を体験する"
 free: true
 ---
 
 本章では、GPU を一切使わずに、Amazon EKS の CPU ノード上で PyTorch の分散学習（DDP）を動かします。まず 1 ノードの中で複数プロセスを協調させる `torchrun` から始め、続いて複数ノードにまたがる分散学習を Kubeflow Training Operator の PyTorchJob で動かします。高額な GPU/Capacity Block に進む前に、「複数プロセスが協調して 1 つのモデルを学習する」という分散学習の最小の成功体験を、GPU に比べればごくわずかなコストで得ることが目的です。
 
 :::message
-本章は GPU も追加のインフラ手順も不要です。Basic01 の `terraform apply` の時点で、Karpenter コントローラ・CPU 用の NodePool（`node-role=cpu`、`cpu_nodepool_enabled` が既定で有効）・共有ストレージ Amazon FSx for OpenZFS（`openzfs_enabled` が既定で有効）・Kubeflow Training Operator（PyTorchJob 用、`training_operator_enabled` が既定で有効）がすべて揃っています。本章の学習 Pod は `node-role=cpu` を要求するので、Karpenter がその CPU NodePool に CPU ノードを 1〜2 台オンデマンドで立ち上げて実行します（Karpenter そのものの解説は Basic03 で行いますが、動かすのに前倒しの作業は要りません）。まずここで「分散学習が EKS 上で動く」ことを自分の手で確認しておくと、以降の章の GPU 版が理解しやすくなります。
+本章は GPU も追加のインフラ手順も不要です。
 :::
 
 # 解説
 
 ## 全体構成
 
-この book 全体で構築する分散 AI 基盤のうち、本章は最小の入口にあたります。GPU/Neuron ノードは使わず、Karpenter が要求に応じて立てる CPU ノード（`node-role=cpu` の NodePool）の上で分散学習を動かします。
+この book 全体で構築する分散 AI 基盤のうち、本章は最小の入口にあたります。GPU/Neuron ノードは使わず、Karpenter が要求に応じて立てる CPU ノード（`node-role=cpu` の NodePool）の上で分散学習を動かします。前章からの追加のリソースはありません。
 
 ![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 
-図の下段、Amazon EKS コントロールプレーンと CPU ノードだけを使う構成です。アクセラレータプールや EFA には触れません。ここで DDP の仕組みと、単一ノード（torchrun）から複数ノード（PyTorchJob）へ広げる流れを CPU で体験しておくと、後続の章の nccl backend やマルチノード通信（Basic05 の EFA、Basic09 の Neuron 2 ノード DDP など）が「gloo を GPU + EFA に置き換えたもの」として素直に理解できます。
+## DDP
 
-## DDP と本章の 2 段構成
-
-分散学習の最も基本的な形が DDP（DistributedDataParallel）です。DDP では、同じモデルの複製を複数のプロセス（rank）が持ち、各 rank が異なるデータのミニバッチで勾配を計算し、その勾配を全 rank で平均（all-reduce）してからモデルを更新します。これにより、実質的なバッチサイズを rank 数倍に増やして学習を高速化します。
-
-DDP の通信バックエンドにはいくつか種類がありますが、本章で押さえておきたいのは次の 2 つです。
+分散学習の基本的な形が DDP（Distributed Data Parallel）です。DDP については参考情報がたくさんあるので調べてみてください。DDP の通信バックエンドにはいくつか種類がありますが、本章で押さえておきたいのは次の 2 つです。
 
 - **gloo**: CPU 上で動きます。GPU は不要です。
-- **nccl**: NVIDIA GPU 上で動き、GPU 間の高速な集合通信を担います（後続の章で EFA と組み合わせます）。
+- **nccl**: NVIDIA GPU 上で動き、GPU 間の高速な集合通信を担います。
 
 本章では gloo backend を使い、CPU ノードの上で DDP を動かします。学習対象は、分散学習の教材として広く使われる MNIST（手書き数字画像）を分類する小さな MLP（多層パーセプトロン）です。モデルもデータも小さいので、GPU なしの CPU でも 1 周が数分で終わり、学習内容そのものより「複数プロセスが勾配を共有して 1 つのモデルを学習する」という DDP の挙動に集中できます。
 
@@ -34,11 +30,11 @@ DDP の通信バックエンドにはいくつか種類がありますが、本�
 
 ### 前半: 単一ノード（torchrun、オペレータ不要）
 
-`torchrun --standalone --nproc_per_node=2` とすると、1 ノード内に 2 つのプロセス（rank 0, rank 1）を立て、それぞれに `RANK` / `WORLD_SIZE` / `LOCAL_RANK` などの環境変数を自動で設定してくれます。追加のコンポーネントは何も要らず、Kubernetes の素の `batch/v1` Job として実行できます。これが「オペレータ無しで何ができるか」の最小形です。
+`torchrun --standalone --nproc_per_node=2` とすると、1 ノード内に 2 つのプロセス（rank 0, rank 1）を立て、それぞれに `RANK` / `WORLD_SIZE` / `LOCAL_RANK` などの環境変数を自動で設定してくれます。追加のコンポーネントは何も要らず、Kubernetes の素の `batch/v1` Job として実行できます。
 
 ### 後半: 複数ノード（PyTorchJob）
 
-分散学習を複数ノードに広げると、「どのノードの誰が rank 0 で、集合点（rendezvous）はどこか」を各ノードに教える仕組みが要ります。Kubernetes 上でこれを宣言的に扱う標準が、Kubeflow Training Operator が提供する PyTorchJob（`kubeflow.org/v1`）です。Worker の台数を宣言すれば operator が各 Worker Pod を並べてくれます。ただし後述のとおり、Worker だけの構成では集合点の配線に `spec.elasticPolicy` の指定が要ります。
+分散学習を複数ノードに広げると、「どのノードの誰が rank 0 で、情報連携の集合点（rendezvous）はどこか」を各ノードに教える仕組みが要ります。Kubernetes 上でこれを宣言的に扱う標準が、Kubeflow Training Operator が提供する PyTorchJob（`kubeflow.org/v1`）です。Worker の台数を宣言すれば operator が各 Worker Pod を並べてくれます。ただし後述のとおり、Worker だけの構成では集合点の配線に `spec.elasticPolicy` の指定が要ります。
 
 使うワークロードは Helm チャート [`charts/experiments`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/charts/experiments) の 2 つです。前半が単一ノードの `torchrunTrain`、後半が複数ノードの `pytorchjobTrain` で、どちらも CPU と GPU の両対応です。適用は `helm template ... | kubectl apply -f -` で行い、`helm install` は使いません（このチャートは release 管理をせず、レンダリングして手で適用する実験カタログという位置づけです）。
 
