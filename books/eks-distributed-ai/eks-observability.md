@@ -27,11 +27,11 @@ GPU を使った分散学習・推論では、「GPU が本当に使われてい
 
 - **DCGM exporter**: NVIDIA の Data Center GPU Manager が公開する GPU メトリクス（使用率 `DCGM_FI_DEV_GPU_UTIL`、温度、メモリ使用量、電力など）を Prometheus 形式で出す exporter。この book では **Basic04 で導入した NVIDIA GPU Operator に同梱**されており、GPU ノードが立つと自動的に各ノードで動きます。追加導入は不要です
 - **Prometheus**: 各 exporter からメトリクスを定期的に収集（scrape）し、時系列データとして保持する
-- **Grafana**: Prometheus のデータをダッシュボードとして可視化する UI
+- **Grafana**: Prometheus のデータをダッシュボードとして可視化します
 
 Prometheus と Grafana は [kube-prometheus-stack](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack) という Helm チャートでまとめて導入します。このチャートは Prometheus Operator・Grafana・node-exporter・kube-state-metrics・各種 Kubernetes ダッシュボードを一括で入れてくれるため、EKS の observability の定番です。
 
-DCGM exporter のメトリクスを Prometheus に拾わせるには、GPU Operator が作る ServiceMonitor（または PodMonitor）を Prometheus が検出できるようにします。kube-prometheus-stack のデフォルトでは自身の Helm リリースが作った ServiceMonitor しか拾わない設定になっているため、`prometheusSpec.serviceMonitorSelectorNilUsesHelmValues: false` のように「全 namespace の ServiceMonitor を拾う」設定にしておくのがポイントです。
+DCGM exporter のメトリクスを Prometheus に拾わせるには、2 つが噛み合う必要があります。1 つは exporter 側で ServiceMonitor が作られていること。GPU Operator の DCGM exporter は既定では ServiceMonitor を作らないため、この基盤では Basic04 の GPU Operator 導入時に `dcgmExporter.serviceMonitor.enabled = true` を設定して ServiceMonitor を出すようにしてあります。もう 1 つは Prometheus 側がそれを検出できること。kube-prometheus-stack のデフォルトは自身の Helm リリースが作った ServiceMonitor しか拾わないので、`prometheusSpec.serviceMonitorSelectorNilUsesHelmValues: false` にして「全 namespace の ServiceMonitor を拾う」設定にします。この 2 つが揃って初めて GPU メトリクスが収集されます。
 
 ## 全体の中での位置付け
 
@@ -39,7 +39,13 @@ DCGM exporter のメトリクスを Prometheus に拾わせるには、GPU Opera
 
 ## 注意
 
-**observability スタックは Terraform 管理外です。** この book の `infra/eks` モジュールは observability を含みません。Helm で別途入れるため、`terraform destroy`（Basic11）では消えません。クラスタごと消す場合は問題ありませんが、クラスタを残したまま observability だけ外すには `helm uninstall` を別途実行します。
+**observability スタックは Terraform 管理外です。** この book の `infra/eks` モジュールは observability を含みません。Helm で別途入れるため、`terraform destroy`（Basic11）では消えません。クラスタごと消す場合は問題ありませんが、クラスタを残したまま observability だけ外すには次のように `helm uninstall` します。kube-prometheus-stack は uninstall 後も CRD（`prometheuses` / `servicemonitors` など）が残るので、完全に消したい場合は CRD も手で削除します。
+
+```bash
+helm uninstall kps -n monitoring
+# CRD は uninstall では消えないので、必要なら明示削除する
+kubectl get crd | grep -E 'monitoring.coreos.com' | awk '{print $1}' | xargs -r kubectl delete crd
+```
 
 **Prometheus の retention とリソースに注意します。** GPU メトリクスは系列数が多く（GPU 1 枚ごと × メトリクス種別）、保持期間を長くするとストレージを消費します。実験用途では retention を数日程度に抑え、Prometheus の memory limit を設定しておくのが無難です。
 
@@ -49,7 +55,7 @@ DCGM exporter のメトリクスを Prometheus に拾わせるには、GPU Opera
 
 ## 1. kube-prometheus-stack を導入する
 
-Helm リポジトリを追加し、`monitoring` namespace にインストールします。DCGM を含む全 namespace の ServiceMonitor を拾う設定にします。
+Helm リポジトリを追加し、`monitoring` namespace にインストールします。DCGM を含む全 namespace の ServiceMonitor を拾う設定にします。なお、Basic07 までのワークロードは `helm template | kubectl apply` でレンダリングして適用する「実験カタログ」方式でしたが、observability は使い捨ての実験ではなく常駐する運用コンポーネントで、CRD やフックを含むため、ここでは `helm install` でリリースとして管理します。
 
 ```bash
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
@@ -128,9 +134,9 @@ kubectl port-forward -n monitoring svc/kps-grafana 3000:80 &
 
 ログイン後、左メニューの Dashboards から、kube-prometheus-stack が自動導入したダッシュボードが見えます（実機で 25 個）。
 
-- `Kubernetes / Compute Resources / Node (Pods)` — ノード単位の CPU/メモリ
-- `Node Exporter / Nodes` — ノードのハードウェアメトリクス
-- `Kubernetes / Compute Resources / Namespace (Pods)` — namespace 単位のリソース
+- `Kubernetes / Compute Resources / Node (Pods)`: ノード単位の CPU/メモリを表示します
+- `Node Exporter / Nodes`: ノードのハードウェアメトリクスを表示します
+- `Kubernetes / Compute Resources / Namespace (Pods)`: namespace 単位のリソースを表示します
 
 GPU 専用のダッシュボードは kube-prometheus-stack には含まれないため、[NVIDIA DCGM Exporter Dashboard（Grafana ID: 12239）](https://grafana.com/grafana/dashboards/12239-nvidia-dcgm-exporter-dashboard/) をインポートすると、GPU 使用率・温度・メモリ・電力のパネルが一式表示されます。
 
