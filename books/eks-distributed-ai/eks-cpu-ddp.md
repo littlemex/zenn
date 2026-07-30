@@ -248,11 +248,9 @@ kubectl delete job ddp-torchrun -n "$NAMESPACE"
 
 ## 4. 複数ノードで TrainJob を動かす（後半）
 
-次に、同じ学習を 2 ノードにまたがる TrainJob で動かします。`numNodes=2` がノード数、`nprocPerNode=1` が各ノード内のプロセス数です（Helm の `nprocPerNode` は TrainJob の `numProcPerNode` に対応します）。本 book がクラスタに用意した Runtime（[`torch-distributed-eks`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/clustertrainingruntime-eks.yaml)）に `topologyKey: kubernetes.io/hostname` の podAntiAffinity が入っているので、2 つの Pod は必ず別ノードに分かれて配置されます（結果として Pod 数 = ノード数になります）。前半と違い、rank の割り当てと集合点の配線は Trainer に任せるため、追加の手作業は不要です。
+次に、同じ学習を 2 ノードにまたがる TrainJob で動かします。
 
-:::message
-この手順は distai-eks-blog クラスタ（EKS 1.35、CPU ノード 2 台、gloo）で実機検証済みです。Pod 名 `<ジョブ名>-node-0-<index>-<ランダム>`、node index と rank の一致（`node-0-0` が rank 0）、`node-0-0` が集合点、2 Pod が別ノードに分かれること、2 ノード間の all-reduce、`ddp.py`（MNIST MLP）の 3 エポック完走（loss が両 rank でほぼ一致しながら単調減少し、rank 0 がスナップショットを共有ストレージへ保存）、`Complete` ステータスまでを確認しています。以下のログ例の loss 値そのものは seed やデータ分割で変わります。
-:::
+`numNodes=2` がノード数、`nprocPerNode=1` が各ノード内のプロセス数です（Helm の `nprocPerNode` は TrainJob の `numProcPerNode` に対応します）。本 book がクラスタに用意した Runtime（[`torch-distributed-eks`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/clustertrainingruntime-eks.yaml)）に `topologyKey: kubernetes.io/hostname` の podAntiAffinity が入っているので、2 つの Pod は必ず別ノードに分かれて配置されます。
 
 ```bash
 # torchrun の Job と同じ理由で、同名の TrainJob が残っていると apply がスキップされる。
@@ -269,7 +267,7 @@ helm template exp charts/experiments -n "$NAMESPACE" \
     | kubectl apply -f -
 ```
 
-TrainJob が展開する Pod は JobSet の規則で名付けられ、`<ジョブ名>-node-0-<index>-<ランダム>` になります。本章のジョブ名は `ddp-trainjob` なので、rank 0 の Pod は `ddp-trainjob-node-0-0-xxxxx`、rank 1 は `ddp-trainjob-node-0-1-xxxxx` という形です（末尾のランダムな 5 文字は実行のたびに変わるので、Pod 名を決め打ちせずラベルで選ぶのが確実です）。node index と rank は一致し、`node-0-0` が常に rank 0 です。v1 の PyTorchJob と違って master と worker の区別はありません。まず 2 つの Pod がそれぞれ別ノードに載っていることを確認します（`-o wide` の `NODE` 列が 2 つとも違えば OK です）。ジョブ名のラベルで全ノードの Pod をまとめて選べます。
+TrainJob が展開する Pod は JobSet の規則で名付けられ、`<ジョブ名>-node-0-<index>-<ランダム>` になります。本章のジョブ名は `ddp-trainjob` なので、rank 0 の Pod は `ddp-trainjob-node-0-0-xxxxx`、rank 1 は `ddp-trainjob-node-0-1-xxxxx` という形です（末尾のランダムな 5 文字は実行のたびに変わるので、Pod 名を決め打ちせずラベルで選ぶのが確実です）。node index と rank は一致し、`node-0-0` が常に rank 0 です。まず 2 つの Pod がそれぞれ別ノードに載っていることを確認します（`-o wide` の `NODE` 列が 2 つとも違えば OK です）。ジョブ名のラベルで全ノードの Pod をまとめて選べます。
 
 ```bash
 kubectl get pods -n "$NAMESPACE" -o wide -l jobset.sigs.k8s.io/jobset-name=ddp-trainjob
@@ -322,10 +320,6 @@ kubectl logs -l "jobset.sigs.k8s.io/jobset-name=ddp-trainjob,batch.kubernetes.io
 
 `WORLD_SIZE=2` の 2 プロセスが別々のノードで起動し、両 rank の loss がエポックを追って単調に下がっていることから、2 つのノードが勾配を all-reduce しながら 1 つのモデルを学習できていることが分かります（各 rank はデータセットの異なる分割を担当するので、loss は完全に同一ではなく近い値で推移します）。最後に TrainJob が `Complete` になり、rank 0 がスナップショットを共有ストレージ上の `/shared/output/trainjob/snapshot.pt` に保存します。
 
-:::message
-上のログは形式を示すための例で、loss の数値そのものは seed やデータ分割で変わります。単調に減少していれば正常です。この 2 ノード TrainJob での MNIST 学習は distai-eks-blog（EKS 1.35、CPU ノード 2 台）で実機完走を確認済みで、両 rank の loss がほぼ一致しながら 3 エポックで減少し（実測で rank 0 が 0.20 → 0.09 → 0.06）、rank 0 が `/shared/output/trainjob/snapshot.pt` を保存して `Complete` になりました。
-:::
-
 ログを追い損ねても、TrainJob が `Complete` になったことと、共有ストレージ上のスナップショットで完了を確認できます。`kubectl wait` の `--for=condition=Complete` が完了を待つ確実な方法です。
 
 ```bash
@@ -342,7 +336,7 @@ kubectl delete trainjob ddp-trainjob -n "$NAMESPACE"
 
 ## 5. GPU（nccl）で動かす場合
 
-同じワークロードを GPU に載せ替えるときの形だけ示します。GPU 実行を実際に決めるのは `gpu.enabled=true` と Pod の `nvidia.com/gpu` リクエストで、これが揃うと `ddp.py` が nccl backend を選びます。`backend=nccl` はあくまで出力パスのラベルなので、`gpu.enabled=true` を付け忘れると GPU ノード上でも gloo で動いてしまい、出力先だけ `*-nccl` になるという分かりにくい不整合が起きます。GPU プールを選ぶ `nodeRole` と合わせて、この 3 つをセットで指定するのがポイントです。`nprocPerNode` は 1 ノード（Pod）あたりの GPU 数（`gpu.count`）と一致させます（1 プロセスが 1 GPU を掴むため、ずれると同じ GPU を奪い合います）。
+同じワークロードを GPU に載せ替えるときの形だけ示します。GPU 実行を決めるのは `gpu.enabled=true` と Pod の `nvidia.com/gpu` リクエストで、これが揃うと `ddp.py` が nccl backend を選びます。`backend=nccl` はあくまで出力パスのラベルなので、`gpu.enabled=true` を付け忘れると GPU ノード上でも gloo で動いてしまい、出力先だけ `*-nccl` になるという分かりにくい不整合が起きます。GPU プールを選ぶ `nodeRole` と合わせて、この 3 つをセットで指定するのがポイントです。`nprocPerNode` は 1 ノード（Pod）あたりの GPU 数（`gpu.count`）と一致させます（1 プロセスが 1 GPU を掴むため、ずれると同じ GPU を奪い合います）。
 
 ```bash
 # 単一ノード torchrun を 1 GPU で
