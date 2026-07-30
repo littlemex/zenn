@@ -91,9 +91,7 @@ TrainJob 側は台数（`numNodes`）とノードあたりのプロセス数（`
 
 ## 実行時の注意点
 
-**CPU ノードは Karpenter の consolidation で消えることがあります。** 本章の CPU ノードは Karpenter の CPU NodePool が起動するもので（Karpenter そのものは Basic03 で解説します）、`consolidationPolicy: WhenEmptyOrUnderutilized` はアイドルなノードを早めに回収します。学習 Pod が単独で載っているノードが「余剰」と判断されて学習中に evict される事故を避けるため、Pod には `karpenter.sh/do-not-disrupt: "true"` アノテーションを付けます（テンプレートに含まれています）。
-
-**CPU で動かします。** 本章は性能を測るのではなく「動く」ことを確認する章です。MNIST MLP は非常に軽いので、CPU でも数分で数エポックが終わります。GPU に載せれば当然さらに速くなりますが、この規模のモデルでは差を実感するほどではありません。GPU での高速化を体感するのは、もっと大きなモデルを扱う後続の章になります。
+**CPU ノードは Karpenter の consolidation で消えることがあります。** 本章の CPU ノードは Karpenter の CPU NodePool が起動するもので、`consolidationPolicy: WhenEmptyOrUnderutilized` はアイドルなノードを早めに回収します。学習 Pod が単独で載っているノードが「余剰」と判断されて学習中に evict される事故を避けるため、Pod には `karpenter.sh/do-not-disrupt: "true"` アノテーションを付けます。
 
 # ワークショップ実施
 
@@ -109,16 +107,14 @@ kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -
 ```
 
 :::message
-本章のワークショップ全体を一発で実行するスクリプトが [`infra/eks/scripts/run-basic02.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/run-basic02.sh) に用意されています。イメージの build/push（ビルド先の ECR リポジトリは Basic01 の `terraform apply` で作成済み）・torchrun・TrainJob のすべてを自動で行い、完了後に学習ジョブを削除します（ECR のイメージは残すので後続章で再利用できます）。以下の手順を個別に実行する代わりに、`./scripts/run-basic02.sh` を使うこともできます。手動で 1 ステップずつ確認したい場合は以下の手順に従ってください。
+本章のワークショップ全体を一発で実行するスクリプトが [`infra/eks/scripts/run-basic02.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/run-basic02.sh) に用意されています。
 :::
 
 ## 2. 学習用イメージを用意する
 
-2 つのワークロードは、MNIST MLP を DDP で学習する `ddp.py` を焼き込んだ専用イメージ `ddp-sample` を共用します。`ddp.py` は [awslabs/awsome-distributed-training の DDP サンプル](https://github.com/awslabs/awsome-distributed-training/tree/main/3.test_cases/pytorch/ddp) をベースに、保存先を共有 PVC へ寄せて adapt したものです。集合点は `torchrun` が注入された環境変数から読み取るので、`ddp.py` 自体は引数なしの `init_process_group()` で env:// rendezvous を使うだけです。Dockerfile はリポジトリの [`infra/eks/manifests/ddp-sample/`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/manifests/ddp-sample) に置いてあります。
+2 つのワークロードは、MNIST MLP を DDP で学習する `ddp.py` を焼き込んだ専用イメージ `ddp-sample` を共用します。`ddp.py` は [awslabs/awsome-distributed-training の DDP サンプル](https://github.com/awslabs/awsome-distributed-training/tree/main/3.test_cases/pytorch/ddp) をベースに、保存先を共有 PVC へ寄せて adapt したものです。Dockerfile はリポジトリの [`infra/eks/manifests/ddp-sample/`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/manifests/ddp-sample) に置いてあります。
 
-このイメージのビルドは、手元の Docker に頼らずクラスタ内で完結させます。Basic01 の `terraform apply`（`image_builder_enabled` が既定で有効）で、ビルド用の Amazon ECR リポジトリ・IAM ロール・Pod Identity・専用 namespace（`image-builder`）がすでに用意されています。ビルド自体は [BuildKit](https://github.com/moby/buildkit)（rootless）の Job で行い、公開リポジトリから直接ソースを取得して Dockerfile をビルドし、ECR に push します。ECR 認証は Pod Identity 経由で解決されるため、`docker login` も認証情報の受け渡しも要りません。ビルドの起動は学習 Job と同じく Helm チャートのレンダリングで行います。
-
-ビルド先の ECR URL は Terraform の出力から取得できます。イメージタグはワークショップ用に `v1` を使います（再ビルドするときは `v2` のようにタグを進めると、`latest` のキャッシュ問題を避けられます）。
+このイメージのビルドは、上述した BuildKit で実施します。ビルド先の ECR URL は Terraform の出力から取得できます。イメージタグはワークショップ用に `v1` を使います（再ビルドするときは `v2` のようにタグを進めると、`latest` のキャッシュ問題を避けられます）。
 
 ```bash
 cd infra/eks
@@ -138,7 +134,7 @@ kubectl -n image-builder wait --for=condition=complete \
     job/build-ddp-sample-v1 --timeout=30m
 ```
 
-なお、この Job を `kubectl apply` すると `Warning: would violate PodSecurity "baseline" ... seccompProfile` という警告が表示されます。これは rootless BuildKit が `seccompProfile: Unconfined` を必要とするための意図した設計上の警告で、ビルドは正常に進みます（`image-builder` namespace は PSA の `warn`/`audit` を `baseline` に残して逸脱を可視化しつつ、`enforce` だけ緩めてあります。詳細は後述）。
+なお、この Job を `kubectl apply` すると `Warning: would violate PodSecurity "baseline" ... seccompProfile` という警告が表示されます。これは rootless BuildKit が `seccompProfile: Unconfined` を必要とするための意図した設計上の警告で、ビルドは正常に進みます。
 
 進捗やエラーはビルド Job のログで確認できます。既定では BuildKit 本体（ビルドと push）のログが出ます。ECR 認証を用意する initContainer が失敗した場合は `-c ecr-login` でそちらのログを見ます。
 
