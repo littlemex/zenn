@@ -6,7 +6,7 @@ free: true
 本章では、Basic03-06 で用意した Karpenter・アクセラレータプールの上に、vLLM の OpenAI 互換サーバーをデプロイし、軽量な言語モデルで推論を動かします。高額な Capacity Block は使わず、g5 / g6e / g6 系の on-demand GPU で誰でも試せる構成です。Basic02 の CPU 分散学習に続く「GPU を使った推論の最小体験」として位置づけます。
 
 :::message
-本章は Capacity Block 不要です。g5.12xlarge / g6e.12xlarge / g6.12xlarge など on-demand で取れる GPU インスタンスで動きます。「まず 1 枚の GPU で推論サーバーが立つ」ことを確認するのが目的で、マルチノードや大規模モデルは扱いません。
+本章は Capacity Block 不要です。Basic04 で定義した `gpu-dev` プール（g6e.12xlarge、on-demand）をそのまま使い、GPU 1 枚で小さなモデルを動かします。「まず 1 枚の GPU で推論サーバーが立つ」ことを確認するのが目的で、マルチノードや大規模モデルは扱いません。
 :::
 
 # 解説
@@ -33,9 +33,7 @@ free: true
 
 ## 注意
 
-**on-demand GPU は容量が取れないことがあります。** GPU インスタンスは人気が高く、特定の AZ・特定のタイプで一時的に `InsufficientInstanceCapacity` になることがあります。実際に本章の検証でも、単一 AZ・単一タイプ（g5.12xlarge / us-east-2b のみ）に固定したプールでは容量が取れず、Karpenter が「filtered out all instance types」を出し続けました。対策は Basic04 と同じで、**複数の AZ と複数の instance type を許可する**ことです。`accelerator_pools` の `zone` を変える、または `instance_types` に `g5.12xlarge` / `g6e.12xlarge` / `g6.12xlarge` のように複数を並べておくと、Karpenter が取れるものを選びます。検証では複数 AZ・複数タイプを許可したところ、別 AZ の g6e が確保できました。
-
-**CPU リクエストは GPU ノードのサイズに対して現実的な値にします。** vLLM の Deployment に `cpu: 8` を要求すると、8 vCPU クラスのインスタンス（g6e.2xlarge など）ではシステム予約（kubelet・DaemonSet 等）を差し引くと足りず、`no instance type has enough resources` でスケジュールされません。実測では `cpu: 8` を `cpu: 4` に下げたところ g6e.2xlarge に載りました。GPU 台数（`nvidia.com/gpu`）に対して CPU/メモリを過剰に要求しないよう注意します。
+**on-demand GPU は容量が取れないことがあります。** GPU インスタンスは人気が高く、特定の AZ・特定のタイプで一時的に `InsufficientInstanceCapacity` になり、Karpenter が「filtered out all instance types」を出し続けることがあります。対策は Basic04 と同じで、`accelerator_pools` の `gpu-dev` プールで `zone` を変えて別の AZ を試すか、`instance_types` に `g6e.12xlarge` / `g5.12xlarge` のように複数を並べて Karpenter に選択肢を与えます。実際に単一 AZ・単一タイプに固定していて容量が取れなかったケースでも、複数 AZ・複数タイプを許可したら確保できました。
 
 **GPU Operator の初期化を待ちます。** Karpenter が GPU ノードを起動しても、NVIDIA GPU Operator が `nvidia.com/gpu` を advertise するまで数分かかります。それまで Pod は `Pending` のままですが、これは異常ではありません。
 
@@ -83,6 +81,7 @@ port-forward してモデル一覧と推論を確認します。
 
 ```bash
 kubectl -n "$NAMESPACE" port-forward svc/gpu-vllm 8000:8000 &
+sleep 2   # フォワード確立を待つ（省くと connection refused になることがあります）
 curl -s localhost:8000/v1/models | python3 -m json.tool
 ```
 
@@ -111,15 +110,18 @@ curl -s localhost:8000/v1/chat/completions \
   | python3 -m json.tool
 ```
 
-応答本文と `usage`（`prompt_tokens` / `completion_tokens` / `total_tokens`）が返れば、g6e / g5 クラスの 1 枚の GPU で vLLM の推論が動いていることが確認できます（実測で prompt 36 / completion 31 / total 67 トークンの応答を確認）。
+応答本文と `usage`（`prompt_tokens` / `completion_tokens` / `total_tokens`）が返れば、gpu-dev（g6e.12xlarge）の 1 枚の GPU で vLLM の推論が動いていることが確認できます（実測で prompt 36 / completion 31 / total 67 トークンの応答を確認）。なお `/v1/models` に出る `max_model_len` は Qwen2.5-0.5B 本来の 32K ではなく、チャートが軽量検証向けに `--max-model-len` を控えめに指定した値です。
+
+port-forward はバックグラウンド（`&`）で起動したので、確認が終わったら `kill %1`（または `jobs` で番号を確認して `kill %<n>`）で止めます。
 
 ## 5. 後片付け
 
-推論サーバーを止めれば、GPU ノードは `consolidateAfter`（本構成の NodePool では 5 分に設定）のアイドル後に Karpenter が自動回収します。on-demand なので使った分だけの課金です。
+推論サーバーを止めれば、GPU ノードは `consolidateAfter`（本構成の NodePool では 5 分に設定）のアイドル後に Karpenter が自動回収します。on-demand なので使った分だけの課金です。投入時と同じ `--set` を付けてレンダリングした結果を `kubectl delete` に渡すと、Deployment・Service を含めチャートが出力した全リソースを取りこぼしなく削除できます。
 
 ```bash
-kubectl delete deploy gpu-vllm -n "$NAMESPACE"
-kubectl delete svc gpu-vllm -n "$NAMESPACE"
+helm template exp charts/experiments -n "$NAMESPACE" \
+    --set gpuServingVllm.enabled=true --set gpuServingVllm.nodeRole=gpu-dev \
+    | kubectl delete -f -
 kubectl get nodeclaims -w        # GPU ノードが消えるのを確認
 ```
 
