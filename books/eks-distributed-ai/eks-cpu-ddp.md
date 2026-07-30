@@ -36,7 +36,7 @@ free: true
 
 分散学習を複数ノードに広げると、「どのノードの誰が rank 0 で、情報連携の集合点（rendezvous）はどこか」を各ノードに教える仕組みが要ります。Kubernetes 上でこれを宣言的に扱う標準が、Kubeflow Trainer v2 が提供する TrainJob（`trainer.kubeflow.org/v1alpha1`）です。ノード数を宣言すれば、Trainer が内部で JobSet を展開して各ノードの Pod を並べ、集合点の情報を各 Pod に注入してくれます。
 
-使うワークロードは Helm チャート [`charts/experiments`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/charts/experiments) の 2 つです。前半が単一ノードの `torchrunTrain`、後半が複数ノードの `trainjobTrain` で、どちらも CPU と GPU の両対応です。適用は `helm template ... | kubectl apply -f -` で行い、`helm install` は使いません（このチャートは release 管理をせず、レンダリングして手で適用する実験カタログという位置づけです）。
+使うワークロードは Helm チャート [`charts/experiments`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/charts/experiments) です。前半が単一ノードの `torchrunTrain`、後半が複数ノードの `trainjobTrain` で、どちらも CPU と GPU の両対応です。適用は `helm template ... | kubectl apply -f -` で行い、`helm install` は使いません（このチャートは release 管理をせず、レンダリングして手で適用する実験カタログという位置づけです）。
 
 なお、前半の `torchrunTrain` の values にある `backend`（`gloo` / `nccl`）は出力ディレクトリ名（`/shared/output/*-<backend>`）を分けるための**ラベルに過ぎません**。実際にどの通信バックエンドで動くかは、GPU が見えるかどうか（`gpu.enabled=true` と Pod の `nvidia.com/gpu` リクエスト）で `ddp.py` が自動判定します。つまり CPU で動かすか GPU で動かすかを決めるのは `gpu.enabled` であって、`backend` の文字列ではありません。この点は後半の GPU 節でもう一度触れます。
 
