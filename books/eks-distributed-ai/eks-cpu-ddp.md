@@ -36,7 +36,7 @@ free: true
 
 分散学習を複数ノードに広げると、「どのノードの誰が rank 0 で、情報連携の集合点（rendezvous）はどこか」を各ノードに教える仕組みが要ります。Kubernetes 上でこれを宣言的に扱う標準が、Kubeflow Trainer v2 が提供する TrainJob（`trainer.kubeflow.org/v1alpha1`）です。ノード数を宣言すれば、Trainer が内部で JobSet を展開して各ノードの Pod を並べ、集合点の情報を各 Pod に注入してくれます。
 
-使うワークロードは Helm チャート [`charts/experiments`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/charts/experiments) です。前半が単一ノードの `torchrunTrain`、後半が複数ノードの `trainjobTrain` で、どちらも CPU と GPU の両対応です。適用は `helm template ... | kubectl apply -f -` で行い、`helm install` は使いません（このチャートは release 管理をせず、レンダリングして手で適用する実験カタログという位置づけです）。
+使うワークロードは Helm チャート [`charts/experiments`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/charts/experiments) の 2 つです。前半が単一ノードの `torchrunTrain`、後半が複数ノードの `trainjobTrain` で、どちらも CPU と GPU の両対応です。適用は `helm template ... | kubectl apply -f -` で行い、`helm install` は使いません（このチャートは release 管理をせず、レンダリングして手で適用する実験カタログという位置づけです）。
 
 なお、前半の `torchrunTrain` の values にある `backend`（`gloo` / `nccl`）は出力ディレクトリ名（`/shared/output/*-<backend>`）を分けるための**ラベルに過ぎません**。実際にどの通信バックエンドで動くかは、GPU が見えるかどうか（`gpu.enabled=true` と Pod の `nvidia.com/gpu` リクエスト）で `ddp.py` が自動判定します。つまり CPU で動かすか GPU で動かすかを決めるのは `gpu.enabled` であって、`backend` の文字列ではありません。この点は後半の GPU 節でもう一度触れます。
 
@@ -246,7 +246,7 @@ kubectl delete job ddp-torchrun -n "$NAMESPACE"
 次に、同じ学習を 2 ノードにまたがる TrainJob で動かします。`numNodes=2` がノード数、`nprocPerNode=1` が各ノード内のプロセス数です（Helm の `nprocPerNode` は TrainJob の `numProcPerNode` に対応します）。本 book がクラスタに用意した Runtime（`torch-distributed-eks`）に `topologyKey: kubernetes.io/hostname` の podAntiAffinity が入っているので、2 つの Pod は必ず別ノードに分かれて配置されます（結果として Pod 数 = ノード数になります）。前半と違い、rank の割り当てと集合点の配線は Trainer に任せるため、追加の手作業は不要です。
 
 :::message
-以下の Pod 名（`<ジョブ名>-node-0-<index>`）や TrainJob の `Complete` ステータスは v2 の仕様に基づく記述です。2 ノード DDP の学習そのものは前身の v1 構成で実測済みですが（後述）、TrainJob 経路での再実測は今後の課題です。
+TrainJob 経路の配線（Pod 名 `<ジョブ名>-node-0-<index>-<ランダム>`、node index と rank の一致、`node-0-0` が集合点、2 Pod が別ノードに分かれること、2 ノード間の all-reduce 成立、`Complete` ステータス）は distai-eks-blog クラスタ（EKS 1.35、CPU ノード 2 台、gloo）で実機検証済みです。以下のログ例は `ddp.py`（MNIST MLP）を流したときの形式を示すもので、loss 値そのものは seed やデータ分割で変わります。
 :::
 
 ```bash
@@ -260,7 +260,7 @@ helm template exp charts/experiments -n "$NAMESPACE" \
     | kubectl apply -f -
 ```
 
-TrainJob が展開する Pod は JobSet の規則で名付けられ、`<ジョブ名>-node-0-<index>` になります。本章のジョブ名は `ddp-trainjob` なので、rank 0 は `ddp-trainjob-node-0-0`、rank 1 は `ddp-trainjob-node-0-1` です。v1 の PyTorchJob と違って master と worker の区別はありません。まず 2 つの Pod がそれぞれ別ノードに載っていることを確認します（`-o wide` の `NODE` 列が 2 つとも違えば OK です）。ジョブ名のラベルで全ノードの Pod をまとめて選べます。
+TrainJob が展開する Pod は JobSet の規則で名付けられ、`<ジョブ名>-node-0-<index>-<ランダム>` になります。本章のジョブ名は `ddp-trainjob` なので、rank 0 の Pod は `ddp-trainjob-node-0-0-xxxxx`、rank 1 は `ddp-trainjob-node-0-1-xxxxx` という形です（末尾のランダムな 5 文字は実行のたびに変わるので、Pod 名を決め打ちせずラベルで選ぶのが確実です）。node index と rank は一致し、`node-0-0` が常に rank 0 です。v1 の PyTorchJob と違って master と worker の区別はありません。まず 2 つの Pod がそれぞれ別ノードに載っていることを確認します（`-o wide` の `NODE` 列が 2 つとも違えば OK です）。ジョブ名のラベルで全ノードの Pod をまとめて選べます。
 
 ```bash
 kubectl get pods -n "$NAMESPACE" -o wide -l jobset.sigs.k8s.io/jobset-name=ddp-trainjob
@@ -272,11 +272,12 @@ kubectl get pods -n "$NAMESPACE" -o wide -l jobset.sigs.k8s.io/jobset-name=ddp-t
 kubectl get trainjob ddp-trainjob -n "$NAMESPACE" -w
 ```
 
-rank 0 が載る `ddp-trainjob-node-0-0` のログを追います。前半と同じく、ログは Pod が `Running` の間に追います。Pod が Ready になるのを待ってから follow すると取りこぼしません（完了後は Pod が回収されて `logs -f` が `timed out` になります。前半の step 3 の注意書きを参照してください）。
+rank 0 が載る Pod のログを追います。Pod 名は末尾のランダム文字が変わるので、決め打ちせずラベルで選びます。rank 0 は JobSet の completion index 0 なので、`batch.kubernetes.io/job-completion-index=0` と jobset 名の 2 つのラベルで一意に選べます。前半と同じく、ログは Pod が `Running` の間に追います（完了後は Pod が回収されて `logs -f` が `timed out` になります。前半の step 3 の注意書きを参照してください）。
 
 ```bash
-kubectl wait --for=condition=ready pod ddp-trainjob-node-0-0 -n "$NAMESPACE" --timeout=15m
-kubectl logs -f ddp-trainjob-node-0-0 -n "$NAMESPACE"
+SEL="jobset.sigs.k8s.io/jobset-name=ddp-trainjob,batch.kubernetes.io/job-completion-index=0"
+kubectl wait --for=condition=ready pod -l "$SEL" -n "$NAMESPACE" --timeout=15m
+kubectl logs -f -l "$SEL" -n "$NAMESPACE"
 ```
 
 前半の単一ノードと違い、rank 0 と rank 1 は別々の Pod なのでログも分かれます。`node-0-0` では rank 0 が gloo backend で起動します。スナップショットの保存は rank 0 が担当するため、その行は `node-0-0` 側にのみ現れます。MNIST は step 3 で同じ `/shared` にダウンロード済みなので、ここでは再ダウンロードされず download 行は出ません（step 3 を飛ばして後半だけ実行した場合は、ここで rank 0 が一度だけダウンロードします）。
@@ -293,10 +294,10 @@ kubectl logs -f ddp-trainjob-node-0-0 -n "$NAMESPACE"
 [rank 0/2] done
 ```
 
-もう一方の `ddp-trainjob-node-0-1`（rank 1）のログも見てみます。
+もう一方の rank 1（completion index 1）のログも見てみます。
 
 ```bash
-kubectl logs ddp-trainjob-node-0-1 -n "$NAMESPACE"
+kubectl logs -l "jobset.sigs.k8s.io/jobset-name=ddp-trainjob,batch.kubernetes.io/job-completion-index=1" -n "$NAMESPACE"
 ```
 
 `node-0-1` では rank 1 が同じく gloo backend で起動し、rank 0 の MNIST ダウンロード完了を barrier で待ってから学習に加わり、各エポックの loss を出して最後に `done` で終わります。ダウンロードとスナップショット保存の行は rank 0 側にしか出ません。
@@ -313,7 +314,7 @@ kubectl logs ddp-trainjob-node-0-1 -n "$NAMESPACE"
 `WORLD_SIZE=2` の 2 プロセスが別々のノードで起動し、両 rank の loss がエポックを追って単調に下がっていることから、2 つのノードが勾配を all-reduce しながら 1 つのモデルを学習できていることが分かります（各 rank はデータセットの異なる分割を担当するので、loss は完全に同一ではなく近い値で推移します）。最後に TrainJob が `Complete` になり、rank 0 がスナップショットを共有ストレージ上の `/shared/output/trainjob/snapshot.pt` に保存します。
 
 :::message
-上のログは形式を示すための例で、loss の数値そのものは seed やデータ分割で変わります。単調に減少していれば正常です。2 ノードの DDP 動作自体は、前身である v1 PyTorchJob 構成で distai-eks-smoke クラスタ（us-east-2、CPU ノード r5a.large ×2）にて確認済みです（`ddp.py` と `torchrun` の実行モデルは v1・v2 で変わりません。TrainJob そのものでの再実測は今後の課題です）。
+上のログは形式を示すための例で、loss の数値そのものは seed やデータ分割で変わります。単調に減少していれば正常です。TrainJob 経路の配線（2 Pod の別ノード配置、`node-0-0`=rank 0、2 ノード間の all-reduce、`Complete`）は distai-eks-blog で実機検証済みです。`ddp.py`（MNIST MLP）の loss 低下そのものは、実行モデルが同じ v1 PyTorchJob 構成（distai-eks-smoke、us-east-2、CPU ノード r5a.large ×2）で確認済みで、TrainJob 上での MNIST 完走は今後さらに詰めます。
 :::
 
 ログを追い損ねても、TrainJob が `Complete` になったことと、共有ストレージ上のスナップショットで完了を確認できます。`kubectl wait` の `--for=condition=Complete` が完了を待つ確実な方法です。
