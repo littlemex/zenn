@@ -17,17 +17,7 @@ free: true
 
 ![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 
-本章の `terraform apply` は、この基盤のクラスタスコープの土台を一度に立ち上げます。図のうち中核となる **Amazon VPC・Amazon EKS コントロールプレーン・System ノードグループ** に加え、その上で動く Karpenter コントローラ・各 CSI ドライバ・Kubeflow Training Operator・共有ストレージ（既定の FSx）まで、後続の章で使う基盤コンポーネントが同じ apply で揃います（後述の「基盤層が恒久管理するもの、しないもの」を参照）。本章で詳しく解説するのは中核の 3 つで、残りは各コンポーネントの章で 1 つずつ扱います。唯一まだ立たないのは GPU/Neuron のアクセラレータ「ノード」で、`accelerator_pools` が空の本章では起動せず、Basic04 以降で 1 行足して立てます。
-
-## これは何をするものか
-
-本章のゴールは、GPU/Neuron を使った分散学習・推論の実験を後からいくらでも回せる「土台」を一度だけ立てることです。この土台は 1 回の `terraform apply` でクラスタスコープの基盤コンポーネント（Karpenter・CSI ドライバ・Kubeflow Training Operator・共有ストレージ）まで含めて揃いますが、本章で中身に踏み込んで解説するのは、その最も中核となる次の 3 つです。いずれも「実験を始める前に一度作れば、あとは触らない」部分です。
-
-- **Amazon EKS コントロールプレーン**: Kubernetes 1.35 と Pod Identity を使います
-- **System managed node group**: m5 系を 2 台、kube-system と Karpenter コントローラ自身を載せる足場として起動します。Karpenter コントローラを Karpenter 管理下のノードに載せると、ゼロからの起動や自ノードの回収で自己参照の問題が起きるため公式に非推奨で、Karpenter が動き出すための最初の土台としてこの管理外のノードグループが要ります
-- **Amazon VPC**: 上記を収めるネットワークです
-
-アクセラレータ「ノード」自体はまだ立てません。Basic04 以降で `accelerator_pools` に 1 行足すだけで GPU/Neuron ノードが要求に応じて立つよう、それを動かす Karpenter の足場をこの apply で用意しておく、という位置づけです。この土台づくり自体は Amazon EKS の一般的な手順とほぼ同じですが、分散 AI 向けに効かせている設計判断がいくつかあります。以降で実際の Terraform コードを引用しながら、なぜその値・その書き方にしているのかを見ていきます。対象モジュールは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks) です。
+本章の `terraform apply` は、この基盤のクラスタスコープの土台を一度に立ち上げます。図のうち中核となる **Amazon VPC・Amazon EKS コントロールプレーン・System ノードグループ** に加え、その上で動く Karpenter コントローラ・各 CSI ドライバ・Kubeflow Training Operator・共有ストレージ（既定の FSx）まで、後続の章で使う基盤コンポーネントが同じ apply で揃います。本章で詳しく解説するのは中核の 3 つで、残りは各コンポーネントの章で 1 つずつ扱います。唯一まだ立たないのはアクセラレータ「ノード」で、`accelerator_pools` が空の本章では起動しません。
 
 ## Amazon VPC の設計
 
@@ -67,9 +57,9 @@ module "vpc" {
 }
 ```
 
-ここで `azs` / `private_subnets` / `public_subnets` に渡している 3 つの `local.*` が、この構成の設計上の肝です。いずれも [`az.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/az.tf) で `var.region` と `var.vpc_cidr` から自動導出しており、通常のデプロイでは AZ もサブネット CIDR も一切手書きしません。tfvars に書くのは `region` とプールのインスタンスタイプだけで済みます。読みどころは AZ とサブネットの自動導出・`single_nat_gateway`・`private_subnet_tags` の 3 点です。
+ここで `azs` / `private_subnets` / `public_subnets` に渡している 3 つの `local.*` が、この構成の設計上の肝です。いずれも [`az.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/az.tf) で `var.region` と `var.vpc_cidr` から自動導出しており、通常のデプロイでは AZ もサブネット CIDR も一切手書きしません。tfvars に書くのは `region` とプールのインスタンスタイプだけで済みます。
 
-**AZ とサブネット CIDR の自動導出**: `local.azs` は `var.azs` が `null`（既定）ならそのリージョンの標準 AZ（Local Zone や Wavelength を除く、`opt-in-not-required` の AZ）を `sort` して全件返します。`us-west-2` や `us-east-2` なら 4 つの AZ すべてに VPC がまたがります。サブネット CIDR も `var.private_subnet_cidrs` / `var.public_subnet_cidrs` が `null`（既定）なら `var.vpc_cidr` から AZ ごとに 1 つずつ切り出します。プライベートは VPC の下半分（`/16` なら `10.0.0.0/17`）を AZ 数で等分し、パブリックは上半分から `/24` を AZ ごとに取ります。AZ が 2 つならプライベートは `/18`、4 つなら `/19`、というように AZ 数に追随してサイズが決まるため、サブネット一覧が AZ 一覧と食い違う余地がありません。この「プライベートは大きく、パブリックは小さく」という非対称な配分が分散 AI 向けの肝です。IP を大量に消費する主因は VPC CNI で、Pod 用のセカンダリ IP をノードごとにあらかじめ確保します（プレフィックス委譲では `/28` = 16 IP 単位）。EFA 対応インスタンスは物理ネットワークカードを多数持ちます（`p5en.48xlarge` は 16 枚）。この構成のように残りのカードを EFA 専用（`interfaceType: efa-only`）で立てると、ノードの IP を持つのはプライマリインターフェイス 1 枚だけになり、EFA 専用カードはサブネットの IP を一切消費しません。つまり IP 消費を押し上げるのは EFA のカード枚数ではなく VPC CNI であり、ワークロードが載るプライベートサブネットは大きく、NAT/ロードバランサーしか置かないパブリックサブネットは小さく、という配分になります。特定の AZ 集合に固定したい、あるいは CIDR を明示指定したい場合だけ `var.azs` / `var.private_subnet_cidrs` / `var.public_subnet_cidrs` で上書きでき、その際は解決後の AZ ごとにちょうど 1 つずつ CIDR を与えます（過不足は `az.tf` の precondition が検出します）。
+**AZ とサブネット CIDR の自動導出**: `local.azs` は `var.azs` が `null`（既定）ならそのリージョンの標準 AZ を `sort` して全件返します。`us-west-2` や `us-east-2` なら 4 つの AZ すべてに VPC がまたがります。サブネット CIDR も `var.private_subnet_cidrs` / `var.public_subnet_cidrs` が `null`（既定）なら `var.vpc_cidr` から AZ ごとに 1 つずつ切り出します。プライベートは VPC の下半分（`/16` なら `10.0.0.0/17`）を AZ 数で等分し、パブリックは上半分から `/24` を AZ ごとに取ります。AZ が 2 つならプライベートは `/18`、4 つなら `/19`、というように AZ 数に追随してサイズが決まるため、サブネット一覧が AZ 一覧と食い違う余地がありません。この「プライベートは大きく、パブリックは小さく」という非対称な配分が分散 AI 向けの肝です。IP を大量に消費する主因は VPC CNI で、Pod 用のセカンダリ IP をノードごとにあらかじめ確保します（プレフィックス委譲では `/28` = 16 IP 単位）。EFA 対応インスタンスは物理ネットワークカードを多数持ちます（`p5en.48xlarge` は 16 枚）。この構成のように残りのカードを EFA 専用（`interfaceType: efa-only`）で立てると、ノードの IP を持つのはプライマリインターフェイス 1 枚だけになり、EFA 専用カードはサブネットの IP を一切消費しません。つまり IP 消費を押し上げるのは EFA のカード枚数ではなく VPC CNI であり、ワークロードが載るプライベートサブネットは大きく、NAT/ロードバランサーしか置かないパブリックサブネットは小さく、という配分になります。特定の AZ 集合に固定したい、あるいは CIDR を明示指定したい場合だけ `var.azs` / `var.private_subnet_cidrs` / `var.public_subnet_cidrs` で上書きでき、その際は解決後の AZ ごとにちょうど 1 つずつ CIDR を与えます（過不足は `az.tf` の precondition が検出します）。
 
 **`single_nat_gateway = true` の意味**: NAT ゲートウェイを AZ ごとに作らず 1 つだけにしています。本番の可用性設計では、AZ 障害の影響を切り離すためと、AZ をまたぐ転送料金を避けるために AZ ごとに NAT を置きます。ところがこの基盤では、EFA の集団通信も FSx for Lustre も Capacity Block も単一 AZ が前提で、性能を出したいワークロードは自然と 1 つの AZ に集まります。そのため計算そのものが単一 AZ に寄っており、その AZ に NAT を同居させる限り、AZ ごとに NAT を分ける 2 つの利点はどちらも効きません。ただし NAT がどの AZ に作られるかは意識しておく必要があります。`terraform-aws-modules/vpc` の `single_nat_gateway = true` は先頭のパブリックサブネット、つまり `local.azs` の先頭 AZ に NAT を 1 つ作ります。オンデマンド/スポットのプールは `zone` を書かなければこの先頭 AZ に導出されるため、NAT と同じ AZ に載り外向き通信は AZ をまたぎません。一方 Capacity Block のプールは予約が確保された AZ に固定されるので、それが先頭 AZ と異なると外向き通信（イメージ pull など）が AZ をまたぎます。この基盤は「予約が動いても VPC がリージョン全 AZ をまたぐので必ず対応するサブネットがある」ことを優先して単一 NAT を許容しますが、CB のプールと NAT を同じ AZ にそろえたい場合は `var.azs` で CB の AZ を先頭に並べれば同居させられます。プライベートサブネットからの外向き通信はこの単一 NAT を経由し、Amazon S3 は Gateway エンドポイント、Amazon ECR などは Interface エンドポイントを併用して NAT 経由の通信量そのものを減らしています。
 
