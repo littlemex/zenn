@@ -77,21 +77,21 @@ TrainJob 側は台数（`numNodes`）とノードあたりのプロセス数（`
 
 学習ワークロードには `ddp.py` を焼き込んだコンテナイメージが要ります。素直なやり方は手元の `docker build` で作って ECR に push することですが、これは「手元に Docker があり、しかも EKS ノードと同じ x86_64 向けにクロスビルドできる」という前提を各利用者に強いてしまいます。Apple Silicon の Mac ではプラットフォーム指定を忘れて arm64 イメージを作り、ノード上で `exec format error` になる、という事故も定番です。この基盤では、その前提を持ち込まずにイメージのビルドもクラスタ内で完結させます。
 
-ビルドには [Kaniko](https://github.com/GoogleContainerTools/kaniko) を使います。Kaniko は Docker デーモンや特権コンテナを必要とせず、通常の Pod の中で Dockerfile を解釈してイメージをビルドし、レジストリに push できるツールです。Docker デーモンが要らないのは、Kaniko がベースイメージを自分のコンテナのファイルシステムに展開し、Dockerfile の各命令をユーザー空間で実行したうえで、命令ごとにファイルシステムのスナップショットを取って差分をレイヤ化するためです。本章ではこの Kaniko を 1 回限りの Kubernetes Job として起動します。特別なオペレータや常設のビルドサーバーは要らず、学習 Job と同じ「レンダリングして `kubectl apply` する」操作モデルにそのまま乗ります。
+ビルドには [BuildKit](https://github.com/moby/buildkit) の rootless モードを使います。BuildKit は Docker デーモンや特権コンテナを必要とせず、通常の Pod の中で Dockerfile を解釈してイメージをビルドし、レジストリに push できるツールです。rootless イメージ（`moby/buildkit:rootless`）は、ビルド全体をユーザー namespace の中で非 root（uid 1000）として走らせるため、`CAP_SYS_ADMIN` などの特権を一切要求しません。本章ではこの BuildKit を、`buildctl-daemonless.sh` で daemon を常駐させずに 1 回限りの Kubernetes Job として起動します。特別なオペレータや常設のビルドサーバーは要らず、学習 Job と同じ「レンダリングして `kubectl apply` する」操作モデルにそのまま乗ります。
 
 :::message
-Kaniko 本家（`GoogleContainerTools/kaniko`）はメンテナンスが終了し、リポジトリはアーカイブされています。この基盤ではイメージをバージョン（ダイジェスト）で固定して動作を検証しているため引き続き利用できますが、Kaniko はビルドツールとして差し替え可能な部品と位置づけています。将来的には BuildKit（rootless モード）や buildah、Chainguard によるフォークなどへ移行する選択肢があり、その場合も Job としての起動方法や以降の手順は変わりません。
+この基盤は当初 [Kaniko](https://github.com/GoogleContainerTools/kaniko) を使っていましたが、Kaniko 本家（`GoogleContainerTools/kaniko`）はメンテナンスが終了しリポジトリがアーカイブされたため、アクティブに開発が続く BuildKit へ移行しました。ビルダはビルド Job の中の交換可能な部品なので、移行で変わったのはこの Job のコンテナ定義だけで、ECR リポジトリ・IAM・Pod Identity といった Terraform 側の土台や、以降のワークショップ手順は変わっていません。イメージはダイジェストで固定して再現性を保っています。
 :::
 
-ビルドの土台は Basic01 の `terraform apply` の時点で用意されています（`image_builder_enabled` が既定で有効）。具体的には、ビルド先の Amazon ECR リポジトリ・Kaniko に ECR への push 権限を与える IAM ロール・その紐付けを担う Pod Identity・ビルド専用の namespace（`image-builder`）と ServiceAccount です。ここでも Basic01 と同じ設計原則が効いています。すなわち Terraform は「機構」だけを恒久管理し、実際のビルド Job という「実行」はワークショップ側でカタログから適用します。これは Kubeflow Trainer v2 は Terraform が入れるが学習 Job（TrainJob）自体は作らない、という切り分けと同じ構図です。
+ビルドの土台は Basic01 の `terraform apply` の時点で用意されています（`image_builder_enabled` が既定で有効）。具体的には、ビルド先の Amazon ECR リポジトリ・ECR への push 権限を与える IAM ロール・その紐付けを担う Pod Identity・ビルド専用の namespace（`image-builder`）と ServiceAccount です。ここでも Basic01 と同じ設計原則が効いています。すなわち Terraform は「機構」だけを恒久管理し、実際のビルド Job という「実行」はワークショップ側でカタログから適用します。これは Kubeflow Trainer v2 は Terraform が入れるが学習 Job（TrainJob）自体は作らない、という切り分けと同じ構図です。
 
-認証の流れが Kaniko とクラスタ内ビルドの肝です。ECR への push には ECR のログイントークンが要りますが、この基盤では **Pod Identity** がそれを透過的に解決します。`image-builder` の ServiceAccount には Pod Identity Association で IAM ロールが結び付いており、この SA で動く Pod には認証情報を取得するためのエンドポイント情報が自動で注入されます。Kaniko の公式イメージには Amazon ECR 用の認証ヘルパー（`amazon-ecr-credential-helper`）が同梱されていて、push 先が ECR の URI であればこのヘルパーが呼ばれます。ヘルパーはまず Pod Identity 経由で AWS の一時認証情報を取得し、その認証情報で `ecr:GetAuthorizationToken` を呼んで ECR のログイントークンに交換し、レジストリに push します。結果として、`docker login` も認証情報ファイルの受け渡しも一切書かずに、push まで通ります。この一時認証情報のトークンファイル方式に対応するには比較的新しいバージョンのヘルパーが要るため、この基盤では検証済みの Kaniko イメージをダイジェストで固定しています。
+認証の流れがクラスタ内ビルドの肝です。ECR への push には ECR のログイントークンが要りますが、この基盤では **Pod Identity** がそれを透過的に解決します。`image-builder` の ServiceAccount には Pod Identity Association で IAM ロールが結び付いており、この SA で動く Pod には認証情報を取得するためのエンドポイント情報が自動で注入されます。ここで Kaniko と BuildKit の違いが 1 つあります。Kaniko は Amazon ECR 用の認証ヘルパーを同梱していましたが、BuildKit の公式イメージは同梱しません。そこでこのビルド Job は initContainer（AWS CLI イメージ）を 1 つ挟みます。initContainer は Pod Identity の認証情報で `aws ecr get-login-password` を実行してログイントークンを取り、それを Docker の `config.json`（`auths` にレジストリのホスト名と `AWS:<トークン>` の base64 を書いたもの）として emptyDir に書き出します。BuildKit コンテナは `DOCKER_CONFIG` でそのディレクトリを読み、push 時の認証に使います。結果として、`docker login` を手で打つことも認証情報ファイルをリポジトリに置くこともなく push まで通ります。Pod Identity の認証情報は initContainer にも注入されることを実機で確認しています。
 
-ソースの取得も Kaniko に任せます。この book のリポジトリは公開されているので、Kaniko の Git コンテキスト機能で clone からビルドまでを 1 コンテナで完結でき、ソースを取得するための init コンテナや事前の `git clone` は要りません。
+ソースの取得も BuildKit に任せます。この book のリポジトリは公開されているので、BuildKit の Git コンテキスト機能（`context=https://<repo>#<ブランチ>:<サブディレクトリ>`）で clone からビルドまでを完結でき、ソースを取得するための事前の `git clone` は要りません。先ほどの initContainer は ECR 認証トークンを用意するためだけのもので、ソース取得には関与しません。
 
-イメージのサイズには注意が要ります。Kaniko はベースイメージをノードのローカルディスクに展開してビルドするため、ビルド中に一時的に大きなディスクを消費します。この消費はノードの ephemeral-storage としてカウントされるので、ビルド Job には `ephemeral-storage` の requests/limits を設定して同居 Pod が eviction されるのを防いでいます（テンプレートに含まれています）。ピーク時のディスク使用量は、展開後の非圧縮ファイルシステムとスナップショットの中間 tar と push 用の圧縮レイヤの合計で、イメージの内容に依存しますが目安として push 後サイズの 4〜5 倍程度です。本章の `ddp-sample` は push 後で約 3GB なので、CPU ノードの既定のルートディスク（50GiB）に十分収まります。数十 GB 級の重いイメージを扱う場合は、ビルド専用の大容量ノードプールを opt-in で用意する仕組みも入れてあります（詳細はワークショップ手順の該当箇所で触れます）。
+イメージのサイズには注意が要ります。BuildKit はベースイメージの展開とレイヤのスナップショットをノードのローカルディスク上で行うため、ビルド中に一時的に大きなディスクを消費します。この消費はノードの ephemeral-storage としてカウントされるので、ビルド Job には `ephemeral-storage` の requests/limits を設定して同居 Pod が eviction されるのを防いでいます（テンプレートに含まれています）。BuildKit の作業ディレクトリは Pod の emptyDir に載せており、これも同じ ephemeral-storage 予算に含まれます。ピーク時のディスク使用量は、展開後の非圧縮ファイルシステムと各レイヤのスナップショットの合計で、イメージの内容に依存しますが目安として push 後サイズの 4〜5 倍程度です。本章の `ddp-sample` は push 後で約 3GB で、実測でも既定の 30Gi 予算・CPU ノードの既定ルートディスク（50GiB）に十分収まりました。数十 GB 級の重いイメージを扱う場合は、ビルド専用の大容量ノードプールを opt-in で用意する仕組みも入れてあります（詳細はワークショップ手順の該当箇所で触れます）。
 
-この展開先はノードのローカルディスクに固定されており、FSx や NFS のような共有ファイルシステムには移せません。Kaniko はベースイメージをコンテナのルートファイルシステム直下に展開しますが、この `/` はコンテナランタイムがノードローカルのストレージに用意するもので差し替えられないためです。仮にネットワークストレージ上でビルドできたとしても、拡張属性（file capabilities）の非対応やタイムスタンプ精度の違いによるスナップショット差分検出の不整合から、壊れたイメージが生成される恐れがあります。ビルドの一時領域は常にローカルディスクを使うのが正解です。
+この作業領域はノードのローカルディスクを使い、FSx や NFS のような共有ファイルシステムには移しません。ネットワークストレージ上でビルドすると、拡張属性（file capabilities）の非対応やタイムスタンプ精度の違いによるレイヤ差分検出の不整合から、壊れたイメージが生成される恐れがあります。ビルドの一時領域は常にローカルディスクを使うのが正解です。
 
 ## 実行時の注意点
 
@@ -120,7 +120,7 @@ kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -
 
 2 つのワークロードは、MNIST MLP を DDP で学習する `ddp.py` を焼き込んだ専用イメージ `ddp-sample` を共用します。`ddp.py` は [awslabs/awsome-distributed-training の DDP サンプル](https://github.com/awslabs/awsome-distributed-training/tree/main/3.test_cases/pytorch/ddp) をベースに、保存先を共有 PVC へ寄せて adapt したものです。集合点は `torchrun` が注入された環境変数から読み取るので、`ddp.py` 自体は引数なしの `init_process_group()` で env:// rendezvous を使うだけです。Dockerfile はリポジトリの [`infra/eks/manifests/ddp-sample/`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/manifests/ddp-sample) に置いてあります。
 
-このイメージのビルドは、手元の Docker に頼らずクラスタ内で完結させます。Basic01 の `terraform apply`（`image_builder_enabled` が既定で有効）で、ビルド用の Amazon ECR リポジトリ・IAM ロール・Pod Identity・専用 namespace（`image-builder`）がすでに用意されています。ビルド自体は [Kaniko](https://github.com/GoogleContainerTools/kaniko) の Job で行い、公開リポジトリから直接ソースを取得して Dockerfile をビルドし、ECR に push します。ECR 認証は Pod Identity 経由で解決されるため、`docker login` も認証情報の受け渡しも要りません。ビルドの起動は学習 Job と同じく Helm チャートのレンダリングで行います。
+このイメージのビルドは、手元の Docker に頼らずクラスタ内で完結させます。Basic01 の `terraform apply`（`image_builder_enabled` が既定で有効）で、ビルド用の Amazon ECR リポジトリ・IAM ロール・Pod Identity・専用 namespace（`image-builder`）がすでに用意されています。ビルド自体は [BuildKit](https://github.com/moby/buildkit)（rootless）の Job で行い、公開リポジトリから直接ソースを取得して Dockerfile をビルドし、ECR に push します。ECR 認証は Pod Identity 経由で解決されるため、`docker login` も認証情報の受け渡しも要りません。ビルドの起動は学習 Job と同じく Helm チャートのレンダリングで行います。
 
 ビルド先の ECR URL は Terraform の出力から取得できます。イメージタグはワークショップ用に `v1` を使います（再ビルドするときは `v2` のようにタグを進めると、`latest` のキャッシュ問題を避けられます）。
 
@@ -129,7 +129,7 @@ cd infra/eks
 ECR_URL=$(terraform output -raw ddp_sample_ecr_url)
 IMAGE=${ECR_URL}:v1
 
-# クラスタ内で Kaniko ビルド Job を起動
+# クラスタ内で BuildKit ビルド Job を起動
 helm template exp charts/experiments -n "$NAMESPACE" \
     --set imageBuild.enabled=true \
     --set imageBuild.repository="$ECR_URL" \
@@ -142,10 +142,13 @@ kubectl -n image-builder wait --for=condition=complete \
     job/build-ddp-sample-v1 --timeout=30m
 ```
 
-進捗やエラーはビルド Job のログで確認できます。
+なお、この Job を `kubectl apply` すると `Warning: would violate PodSecurity "baseline" ... seccompProfile` という警告が表示されます。これは rootless BuildKit が `seccompProfile: Unconfined` を必要とするための意図した設計上の警告で、ビルドは正常に進みます（`image-builder` namespace は PSA の `warn`/`audit` を `baseline` に残して逸脱を可視化しつつ、`enforce` だけ緩めてあります。詳細は後述）。
+
+進捗やエラーはビルド Job のログで確認できます。既定では BuildKit 本体（ビルドと push）のログが出ます。ECR 認証を用意する initContainer が失敗した場合は `-c ecr-login` でそちらのログを見ます。
 
 ```bash
-kubectl -n image-builder logs -f job/build-ddp-sample-v1
+kubectl -n image-builder logs -f job/build-ddp-sample-v1              # BuildKit 本体
+kubectl -n image-builder logs job/build-ddp-sample-v1 -c ecr-login    # 認証 init が失敗したとき
 ```
 
 :::message
@@ -157,7 +160,11 @@ kubectl -n image-builder logs -f job/build-ddp-sample-v1
 :::
 
 :::message
-Kaniko はベースイメージをノードのローカルディスク上に展開してビルドします。ビルド中のピークディスクはおおよそ push 後イメージサイズの 4〜5 倍で、`ddp-sample`（push 後約 3GB）は共有 CPU ノードプールの既定 50Gi ルートに収まります。数十 GB 級の重いイメージ（独自 CUDA 拡張入りの学習イメージなど）を扱う場合は、`terraform apply` 時に `image_builder_dedicated_pool = true` を設定すると、NVMe インスタンスストアを束ねた大容量ローカルディスクのビルド専用ノードプール（taint で隔離、ビルドが終われば自動で 0 台に戻る）が用意されます。その際は Helm 側で `--set imageBuild.dedicatedPool.enabled=true --set imageBuild.ephemeralStorage=150Gi` のように専用プールを指定します。共有ファイルシステム（FSx や NFS）をビルド作業領域に使うことはできません。Kaniko の展開先はノードのルートに固定されており、ネットワークストレージ上ではファイル属性の扱いで壊れたイメージが生成される恐れがあるためです。
+数十 GB 級の重いイメージ（独自 CUDA 拡張入りの学習イメージなど）は、前述のとおりピークディスクが push 後サイズの 4〜5 倍になり共有 CPU プールの 50Gi ルートに収まりません。その場合は `terraform apply` 時に `image_builder_dedicated_pool = true` を設定すると、NVMe インスタンスストアを束ねた大容量ローカルディスクのビルド専用ノードプール（taint で隔離、ビルドが終われば自動で 0 台に戻る）が用意されます。Helm 側では `--set imageBuild.dedicatedPool.enabled=true --set imageBuild.ephemeralStorage=150Gi` のように指定します。
+:::
+
+:::message
+rootless BuildKit は非特権（`CAP_SYS_ADMIN` 不要、uid 1000）で動きますが、内部の rootlesskit が使う `clone`/`unshare` 系のシステムコールが `RuntimeDefault` の seccomp プロファイルでブロックされるため、ビルドコンテナは `seccompProfile: Unconfined` を指定する必要があります。これは Pod Security Admission の `baseline`/`restricted` に抵触するので、`image-builder` namespace だけは PSA の enforce を緩め（`warn`/`audit` は `baseline` のまま可視化）、単発のビルド Job 専用に隔離しています。この設定は `terraform apply`（`image_builder_enabled`）が行うので、利用者側の追加操作は不要です。
 :::
 
 続いて、後半で使う Kubeflow Trainer v2 が入っていることを確認します。Basic01 の `terraform apply`（`trainer_enabled` が既定で有効）で導入済みのはずなので、TrainJob の CRD が見えることと、コントロールプレーン（`kubeflow-system` の manager と JobSet）が動いていることを確かめておきます。
