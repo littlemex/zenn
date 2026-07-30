@@ -57,7 +57,7 @@ module "vpc" {
 }
 ```
 
-ここで `azs` / `private_subnets` / `public_subnets` に渡している 3 つの `local.*` が、この構成の設計上の肝です。いずれも [`az.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/az.tf) で `var.region` と `var.vpc_cidr` から自動導出しており、通常のデプロイでは AZ もサブネット CIDR も一切手書きしません。tfvars に書くのは `region` とプールのインスタンスタイプだけで済みます。
+ここで `azs` / `private_subnets` / `public_subnets` に渡している 3 つの `local.*` が、この構成の設計上の肝です。いずれも [`az.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/az.tf) で `var.region` と `var.vpc_cidr` から自動導出しており、通常のデプロイでは AZ もサブネット CIDR も一切手書きしません。tfvars に書くのは `region` とプールのインスタンスタイプだけで済みます。リージョンや AZ、CIDR、インスタンスの zone id などを毎回手書きしているとミスが発生してデバッグやデプロイのし直しで時間がかかるため地味ですが重要な自動化です。
 
 **AZ とサブネット CIDR の自動導出**: `local.azs` は `var.azs` が `null`（既定）ならそのリージョンの標準 AZ を `sort` して全件返します。`us-west-2` や `us-east-2` なら 4 つの AZ すべてに VPC がまたがります。サブネット CIDR も `var.private_subnet_cidrs` / `var.public_subnet_cidrs` が `null`（既定）なら `var.vpc_cidr` から AZ ごとに 1 つずつ切り出します。プライベートは VPC の下半分（`/16` なら `10.0.0.0/17`）を AZ 数で等分し、パブリックは上半分から `/24` を AZ ごとに取ります。AZ が 2 つならプライベートは `/18`、4 つなら `/19`、というように AZ 数に追随してサイズが決まるため、サブネット一覧が AZ 一覧と食い違う余地がありません。この「プライベートは大きく、パブリックは小さく」という非対称な配分が分散 AI 向けの肝です。IP を大量に消費する主因は VPC CNI で、Pod 用のセカンダリ IP をノードごとにあらかじめ確保します（プレフィックス委譲では `/28` = 16 IP 単位）。EFA 対応インスタンスは物理ネットワークカードを多数持ちます（`p5en.48xlarge` は 16 枚）。この構成のように残りのカードを EFA 専用（`interfaceType: efa-only`）で立てると、ノードの IP を持つのはプライマリインターフェイス 1 枚だけになり、EFA 専用カードはサブネットの IP を一切消費しません。つまり IP 消費を押し上げるのは EFA のカード枚数ではなく VPC CNI であり、ワークロードが載るプライベートサブネットは大きく、NAT/ロードバランサーしか置かないパブリックサブネットは小さく、という配分になります。特定の AZ 集合に固定したい、あるいは CIDR を明示指定したい場合だけ `var.azs` / `var.private_subnet_cidrs` / `var.public_subnet_cidrs` で上書きでき、その際は解決後の AZ ごとにちょうど 1 つずつ CIDR を与えます（過不足は `az.tf` の precondition が検出します）。
 
