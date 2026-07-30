@@ -123,7 +123,7 @@ module "eks" {
 
 **`before_compute = true` の 2 つのアドオン**: `vpc-cni` と `eks-pod-identity-agent` にこのフラグを付け、ワーカーノードが起動する前にこれらを導入します。特に Pod Identity Agent は、Pod Identity で AWS 権限を得るコントローラ（Karpenter など）より先に存在していないと、それらが起動時に認証情報を取得できずクラッシュします。そのため順序を保証するためのフラグです。
 
-**System ノードグループの `karpenter.sh/controller` ラベル**: m5 系インスタンス（`var.system_node_ami_type` / `var.system_node_instance_types`）を `var.system_node_desired_size`（既定 2）台、`min_size = max_size = desired_size` で固定起動します。このノードグループは Karpenter が管理するのではなく、Amazon EKS Managed Node Group として常時稼働させます。`karpenter.sh/controller: "true"` というラベルを付けているのは、本章の apply で導入される Karpenter コントローラ自身をこのノードに載せるためです（Karpenter の仕組みは Basic03 で解説します）。Karpenter コントローラを Karpenter 管理下のノードに載せるのは前述のとおり非推奨なので、Karpenter を動かす最初の足場として、Karpenter の管理外のノードグループが必要になります。
+**System ノードグループの `karpenter.sh/controller` ラベル**: 規定では m5 系インスタンスを 2 台を固定起動します。このノードグループは Karpenter が管理するのではなく、Amazon EKS Managed Node Group として常時稼働させます。`karpenter.sh/controller: "true"` というラベルを付けているのは、本章の apply で導入される Karpenter コントローラ自身をこのノードに載せるためです。Karpenter コントローラを Karpenter 管理下のノードに載せるのは前述のとおり非推奨なので、Karpenter を動かす最初の足場として、Karpenter の管理外のノードグループが必要になります。
 
 ## Pod Identity による認証
 
