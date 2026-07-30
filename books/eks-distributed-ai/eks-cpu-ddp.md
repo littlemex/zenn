@@ -121,6 +121,11 @@ cd infra/eks
 ECR_URL=$(terraform output -raw ddp_sample_ecr_url)
 IMAGE=${ECR_URL}:v1
 
+# 同名のビルド Job が残っていると apply が "unchanged" でスキップされる（Job の spec は変更不可）。
+# 同じタグで作り直すときは先に削除する。初回は存在しなくても --ignore-not-found で安全。
+# （別解: タグを v2 に上げると Job 名も変わるので削除不要。latest 固定のキャッシュ事故も避けられる。）
+kubectl delete job build-ddp-sample-v1 -n image-builder --ignore-not-found
+
 # クラスタ内で BuildKit ビルド Job を起動
 helm template exp charts/experiments -n "$NAMESPACE" \
     --set imageBuild.enabled=true \
@@ -173,6 +178,11 @@ kubectl get pods -n kubeflow-system
 ```bash
 # step 2 から続けて infra/eks にいる前提です。ターミナルを変えた場合は cd infra/eks した上で
 # 変数を再取得します: ECR_URL=$(terraform output -raw ddp_sample_ecr_url); IMAGE=${ECR_URL}:v1
+
+# 同名の Job が残っていると apply が "unchanged" で無言でスキップされる（Job の spec は変更不可）。
+# 作り直すときは必ず先に削除する。初回は存在しなくても --ignore-not-found で安全。
+kubectl delete job ddp-torchrun -n "$NAMESPACE" --ignore-not-found
+
 helm template exp charts/experiments -n "$NAMESPACE" \
     --set sharedStorage.existingClaimName=openzfs-claim \
     --set torchrunTrain.enabled=true \
@@ -182,6 +192,10 @@ helm template exp charts/experiments -n "$NAMESPACE" \
     --set torchrunTrain.nprocPerNode=2 \
     | kubectl apply -f -
 ```
+
+:::message
+同名の `batch/v1` Job（`ddp-torchrun`）がすでに存在すると、`kubectl apply` は `job.batch/ddp-torchrun unchanged` と表示するだけで新しい定義を適用しません（Job の Pod テンプレートは作成後に変更できないためです）。前回の実行が残ったまま気づかず、古い完了済み Job を「動いた」と誤認しやすいので、投入の前に必ず削除します。
+:::
 
 :::message
 `sharedStorage.existingClaimName` を渡すのは、共有ストレージの静的 PersistentVolume（`openzfs-shared`）が 1 つしかなく、1 つの PVC にしかバインドできないためです。Basic01 で `openzfs-claim` がこの PV を掴んでいるので、チャートに新しい PVC を作らせるとバインド先が無く永久に `Pending` になります。既存の PVC を再利用するようこの値を渡すと、その競合を避けられます。
@@ -241,6 +255,10 @@ kubectl delete job ddp-torchrun -n "$NAMESPACE"
 :::
 
 ```bash
+# torchrun の Job と同じ理由で、同名の TrainJob が残っていると apply がスキップされる。
+# 作り直すときは先に削除する（初回は存在しなくても --ignore-not-found で安全）。
+kubectl delete trainjob ddp-trainjob -n "$NAMESPACE" --ignore-not-found
+
 helm template exp charts/experiments -n "$NAMESPACE" \
     --set sharedStorage.existingClaimName=openzfs-claim \
     --set trainjobTrain.enabled=true \
