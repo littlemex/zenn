@@ -43,7 +43,7 @@ module "vpc" {
   cidr = var.vpc_cidr        # 既定 10.0.0.0/16
 
   azs             = local.azs             # 既定はリージョンの全標準 AZ（az.tf で導出）
-  private_subnets = local.private_subnets # vpc_cidr の下半分から AZ ごとに /18 級を導出
+  private_subnets = local.private_subnets # vpc_cidr の下半分を AZ 数で等分（2 AZ→/18, 4 AZ→/19）
   public_subnets  = local.public_subnets  # vpc_cidr の上半分から AZ ごとに /24 を導出
 
   enable_nat_gateway     = true
@@ -179,7 +179,7 @@ IRSA は ServiceAccount にアノテーションで IAM ロールを結び付け
 
 分散 AI 特有の落とし穴が 2 つあります。いずれも一度ハマると原因特定に時間がかかるため、最初に押さえておきます。
 
-**注意 1: Amazon VPC の IP アドレスは大きめに確保する。** アクセラレータノードは通常の CPU ノードより桁違いに IP を消費します。主因は VPC CNI で、Pod 用の secondary IP をノードごとに大量に先取りします（プレフィックス委譲では `/28` = 16 IP 単位で確保）。EFA（Elastic Fabric Adapter）対応インスタンスは物理ネットワークカードを多数持ちますが（`p5en.48xlarge` は 16 枚）、ノードの IP を持つのはプライマリインターフェイス 1 枚だけで、残りは IP を消費しない EFA 専用（`interfaceType: efa-only`）です。したがって IP を食い潰すのは EFA のカード枚数ではなく VPC CNI であり、小さな CIDR だと数台のノードで枯渇し、最悪 Amazon EKS コントロールプレーンが管理 ENI を置けず `IMPAIRED`（`InsufficientFreeAddresses`）に陥ります。後から広げにくい失敗なので、この構成では Amazon VPC を `/16`、プライベートサブネットを AZ ごとに `/18` と大きめに取り、パブリックは NAT/LB 用途のみなので `/24` にしています。「パブリックは小さく、プライベートは大きく」は `awslabs/awsome-distributed-ai` の HyperPod-EKS リファレンスにも見られる原則です。
+**注意 1: Amazon VPC の IP アドレスは大きめに確保する。** アクセラレータノードは通常の CPU ノードより桁違いに IP を消費します。主因は VPC CNI で、Pod 用の secondary IP をノードごとに大量に先取りします（プレフィックス委譲では `/28` = 16 IP 単位で確保）。EFA（Elastic Fabric Adapter）対応インスタンスは物理ネットワークカードを多数持ちますが（`p5en.48xlarge` は 16 枚）、ノードの IP を持つのはプライマリインターフェイス 1 枚だけで、残りは IP を消費しない EFA 専用（`interfaceType: efa-only`）です。したがって IP を食い潰すのは EFA のカード枚数ではなく VPC CNI であり、小さな CIDR だと数台のノードで枯渇し、最悪 Amazon EKS コントロールプレーンが管理 ENI を置けず `IMPAIRED`（`InsufficientFreeAddresses`）に陥ります。後から広げにくい失敗なので、この構成では Amazon VPC を `/16`、プライベートサブネットを AZ 数に応じて `/18`〜`/19`（2 AZ なら `/18`、4 AZ なら `/19`）と大きめに取り、パブリックは NAT/LB 用途のみなので `/24` にしています。「パブリックは小さく、プライベートは大きく」は `awslabs/awsome-distributed-ai` の HyperPod-EKS リファレンスにも見られる原則です。
 
 **注意 2: `karpenter.sh/discovery` タグをパブリックサブネットに漏らさない。** このタグは Karpenter が「ノードを起動してよいサブネット」を検出するための目印です。Amazon VPC モジュールの共通タグに含めてしまうと全サブネットに伝搬し、パブリックサブネットにも付いてしまいます。すると Karpenter がパブリックサブネットにノードを立てますが、この構成はパブリック IP を自動付与しない設定のため、そのノードは外向きの到達経路を持たず `nodeadm` によるクラスタ参加に失敗して詰みます。この構成ではこのタグをプライベートサブネットとノードセキュリティグループにだけ明示的に付け、Amazon VPC 共通タグからは意図的に外しています。
 
@@ -203,6 +203,10 @@ cp terraform.tfvars.example terraform.tfvars
 # terraform.tfvars を編集: region, cluster_name, expected_account_id
 # （名前付き profile なら aws_profile も）
 ```
+
+:::message
+既定では AZ もサブネット CIDR も `region` と `vpc_cidr` から自動導出されるため、通常は tfvars で AZ やサブネットに手を加える必要はありません。`var.azs` / `var.private_subnet_cidrs` / `var.public_subnet_cidrs` を明示指定して上書きする場合だけ、解決後の AZ ごとにちょうど 1 つずつ CIDR を与えてください。長さが食い違うとサブネットを持たない AZ が生まれ、そこにアクセラレータプールを割り当てると Pod が永久に `Pending` になります。この不整合は `az.tf` の precondition（サブネット数と AZ 数の一致、各プールの解決後 AZ が VPC の AZ に含まれること、など）が plan 時に検出して apply を止めます。
+:::
 
 ## 2. apply する
 
@@ -263,16 +267,13 @@ kubectl config current-context
 
 今の時点では地味に見えますが、操作対象のクラスタやリソースが増える後続の章で事故を防ぐための習慣として、ここで身につけておきます。マルチクラスタ環境では、別クラスタ用に context を切り替えたまま元のつもりで操作してしまう事故が起きやすいため、破壊的な操作の前には必ずこのコマンドで対象クラスタを確認します。
 
-:::message
-既定では AZ もサブネット CIDR も `region` と `vpc_cidr` から自動導出されるため、通常はここで手を加える必要はありません。`var.azs` / `var.private_subnet_cidrs` / `var.public_subnet_cidrs` を明示指定して上書きする場合だけ、解決後の AZ ごとにちょうど 1 つずつ CIDR を与えてください。長さが食い違うとサブネットを持たない AZ が生まれ、そこにアクセラレータプールを割り当てると Pod が永久に `Pending` になります。この不整合は `az.tf` の precondition（サブネット数と AZ 数の一致、各プールの解決後 AZ が VPC の AZ に含まれること、など）が plan 時に検出して apply を止めます。
-:::
-
 ## 6. (任意) スモークテストで動作確認する
 
 リポジトリの [`infra/eks/tests/`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/tests) にインフラ層のスモークテストが用意されています。実行は任意ですが、初回構築後やモジュール変更後に回すと「apply は通ったが何かが壊れている」を早期に検出できます。基盤テストは GPU ノードを起動せず約 1 分で完了します。
 
 ```bash
-cd infra/eks/tests
+# ここまでの手順で infra/eks にいる前提です（別の場所にいる場合は cd <repo>/infra/eks）
+cd tests
 
 # 基盤テスト: control-plane / system-nodes / karpenter / training-operator /
 #            csi-drivers / storage-mount (FSx read/write)
