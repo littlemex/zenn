@@ -3,7 +3,7 @@ title: "Basic04 - accelerator_pools で GPU/Neuron ノードを追加する"
 free: true
 ---
 
-本章では、Ch1・Ch3 で作った Amazon EKS + Karpenter の土台の上に、`accelerator_pools` という 1 つの map 変数だけで GPU/Neuron ノードを追加する仕組みを扱います。実際に GPU ノードを 1 台起動し、Pod がスケジュールされて `nvidia-smi` が通るところまでを確認します。
+本章では、Basic01・Basic03 で作った Amazon EKS + Karpenter の土台の上に、`accelerator_pools` という 1 つの map 変数だけで GPU/Neuron ノードを追加する仕組みを扱います。実際に GPU ノードを 1 台起動し、Pod がスケジュールされて `nvidia-smi` が通るところまでを確認します。
 
 # 解説
 
@@ -11,11 +11,11 @@ free: true
 
 ![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 
-本章で扱うのは、この図のうち Karpenter が要求に応じて起動する **GPU/Neuron アクセラレータプール** の部分です。具体的には NodePool・EC2NodeClass・GPU Operator や device plugin などの関連アドオンを指します。Amazon VPC・Amazon EKS コントロールプレーン・Karpenter コントローラ自体は Ch1・Ch3 で作った前提とします。
+本章で扱うのは、この図のうち Karpenter が要求に応じて起動する **GPU/Neuron アクセラレータプール** の部分です。具体的には NodePool・EC2NodeClass・GPU Operator や device plugin などの関連アドオンを指します。Amazon VPC・Amazon EKS コントロールプレーン・Karpenter コントローラ自体は Basic01・Basic03 で作った前提とします。
 
 ## これは何をするものか
 
-Ch1・Ch3 で Amazon VPC・Amazon EKS コントロールプレーン・Karpenter コントローラという土台ができました。この土台の上に、実際に GPU や AWS Trainium/AWS Inferentia（Neuron）を積んだノードを Karpenter に起動させるための「型」を定義するのが本章です。
+Basic01・Basic03 で Amazon VPC・Amazon EKS コントロールプレーン・Karpenter コントローラという土台ができました。この土台の上に、実際に GPU や AWS Trainium/AWS Inferentia（Neuron）を積んだノードを Karpenter に起動させるための「型」を定義するのが本章です。
 
 Karpenter がノードを起動するには、最低でも次の 2 つの Kubernetes リソースが必要になります。
 
@@ -28,9 +28,9 @@ Karpenter がノードを起動するには、最低でも次の 2 つの Kubern
 
 `accelerator_pools` の主なフィールドは次の通りです。
 
-- `instance_types` — Karpenter が起動候補にできる Amazon EC2 インスタンスタイプのリスト（例: `["g6e.12xlarge"]`）
+- `instance_types` — Karpenter が起動候補にできる Amazon EC2 インスタンスタイプのリストを指定します（例: `["g6e.12xlarge"]`）
 - `device_plugin` — `"nvidia"` または `"neuron"`。どの device plugin がこのプールのアクセラレータを advertise するかを決める
-- `capacity_type` — `"reserved"`（Capacity Block）、`"on-demand"`、`"spot"` のいずれか
+- `capacity_type` — `"reserved"`（Capacity Block）、`"on-demand"`、`"spot"` のいずれかを指定します
 - `zone`（optional）— このプールを固定する単一の AZ。EFA/RDMA トラフィックはサブネットを跨げないため、複数ノードにわたる collective 通信を行う場合は全ランクが同一 AZ に載っている必要がある。通常は書かず、`reserved` なら Capacity Block の AZ、on-demand/spot なら先頭 AZ（`local.azs[0]`）に自動導出される。特定の AZ に固定したいときだけ明示指定する
 
 プールの `device_plugin` フィールドから、`has_gpu_pool` / `has_neuron_pool` / `has_efa_pool` という 3 つの真偽値が自動的に導出されます。これらのフラグに応じて、NVIDIA GPU Operator・Neuron device plugin・AWS EFA device plugin という 3 種類のアドオンがそれぞれ導入されるかどうかが決まります。つまり `accelerator_pools` に GPU プールしか定義しなければ Neuron 関連のアドオンは一切入らず、Neuron プールしか定義しなければ GPU Operator は入りません。クラスタが実際に使うものだけがインストールされます。
@@ -76,7 +76,7 @@ variable "accelerator_pools" {
 }
 ```
 
-必須は `instance_types` / `device_plugin` / `capacity_type` の 3 つだけで、残りはすべて `optional()` です。`zone` も既定 `""`（導出）で optional に降格しており、書かなければ `reserved` は Capacity Block の AZ を、on-demand/spot は先頭 AZ（`local.azs[0]`）を自動的に採ります（導出ロジックは `az.tf` の `local.pool_zone`。詳細は Ch6 と、既に見た Basic01 の AZ 自動導出）。`efa_interface_count = -1` と `efa_multi_card = null` が既定値になっている点にも注目してください。この 2 つは「明示しなければ EFA トポロジを instance type から自動導出する」というシグナルであり、具体的な導出ロジックは次節の `locals.tf` で見ます。`zone` を明示しても「解決後の AZ が VPC の AZ に含まれること」はこの変数の `validation` では検査せず（`local.azs` はデータソース由来で validation から参照できないため）、`az.tf` の precondition で plan 時に検査します。
+必須は `instance_types` / `device_plugin` / `capacity_type` の 3 つだけで、残りはすべて `optional()` です。`zone` も既定 `""`（導出）で optional に降格しており、書かなければ `reserved` は Capacity Block の AZ を、on-demand/spot は先頭 AZ（`local.azs[0]`）を自動的に採ります（導出ロジックは `az.tf` の `local.pool_zone`。詳細は Basic06 と、既に見た Basic01 の AZ 自動導出）。`efa_interface_count = -1` と `efa_multi_card = null` が既定値になっている点にも注目してください。この 2 つは「明示しなければ EFA トポロジを instance type から自動導出する」というシグナルであり、具体的な導出ロジックは次節の `locals.tf` で見ます。`zone` を明示しても「解決後の AZ が VPC の AZ に含まれること」はこの変数の `validation` では検査せず（`local.azs` はデータソース由来で validation から参照できないため）、`az.tf` の precondition で plan 時に検査します。
 
 この変数には 11 個の `validation` ブロックが積まれており、本章の「注意」節で挙げた落とし穴のほとんどは、実際にはここで plan 時に弾かれます。代表的なものを 2 つ引用します。
 
@@ -240,7 +240,7 @@ efa_supported_instance_types = distinct(flatten([
 
 ## 全体の中での位置付け
 
-本章は、Ch1 で作った Amazon EKS コントロールプレーンと Ch3 で載せた Karpenter コントローラの上に、初めて「GPU/Neuron ノードを増やせる型」を積む章です。ここで `accelerator_pools` の型と、それに紐づく taint・アドオン・disruption ポリシーの設計を理解しておくと、後続の章で扱う共有ストレージ（Amazon EFS/Amazon FSx for Lustre）や Capacity Block プールも同じ型の延長として素直に理解できます。Capacity Block（`capacity_type = "reserved"`）を使ったプールの追加は Ch6 で扱うため、本章では on-demand の最小構成から確認します。
+本章は、Basic01 で作った Amazon EKS コントロールプレーンと Basic03 で載せた Karpenter コントローラの上に、初めて「GPU/Neuron ノードを増やせる型」を積む章です。ここで `accelerator_pools` の型と、それに紐づく taint・アドオン・disruption ポリシーの設計を理解しておくと、後続の章で扱う共有ストレージ（Amazon EFS/Amazon FSx for Lustre）や Capacity Block プールも同じ型の延長として素直に理解できます。Capacity Block（`capacity_type = "reserved"`）を使ったプールの追加は Basic06 で扱うため、本章では on-demand の最小構成から確認します。
 
 ## 注意
 
@@ -248,7 +248,7 @@ efa_supported_instance_types = distinct(flatten([
 
 **1 プール内の instance_types は同じ EFA トポロジでなければなりません。** 1 つのプールに対して生成されるネットワークインターフェース構成は 1 つしかないため、例えば同じプールに `g6e.12xlarge`（EFA 1 枚・単一カード）と `p5en.48xlarge`（EFA 16 枚・複数カード）を混在させると、EFA カード構成が食い違い、plan/apply 時のバリデーションで reject されます。異なる EFA トポロジのインスタンスタイプを両方使いたい場合は、プールを分けます。
 
-**`InsufficientInstanceCapacity` への対処。** 導出された（あるいは明示した）AZ・インスタンスタイプの組み合わせで空き容量がない場合、Karpenter はノードを起動できずに再試行を続けます。対処法は 2 つあります。1 つは `zone` を明示指定して別の AZ に変えることです（on-demand/spot は既定で先頭 AZ に導出されるため、他の AZ を試すには明示が要ります。reserved は Capacity Block の AZ に固定なので、この対処は on-demand/spot 向けです）。もう 1 つは `instance_types` に同じ EFA トポロジを持つ別サイズ（例えば `g6e.12xlarge` に加えて `g6e.24xlarge` も追加する）を並べ、Karpenter に選択肢を与えることです。
+**`InsufficientInstanceCapacity` への対処。** 導出された（あるいは明示した）AZ・インスタンスタイプの組み合わせで空き容量がない場合、Karpenter はノードを起動できずに再試行を続けます。対処法は 2 つあります。1 つは `zone` を明示指定して別の AZ に変えることです（on-demand/spot は既定で先頭 AZ に導出されるため、他の AZ を試すには明示が要ります。reserved は Capacity Block の AZ に固定なので、この対処は on-demand/spot 向けです）。もう 1 つは `instance_types` に候補を増やして Karpenter に選択肢を与えることです（EFA を使うプールでは、`efa_capability` テーブルに登録済みで EFA トポロジが一致するタイプに限ります。g5 系のように EFA を持たない汎用 GPU プールなら `g5.12xlarge` と `g5.24xlarge` を並べる、といった具合です）。なお、初回に GPU ノードを起動するときは vCPU サービスクォータ（例: `Running On-Demand G and VT instances`）の不足で起動できないこともあります。g6e.12xlarge は 48 vCPU を要求するので、NodeClaim が起動しないときは容量不足だけでなくクォータも確認してください。
 
 **GPU Operator の初期化には数分かかります。** ノードが `Ready` になった直後は、GPU Operator の feature discovery・device plugin がまだ起動しきっていないことが多く、`nvidia.com/gpu` という resource がまだ advertise されていない時間帯があります。この間に GPU を要求する Pod をスケジュールしようとすると一時的に Pending のままになりますが、これは異常ではなく、数分待てば解消します。
 
@@ -342,7 +342,7 @@ ip-10-0-ww-ww.<region>...      Ready    <none>   15m   v1.35.6-eks-...     (syst
 ```
 
 :::message
-Capacity Block (reserved) プールを追加した場合は `gpu-p5en` / `reserved` として表示されます。CB プールの追加は Ch6 で扱います。
+Capacity Block (reserved) プールを追加した場合は `gpu-p5en` / `reserved` として表示されます。CB プールの追加は Basic06 で扱います。
 :::
 
 ## 6. nvidia-smi の出力を確認する
@@ -351,7 +351,7 @@ Capacity Block (reserved) プールを追加した場合は `gpu-p5en` / `reserv
 kubectl logs gpu-smoke
 ```
 
-実機出力例（p5en.48xlarge、H200）:
+実機出力例（`gpu-dev` = g6e.12xlarge、L40S x4）:
 
 ```
 +-----------------------------------------------------------------------------------------+
@@ -359,12 +359,18 @@ kubectl logs gpu-smoke
 +-----------------------------------------+------------------------+----------------------+
 | GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
 |=========================================+========================+======================|
-|   0  NVIDIA H200                    On  |   00000000:A4:00.0 Off |                    0 |
-| N/A   31C    P0             73W /  700W |       0MiB / 143771MiB |      0%      Default |
+|   0  NVIDIA L40S                    On  |   00000000:38:00.0 Off |                    0 |
+| N/A   28C    P8             34W /  350W |       0MiB /  46068MiB |      0%      Default |
+|   1  NVIDIA L40S                    On  |   00000000:3A:00.0 Off |                    0 |
+| N/A   27C    P8             33W /  350W |       0MiB /  46068MiB |      0%      Default |
+|   2  NVIDIA L40S                    On  |   00000000:3C:00.0 Off |                    0 |
+| N/A   28C    P8             34W /  350W |       0MiB /  46068MiB |      0%      Default |
+|   3  NVIDIA L40S                    On  |   00000000:3E:00.0 Off |                    0 |
+| N/A   27C    P8             33W /  350W |       0MiB /  46068MiB |      0%      Default |
 +-----------------------------------------+------------------------+----------------------+
 ```
 
-H200 (143 GB HBM3e) が認識されています。GPU Operator が正しく動作している証拠です。
+L40S（各 46 GB）が 4 枚とも認識されています。AL2023 の GPU 対応 AMI に同梱された NVIDIA ドライバと、GPU Operator が入れた device plugin が正しく動作している証拠です。
 
 ## 7. Pod を消して consolidateAfter の効果を見る
 
