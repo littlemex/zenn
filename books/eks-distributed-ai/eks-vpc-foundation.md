@@ -73,7 +73,7 @@ module "vpc" {
 
 **`single_nat_gateway = true` の意味**: NAT ゲートウェイを AZ ごとに作らず 1 つだけにしています。本番の可用性設計では、AZ 障害の影響を切り離すためと、AZ をまたぐ転送料金を避けるために AZ ごとに NAT を置きます。ところがこの基盤では、EFA の集団通信も FSx for Lustre も Capacity Block も単一 AZ が前提で、性能を出したいワークロードは自然と 1 つの AZ に集まります。そのため計算そのものが単一 AZ に寄っており、その AZ に NAT を同居させる限り、AZ ごとに NAT を作る利点は薄いです。ただし NAT がどの AZ に作られるかは意識しておく必要があります。`terraform-aws-modules/vpc` の `single_nat_gateway = true` は先頭のパブリックサブネット、つまり `local.azs` の先頭 AZ に NAT を 1 つ作ります。オンデマンド/スポットのプールは `zone` を書かなければこの先頭 AZ に導出されるため、NAT と同じ AZ に載り外向き通信は AZ をまたぎません。一方 Capacity Block のプールは予約が確保された AZ に固定されるので、それが先頭 AZ と異なると外向き通信（イメージ pull など）が AZ をまたぎます。この基盤は「予約が動いても VPC がリージョン全 AZ をまたぐので必ず対応するサブネットがある」ことを優先して単一 NAT を許容しています。ここで一点はっきりさせておくと、NAT は CB の AZ に自動で追従しません。`local.azs` は既定でリージョンの AZ 名を単純にソートした並びで、その先頭（通常は `...a`）に NAT が固定されます。CB がどの AZ に確保されても、また確保先が次回の予約で変わっても、NAT の位置は変わりません。したがって CB のプールと NAT を同じ AZ にそろえたい場合は、クラスタを構築する際の `var.azs` に CB の AZ を先頭にして並べます（例: CB が `us-east-2c` なら `azs = ["us-east-2c", "us-east-2a", ...]`）。そうすれば `azs[0]` が CB の AZ になり、NAT もそこに作られます。これはあくまで最初の `terraform apply` 時に決める設定で、稼働後に CB が別 AZ へ動いても NAT が引っ越すわけではない点に注意してください。揃えなかった場合でも動作はし、CB プールの外向き通信（イメージ pull など）が先頭 AZ の NAT を経由して AZ をまたぐだけです。プライベートサブネットからの外向き通信はこの単一 NAT を経由し、Amazon S3 は Gateway エンドポイント、Amazon ECR などは Interface エンドポイントを併用して NAT 経由の通信量そのものを減らしています。
 
-**`private_subnet_tags` の `karpenter.sh/discovery`**: このタグが後の章で効いてきます。Karpenter は「ノードを起動してよいサブネット」をこのタグで検出します。ここで**プライベートサブネットにだけ**タグを付け、`public_subnet_tags` には付けていない点が重要です。もし共通の `tags` に含めてしまうと全サブネットに伝搬してパブリックサブネットにも付き、Karpenter がそこにノードを立ててしまいます。この構成はパブリックサブネットにパブリック IP を自動付与しない設定なので、そこに立ったノードは外向きの到達経路を持たず、`nodeadm` によるクラスタ参加に失敗します。この付け分けは意図的です（詳細は末尾の「注意」節）。
+**`private_subnet_tags` の `karpenter.sh/discovery`**: このタグが後の章で効いてきます。Karpenter は「ノードを起動してよいサブネット」をこのタグで検出します。ここで**プライベートサブネットにだけ**タグを付け、`public_subnet_tags` には付けていない点が重要です。もし共通の `tags` に含めてしまうと全サブネットに伝搬してパブリックサブネットにも付き、Karpenter がそこにノードを立ててしまいます。この構成はパブリックサブネットにパブリック IP を自動付与しない設定なので、そこに立ったノードは外向きの到達経路を持たず、`nodeadm` によるクラスタ参加に失敗します。
 
 ## Amazon EKS クラスタと System ノードグループ
 
@@ -120,10 +120,6 @@ module "eks" {
   }
 }
 ```
-
-:::message
-このモジュールは `terraform-aws-eks` v21 系を使っており、引数名が `name` / `kubernetes_version` です（v20 以前の `cluster_name` / `cluster_version` ではありません）。バージョンを変える際は引数名の互換性に注意してください。
-:::
 
 **`before_compute = true` の 2 つのアドオン**: `vpc-cni` と `eks-pod-identity-agent` に `before_compute = true` を付け、ワーカーノードが起動する前にこれらを導入します。特に Pod Identity Agent は、Pod Identity で AWS 権限を得るコントローラ（Karpenter や、上の `aws-ebs-csi-driver`）より先に存在していないと、それらが起動時に認証情報を取得できずクラッシュします。実際 `aws-ebs-csi-driver` には `pod_identity_association` で IAM ロールを渡しており、これが機能するには Pod Identity Agent が先にいる必要があります。順序を保証するためのフラグです。
 
