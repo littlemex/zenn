@@ -23,7 +23,7 @@ Karpenter は、スケジュールできずに `Pending` のままになって�
 
 1 つ目は CRD の管理方法です。Karpenter が使う `EC2NodeClass` / `NodePool` / `NodeClaim` の CRD は、コントローラ本体の Helm chart（`karpenter`）とは別の chart（`karpenter-crd`）として提供されています。これは Helm の仕様上、chart の `crds/` ディレクトリに含まれる CRD は `helm upgrade` の対象外で、初回インストール時のスキーマのまま更新されないためです。`karpenter-crd` を同じバージョンで別チャートとして管理すれば、バージョンアップ時に CRD のスキーマも一緒に更新できます。
 
-2 つ目は認証方式です。Karpenter コントローラが Amazon EC2 の起動・終了などの AWS API を呼ぶために必要な権限は、ServiceAccount に IAM ロールをアノテーションで結び付ける IRSA 方式ではなく、Amazon EKS Pod Identity を使って付与します。Pod Identity は IAM ロールとの結び付けを ServiceAccount 定義ではなく Kubernetes クラスタの外（IAM 側の Pod Identity Association）で完結させられるため、設定がシンプルになります。
+2 つ目は認証方式です。Karpenter コントローラが Amazon EC2 の起動・終了などの AWS API を呼ぶために必要な権限は、ServiceAccount に IAM ロールをアノテーションで結び付ける IRSA 方式ではなく、Amazon EKS Pod Identity を使って付与します。Pod Identity は IAM ロールとの結び付けを ServiceAccount のアノテーションではなく EKS 側のリソース（Pod Identity Association）で完結させられるため、設定がシンプルになります。これが機能するには `eks-pod-identity-agent` アドオンが必要ですが、これは Basic01 の `terraform apply` で導入済みです。
 
 3 つ目は Spot 中断への対応です。Karpenter は SQS の interruption queue を経由して、Spot インスタンスの中断通知や AWS のヘルスイベント、リバランス推奨を受け取り、対象ノード上の Pod を強制終了ではなく graceful に drain してから終了させます。この queue と、通知を queue に流す Amazon EventBridge ルールの作成も、Karpenter 導入の一部として行います。
 
@@ -83,7 +83,7 @@ variable "karpenter_chart_version" {
 
 この 1 つの変数を `helm_release.karpenter_crd` と `helm_release.karpenter` の両方の `version` に渡すことで、バージョンアップ時に 2 か所を揃えて書き換える必要がなくなり、片方だけ上げ忘れる事故を防いでいます。
 
-**`webhook.enabled = false` で `karpenter-crd` chart 側の webhook を無効化する。** `karpenter-crd` chart は CRD の conversion webhook をオプションで持てますが、その webhook はコントローラ本体（`helm_release.karpenter`）側のチャートも同じものを起動します。両方で起動すると Deployment が重複するため、CRD 専用チャート側では明示的に無効化しています。
+**`webhook.enabled = false` で `karpenter-crd` chart 側の webhook を無効化する。** `karpenter-crd` chart は CRD の conversion webhook（`v1beta1` から `v1` へ API バージョンを変換する仕組み）をオプションで持てますが、これは古い API バージョンからの移行用で、Karpenter v1 系では conversion 自体が不要になっています。本構成は最初から v1 の CRD だけを使うので、この webhook を明示的に無効化して余計なコンポーネントを立てないようにしています。
 
 ## Karpenter コントローラの Helm リリース
 
@@ -134,11 +134,11 @@ resource "helm_release" "karpenter" {
 }
 ```
 
-**`skip_crds = true`。** `karpenter-crd` chart で CRD を管理している以上、コントローラ chart 側が同梱する CRD は絶対にインストールさせてはいけません。これを付けないと `helm upgrade` のたびにどちらの chart が CRD の最終形を決めるかが不定になり、`karpenter-crd` 側での更新が無意味になります。
+**`skip_crds = true` を付ける。** `karpenter-crd` chart で CRD を管理している以上、コントローラ chart 側が同梱する CRD はインストールさせてはいけません。これを付けないと、初回インストール時にコントローラ chart も同じ CRD を作ろうとして所有権が衝突します。しかも Helm は chart の `crds/` ディレクトリを初回 install 時にしか処理せず `helm upgrade` では触らないため、コントローラ chart 側が一度作った CRD はその後 `karpenter-crd` 側で更新しても追従されません。CRD の管理を `karpenter-crd` chart に一本化するために、コントローラ chart 側では明示的にスキップします。
 
-**`wait = false` と、その代わりの `depends_on`。** このリリースはコントローラ Pod が `Ready` になるまで Terraform 側で待ちません。その代わり、後続の `NodePool` / `EC2NodeClass` を表す `kubectl_manifest` リソース（`karpenter-resources.tf`、次章で扱う）が `helm_release.karpenter_crd` に明示的に依存する形で、CRD の登録だけを保証しています。コントローラ Pod 自体の起動完了までは待たないため、「CRD が `Established` になる前に NodePool を apply すると失敗しうる」という後述の注意が残っています。
+**`wait = false` にして `depends_on` で順序を保証する。** このリリースはコントローラ Pod が `Ready` になるまで Terraform 側で待ちません。その代わり、後続の `NodePool` / `EC2NodeClass` を表す `kubectl_manifest` リソース（`karpenter-resources.tf`、次章で扱う）が `helm_release.karpenter_crd` に明示的に依存する形で、CRD の登録だけを保証しています。コントローラ Pod 自体の起動完了までは待たないため、「CRD が `Established` になる前に NodePool を apply すると失敗しうる」という後述の注意が残っています。
 
-**`nodeSelector.karpenter.sh/controller: "true"`。** Ch1 で System ノードグループに付けたラベルと同じキーです。Karpenter は自分が管理するノードにこのラベルを付けないため、このラベルを持つノードは常に Karpenter 管理外の System ノードだけになり、コントローラが自己参照で詰まることがありません。
+**`nodeSelector` で `karpenter.sh/controller: "true"` を要求する。** Basic01 で System ノードグループに付けたラベルと同じキーです。Karpenter は自分が管理するノードにこのラベルを付けないため、このラベルを持つノードは常に Karpenter 管理外の System ノードだけになり、コントローラが自己参照で詰まることがありません。
 
 **`settings.interruptionQueue` に `module.karpenter.queue_name` を渡す。** `iam.tf` の `module "karpenter"` が作成した SQS queue の名前をそのまま Helm values に埋め込んでいます。この 1 行だけで Spot 中断通知の受信先が決まります。
 
@@ -182,9 +182,9 @@ module "karpenter" {
 
 **`enable_spot_termination = true` が SQS queue と Amazon EventBridge ルールを両方作る。** この 1 行が、Spot 中断通知を受け取る interruption queue と、その queue に Spot 中断イベント・AWS ヘルスイベント・リバランス推奨を流す Amazon EventBridge ルールをまとめて作成します。上の Helm values で参照した `module.karpenter.queue_name` は、この行がなければ存在しません。
 
-**`node_iam_role_use_name_prefix = false` と `node_iam_role_name`。** ノード用 IAM ロール名を `${var.cluster_name}-karpenter-node`（`locals.tf` の `karpenter_node_role_name`）に固定しています。デフォルトではモジュールがランダムな suffix を付けたロール名を生成しますが、それだと次章で書く `EC2NodeClass.spec.instanceProfile` から参照するロール名が Terraform apply ごとに変わってしまいます。名前を固定することで、EC2NodeClass 側から確定的な名前で参照できるようにしています。
+**`node_iam_role_use_name_prefix = false` でノードロール名を固定する。** ノード用 IAM ロール名を `${var.cluster_name}-karpenter-node`（`locals.tf` の `karpenter_node_role_name`）に固定しています。デフォルトではモジュールがランダムな suffix を付けた名前を生成するため、`EC2NodeClass.spec.instanceProfile` に渡すインスタンスプロファイル名（このモジュールはロール名から導出します）が Terraform apply ごとに変わってしまいます。ロール名を固定するとプロファイル名も確定的になり、Basic04 で書く `EC2NodeClass` から決め打ちの名前で参照できます。
 
-**`node_iam_role_additional_policies` の 2 つ。** `AmazonSSMManagedInstanceCore` は Session Manager 経由でノードにログインするために付与しています。`NodeS3ReadWrite` は同じ `iam.tf` 内で定義したカスタムポリシー（`aws_iam_policy.karpenter_node_s3`）で、アカウント ID を名前に含む Amazon S3 バケット（実験データ用の命名規則）への読み書きをノードに許可します。
+**`node_iam_role_additional_policies` で 2 つのポリシーを足す。** `AmazonSSMManagedInstanceCore` は Session Manager 経由でノードにログインするために付与しています。`NodeS3ReadWrite` は同じ `iam.tf` 内で定義したカスタムポリシー（`aws_iam_policy.karpenter_node_s3`）で、アカウント ID を名前に含む Amazon S3 バケット（実験データ用の命名規則）への読み書きをノードに許可します。
 
 ```hcl
 # iam.tf（抜粋、S3 ポリシーの definition）
@@ -241,27 +241,19 @@ resource "null_resource" "wait_for_node_drain" {
 }
 ```
 
-**なぜこれが要るのか。** `kubectl_manifest` は `NodePool` / `NodeClaim` の削除を Kubernetes API が受理した瞬間に「完了」として報告しますが、実際のノード drain・Amazon EC2 インスタンス終了・ENI 解放は Karpenter コントローラが非同期に行う後処理です。GPU/Neuron ノードが起動中に `terraform destroy` で Karpenter やその関連コントローラ（EFA デバイスプラグイン、Amazon EFS/Amazon FSx for Lustre CSI ドライバなど）を先に消してしまうと、その Amazon EC2 インスタンスは誰にも終了されずに課金され続ける「孤児」インスタンスになります。
+**なぜこれが要るのかを説明します。** `kubectl_manifest` は `NodePool` / `NodeClaim` の削除を Kubernetes API が受理した瞬間に「完了」として報告しますが、実際のノード drain・Amazon EC2 インスタンス終了・ENI 解放は Karpenter コントローラが非同期に行う後処理です。GPU/Neuron ノードが起動中に `terraform destroy` で Karpenter やその関連コントローラ（EFA デバイスプラグイン、Amazon EFS/Amazon FSx for Lustre CSI ドライバなど）を先に消してしまうと、その Amazon EC2 インスタンスは誰にも終了されずに課金され続ける「孤児」インスタンスになります。
 
-**`depends_on` の設計。** Terraform は destroy を `depends_on` の逆順で実行するため、この `null_resource` が `depends_on` に列挙している Karpenter・GPU Operator・EFA デバイスプラグイン・Amazon EFS/Amazon FSx for Lustre CSI・placement group・Amazon VPC エンドポイントは、すべてこの drain 待ちが完了した**後**に破棄されます。Amazon VPC エンドポイントが含まれているのは、destroy 中に NAT ゲートウェイが先に消えても、Karpenter コントローラが Amazon VPC エンドポイント経由で Amazon EC2/IAM/STS/SSM の API 呼び出しを続けられるようにするためです（詳細はソースコード中のコメントを参照）。
-
-## 全体の中での位置付け
-
-前章（Ch1）で用意した System ノードの上に、本章で Karpenter コントローラを載せます。Karpenter 自身はまだ何の NodePool も持たないため、この時点ではアクセラレータノードは 1 台も起動しません。次章（Ch4）で `accelerator_pools` を定義すると、その Karpenter が定義に従って GPU/Neuron ノードを起動する、という流れになります。本章は「エンジンだけ載せて、燃料はまだ入れていない」状態を作る章です。
+**`depends_on` はこう設計しています。** Terraform は destroy を `depends_on` の逆順で実行するため、この `null_resource` が `depends_on` に列挙している Karpenter・GPU Operator・EFA デバイスプラグイン・Amazon EFS/Amazon FSx for Lustre CSI・placement group・Amazon VPC エンドポイントは、すべてこの drain 待ちが完了した**後**に破棄されます。Amazon VPC エンドポイントが含まれているのは、destroy 中に NAT ゲートウェイが先に消えても、Karpenter コントローラが Amazon VPC エンドポイント経由で Amazon EC2/IAM/STS/SSM の API 呼び出しを続けられるようにするためです（詳細はソースコード中のコメントを参照）。
 
 ## 注意
 
-**注意 1: `featureGates.reservedCapacity` を Helm values に書かない。** このフラグは Karpenter v1.13.0 のコンパイル時点で `true` がデフォルトになっています。Helm values に明示的にキーを書くと、chart 側のスキーマに存在しないキーとして扱われてエラーになる場合があります。バージョンごとのデフォルト値は chart の `values.yaml` で確認し、デフォルトと同じ値をわざわざ明示しないようにします。
+**注意 1: `featureGates.reservedCapacity` を Helm values に書かない。** このフラグは Karpenter v1.13.0 のコンパイル時点で `true` がデフォルトになっており、本構成が必要とする挙動と一致します。デフォルトと同じ値をわざわざ values に固定すると、将来 chart のデフォルトが変わったときに追従できなくなるので、明示せずデフォルトに委ねます。バージョンごとのデフォルト値は chart の `values.yaml` で確認できます。
 
-**注意 2: `expireAfter` は ISO-8601 ではなく Go の duration 文字列で書く。** NodePool で使う `expireAfter` フィールドは `P1D` のような ISO-8601 形式ではなく、`"24h"` のような Go 標準の duration 文字列を期待します。ISO-8601 の書式で書いても apply 自体は通ってしまう場合があり、実際の期限が意図した値と違うことに気づきにくいので注意します。
-
-**注意 3: CRD が `Established` になる前の NodePool apply は失敗しうる。** `karpenter-crd` chart のインストール直後、まだ Kubernetes API サーバーに CRD が完全に登録されていない状態で `NodePool` リソースを apply すると失敗することがあります。これは一時的な状態なので、再実行すれば通ることが多い既知の flake として扱ってよいです。
-
-**注意 4: Amazon ECR Public の認証トークンは `us-east-1` から取る。** Karpenter の Helm chart は `oci://public.ecr.aws/karpenter` から取得しますが、Amazon ECR Public の認証トークンは AWS API の制約でリージョンを `us-east-1` に固定して取得する必要があります。他のリージョンからトークンを取ろうとすると認証エラーになります。
+**注意 2: CRD が `Established` になる前の NodePool apply は失敗しうる。** `karpenter-crd` chart のインストール直後、まだ Kubernetes API サーバーに CRD が完全に登録されていない状態で `NodePool` リソースを apply すると失敗することがあります。これは一時的な状態なので、`terraform apply` を再実行すれば通ります。
 
 # ワークショップ実施
 
-Karpenter は Ch1 の `terraform apply` に含めて導入済みの構成です。ここでは導入結果を確認します。
+Karpenter は Basic01 の `terraform apply` に含めて導入済みの構成です。ここでは導入結果を確認します。
 
 ## 1. Karpenter コントローラの起動を確認する
 
@@ -269,7 +261,7 @@ Karpenter は Ch1 の `terraform apply` に含めて導入済みの構成です�
 kubectl -n karpenter get pods
 ```
 
-`karpenter` namespace で controller Pod が `Running` になっていることを確認します。Ch1 で作った System ノード（`nodeSelector: karpenter.sh/controller: "true"`）の上にスケジュールされているはずです。
+`karpenter` namespace で controller Pod が `Running` になっていることを確認します。Basic01 で作った System ノード（`nodeSelector: karpenter.sh/controller: "true"`）の上にスケジュールされているはずです。
 
 ## 2. CRD が入っていることを確認する
 
@@ -285,7 +277,7 @@ kubectl get crd | grep karpenter
 helm list -n karpenter
 ```
 
-`karpenter-crd` と `karpenter` が別リリースとして並びます。バージョンを上げるときはこの 2 つを同じバージョンで揃えて `helm upgrade` します。
+`karpenter-crd` と `karpenter` が別リリースとして並びます。この 2 つは `var.karpenter_chart_version` という 1 つの変数から同じバージョンを受け取る設計なので、バージョンを上げるときはこの変数を変えて `terraform apply` すれば両者が揃って更新されます（Helm リリースは Terraform が管理しているので、手で `helm upgrade` はしません）。
 
 ## 4. まだノードが増えていないことを確認する
 
@@ -293,7 +285,7 @@ helm list -n karpenter
 kubectl get nodes
 ```
 
-この時点では `NodePool` を 1 つも定義していないため、Karpenter はまだ起動先の情報を持ちません。表示されるノードは Ch1 の System ノードのみで、GPU/Neuron ノードは増えていません。これが demand-driven なプロビジョニングの動作確認になります。
+この時点では `NodePool` を 1 つも定義していないため、Karpenter はまだ起動先の情報を持ちません。表示されるノードは Basic01 の System ノードのみで、GPU/Neuron ノードは増えていません。これが demand-driven なプロビジョニングの動作確認になります。
 
 # まとめ
 
