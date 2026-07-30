@@ -246,7 +246,7 @@ kubectl delete job ddp-torchrun -n "$NAMESPACE"
 次に、同じ学習を 2 ノードにまたがる TrainJob で動かします。`numNodes=2` がノード数、`nprocPerNode=1` が各ノード内のプロセス数です（Helm の `nprocPerNode` は TrainJob の `numProcPerNode` に対応します）。本 book がクラスタに用意した Runtime（`torch-distributed-eks`）に `topologyKey: kubernetes.io/hostname` の podAntiAffinity が入っているので、2 つの Pod は必ず別ノードに分かれて配置されます（結果として Pod 数 = ノード数になります）。前半と違い、rank の割り当てと集合点の配線は Trainer に任せるため、追加の手作業は不要です。
 
 :::message
-TrainJob 経路の配線（Pod 名 `<ジョブ名>-node-0-<index>-<ランダム>`、node index と rank の一致、`node-0-0` が集合点、2 Pod が別ノードに分かれること、2 ノード間の all-reduce 成立、`Complete` ステータス）は distai-eks-blog クラスタ（EKS 1.35、CPU ノード 2 台、gloo）で実機検証済みです。以下のログ例は `ddp.py`（MNIST MLP）を流したときの形式を示すもので、loss 値そのものは seed やデータ分割で変わります。
+この手順は distai-eks-blog クラスタ（EKS 1.35、CPU ノード 2 台、gloo）で実機検証済みです。Pod 名 `<ジョブ名>-node-0-<index>-<ランダム>`、node index と rank の一致（`node-0-0` が rank 0）、`node-0-0` が集合点、2 Pod が別ノードに分かれること、2 ノード間の all-reduce、`ddp.py`（MNIST MLP）の 3 エポック完走（loss が両 rank でほぼ一致しながら単調減少し、rank 0 がスナップショットを共有ストレージへ保存）、`Complete` ステータスまでを確認しています。以下のログ例の loss 値そのものは seed やデータ分割で変わります。
 :::
 
 ```bash
@@ -314,7 +314,7 @@ kubectl logs -l "jobset.sigs.k8s.io/jobset-name=ddp-trainjob,batch.kubernetes.io
 `WORLD_SIZE=2` の 2 プロセスが別々のノードで起動し、両 rank の loss がエポックを追って単調に下がっていることから、2 つのノードが勾配を all-reduce しながら 1 つのモデルを学習できていることが分かります（各 rank はデータセットの異なる分割を担当するので、loss は完全に同一ではなく近い値で推移します）。最後に TrainJob が `Complete` になり、rank 0 がスナップショットを共有ストレージ上の `/shared/output/trainjob/snapshot.pt` に保存します。
 
 :::message
-上のログは形式を示すための例で、loss の数値そのものは seed やデータ分割で変わります。単調に減少していれば正常です。TrainJob 経路の配線（2 Pod の別ノード配置、`node-0-0`=rank 0、2 ノード間の all-reduce、`Complete`）は distai-eks-blog で実機検証済みです。`ddp.py`（MNIST MLP）の loss 低下そのものは、実行モデルが同じ v1 PyTorchJob 構成（distai-eks-smoke、us-east-2、CPU ノード r5a.large ×2）で確認済みで、TrainJob 上での MNIST 完走は今後さらに詰めます。
+上のログは形式を示すための例で、loss の数値そのものは seed やデータ分割で変わります。単調に減少していれば正常です。この 2 ノード TrainJob での MNIST 学習は distai-eks-blog（EKS 1.35、CPU ノード 2 台）で実機完走を確認済みで、両 rank の loss がほぼ一致しながら 3 エポックで減少し（実測で rank 0 が 0.20 → 0.09 → 0.06）、rank 0 が `/shared/output/trainjob/snapshot.pt` を保存して `Complete` になりました。
 :::
 
 ログを追い損ねても、TrainJob が `Complete` になったことと、共有ストレージ上のスナップショットで完了を確認できます。`kubectl wait` の `--for=condition=Complete` が完了を待つ確実な方法です。
