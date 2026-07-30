@@ -3,7 +3,9 @@ title: "Basic01 - Amazon EKS 基盤を立てる"
 free: true
 ---
 
-本章では、分散学習・推論の実験を回すための土台として Amazon EKS クラスタを構築します。Terraform で Amazon VPC・Amazon EKS コントロールプレーン・Karpenter を動かすための System ノードグループをデプロイし、`kubectl` でノードが見えるところまでを扱います。GPU/Neuron のアクセラレータノード自体は Basic04 以降で立てるため、ここでは「あとから何度でも実験を回せる足場」を一度だけ作ります。
+本章では、分散学習・推論の実験を回すための土台として Amazon EKS クラスタを構築します。
+
+Terraform で Amazon VPC・Amazon EKS コントロールプレーン・Karpenter を動かすための System ノードグループをデプロイし、`kubectl` でノードが見えるところまでを扱います。
 
 :::message alert
 本資料は `us-east-2` リージョンを例に説明します。実際には自身で選択したリージョンに読み替えて進めてください。コマンド中の `<region>` などのプレースホルダは自分の値に置き換えます。
@@ -17,7 +19,7 @@ free: true
 
 ![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 
-本章の `terraform apply` は、この基盤のクラスタスコープの土台を一度に立ち上げます。図のうち中核となる **Amazon VPC・Amazon EKS コントロールプレーン・System ノードグループ** に加え、その上で動く Karpenter コントローラ・各 CSI ドライバ・Kubeflow Training Operator・共有ストレージ（既定の FSx）まで、後続の章で使う基盤コンポーネントが同じ apply で揃います（後述の「基盤層が恒久管理するもの、しないもの」を参照）。本章で詳しく解説するのは中核の 3 つで、残りは各コンポーネントの章で 1 つずつ扱います。唯一まだ立たないのは GPU/Neuron のアクセラレータ「ノード」で、`accelerator_pools` が空の本章では起動せず、Basic04 以降で 1 行足して立てます。
+本章の `terraform apply` は、この基盤のクラスタスコープの土台を一度に立ち上げます。図のうち中核となる **Amazon VPC・Amazon EKS コントロールプレーン・System ノードグループ** に加え、その上で動く Karpenter コントローラ・各 CSI ドライバ・Kubeflow Training Operator・共有ストレージ（既定の FSx）まで、後続の章で使う基盤コンポーネントが同じ apply で揃います。本章で詳しく解説するのは中核の 3 つで、残りは各コンポーネントの章で 1 つずつ扱います。
 
 ## これは何をするものか
 
@@ -67,7 +69,7 @@ module "vpc" {
 }
 ```
 
-ここで `azs` / `private_subnets` / `public_subnets` に渡している 3 つの `local.*` が、この構成の設計上の肝です。いずれも [`az.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/az.tf) で `var.region` と `var.vpc_cidr` から自動導出しており、通常のデプロイでは AZ もサブネット CIDR も一切手書きしません。tfvars に書くのは `region` とプールのインスタンスタイプだけで済みます。読みどころは AZ とサブネットの自動導出・`single_nat_gateway`・`private_subnet_tags` の 3 点です。
+ここで `azs` / `private_subnets` / `public_subnets` に渡している 3 つの `local.*` が、この構成の設計上の肝です。いずれも [`az.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/az.tf) で `var.region` と `var.vpc_cidr` から自動導出しており、通常のデプロイでは AZ もサブネット CIDR も一切手書きしません。tfvars に書くのは `region` とプールのインスタンスタイプだけで済みます。
 
 **AZ とサブネット CIDR の自動導出**: `local.azs` は `var.azs` が `null`（既定）ならそのリージョンの標準 AZ（Local Zone や Wavelength を除く、`opt-in-not-required` の AZ）を `sort` して全件返します。`us-west-2` や `us-east-2` なら 4 つの AZ すべてに VPC がまたがります。サブネット CIDR も `var.private_subnet_cidrs` / `var.public_subnet_cidrs` が `null`（既定）なら `var.vpc_cidr` から AZ ごとに 1 つずつ切り出します。プライベートは VPC の下半分（`/16` なら `10.0.0.0/17`）を AZ 数で等分し、パブリックは上半分から `/24` を AZ ごとに取ります。AZ が 2 つならプライベートは `/18`、4 つなら `/19`、というように AZ 数に追随してサイズが決まるため、サブネット一覧が AZ 一覧と食い違う余地がありません。この「プライベートは大きく、パブリックは小さく」という非対称な配分が分散 AI 向けの肝です。GPU ノードが載るプライベートサブネットは、Pod ごとに VPC の IP を消費する VPC CNI のために大きく確保し、NAT ゲートウェイやロードバランサーしか置かないパブリックサブネットは小さくて足ります（この IP 消費の仕組みと、EFA が IP を食わない理由は末尾の「注意」節で詳しく説明します）。特定の AZ 集合に固定したい、あるいは CIDR を明示指定したい場合だけ `var.azs` / `var.private_subnet_cidrs` / `var.public_subnet_cidrs` で上書きでき、その際は解決後の AZ ごとにちょうど 1 つずつ CIDR を与えます（過不足は `az.tf` の precondition が検出します）。
 
