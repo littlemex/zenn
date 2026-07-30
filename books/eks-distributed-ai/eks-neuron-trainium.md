@@ -115,9 +115,9 @@ variable "neuron_enable_scheduler" {
 
 Basic04 で作った `accelerator_pools` の型は GPU/Neuron 共通です。本章はその型に `device_plugin = "neuron"` のエントリを 1 つ追加し、`neuron-addons.tf` が条件付きで Neuron device plugin を導入するところから始めて、Basic05 で見た EFA を使ったマルチノード構成を Neuron 側でも実際に動かすところまでを扱います。GPU 側では NCCL がその役割を担っていましたが、Neuron では torch-neuronx（PyTorch/XLA バックエンド）と Neuron 用の collective 通信ライブラリがその役割を担います。
 
-## 注意
+## 設計上の注意
 
-**Karpenter + Neuron の NPD/DRA は非サポートです。** `neuron-helm-chart` の Node Problem Detector（NPD）と Dynamic Resource Allocation（DRA、Kubernetes 1.30+ のデバイス割り当て API）はこの構成では明示的に無効化しています。Karpenter がノードのライフサイクルを管理する構成では、Neuron の NPD/DRA は組み合わせとして未サポートのため、有効化しません。
+**Karpenter + Neuron の NPD/DRA は非サポートです。** この構成では `neuron-helm-chart` の Node Problem Detector（NPD）を `npd.enabled = false` で明示的に無効化しています。DRA（Dynamic Resource Allocation、デバイス割り当ての新 API）はチャートのデフォルトで無効なので、こちらは有効化しないことで結果的に使いません。いずれも Karpenter がノードのライフサイクルを管理する構成とは組み合わせとして未サポートのため、オフのまま運用します。
 
 **EFA device plugin の toleration には必ず `aws.amazon.com/neuron` を含めてください。** EFA device plugin は GPU と Neuron の両方のプールで共有される 1 つの DaemonSet であり、その toleration に Neuron taint が入っていなければ trn2 ノードには乗れません。乗れなければ `vpc.amazonaws.com/efa` がそのノードで一切 advertise されず、EFA を要求する Pod は理由の分かりにくい Pending のまま止まります。この構成ではすでに toleration に含めてありますが、自分で device plugin の設定を変更する場合はここを崩さないよう注意してください。
 
@@ -173,7 +173,7 @@ helm template exp charts/experiments -n "$NAMESPACE" \
 kubectl -n "$NAMESPACE" exec neuron-probe -- neuron-ls
 ```
 
-trn2.48xlarge では 16 個の Trainium2 デバイスが表示されます。ノードの allocatable を見ると、device plugin が `aws.amazon.com/neuron: 16`、`aws.amazon.com/neuroncore: 64`、`vpc.amazonaws.com/efa: 15` を advertise していることが確認できます。この `neuroncore: 64` は、後述する LNC=2 のもとでの論理 NeuronCore 数です。EFA が 16 枚のカードに対して 15 なのは、この構成ではネットワークカード 0 をノードの IP を担う ENA として構成し、残る 15 枚を EFA 専用インターフェースとして立てているためです（EC2 の制約上、カード 0 のインターフェースは ENA を含む必要があります）。したがって Pod がスケジュール要求に使える EFA は 15 枚になります。実際に要求できる枚数はインスタンスタイプとノードの起動時構成で決まるので、`terraform output accelerator_pool_efa_schedulable` の値か、ノードの allocatable を直接確認するのが確実です。
+trn2.48xlarge では 16 個の Trainium2 デバイスが表示されます。ノードの allocatable を見ると、`aws.amazon.com/neuron: 16` と `aws.amazon.com/neuroncore: 64` は Neuron device plugin が、`vpc.amazonaws.com/efa: 15` は別の DaemonSet である EFA device plugin が、それぞれ advertise していることが確認できます。この `neuroncore: 64` は、後述する LNC=2 のもとでの論理 NeuronCore 数です。EFA が 16 枚のカードに対して 15 なのは、この構成ではネットワークカード 0 をノードの IP を担う ENA として構成し、残る 15 枚を EFA 専用インターフェースとして立てているためです（EC2 の制約上、カード 0 のインターフェースは ENA を含む必要があります）。したがって Pod がスケジュール要求に使える EFA は 15 枚になります。実際に要求できる枚数はインスタンスタイプとノードの起動時構成で決まるので、`terraform output accelerator_pool_efa_schedulable` の値か、ノードの allocatable を直接確認するのが確実です。
 
 :::message
 Karpenter は hugepages を「新しいノードをどのインスタンスタイプで立てるか」の判断材料として扱いません。そのため、まだ対象ノードが存在せずプロビジョニングを誘発するプローブ Pod で `hugepages-2Mi` を要求すると、Karpenter が「条件を満たすインスタンスタイプがない」と誤判定して NodeClaim を作らず、Pod が永久に Pending になります。プローブでは hugepages を要求しないのはこのためです。一方、次の 2 ノード DDP は起動済みのノードに対して適用するので hugepages を要求できます。
@@ -189,39 +189,24 @@ helm template exp charts/experiments -n "$NAMESPACE" \
   | kubectl apply -f -
 ```
 
-2 台目の trn2 が起動して両 Pod が `Running` になったら、Pod 間で SSH 鍵を配ります（両 Pod は hostNetwork なので Pod IP はノード IP と一致します）。
-
-```bash
-NS=trn2-verify
-kubectl -n $NS exec neuron-server -- bash -lc \
-  '[ -f /root/.ssh/id_ed25519 ] || ssh-keygen -t ed25519 -N "" -f /root/.ssh/id_ed25519 -q; \
-   cp /root/.ssh/id_ed25519.pub /root/.ssh/authorized_keys; chmod 600 /root/.ssh/authorized_keys'
-PRIV=$(kubectl -n $NS exec neuron-server -- bash -lc 'base64 -w0 < /root/.ssh/id_ed25519')
-PUB=$(kubectl -n $NS exec neuron-server -- bash -lc 'cat /root/.ssh/id_ed25519.pub')
-kubectl -n $NS exec neuron-client -- bash -lc \
-  "echo '$PRIV' | base64 -d > /root/.ssh/id_ed25519 && chmod 600 /root/.ssh/id_ed25519; \
-   echo '$PUB' > /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys; \
-   chown -R root:root /root/.ssh"
-```
-
-`chown -R root:root /root/.ssh` を忘れると、sshd の StrictModes が所有者不一致を理由に鍵を拒否するので必ず入れてください。
+2 台目の trn2 が起動して両 Pod が `Running` になったら、あとは両ノードで `torchrun` を起動するだけです。ここでの rendezvous は `torchrun` の `--master-addr` / `--master-port` に master ノードの IP を直接渡す方式なので、Pod 間の SSH は必要ありません（テンプレートは NCCL 版ワークロードと同じ作りで各 Pod に sshd を持っていますが、この torchrun 手順では使いません。両 Pod は hostNetwork なので Pod IP はノード IP と一致します）。
 
 Pod の IP を確認し、両ノードで `torchrun` を起動します。1 ノードあたりの並列数（`--nproc-per-node`）は 32 で、2 ノードで world_size は 64 になります。
 
 ここで並列数の数え方を整理しておきます。trn2.48xlarge は 16 個の Trainium2 デバイスを積んでおり、Trainium2 は 1 デバイスあたり 8 個の物理 NeuronCore を持つため、物理 NeuronCore は合計 128 個です。この構成は LNC（logical NeuronCore config）=2 で動いており、2 つの物理コアが 1 論理コアに束ねられます。その結果、1 ノードあたりの論理 NeuronCore は 64 個になります。これは手順 3 で device plugin が advertise していた `aws.amazon.com/neuroncore: 64` と一致します。この検証では 1 ノードあたり 32 プロセス（`--nproc-per-node=32`）で起動しており、論理コアをすべて使い切る構成（`--nproc-per-node=64`）ではなく、疎通と DDP の成立を確認するためのスモーク構成である点に注意してください。プロセス数を変える場合は、この後のワークロードの `nprocPerNode` の値も合わせて調整します。
 
 ```bash
-kubectl -n $NS get pods -o wide   # server / client の IP を確認
+kubectl -n "$NAMESPACE" get pods -o wide   # server / client の IP を確認
 SERVER_IP=<neuron-server のノード IP>
 
 # client（node-rank=1）を先に起動
-kubectl -n $NS exec neuron-client -- bash -lc "cd /opt/test && \
+kubectl -n "$NAMESPACE" exec neuron-client -- bash -lc "cd /opt/test && \
   NEURON_RT_DBG_ZEROCOPY=0 FI_PROVIDER=efa FI_EFA_USE_DEVICE_RDMA=1 FI_EFA_FORK_SAFE=1 \
   torchrun --nnodes=2 --node-rank=1 --nproc-per-node=32 \
     --master-addr=$SERVER_IP --master-port=29500 allreduce_test.py" &
 
 # server（node-rank=0）
-kubectl -n $NS exec neuron-server -- bash -lc "cd /opt/test && \
+kubectl -n "$NAMESPACE" exec neuron-server -- bash -lc "cd /opt/test && \
   NEURON_RT_DBG_ZEROCOPY=0 FI_PROVIDER=efa FI_EFA_USE_DEVICE_RDMA=1 FI_EFA_FORK_SAFE=1 \
   torchrun --nnodes=2 --node-rank=0 --nproc-per-node=32 \
     --master-addr=$SERVER_IP --master-port=29500 allreduce_test.py"
@@ -255,7 +240,7 @@ libfabric:...:core:core:fi_fabric_():1588<info> Opened fabric: efa-direct
 
 さらに、公式サンプル（aws-neuron-samples）の MNIST MLP を DDP で流す実践的なワークロードも 2 ノード（各 16 ワーカー、計 32 ワーカー）で完走し、両ノードの全ワーカーが最終 loss を算出しました。単なる collective 疎通だけでなく、実際のモデル訓練が 2 ノードで回ることまで確認できています。
 
-## 注意
+## 検証時の注意
 
 **ドライバとランタイムの `zerocopy` ABI 不一致で `nrt_init` が失敗することがあります。** 上の起動コマンドに付けた `NEURON_RT_DBG_ZEROCOPY=0` は、今回の検証で踏んだハマりどころへの対処です。何も付けずに実行すると、Neuron ランタイムの初期化が次のエラーで失敗しました。
 
