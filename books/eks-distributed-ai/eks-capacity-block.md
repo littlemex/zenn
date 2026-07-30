@@ -2,7 +2,7 @@
 title: "Basic06 - Capacity Block を取得して組み込む"
 free: true
 ---
-本章では、Ch4 で `accelerator_pools` に用意しておいた `capacity_type = "reserved"` という選択肢を実際に使い、H200/AWS Trainium の予約キャパシティ（Capacity Block）を Amazon EKS クラスタに組み込みます。予約の検索・購入から `terraform.tfvars` への反映、NCCL/EFA での動作確認、期限管理までの一連の運用フローを扱います。
+本章では、Basic04 で `accelerator_pools` に用意しておいた `capacity_type = "reserved"` という選択肢を実際に使い、H200/AWS Trainium の予約キャパシティ（Capacity Block）を Amazon EKS クラスタに組み込みます。予約の検索・購入から `terraform.tfvars` への反映、NCCL/EFA での動作確認、期限管理までの一連の運用フローを扱います。
 
 # 解説
 
@@ -10,7 +10,7 @@ free: true
 
 ![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 
-本章で扱うのは、この図のうち **Capacity Block による予約 GPU/AWS Trainium ノードの調達** と、その期限を監視する **Amazon EventBridge → Amazon SNS のアラート経路** です。アクセラレータプールの構造自体は Ch4 までに作った型をそのまま使います。
+本章で扱うのは、この図のうち **Capacity Block による予約 GPU/AWS Trainium ノードの調達** と、その期限を監視する **Amazon EventBridge → Amazon SNS のアラート経路** です。アクセラレータプールの構造自体は Basic04 までに作った型をそのまま使います。
 
 ## これは何をするものか
 
@@ -29,7 +29,7 @@ CB を使う運用フローは次のようになります。
 
 この章に付属する helper script は `00-check-cb-offerings.sh` から `04-teardown.sh` までの 5 つで、上記の手順 1・2・3・4・6（検索・購入・反映・検証・teardown）にそれぞれ 1 対 1 で対応しています。番号の順に実行すれば迷わない構成にしています。手順 5 の期限アラートだけはスクリプト実行を挟まず、`cb_end_date` を設定するだけで Terraform が自動的に組み立てます。
 
-さらに、この構成には `cb_end_date` から自動的に期限アラートを組み立てる仕組みが入っています。プールに `cb_end_date` を書いておくと、Terraform が Amazon EventBridge Scheduler の one-shot ルールを 1 プールにつき 1 つ作り、終了 1 時間前に Amazon SNS へ通知します。発火後はそのスケジュール自体が自己削除されるため、`terraform apply` を重ねても過去の時刻でスケジュールを再作成しようとして API に拒否される、という事故を避けられます。
+さらに、この構成には `cb_end_date` から自動的に期限アラートを組み立てる仕組みが入っています。プールに `cb_end_date` を書いておくと、Terraform が Amazon EventBridge Scheduler の one-shot スケジュールを 1 プールにつき 1 つ作り、終了 1 時間前に Amazon SNS へ通知します。発火後はそのスケジュール自体が自己削除されるため、`terraform apply` を重ねても過去の時刻でスケジュールを再作成しようとして API に拒否される、という事故を避けられます。
 
 最後にコストの話をしておきます。CB は前払いで、購入後のキャンセルや返金はできません。p5en.48xlarge を 24 時間予約するだけで数百ドルから千ドル台のオーダーの upfront fee がかかります。したがって、CB を買う前に g6e のような On-Demand で十分に手が届く GPU インスタンスでコードとマニフェストの動作を検証しておき、CB は「動作確認済みのジョブを、確保した本番規模のアクセラレータに載せる」という最後のステップに使うのが安全な段階的アプローチになります。
 
@@ -154,7 +154,7 @@ check "capacity_block_ready" {
 
 ## 期限アラート（eventbridge-cb-alarm.tf）
 
-[`eventbridge-cb-alarm.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/eventbridge-cb-alarm.tf) は、`capacity-block.tf` が導出した `local.pool_cb_end_date` から、プールごとに 1 つの one-shot な Amazon EventBridge Scheduler ルールを組み立てます。
+[`eventbridge-cb-alarm.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/eventbridge-cb-alarm.tf) は、`capacity-block.tf` が導出した `local.pool_cb_end_date` から、プールごとに 1 つの one-shot な Amazon EventBridge Scheduler スケジュールを組み立てます。
 
 ```hcl
 # eventbridge-cb-alarm.tf（抜粋）
@@ -210,7 +210,7 @@ resource "aws_scheduler_schedule" "cb_expiry_alert" {
 
 ## 全体の中での位置付け
 
-Ch4 までに作った `accelerator_pools` という型に、本章では「予約 ID をどう埋めるか」という運用手順を積み重ねます。プール定義そのものの構造は変わりません。CB は容量調達の一手段であり、NodePool/NodeClass の設計自体には手を入れないという点が、この章を Ch4〜Ch5 の続きとして位置づける根拠になります。
+Basic04 までに作った `accelerator_pools` という型に、本章では「予約 ID をどう埋めるか」という運用手順を積み重ねます。プール定義そのものの構造は変わりません。CB は容量調達の一手段であり、NodePool/NodeClass の設計自体には手を入れないという点が、この章を Basic04〜Basic05 の続きとして位置づける根拠になります。
 
 ## 注意
 
@@ -277,16 +277,23 @@ gpu-p5en = {
 
 `zone` は含まれません。前述のとおり `reserved` プールの AZ は予約から導出されるため、スクリプトも既定では `zone` 行を出しません。特定の AZ に固定したい場合だけ `--zone <az>` を渡すと、その明示指定を含んだブロックが出力されます。出力されたブロックを `terraform.tfvars` の `accelerator_pools` に貼り付けます。
 
-## 4. apply してノードを確認する
+## 4. apply して NodePool を確認する
 
 ```bash
 cd infra/eks
 terraform apply
-kubectl get nodes -l karpenter.sh/capacity-type=reserved
-kubectl get nodeclaims -l karpenter.sh/nodepool=gpu-p5en
+kubectl get nodepool gpu-p5en
+kubectl get ec2nodeclass gpu-p5en
 ```
 
-`CAPACITY = reserved` の NodeClaim が表示され、`ZONE` が指定した単一 AZ に一致していれば、CB からのノード起動は成功です。
+apply が作るのは NodePool と EC2NodeClass の定義であって、この時点ではまだノードは立ちません。Karpenter は GPU を要求する Pod（Pending）が現れて初めてノードを起動します。実際にノードを立てるのは次の手順で、CB プールをターゲットにしたワークロードを投入したときです。ノードが立った後は次のコマンドで確認できます。
+
+```bash
+kubectl get nodeclaims -l karpenter.sh/nodepool=gpu-p5en
+kubectl get nodes -l karpenter.sh/capacity-type=reserved
+```
+
+`CAPACITY = reserved` の NodeClaim が表示され、`ZONE` が予約の AZ に一致していれば、CB からのノード起動は成功です。
 
 ## 5. マルチノードなら NCCL/EFA を検証する
 
@@ -311,12 +318,19 @@ terraform output cb_expiry_sns_topic_arn
 実機出力:
 ```
 cb_expiry_alert_schedule_exprs = {
-  "gpu-p5en" = "at(2026-07-21T10:30:00)"
+  "gpu-p5en" = "at(2026-07-21T11:00:00)"
 }
 cb_expiry_sns_topic_arn = "arn:aws:sns:<region>:<account>:distai-eks-<name>-cb-expiry-alert"
 ```
 
-`cb_end_date`（または予約から自動導出された終了時刻）の 1 時間前に `at()` 式の Amazon EventBridge Scheduler ルールが 1 つ作られ、共有 Amazon SNS トピックにメール通知が届きます。通知が来たらワークロードの graceful drain を開始します。
+`cb_end_date`（または予約から自動導出された終了時刻）の 1 時間前に `at()` 式の Amazon EventBridge Scheduler スケジュールが 1 つ作られ、共有 Amazon SNS トピックにメール通知が届きます。通知が来たらワークロードの graceful drain を開始します。
+
+メールを受け取るには、通知先アドレスを `terraform.tfvars` の `cb_alert_email_addresses` に設定して apply しておきます。設定すると Terraform が SNS トピックへの email サブスクリプションを作成しますが、AWS から確認メールが届くので、その中のリンクを一度クリックして承認するまで通知は届きません（SNS の仕様です）。
+
+```hcl
+# terraform.tfvars
+cb_alert_email_addresses = ["you@example.com"]
+```
 
 ## 7. teardown する
 
@@ -328,12 +342,12 @@ Deployment/StatefulSet/Job/MPIJob を削除し、GPU Pod が完全に終了し�
 
 # まとめ
 
-本章では、Ch4 で用意した `capacity_type = "reserved"` を使い、Capacity Block の検索・購入から `terraform.tfvars` への反映、NCCL/EFA での動作確認、期限アラート、teardown までの一連の運用フローを構築しました。CB は前払いで取り消しができないため、On-Demand で動作確認を済ませたジョブを最後に載せる、という段階的な使い方が安全です。`cb_end_date` の UTC 指定や `capacity_type` との組み合わせなど、Terraform の `validation` で弾いている落とし穴も合わせて押さえておけば、期限管理まで含めた CB 運用を事故なく回せます。
+本章では、Basic04 で用意した `capacity_type = "reserved"` を使い、Capacity Block の検索・購入から `terraform.tfvars` への反映、NCCL/EFA での動作確認、期限アラート、teardown までの一連の運用フローを構築しました。CB は前払いで取り消しができないため、On-Demand で動作確認を済ませたジョブを最後に載せる、という段階的な使い方が安全です。`cb_end_date` の UTC 指定や `capacity_type` との組み合わせなど、Terraform の `validation` で弾いている落とし穴も合わせて押さえておけば、期限管理まで含めた CB 運用を事故なく回せます。
 
 # 参考資料
 
 - [Amazon EC2 Capacity Blocks for ML](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/capacity-blocks-using.html)
 - [Amazon EventBridge Scheduler](https://docs.aws.amazon.com/scheduler/latest/UserGuide/what-is-scheduler.html)
-- [awslabs/awsome-distributed-ai](https://github.com/awslabs/awsome-distributed-training)
+- [awslabs/awsome-distributed-training](https://github.com/awslabs/awsome-distributed-training)
 - [対象モジュール infra/eks](https://github.com/littlemex/distributed-ai/tree/main/infra/eks)
 </content>
