@@ -149,15 +149,7 @@ kubectl -n image-builder logs job/build-ddp-sample-v1 -c ecr-login    # 認証 i
 ```
 
 :::message
-このイメージには sshd も Open MPI も etcd も入りません。`torch` と `torchvision` は PyTorch のベースイメージに同梱されており、DDP に必要なものは揃っています。v2 では集合点が `torchrun` の既定 rendezvous（先頭ノード上の TCP ストア）で完結するため、rendezvous 用の追加サーバーやクライアントライブラリは要りません。
-:::
-
-:::message
-どうしても手元でビルドしたい場合は、[`infra/eks/manifests/ddp-sample/README.md`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/manifests/ddp-sample) に `docker`（または `finch`）でのビルド・push 手順があります。その場合は `terraform apply` 時に `image_builder_enabled = false` にしてクラスタ内ビルドの機構を作らないようにもできますが、既定のクラスタ内ビルドで完結するのでこの節では使いません。
-:::
-
-:::message
-数十 GB 級の重いイメージ（独自 CUDA 拡張入りの学習イメージなど）は、前述のとおりピークディスクが push 後サイズの 4〜5 倍になり共有 CPU プールの 50Gi ルートに収まりません。その場合は `terraform apply` 時に `image_builder_dedicated_pool = true` を設定すると、NVMe インスタンスストアを束ねた大容量ローカルディスクのビルド専用ノードプール（taint で隔離、ビルドが終われば自動で 0 台に戻る）が用意されます。Helm 側では `--set imageBuild.dedicatedPool.enabled=true --set imageBuild.ephemeralStorage=150Gi` のように指定します。
+数十 GB 級の重いイメージは、前述のとおりピークディスクが push 後サイズの 4〜5 倍になり共有 CPU プールの 50Gi ルートに収まりません。その場合は `terraform apply` 時に `image_builder_dedicated_pool = true` を設定すると、NVMe インスタンスストアを束ねた大容量ローカルディスクのビルド専用ノードプール（taint で隔離、ビルドが終われば自動で 0 台に戻る）が用意されます。Helm 側では `--set imageBuild.dedicatedPool.enabled=true --set imageBuild.ephemeralStorage=150Gi` のように指定します。
 :::
 
 :::message
@@ -334,45 +326,9 @@ kubectl run peek --rm -it --restart=Never --image=busybox:1.36 -n "$NAMESPACE" \
 kubectl delete trainjob ddp-trainjob -n "$NAMESPACE"
 ```
 
-## 5. オプション: GPU（nccl）で動かす場合
-
-同じワークロードを GPU に載せ替えられます。GPU 実行を決めるのは `gpu.enabled=true` と Pod の `nvidia.com/gpu` リクエストで、これが揃うと `ddp.py` が nccl backend を選びます。`backend=nccl` はあくまで出力パスのラベルなので、`gpu.enabled=true` を付け忘れると GPU ノード上でも gloo で動いてしまい、出力先だけ `*-nccl` になるという分かりにくい不整合が起きます。GPU プールを選ぶ `nodeRole` と合わせて、この 3 つをセットで指定するのがポイントです。`nprocPerNode` は 1 ノード（Pod）あたりの GPU 数（`gpu.count`）と一致させます（1 プロセスが 1 GPU を掴むため、ずれると同じ GPU を奪い合います）。
-
-`nodeRole` に渡す「GPU プール名」は、Basic04 で `accelerator_pools` に定義した map のキーそのものです（本 book の例では GPU 用の `gpu-dev`）。この名前が Karpenter の NodePool 名になり、同時に各ノードの `node-role` ラベルの値になります。ワークロードは `nodeSelector: node-role: <プール名>` でそのプールに載るので、CPU で使ってきた `node-role=cpu` の GPU 版だと考えれば同じ仕組みです。手元で実際の名前を確認するには次のコマンドを使います（`gpu-` で始まるものが GPU プールです）。
-
-```bash
-kubectl get nodepool
-```
-
-```bash
-# 単一ノード torchrun を 1 GPU で
-helm template exp charts/experiments -n "$NAMESPACE" \
-    --set sharedStorage.existingClaimName=openzfs-claim \
-    --set torchrunTrain.enabled=true --set torchrunTrain.image="$IMAGE" \
-    --set torchrunTrain.backend=nccl --set torchrunTrain.nodeRole=gpu-dev \
-    --set torchrunTrain.gpu.enabled=true --set torchrunTrain.gpu.count=1 \
-    --set torchrunTrain.nprocPerNode=1 | kubectl apply -f -
-```
-
-後半の TrainJob を GPU に載せ替える場合も同じ考え方です。`trainjobTrain` には出力パスのラベル（`backend`）はなく、出力先は常に `/shared/output/trainjob/` です。GPU 実行は `gpu.enabled=true` と `gpu.count` で決まり、`ddp.py` が nccl backend を選びます。`nprocPerNode` は `gpu.count` と揃えます。
-
-```bash
-# 2 ノード TrainJob を各 1 GPU で
-helm template exp charts/experiments -n "$NAMESPACE" \
-    --set sharedStorage.existingClaimName=openzfs-claim \
-    --set trainjobTrain.enabled=true --set trainjobTrain.image="$IMAGE" \
-    --set trainjobTrain.nodeRole=gpu-dev --set trainjobTrain.numNodes=2 \
-    --set trainjobTrain.gpu.enabled=true --set trainjobTrain.gpu.count=1 \
-    --set trainjobTrain.nprocPerNode=1 | kubectl apply -f -
-```
-
-:::message
-これらの nccl のコマンドは形を示すためのもので、本章では実機検証していません（本章で実測したのは CPU の gloo 経路だけです）。Karpenter の仕組みは Basic03 で掘り下げ、GPU プールの用意とその上での実際の学習は Basic04 以降で扱います。本章の時点では CPU（gloo）で「動く」ことを確認できていれば十分です。
-:::
-
 # まとめ
 
-本章では、GPU を使わずに Amazon EKS の CPU ノード上で MNIST MLP の DDP 学習を 2 段構えで動かしました。前半はオペレータ不要の `torchrun`（`batch/v1` Job）で 1 ノード内の 2 プロセスを走らせ、後半は Kubeflow Trainer v2 の TrainJob で 2 ノードにまたがる分散学習を走らせました。いずれも gloo backend で動かし、loss が減少すること、そして rank 0 のみがスナップショットを共有ストレージに保存するという DDP の基本動作を確認しました。複数ノードの PyTorch 学習には、SSH の足回りが要る MPIJob 構成ではなく、レガシーの PyTorchJob（v1）の後継である TrainJob（v2）を使い、集合点の配線は Trainer が `torchrun` の既定 rendezvous で自動化するため自前の etcd が要らない、という勘所も押さえました。共有ストレージは既定で単一 AZ の FSx for OpenZFS を使い、その選定理由（計算が単一 AZ に寄る基盤ではマルチ AZ 共有は活きない）も見ました。次章 Basic03 で Karpenter を掘り下げ、Basic04 以降でこの DDP を GPU（nccl backend）に載せ替え、さらに EFA でマルチノードに広げていきます。
+本章では、GPU を使わずに Amazon EKS の CPU ノード上で MNIST MLP の DDP 学習を 2 段構えで動かしました。前半はオペレータ不要の `torchrun`（`batch/v1` Job）で 1 ノード内の 2 プロセスを走らせ、後半は Kubeflow Trainer v2 の TrainJob で 2 ノードにまたがる分散学習を走らせました。いずれも gloo backend で動かし、loss が減少すること、そして rank 0 のみがスナップショットを共有ストレージに保存するという DDP の基本動作を確認しました。
 
 # 参考資料
 
