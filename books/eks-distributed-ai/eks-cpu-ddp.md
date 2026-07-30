@@ -26,7 +26,7 @@ free: true
 
 本章では gloo backend を使い、CPU ノードの上で DDP を動かします。学習対象は、分散学習の教材として広く使われる MNIST を分類する小さな MLP です。モデルもデータも小さいので、GPU なしの CPU でも 1 周が数分で終わり、学習内容そのものより「複数プロセスが勾配を共有して 1 つのモデルを学習する」という DDP の挙動に集中できます。
 
-本章は 2 段構えで進めます。同じ学習スクリプト `ddp.py` を使い回し、起動方法だけを差し替えます。
+本章は 2 段構えで進めます。同じ学習スクリプト [`ddp.py`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/manifests/ddp-sample/ddp.py) を使い回し、起動方法だけを差し替えます。
 
 ### 前半: 単一ノード（torchrun、オペレータ不要）
 
@@ -63,7 +63,7 @@ Kubeflow Trainer v2 の API はまだ `v1alpha1`（アルファ）です。将�
 
 v2 の要点は「利用者は TrainJob で台数と中身だけを書き、集合点の配線は Trainer に任せる」ことです。具体的には、Trainer の torch プラグインが各 Pod に `torchrun`（TorchElastic）が読む `PET_*` 環境変数（`PET_NNODES` / `PET_NPROC_PER_NODE` / `PET_NODE_RANK` / `PET_MASTER_ADDR` / `PET_MASTER_PORT`）を注入します。`PET_NODE_RANK` は Pod のインデックスから固定で決まるため、`node-0-0` が常に node rank 0（= rank 0）になります。`PET_MASTER_ADDR` は先頭ノードの Pod（JobSet が払い出す `<ジョブ名>-node-0-0` の headless DNS）を指し、そこが集合点になります。`torchrun` はこれらを引数の既定値として読み（先頭ノード上の TCPStore を使う既定の rendezvous で動きます。参加順で rank が変わる動的方式ではありません）、各学習プロセスに `RANK` / `WORLD_SIZE` / `LOCAL_RANK` / `MASTER_ADDR` / `MASTER_PORT` を再エクスポートします。`ddp.py` はその値を、引数なしの `init_process_group()` による env:// rendezvous で読み取ります。
 
-TrainJob 側は台数（`numNodes`）とノードあたりのプロセス数（`numProcPerNode`）、イメージ、起動コマンドだけを指定します。集合点の配線や 1 ノード 1 Pod の配置といった土台側の設定は、本 book がクラスタに用意した Runtime（`torch-distributed-eks`）が持っています。
+TrainJob 側は台数（`numNodes`）とノードあたりのプロセス数（`numProcPerNode`）、イメージ、起動コマンドだけを指定します。集合点の配線や 1 ノード 1 Pod の配置といった土台側の設定は、本 book がクラスタに用意した Runtime（[`torch-distributed-eks`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/clustertrainingruntime-eks.yaml)）が持っています。この Runtime を導入する Trainer v2 本体は Terraform の [`trainer.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/trainer.tf) が入れます。
 
 ## 学習結果の保存先と共有ストレージ
 
@@ -241,7 +241,7 @@ kubectl delete job ddp-torchrun -n "$NAMESPACE"
 
 ## 4. 複数ノードで TrainJob を動かす（後半）
 
-次に、同じ学習を 2 ノードにまたがる TrainJob で動かします。`numNodes=2` がノード数、`nprocPerNode=1` が各ノード内のプロセス数です（Helm の `nprocPerNode` は TrainJob の `numProcPerNode` に対応します）。本 book がクラスタに用意した Runtime（`torch-distributed-eks`）に `topologyKey: kubernetes.io/hostname` の podAntiAffinity が入っているので、2 つの Pod は必ず別ノードに分かれて配置されます（結果として Pod 数 = ノード数になります）。前半と違い、rank の割り当てと集合点の配線は Trainer に任せるため、追加の手作業は不要です。
+次に、同じ学習を 2 ノードにまたがる TrainJob で動かします。`numNodes=2` がノード数、`nprocPerNode=1` が各ノード内のプロセス数です（Helm の `nprocPerNode` は TrainJob の `numProcPerNode` に対応します）。本 book がクラスタに用意した Runtime（[`torch-distributed-eks`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/clustertrainingruntime-eks.yaml)）に `topologyKey: kubernetes.io/hostname` の podAntiAffinity が入っているので、2 つの Pod は必ず別ノードに分かれて配置されます（結果として Pod 数 = ノード数になります）。前半と違い、rank の割り当てと集合点の配線は Trainer に任せるため、追加の手作業は不要です。
 
 :::message
 この手順は distai-eks-blog クラスタ（EKS 1.35、CPU ノード 2 台、gloo）で実機検証済みです。Pod 名 `<ジョブ名>-node-0-<index>-<ランダム>`、node index と rank の一致（`node-0-0` が rank 0）、`node-0-0` が集合点、2 Pod が別ノードに分かれること、2 ノード間の all-reduce、`ddp.py`（MNIST MLP）の 3 エポック完走（loss が両 rank でほぼ一致しながら単調減少し、rank 0 がスナップショットを共有ストレージへ保存）、`Complete` ステータスまでを確認しています。以下のログ例の loss 値そのものは seed やデータ分割で変わります。
