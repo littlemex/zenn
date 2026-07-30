@@ -67,17 +67,11 @@ TrainJob 側は台数（`numNodes`）とノードあたりのプロセス数（`
 
 ## 学習結果の保存先と共有ストレージ
 
-本章の 2 つのワークロードは、MNIST のデータと学習スナップショットを共有ストレージに保存します。既定の保存先は単一 AZ の NFS 共有である **Amazon FSx for OpenZFS** です。ストレージの詳細は Basic10 で扱いますが、`openzfs_enabled` が既定で有効なため、Basic01 の `terraform apply` の時点でファイルシステムと静的 PersistentVolume（`openzfs-shared`）はすでに作られています。本章では、Basic01 で作成済みの PVC（`openzfs-claim`）をそのまま再利用し、コンテナの `/shared` にマウントして使います（Helm の `sharedStorage.existingClaimName` で指定します）。
+本章の 2 つのワークロードは、MNIST のデータと学習スナップショットを共有ストレージに保存します。既定の保存先は単一 AZ の **Amazon FSx for OpenZFS** です。ストレージの詳細は後続の章でで扱いますが、`openzfs_enabled` が既定で有効なため、`terraform apply` の時点でファイルシステムと静的 PersistentVolume（`openzfs-shared`）はすでに作られています。本章では、既に作成済みの PVC（`openzfs-claim`）をそのまま利用し、コンテナの `/shared` にマウントして使います。
 
-後半の複数ノード TrainJob でも、スナップショットの保存は rank 0 が担当します。そのため、どのノードから書かれても同じ場所に成果物が集まる共有ストレージ（ReadWriteMany）が要ります。単一ノードの torchrun でも同じ共有ストレージを使い、入口から同じ `/shared` 規約に揃えておくと 2 段目への流れが素直になります。共有ファイルシステム上での同時書き込みによる破損を避けるため、`ddp.py` は MNIST のダウンロードを rank 0 だけが行い（他 rank は barrier で待って同じ実体を読む）、スナップショットの書き込みも rank 0 に限定しています。
+後半の複数ノード TrainJob でも、スナップショットの保存は rank 0 が担当します。そのため、どのノードから書かれても同じ場所に成果物が集まる共有ストレージ（ReadWriteMany）が要ります。単一ノードの torchrun でも同じ共有ストレージを使い、入口から同じ `/shared` 規約に揃えておくと 2 段目への流れが素直になります。共有ファイルシステム上での同時書き込みによる破損を避けるため、`ddp.py` は MNIST のダウンロードとスナップショット書き込みを rank 0 だけが行います。
 
-保存先は Helm の `sharedStorage.backend` で切り替えられます。既定の `openzfs`（FSx for OpenZFS、汎用の共有ホーム）のほかに、高スループットのスクラッチ領域が要るときは `fsx`（FSx for Lustre）、リージョン規模のマルチ AZ 共有が要るときは `efs`（Amazon EFS）を選べます。3 つのバックエンドはいずれも Terraform 側で静的 PV が用意される設計で、選んだバックエンドの `var.<x>_enabled` が有効になっている必要があります。既定で `openzfs` と `fsx` は有効、`efs` は無効（ドライバのみ常設）です。
-
-:::message
-既定が単一 AZ の FSx なのは、EFA・FSx for Lustre・Capacity Block を前提とする学習ワークロードでは計算が 1 つの AZ に寄るため、ストレージだけをマルチ AZ にしても可用性が活きず単価だけが上がるからです。マルチ AZ 配置が定石になる推論サービングや、AZ をまたいでキャッシュを共有したい用途のためには EFS を選択肢として残しています。この設計判断の詳細は Basic01 の「基盤層が恒久管理するもの、しないもの」で、ストレージ自体の詳細は Basic10 で扱います。なお本章の CPU NodePool は軽量なため AZ 固定しておらず、CPU ノードが OpenZFS とは別の AZ に立つと NFS アクセスが AZ をまたぐことがありますが、MNIST 規模では体感できる差はなく、ここでは単純さを優先しています（性能を要求するアクセラレータプールは単一 AZ に固定します）。
-:::
-
-なお静的 PV は 1 つの PVC としか結び付けられません。namespace やチャートを消して作り直すと、古い PVC への参照（claimRef）が PV 側に残って `Released` のまま再バインドできず Pod が Pending で止まることがあります。その場合の復旧やストレージの詳細は Basic10 で扱います。
+保存先は Helm の `sharedStorage.backend` で切り替えられます。既定の `openzfs` のほかに、`fsx`（FSx for Lustre）、リージョン規模のマルチ AZ 共有が要るときは `efs` を選べます。3 つのバックエンドはいずれも Terraform 側で静的 PV が用意される設計で、選んだバックエンドの `var.<x>_enabled` が有効になっている必要があります。既定で `openzfs` と `fsx` は有効、`efs` は無効（ドライバのみ常設）です。
 
 ## 学習用イメージをクラスタ内でビルドする
 
