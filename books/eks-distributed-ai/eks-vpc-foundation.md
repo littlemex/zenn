@@ -3,7 +3,7 @@ title: "Basic01 - Amazon EKS 基盤を立てる"
 free: true
 ---
 
-本章では、分散学習・推論の実験を回すための土台として Amazon EKS クラスタを構築します。Terraform で Amazon VPC・Amazon EKS コントロールプレーン・Karpenter を動かすための System ノードグループをデプロイし、`kubectl` でノードが見えるところまでを扱います。GPU/Neuron のアクセラレータノード自体は後々立てるため、ここでは足場を作ります。
+本章では、分散学習・推論の実験を回すための土台として Amazon EKS クラスタを構築します。Terraform で Amazon VPC・Amazon EKS コントロールプレーン・Karpenter を動かすための System ノードグループをデプロイし、`kubectl` でノードが見えるところまでを扱います。GPU/Neuron のアクセラレータノード自体は Basic04 以降で立てるため、ここでは「あとから何度でも実験を回せる足場」を一度だけ作ります。
 
 :::message alert
 本資料は `us-east-2` リージョンを例に説明します。実際には自身で選択したリージョンに読み替えて進めてください。コマンド中の `<region>` などのプレースホルダは自分の値に置き換えます。
@@ -17,7 +17,17 @@ free: true
 
 ![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 
-本章の `terraform apply` は、この基盤のクラスタスコープの土台を一度に立ち上げます。図のうち中核となる **Amazon VPC・Amazon EKS コントロールプレーン・System ノードグループ** に加え、その上で動く Karpenter コントローラ・各 CSI ドライバ・Kubeflow Training Operator・共有ストレージ（既定の FSx）まで、後続の章で使う基盤コンポーネントが同じ apply で揃います。本章で詳しく解説するのは中核の 3 つで、残りは各コンポーネントの章で 1 つずつ扱います。唯一まだ立たないのはアクセラレータノードです。
+本章の `terraform apply` は、この基盤のクラスタスコープの土台を一度に立ち上げます。図のうち中核となる **Amazon VPC・Amazon EKS コントロールプレーン・System ノードグループ** に加え、その上で動く Karpenter コントローラ・各 CSI ドライバ・Kubeflow Training Operator・共有ストレージ（既定の FSx）まで、後続の章で使う基盤コンポーネントが同じ apply で揃います（後述の「基盤層が恒久管理するもの、しないもの」を参照）。本章で詳しく解説するのは中核の 3 つで、残りは各コンポーネントの章で 1 つずつ扱います。唯一まだ立たないのは GPU/Neuron のアクセラレータ「ノード」で、`accelerator_pools` が空の本章では起動せず、Basic04 以降で 1 行足して立てます。
+
+## これは何をするものか
+
+本章のゴールは、GPU/Neuron を使った分散学習・推論の実験を後からいくらでも回せる「土台」を一度だけ立てることです。この土台は 1 回の `terraform apply` でクラスタスコープの基盤コンポーネント（Karpenter・CSI ドライバ・Kubeflow Training Operator・共有ストレージ）まで含めて揃いますが、本章で中身に踏み込んで解説するのは、その最も中核となる次の 3 つです。いずれも「実験を始める前に一度作れば、あとは触らない」部分です。
+
+- **Amazon EKS コントロールプレーン**: Kubernetes 1.35 と Pod Identity を使います
+- **System managed node group**: m5 系を 2 台、kube-system と Karpenter コントローラ自身を載せる足場として起動します。Karpenter コントローラを Karpenter 管理下のノードに載せると、ゼロからの起動や自ノードの回収で自己参照の問題が起きるため公式に非推奨で、Karpenter が動き出すための最初の土台としてこの管理外のノードグループが要ります
+- **Amazon VPC**: 上記を収めるネットワークです
+
+アクセラレータ「ノード」自体はまだ立てません。Basic04 以降で `accelerator_pools` に 1 行足すだけで GPU/Neuron ノードが要求に応じて立つよう、それを動かす Karpenter の足場をこの apply で用意しておく、という位置づけです。この土台づくり自体は Amazon EKS の一般的な手順とほぼ同じですが、分散 AI 向けに効かせている設計判断がいくつかあります。以降で実際の Terraform コードを引用しながら、なぜその値・その書き方にしているのかを見ていきます。対象モジュールは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks) です。
 
 ## Amazon VPC の設計
 
@@ -57,9 +67,9 @@ module "vpc" {
 }
 ```
 
-ここで `azs` / `private_subnets` / `public_subnets` に渡している 3 つの `local.*` が、この構成の設計上の肝です。いずれも [`az.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/az.tf) で `var.region` と `var.vpc_cidr` から自動導出しており、通常のデプロイでは AZ もサブネット CIDR も一切手書きしません。tfvars に書くのは `region` とプールのインスタンスタイプだけで済みます。リージョンや AZ、CIDR、インスタンスの zone id などを毎回手書きしているとミスが発生してデバッグやデプロイのし直しで時間がかかるため地味ですが重要な自動化です。
+ここで `azs` / `private_subnets` / `public_subnets` に渡している 3 つの `local.*` が、この構成の設計上の肝です。いずれも [`az.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/az.tf) で `var.region` と `var.vpc_cidr` から自動導出しており、通常のデプロイでは AZ もサブネット CIDR も一切手書きしません。tfvars に書くのは `region` とプールのインスタンスタイプだけで済みます。読みどころは AZ とサブネットの自動導出・`single_nat_gateway`・`private_subnet_tags` の 3 点です。
 
-**AZ とサブネット CIDR の自動導出**: `local.azs` は `var.azs` が `null`（既定）ならそのリージョンの標準 AZ を `sort` して全件返します。`us-west-2` や `us-east-2` なら 4 つの AZ すべてに VPC がまたがります。サブネット CIDR も `var.private_subnet_cidrs` / `var.public_subnet_cidrs` が `null`（既定）なら `var.vpc_cidr` から AZ ごとに 1 つずつ切り出します。プライベートは VPC の下半分（`/16` なら `10.0.0.0/17`）を AZ 数で等分し、パブリックは上半分から `/24` を AZ ごとに取ります。AZ が 2 つならプライベートは `/18`、4 つなら `/19`、というように AZ 数に追随してサイズが決まるため、サブネット一覧が AZ 一覧と食い違う余地がありません。この「プライベートは大きく、パブリックは小さく」という非対称な配分が分散 AI 向けの肝です。IP を大量に消費する主因は VPC CNI で、Pod 用のセカンダリ IP をノードごとにあらかじめ確保します（プレフィックス委譲では `/28` = 16 IP 単位）。EFA 対応インスタンスは物理ネットワークカードを多数持ちます（`p5en.48xlarge` は 16 枚）。この構成のように残りのカードを EFA 専用（`interfaceType: efa-only`）で立てると、ノードの IP を持つのはプライマリインターフェイス 1 枚だけになり、EFA 専用カードはサブネットの IP を一切消費しません。つまり IP 消費を押し上げるのは EFA のカード枚数ではなく VPC CNI であり、ワークロードが載るプライベートサブネットは大きく、NAT/ロードバランサーしか置かないパブリックサブネットは小さく、という配分になります。特定の AZ 集合に固定したい場合は設定を入れることができます。
+**AZ とサブネット CIDR の自動導出**: `local.azs` は `var.azs` が `null`（既定）ならそのリージョンの標準 AZ（Local Zone や Wavelength を除く、`opt-in-not-required` の AZ）を `sort` して全件返します。`us-west-2` や `us-east-2` なら 4 つの AZ すべてに VPC がまたがります。サブネット CIDR も `var.private_subnet_cidrs` / `var.public_subnet_cidrs` が `null`（既定）なら `var.vpc_cidr` から AZ ごとに 1 つずつ切り出します。プライベートは VPC の下半分（`/16` なら `10.0.0.0/17`）を AZ 数で等分し、パブリックは上半分から `/24` を AZ ごとに取ります。AZ が 2 つならプライベートは `/18`、4 つなら `/19`、というように AZ 数に追随してサイズが決まるため、サブネット一覧が AZ 一覧と食い違う余地がありません。この「プライベートは大きく、パブリックは小さく」という非対称な配分が分散 AI 向けの肝です。GPU ノードが載るプライベートサブネットは、Pod ごとに VPC の IP を消費する VPC CNI のために大きく確保し、NAT ゲートウェイやロードバランサーしか置かないパブリックサブネットは小さくて足ります（この IP 消費の仕組みと、EFA が IP を食わない理由は末尾の「注意」節で詳しく説明します）。特定の AZ 集合に固定したい、あるいは CIDR を明示指定したい場合だけ `var.azs` / `var.private_subnet_cidrs` / `var.public_subnet_cidrs` で上書きでき、その際は解決後の AZ ごとにちょうど 1 つずつ CIDR を与えます（過不足は `az.tf` の precondition が検出します）。
 
 **`single_nat_gateway = true` の意味**: NAT ゲートウェイを AZ ごとに作らず 1 つだけにしています。本番の可用性設計では、AZ 障害の影響を切り離すためと、AZ をまたぐ転送料金を避けるために AZ ごとに NAT を置きます。ところがこの基盤では、EFA の集団通信も FSx for Lustre も Capacity Block も単一 AZ が前提で、性能を出したいワークロードは自然と 1 つの AZ に集まります。そのため計算そのものが単一 AZ に寄っており、その AZ に NAT を同居させる限り、AZ ごとに NAT を分ける 2 つの利点はどちらも効きません。ただし NAT がどの AZ に作られるかは意識しておく必要があります。`terraform-aws-modules/vpc` の `single_nat_gateway = true` は先頭のパブリックサブネット、つまり `local.azs` の先頭 AZ に NAT を 1 つ作ります。オンデマンド/スポットのプールは `zone` を書かなければこの先頭 AZ に導出されるため、NAT と同じ AZ に載り外向き通信は AZ をまたぎません。一方 Capacity Block のプールは予約が確保された AZ に固定されるので、それが先頭 AZ と異なると外向き通信（イメージ pull など）が AZ をまたぎます。この基盤は「予約が動いても VPC がリージョン全 AZ をまたぐので必ず対応するサブネットがある」ことを優先して単一 NAT を許容しますが、CB のプールと NAT を同じ AZ にそろえたい場合は `var.azs` で CB の AZ を先頭に並べれば同居させられます。プライベートサブネットからの外向き通信はこの単一 NAT を経由し、Amazon S3 は Gateway エンドポイント、Amazon ECR などは Interface エンドポイントを併用して NAT 経由の通信量そのものを減らしています。
 
@@ -169,7 +179,13 @@ IRSA は ServiceAccount にアノテーションで IAM ロールを結び付け
 
 分散 AI 特有の落とし穴が 2 つあります。いずれも一度ハマると原因特定に時間がかかるため、最初に押さえておきます。
 
-**注意 1: Amazon VPC の IP アドレスは大きめに確保する。** アクセラレータノードは通常の CPU ノードより桁違いに IP を消費します。主因は VPC CNI で、Pod 用の secondary IP をノードごとに大量に先取りします（プレフィックス委譲では `/28` = 16 IP 単位で確保）。EFA（Elastic Fabric Adapter）対応インスタンスは物理ネットワークカードを多数持ちますが（`p5en.48xlarge` は 16 枚）、ノードの IP を持つのはプライマリインターフェイス 1 枚だけで、残りは IP を消費しない EFA 専用（`interfaceType: efa-only`）です。したがって IP を食い潰すのは EFA のカード枚数ではなく VPC CNI であり、小さな CIDR だと数台のノードで枯渇し、最悪 Amazon EKS コントロールプレーンが管理 ENI を置けず `IMPAIRED`（`InsufficientFreeAddresses`）に陥ります。後から広げにくい失敗なので、この構成では Amazon VPC を `/16`、プライベートサブネットを AZ 数に応じて `/18`〜`/19`（2 AZ なら `/18`、4 AZ なら `/19`）と大きめに取り、パブリックは NAT/LB 用途のみなので `/24` にしています。「パブリックは小さく、プライベートは大きく」は `awslabs/awsome-distributed-ai` の HyperPod-EKS リファレンスにも見られる原則です。
+**注意 1: Amazon VPC の IP アドレスは大きめに確保する。** 結論から言うと、IP アドレスを大量に食うのは EFA ではなく、VPC CNI が Pod のために確保する IP です。アクセラレータノードは通常の CPU ノードより桁違いに VPC の IP を消費しますが、その理由を順を追って説明します。
+
+まず前提として、Amazon EKS では Pod ひとつひとつが VPC のプライベート IP アドレスを 1 つ持ちます（ホストのネットワークをそのまま使う一部の Pod は例外です）。これを実現しているのが **VPC CNI** というネットワークプラグインで、ノードにネットワークインターフェイス（ENI）を足しながら、そこに載せる Pod ぶんの IP をあらかじめ確保します。プレフィックス委譲を有効にすると、IP を 1 個ずつではなく `/28`（16 個）の塊でまとめて割り当てます。Pod を多く載せるほど IP は `/28` 単位で伸び、GPU ノードを Pod で埋めると 1 台で 100 個超に達することもあります。**IP 消費の主役はこの VPC CNI（＝ Pod の数）** です。
+
+ここで直感に反しやすいのが EFA です。**EFA（Elastic Fabric Adapter）** は GPU ノード間を高速につなぐための専用ネットワークで、`p5en.48xlarge` は EFA 対応のネットワークカードを 16 枚持ちます。「カードが 16 枚あるなら IP も 16 個要るのでは」と思いがちですが、そうはなりません。本 book の構成では、カード 0 だけを通常の通信と EFA を兼ねるインターフェイス（`interfaceType: efa`）として立て、残り 15 枚は EFA 専用（`interfaceType: efa-only`）にします。**VPC の IP を受け取るのはカード 0 の 1 枚だけ**で、EFA 専用の 15 枚は GPU 間通信（RDMA）にしか使わず IP を一切消費しません。だから EFA を何枚積んでも、ノードが使う IP はカード 0 のぶんと、その上に載る Pod のぶんだけです。
+
+したがって IP を食い潰すのは EFA の枚数ではなく Pod の数であり、CIDR（IP アドレスの範囲）を小さく取ると、数台の GPU ノードを立てただけで枯渇します。枯渇するとまず Pod が `ContainerCreating` のまま止まり（`failed to assign an IP address` が出ます）、最悪の場合は Amazon EKS がクラスタ管理用のインターフェイスすら置けず、クラスタのヘルスに `InsufficientFreeAddresses` の問題が報告されます。VPC には後からセカンダリ CIDR を足せますが、サブネットの再設計や CNI 設定の変更を伴い手戻りが大きいので、最初から大きく取るのが楽です。この構成では VPC 全体を `/16`（約 6.5 万アドレス）、ワークロードが載るプライベートサブネットを AZ 数に応じて `/18`〜`/19`（2 AZ なら `/18`、4 AZ なら `/19`）と大きめに取り、NAT ゲートウェイやロードバランサーしか置かないパブリックサブネットは `/24`（256 アドレス）と小さくしています。「パブリックは小さく、プライベートは大きく」は `awslabs/awsome-distributed-ai` の HyperPod-EKS リファレンスにも見られる原則です。
 
 **注意 2: `karpenter.sh/discovery` タグをパブリックサブネットに漏らさない。** このタグは Karpenter が「ノードを起動してよいサブネット」を検出するための目印です。Amazon VPC モジュールの共通タグに含めてしまうと全サブネットに伝搬し、パブリックサブネットにも付いてしまいます。すると Karpenter がパブリックサブネットにノードを立てますが、この構成はパブリック IP を自動付与しない設定のため、そのノードは外向きの到達経路を持たず `nodeadm` によるクラスタ参加に失敗して詰みます。この構成ではこのタグをプライベートサブネットとノードセキュリティグループにだけ明示的に付け、Amazon VPC 共通タグからは意図的に外しています。
 
