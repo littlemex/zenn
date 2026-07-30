@@ -21,16 +21,6 @@ Terraform で Amazon VPC・Amazon EKS コントロールプレーン・Karpenter
 
 本章の `terraform apply` は、この基盤のクラスタスコープの土台を一度に立ち上げます。図のうち中核となる **Amazon VPC・Amazon EKS コントロールプレーン・System ノードグループ** に加え、その上で動く Karpenter コントローラ・各 CSI ドライバ・Kubeflow Training Operator・共有ストレージ（既定の FSx）まで、後続の章で使う基盤コンポーネントが同じ apply で揃います。本章で詳しく解説するのは中核の 3 つで、残りは各コンポーネントの章で 1 つずつ扱います。
 
-## これは何をするものか
-
-本章のゴールは、GPU/Neuron を使った分散学習・推論の実験を後からいくらでも回せる「土台」を一度だけ立てることです。この土台は 1 回の `terraform apply` でクラスタスコープの基盤コンポーネント（Karpenter・CSI ドライバ・Kubeflow Training Operator・共有ストレージ）まで含めて揃いますが、本章で中身に踏み込んで解説するのは、その最も中核となる次の 3 つです。いずれも「実験を始める前に一度作れば、あとは触らない」部分です。
-
-- **Amazon EKS コントロールプレーン**: Kubernetes 1.35 と Pod Identity を使います
-- **System managed node group**: m5 系を 2 台、kube-system と Karpenter コントローラ自身を載せる足場として起動します。Karpenter コントローラを Karpenter 管理下のノードに載せると、ゼロからの起動や自ノードの回収で自己参照の問題が起きるため公式に非推奨で、Karpenter が動き出すための最初の土台としてこの管理外のノードグループが要ります
-- **Amazon VPC**: 上記を収めるネットワークです
-
-アクセラレータ「ノード」自体はまだ立てません。Basic04 以降で `accelerator_pools` に 1 行足すだけで GPU/Neuron ノードが要求に応じて立つよう、それを動かす Karpenter の足場をこの apply で用意しておく、という位置づけです。この土台づくり自体は Amazon EKS の一般的な手順とほぼ同じですが、分散 AI 向けに効かせている設計判断がいくつかあります。以降で実際の Terraform コードを引用しながら、なぜその値・その書き方にしているのかを見ていきます。対象モジュールは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks) です。
-
 ## Amazon VPC の設計
 
 Amazon VPC は [`vpc.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/vpc.tf) で `terraform-aws-modules/vpc/aws` モジュールを使って作ります。全体はこれだけです。
@@ -71,9 +61,9 @@ module "vpc" {
 
 ここで `azs` / `private_subnets` / `public_subnets` に渡している 3 つの `local.*` が、この構成の設計上の肝です。いずれも [`az.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/az.tf) で `var.region` と `var.vpc_cidr` から自動導出しており、通常のデプロイでは AZ もサブネット CIDR も一切手書きしません。tfvars に書くのは `region` とプールのインスタンスタイプだけで済みます。
 
-**AZ とサブネット CIDR の自動導出**: `local.azs` は `var.azs` が `null`（既定）ならそのリージョンの標準 AZ（Local Zone や Wavelength を除く、`opt-in-not-required` の AZ）を `sort` して全件返します。`us-west-2` や `us-east-2` なら 4 つの AZ すべてに VPC がまたがります。サブネット CIDR も `var.private_subnet_cidrs` / `var.public_subnet_cidrs` が `null`（既定）なら `var.vpc_cidr` から AZ ごとに 1 つずつ切り出します。プライベートは VPC の下半分（`/16` なら `10.0.0.0/17`）を AZ 数で等分し、パブリックは上半分から `/24` を AZ ごとに取ります。AZ が 2 つならプライベートは `/18`、4 つなら `/19`、というように AZ 数に追随してサイズが決まるため、サブネット一覧が AZ 一覧と食い違う余地がありません。この「プライベートは大きく、パブリックは小さく」という非対称な配分が分散 AI 向けの肝です。GPU ノードが載るプライベートサブネットは、Pod ごとに VPC の IP を消費する VPC CNI のために大きく確保し、NAT ゲートウェイやロードバランサーしか置かないパブリックサブネットは小さくて足ります（この IP 消費の仕組みと、EFA が IP を食わない理由は末尾の「注意」節で詳しく説明します）。特定の AZ 集合に固定したい、あるいは CIDR を明示指定したい場合だけ `var.azs` / `var.private_subnet_cidrs` / `var.public_subnet_cidrs` で上書きでき、その際は解決後の AZ ごとにちょうど 1 つずつ CIDR を与えます（過不足は `az.tf` の precondition が検出します）。
+**AZ とサブネット CIDR の自動導出**: `local.azs` は `var.azs` が `null`（既定）ならそのリージョンの標準 AZ を `sort` して全件返します。`us-west-2` や `us-east-2` なら 4 つの AZ すべてに VPC がまたがります。サブネット CIDR も `var.private_subnet_cidrs` / `var.public_subnet_cidrs` が `null`（既定）なら `var.vpc_cidr` から AZ ごとに 1 つずつ切り出します。デフォルトではうまく AZ を適切な CIDR で切ってくれていると思っていただければ大丈夫です。
 
-**`single_nat_gateway = true` の意味**: NAT ゲートウェイを AZ ごとに作らず 1 つだけにしています。本番の可用性設計では、AZ 障害の影響を切り離すためと、AZ をまたぐ転送料金を避けるために AZ ごとに NAT を置きます。ところがこの基盤では、EFA の集団通信も FSx for Lustre も Capacity Block も単一 AZ が前提で、性能を出したいワークロードは自然と 1 つの AZ に集まります。そのため計算そのものが単一 AZ に寄っており、その AZ に NAT を同居させる限り、AZ ごとに NAT を作る利点は薄いです。ただし NAT がどの AZ に作られるかは意識しておく必要があります。`terraform-aws-modules/vpc` の `single_nat_gateway = true` は先頭のパブリックサブネット、つまり `local.azs` の先頭 AZ に NAT を 1 つ作ります。オンデマンド/スポットのプールは `zone` を書かなければこの先頭 AZ に導出されるため、NAT と同じ AZ に載り外向き通信は AZ をまたぎません。一方 Capacity Block のプールは予約が確保された AZ に固定されるので、それが先頭 AZ と異なると外向き通信（イメージ pull など）が AZ をまたぎます。この基盤は「予約が動いても VPC がリージョン全 AZ をまたぐので必ず対応するサブネットがある」ことを優先して単一 NAT を許容しています。ここで一点はっきりさせておくと、NAT は CB の AZ に自動で追従しません。`local.azs` は既定でリージョンの AZ 名を単純にソートした並びで、その先頭（通常は `...a`）に NAT が固定されます。CB がどの AZ に確保されても、また確保先が次回の予約で変わっても、NAT の位置は変わりません。したがって CB のプールと NAT を同じ AZ にそろえたい場合は、クラスタを構築する際の `var.azs` に CB の AZ を先頭にして並べます（例: CB が `us-east-2c` なら `azs = ["us-east-2c", "us-east-2a", ...]`）。そうすれば `azs[0]` が CB の AZ になり、NAT もそこに作られます。これはあくまで最初の `terraform apply` 時に決める設定で、稼働後に CB が別 AZ へ動いても NAT が引っ越すわけではない点に注意してください。揃えなかった場合でも動作はし、CB プールの外向き通信（イメージ pull など）が先頭 AZ の NAT を経由して AZ をまたぐだけです。プライベートサブネットからの外向き通信はこの単一 NAT を経由し、Amazon S3 は Gateway エンドポイント、Amazon ECR などは Interface エンドポイントを併用して NAT 経由の通信量そのものを減らしています。
+**`single_nat_gateway = true` の意味**: NAT ゲートウェイを AZ ごとに作らず 1 つだけにしています。本番の可用性設計では、AZ 障害の影響を切り離すためと、AZ をまたぐ転送料金を避けるために AZ ごとに NAT を置きます。ところがこの基盤では、EFA の集団通信も FSx for Lustre も Capacity Block も単一 AZ が前提で、性能を出したいワークロードは自然と 1 つの AZ に集まります。そのため計算そのものが単一 AZ に寄っており、その AZ に NAT を同居させる限り、AZ ごとに NAT を作る利点は薄いです。GPU に比べて費用は安いため NAT を全てのリージョンで事前に用意しておくという考え方もできますし推奨されますが、今回は単位 AZ のみで NAT を作っていることに留意してください。そしてクラスター作成後に別の AZ で計算ノードが起動する場合でも勝手に NAT をその AZ で立てるわけではないです。ただし、通信の動作自体は別の AZ に NAT があっても問題はないです。
 
 **`private_subnet_tags` の `karpenter.sh/discovery`**: このタグが後の章で効いてきます。Karpenter は「ノードを起動してよいサブネット」をこのタグで検出します。ここで**プライベートサブネットにだけ**タグを付け、`public_subnet_tags` には付けていない点が重要です。もし共通の `tags` に含めてしまうと全サブネットに伝搬してパブリックサブネットにも付き、Karpenter がそこにノードを立ててしまいます。この構成はパブリックサブネットにパブリック IP を自動付与しない設定なので、そこに立ったノードは外向きの到達経路を持たず、`nodeadm` によるクラスタ参加に失敗します。
 
@@ -123,7 +113,7 @@ module "eks" {
 }
 ```
 
-**`before_compute = true` の 2 つのアドオン**: `vpc-cni` と `eks-pod-identity-agent` にこのフラグを付け、ワーカーノードが起動する前にこれらを導入します。特に Pod Identity Agent は、Pod Identity で AWS 権限を得るコントローラ（Karpenter など）より先に存在していないと、それらが起動時に認証情報を取得できずクラッシュします。そのため順序を保証するためのフラグです。
+**`before_compute = true` の 2 つのアドオン**: `vpc-cni` と `eks-pod-identity-agent` にこのフラグを付け、ワーカーノードが起動する前にアドオンを導入します。特に Pod Identity Agent は、Pod Identity で AWS 権限を得るコントローラ（Karpenter など）より先に存在していないと、それらが起動時に認証情報を取得できずクラッシュします。そのため順序を保証するためのフラグです。
 
 **System ノードグループの `karpenter.sh/controller` ラベル**: 規定では m5 系インスタンスを 2 台を固定起動します。このノードグループは Karpenter が管理するのではなく、Amazon EKS Managed Node Group として常時稼働させます。`karpenter.sh/controller: "true"` というラベルを付けているのは、本章の apply で導入される Karpenter コントローラ自身をこのノードに載せるためです。Karpenter コントローラを Karpenter 管理下のノードに載せるのは前述のとおり非推奨なので、Karpenter を動かす最初の足場として、Karpenter の管理外のノードグループが必要になります。
 
