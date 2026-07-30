@@ -338,12 +338,18 @@ kubectl delete trainjob ddp-trainjob -n "$NAMESPACE"
 
 同じワークロードを GPU に載せ替えられます。GPU 実行を決めるのは `gpu.enabled=true` と Pod の `nvidia.com/gpu` リクエストで、これが揃うと `ddp.py` が nccl backend を選びます。`backend=nccl` はあくまで出力パスのラベルなので、`gpu.enabled=true` を付け忘れると GPU ノード上でも gloo で動いてしまい、出力先だけ `*-nccl` になるという分かりにくい不整合が起きます。GPU プールを選ぶ `nodeRole` と合わせて、この 3 つをセットで指定するのがポイントです。`nprocPerNode` は 1 ノード（Pod）あたりの GPU 数（`gpu.count`）と一致させます（1 プロセスが 1 GPU を掴むため、ずれると同じ GPU を奪い合います）。
 
+`nodeRole` に渡す「GPU プール名」は、Basic04 で `accelerator_pools` に定義した map のキーそのものです（本 book の例では GPU 用の `gpu-dev`）。この名前が Karpenter の NodePool 名になり、同時に各ノードの `node-role` ラベルの値になります。ワークロードは `nodeSelector: node-role: <プール名>` でそのプールに載るので、CPU で使ってきた `node-role=cpu` の GPU 版だと考えれば同じ仕組みです。手元で実際の名前を確認するには次のコマンドを使います（`gpu-` で始まるものが GPU プールです）。
+
+```bash
+kubectl get nodepool
+```
+
 ```bash
 # 単一ノード torchrun を 1 GPU で
 helm template exp charts/experiments -n "$NAMESPACE" \
     --set sharedStorage.existingClaimName=openzfs-claim \
     --set torchrunTrain.enabled=true --set torchrunTrain.image="$IMAGE" \
-    --set torchrunTrain.backend=nccl --set torchrunTrain.nodeRole=<GPU プール名> \
+    --set torchrunTrain.backend=nccl --set torchrunTrain.nodeRole=gpu-dev \
     --set torchrunTrain.gpu.enabled=true --set torchrunTrain.gpu.count=1 \
     --set torchrunTrain.nprocPerNode=1 | kubectl apply -f -
 ```
@@ -355,7 +361,7 @@ helm template exp charts/experiments -n "$NAMESPACE" \
 helm template exp charts/experiments -n "$NAMESPACE" \
     --set sharedStorage.existingClaimName=openzfs-claim \
     --set trainjobTrain.enabled=true --set trainjobTrain.image="$IMAGE" \
-    --set trainjobTrain.nodeRole=<GPU プール名> --set trainjobTrain.numNodes=2 \
+    --set trainjobTrain.nodeRole=gpu-dev --set trainjobTrain.numNodes=2 \
     --set trainjobTrain.gpu.enabled=true --set trainjobTrain.gpu.count=1 \
     --set trainjobTrain.nprocPerNode=1 | kubectl apply -f -
 ```
