@@ -30,9 +30,7 @@ Karpenter の EC2NodeClass は、`spec.networkInterfaces` を省略すると単�
 - カード 0: `interfaceType: "interface"`（ノード IP 用、primary ENI）
 - カード 1〜N: `interfaceType: "efa-only"`（RDMA 専用、IP を持たない）
 
-この宣言はインスタンスタイプごとにカード枚数とレイアウトが異なるため、手書きは事故の温床になります。
-
-この宣言をプールごとに手書きすると、カード枚数を 1 つ間違えるだけで事故になります。以降では、この宣言を自動生成している実コードを引用しながら、設計意図を見ていきます。対象モジュールは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks) です。
+この宣言はインスタンスタイプごとにカード枚数とレイアウトが異なるため、プールごとに手書きするとカード枚数を 1 つ間違えるだけで事故になります。以降では、この宣言を自動生成している実コードを引用しながら、設計意図を見ていきます。対象モジュールは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks) です。
 
 ## EFA トポロジのルックアップテーブル
 
@@ -127,7 +125,7 @@ pool_network_interfaces = {
 
 読みどころは primary interface の後に続く 2 パターンの分岐です。multi-card（p5/p5en/trn2 系）では primary がカード 0 を占有しているため、`efa-only` は `range(count - 1)` 個をカード 1 以降（`networkCardIndex = i + 1`）に 1 枚ずつ割り当てます。これが前節の「schedulable = カード数 − 1」と一致する理由です。single-card（g6e）では逆に、primary と `efa-only` が同じカード 0 上に共存するため、`networkCardIndex` は常に 0 のまま `deviceIndex` だけを `range(count)` でインクリメントします。EFA が無効なプール（`count <= 0`）は空リストを返し、EC2NodeClass 側で `networkInterfaces` フィールド自体を省略してデフォルトの単一 ENA に委ねます。
 
-## EFA セキュリティグループ — egress self-ref が必須
+## EFA セキュリティグループには egress self-ref が必須
 
 これがこのモジュールで実測から得られた最も重要な知見です。[`sg.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/sg.tf) で定義しています。
 
@@ -280,13 +278,17 @@ bootstrap（TCP）は成功するのにデータ転送がハングします。NC
 terraform output accelerator_pool_efa_schedulable
 ```
 
-期待される出力:
+期待される出力（定義したアクセラレータプールに応じて変わります。EFA を持たない cpu プールは含まれません）:
 
 ```
 {
+  "gpu-dev"  = 1
   "gpu-p5en" = 15
+  "trn2"     = 15
 }
 ```
+
+`gpu-dev`（g6e.12xlarge）は EFA を 1 枚だけ持つ single-card 構成なので、schedulable も 1 です。`gpu-p5en`（p5en.48xlarge、16 枚）と `trn2`（trn2.48xlarge、16 枚）は multi-card 構成で、card 0 を除いた 15 が schedulable になります。以降のマルチノード検証では 16 枚構成の p5en を使います。
 
 ## 2. ノード上の EFA リソースを確認する
 
@@ -301,7 +303,7 @@ kubectl describe node <p5en-node> | grep "vpc.amazonaws.com/efa"
   vpc.amazonaws.com/efa:  15
 ```
 
-Capacity（物理上限）と Allocatable（Pod にリクエスト可能な値）の両方が 15 であることが確認できます。16 ではなく 15 — これが card 0 問題の実証です。
+Capacity（EFA device plugin が広告した数）と Allocatable（Pod にリクエスト可能な値）の両方が 15 であることが確認できます。物理的なカードは 16 枚ありますが、card 0 は node の IP を持つプライマリインターフェイスとして使われるため EFA リソースとして広告されず、Capacity も 15 になります。16 ではなく 15 になるのが card 0 問題の実証です。
 
 ## 3. EFA device plugin の稼働を確認する
 
