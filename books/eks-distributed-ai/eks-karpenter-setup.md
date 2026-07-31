@@ -224,7 +224,7 @@ resource "null_resource" "wait_for_node_drain" {
 }
 ```
 
-**なぜこれが要るのか。** `kubectl_manifest` は `NodePool` / `NodeClaim` の削除を Kubernetes API が受理した瞬間に「完了」として報告しますが、実際のノード drain・Amazon EC2 インスタンス終了・ENI 解放は Karpenter コントローラが非同期に行う後処理です。GPU/Neuron ノードが起動中に `terraform destroy` で Karpenter やその関連コントローラ（EFA デバイスプラグイン、Amazon EFS/Amazon FSx for Lustre CSI ドライバなど）を先に消してしまうと、その Amazon EC2 インスタンスは誰にも終了されずに課金され続ける「孤児」インスタンスになります。
+**なぜこれが要るのか。** `kubectl_manifest` は `NodePool` / `NodeClaim` の削除を Kubernetes API が受理した瞬間に「完了」として報告しますが、実際のノード drain・Amazon EC2 インスタンス終了・ENI 解放は Karpenter コントローラが非同期に行う後処理です。GPU ノードが起動中に `terraform destroy` で Karpenter やその関連コントローラ（EFA デバイスプラグイン、Amazon EFS/Amazon FSx for Lustre CSI ドライバなど）を先に消してしまうと、その Amazon EC2 インスタンスは誰にも終了されずに課金され続ける「孤児」インスタンスになります。
 
 **`depends_on` はこう設計しています。** Terraform は destroy を `depends_on` の逆順で実行するため、この `null_resource` が `depends_on` に列挙している Karpenter・GPU Operator・EFA デバイスプラグイン・Amazon EFS/Amazon FSx for Lustre CSI・placement group・Amazon VPC エンドポイントは、すべてこの drain 待ちが完了した**後**に破棄されます。Amazon VPC エンドポイントが含まれているのは、destroy 中に NAT ゲートウェイが先に消えても、Karpenter コントローラが Amazon VPC エンドポイント経由で Amazon EC2/IAM/STS/SSM の API 呼び出しを続けられるようにするためです（詳細はソースコード中のコメントを参照）。
 
