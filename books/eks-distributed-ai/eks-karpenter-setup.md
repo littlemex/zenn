@@ -70,24 +70,7 @@ resource "helm_release" "karpenter_crd" {
 }
 ```
 
-読みどころは 3 点です。
-
-**`aws.us_east_1` プロバイダエイリアスでトークンを取得する。** `oci://public.ecr.aws/karpenter` から chart を pull するには Amazon ECR Public の認証トークンが必要ですが、このトークンは AWS API の制約でリージョンを `us-east-1` に固定して取得しなければなりません。`providers.tf` に別途定義した `aws.us_east_1` エイリアスをこの `data` ソースにだけ指定し、クラスタ自体のリージョン（`var.region`）とは分離しています。
-
-**`karpenter_chart_version` を `karpenter` と `karpenter-crd` の両方で共有する。** バージョンは `variables.tf` で `1.13.0` を既定値としています。
-
-```hcl
-# variables.tf（抜粋）
-variable "karpenter_chart_version" {
-  description = "Helm chart version for Karpenter (oci://public.ecr.aws/karpenter/karpenter)."
-  type        = string
-  default     = "1.13.0"
-}
-```
-
-この 1 つの変数を `helm_release.karpenter_crd` と `helm_release.karpenter` の両方の `version` に渡すことで、バージョンアップ時に 2 か所を揃えて書き換える必要がなくなり、片方だけ上げ忘れる事故を防いでいます。
-
-**`webhook.enabled = false` で `karpenter-crd` chart 側の webhook を無効化する。** `karpenter-crd` chart は CRD の conversion webhook（`v1beta1` から `v1` へ API バージョンを変換する仕組み）をオプションで持てますが、これは古い API バージョンからの移行用で、Karpenter v1 系では conversion 自体が不要になっています。本構成は最初から v1 の CRD だけを使うので、この webhook を明示的に無効化して余計なコンポーネントを立てないようにしています。
+**`aws.us_east_1` プロバイダエイリアスでトークンを取得する。** `oci://public.ecr.aws/karpenter` から chart を pull するには Amazon ECR Public の認証トークンが必要ですが、このトークンは AWS API の制約でリージョンを `us-east-1` に固定して取得しなければなりません。
 
 ## Karpenter コントローラの Helm リリース
 
@@ -140,13 +123,9 @@ resource "helm_release" "karpenter" {
 
 **`skip_crds = true` を付ける。** `karpenter-crd` chart で CRD を管理している以上、コントローラ chart 側が同梱する CRD はインストールさせてはいけません。これを付けないと、初回インストール時にコントローラ chart も同じ CRD を作ろうとして所有権が衝突します。しかも Helm は chart の `crds/` ディレクトリを初回 install 時にしか処理せず `helm upgrade` では触らないため、コントローラ chart 側が一度作った CRD はその後 `karpenter-crd` 側で更新しても追従されません。CRD の管理を `karpenter-crd` chart に一本化するために、コントローラ chart 側では明示的にスキップします。
 
-**`wait = false` にして `depends_on` で順序を保証する。** このリリースはコントローラ Pod が `Ready` になるまで Terraform 側で待ちません。その代わり、後続の `NodePool` / `EC2NodeClass` を表す `kubectl_manifest` リソース（`karpenter-resources.tf`、次章で扱う）が `helm_release.karpenter_crd` に明示的に依存する形で、CRD の登録だけを保証しています。コントローラ Pod 自体の起動完了までは待たないため、「CRD が `Established` になる前に NodePool を apply すると失敗しうる」という後述の注意が残っています。
-
 **`nodeSelector` で `karpenter.sh/controller: "true"` を要求する。** Basic01 で System ノードグループに付けたラベルと同じキーです。Karpenter は自分が管理するノードにこのラベルを付けないため、このラベルを持つノードは常に Karpenter 管理外の System ノードだけになり、コントローラが自己参照で詰まることがありません。
 
-**`settings.interruptionQueue` に `module.karpenter.queue_name` を渡す。** `iam.tf` の `module "karpenter"` が作成した SQS queue の名前をそのまま Helm values に埋め込んでいます。この 1 行だけで Spot 中断通知の受信先が決まります。
-
-**featureGates は書かない。** ソース中のコメントにある通り、v1.13.0 の chart 既定値では `reservedCapacity=true`（BETA）、`nodeRepair` / `nodeOverlay` / `spotToSpotConsolidation` / `staticCapacity` はいずれも `false`（ALPHA）です。この構成で必要な挙動はすべて既定値と一致するため、`values` に `featureGates` ブロックを一切書いていません。
+**`settings.interruptionQueue` に `module.karpenter.queue_name` を渡す。** 作成される SQS queue の名前をそのまま Helm values に埋め込んでいます。この 1 行だけで Spot 中断通知の受信先が決まります。
 
 ## Pod Identity と interruption queue（iam.tf）
 
@@ -186,9 +165,9 @@ module "karpenter" {
 
 **`enable_spot_termination = true` が SQS queue と Amazon EventBridge ルールを両方作る。** この 1 行が、Spot 中断通知を受け取る interruption queue と、その queue に Spot 中断イベント・AWS ヘルスイベント・リバランス推奨を流す Amazon EventBridge ルールをまとめて作成します。上の Helm values で参照した `module.karpenter.queue_name` は、この行がなければ存在しません。
 
-**`node_iam_role_use_name_prefix = false` でノードロール名を固定する。** ノード用 IAM ロール名を `${var.cluster_name}-karpenter-node`（`locals.tf` の `karpenter_node_role_name`）に固定しています。デフォルトではモジュールがランダムな suffix を付けた名前を生成するため、`EC2NodeClass.spec.instanceProfile` に渡すインスタンスプロファイル名（このモジュールはロール名から導出します）が Terraform apply ごとに変わってしまいます。ロール名を固定するとプロファイル名も確定的になり、Basic04 で書く `EC2NodeClass` から決め打ちの名前で参照できます。
+**`node_iam_role_use_name_prefix = false` でノードロール名を固定する。** ノード用 IAM ロール名を `${var.cluster_name}-karpenter-node`（`locals.tf` の `karpenter_node_role_name`）に固定しています。デフォルトではモジュールがランダムな suffix を付けた名前を生成するため、インスタンスプロファイル名が Terraform apply ごとに変わってしまいます。ロール名を固定するとプロファイル名も確定的になり、以降の章で紹介する `EC2NodeClass` から決め打ちの名前で参照できます。
 
-**`node_iam_role_additional_policies` で 2 つのポリシーを足す。** `AmazonSSMManagedInstanceCore` は Session Manager 経由でノードにログインするために付与しています。`NodeS3ReadWrite` は同じ `iam.tf` 内で定義したカスタムポリシー（`aws_iam_policy.karpenter_node_s3`）で、アカウント ID を名前に含む Amazon S3 バケット（実験データ用の命名規則）への読み書きをノードに許可します。
+**`node_iam_role_additional_policies` で 2 つのポリシーを足す。** Session Manager 経由でノードにログインする、アカウント ID を名前に含む Amazon S3 バケット（実験データ用の命名規則）への読み書きをノードに許可します。
 
 ```hcl
 # iam.tf（抜粋、S3 ポリシーの definition）
@@ -214,7 +193,7 @@ data "aws_iam_policy_document" "karpenter_node_s3" {
 
 ## Terraform destroy 時のノード drain 待ち
 
-`karpenter.tf` にはもう 1 つ、Helm リリースそのものとは別に `null_resource.wait_for_node_drain` があります。これは Karpenter 自体の機能ではなく、`terraform destroy` を安全に行うための Terraform 側の工夫です。
+`karpenter.tf` にはもう 1 つ、Helm リリースそのものとは別に `null_resource.wait_for_node_drain` があります。これは Karpenter 自体の機能ではなく、リソース削除を安全に行うための Terraform 側の工夫です。
 
 ```hcl
 # karpenter.tf（抜粋）
@@ -245,7 +224,7 @@ resource "null_resource" "wait_for_node_drain" {
 }
 ```
 
-**なぜこれが要るのかを説明します。** `kubectl_manifest` は `NodePool` / `NodeClaim` の削除を Kubernetes API が受理した瞬間に「完了」として報告しますが、実際のノード drain・Amazon EC2 インスタンス終了・ENI 解放は Karpenter コントローラが非同期に行う後処理です。GPU/Neuron ノードが起動中に `terraform destroy` で Karpenter やその関連コントローラ（EFA デバイスプラグイン、Amazon EFS/Amazon FSx for Lustre CSI ドライバなど）を先に消してしまうと、その Amazon EC2 インスタンスは誰にも終了されずに課金され続ける「孤児」インスタンスになります。
+**なぜこれが要るのか。** `kubectl_manifest` は `NodePool` / `NodeClaim` の削除を Kubernetes API が受理した瞬間に「完了」として報告しますが、実際のノード drain・Amazon EC2 インスタンス終了・ENI 解放は Karpenter コントローラが非同期に行う後処理です。GPU/Neuron ノードが起動中に `terraform destroy` で Karpenter やその関連コントローラ（EFA デバイスプラグイン、Amazon EFS/Amazon FSx for Lustre CSI ドライバなど）を先に消してしまうと、その Amazon EC2 インスタンスは誰にも終了されずに課金され続ける「孤児」インスタンスになります。
 
 **`depends_on` はこう設計しています。** Terraform は destroy を `depends_on` の逆順で実行するため、この `null_resource` が `depends_on` に列挙している Karpenter・GPU Operator・EFA デバイスプラグイン・Amazon EFS/Amazon FSx for Lustre CSI・placement group・Amazon VPC エンドポイントは、すべてこの drain 待ちが完了した**後**に破棄されます。Amazon VPC エンドポイントが含まれているのは、destroy 中に NAT ゲートウェイが先に消えても、Karpenter コントローラが Amazon VPC エンドポイント経由で Amazon EC2/IAM/STS/SSM の API 呼び出しを続けられるようにするためです（詳細はソースコード中のコメントを参照）。
 
