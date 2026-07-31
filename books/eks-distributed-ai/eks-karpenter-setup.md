@@ -238,7 +238,7 @@ DRA が GA になったからといって、この book の構成にそのまま
 
 KEP-5004 は正式には「DRA: Handle extended resource requests via DRA Driver」という提案で、DRA ドライバが公開するデバイスを、device plugin を介さずに `nvidia.com/gpu` のような従来の拡張リソース API 経由でも要求できるようにすることを目指しています。この仕組みが実現すると、同じクラスタの一部のノードが device plugin を使い、別の一部のノードが DRA ドライバを使うという混在運用や、既存の Pod マニフェストを書き換えずに DRA へ段階的に移行することが可能になる、という位置づけです。Karpenter や cluster-autoscaler のようなノードオートスケーラーが DRA の `ResourceClaim` を認識してスケールアウトの判断に反映できるようにする議論も、この KEP の作業範囲に含まれています。KEP のマイルストーンは次のとおりです: Alpha が Kubernetes 1.34、Beta が 1.35 から 1.36 に後ろ倒しされ、Stable（GA）の目標は 1.37 とされています。ただしこれは KEP が置いている目標であり、他の多くの KEP と同様に確定したスケジュールではないため、実際のリリースタイミングは前後する可能性がある点は留保しておきます。
 
-したがって、Karpenter でノードプロビジョニングを行うこの構成では、DRA ドライバは現時点で選択肢になりません。device plugin 方式（NVIDIA GPU Operator、aws-efa-k8s-device-plugin、Neuron device plugin）を使うことが、legacy な妥協ではなく現状で唯一実用的な選択です。この book の Terraform 実装が前提とする設計判断は ADR（決定 D9）にもまとめられており、Karpenter による柔軟な混在プロビジョニングを設計の中心に据えている以上、device plugin 方式を選ぶのは自然な帰結だと整理しています。KEP-5004 が進んで Karpenter からも DRA の `ResourceClaim` が扱えるようになれば、この判断は再検討の対象になります。
+したがって、Karpenter でノードプロビジョニングを行うこの構成では、DRA ドライバは現時点で選択肢になりません。device plugin 方式（NVIDIA GPU Operator、aws-efa-k8s-device-plugin、Neuron device plugin）を使うことが、legacy な妥協ではなく現状で唯一実用的な選択です。KKarpenter からも DRA の `ResourceClaim` が扱えるようになれば、この判断は再検討の対象になります。
 
 # ワークショップ実施
 
@@ -266,7 +266,7 @@ kubectl get crd | grep karpenter
 helm list -n karpenter
 ```
 
-`karpenter-crd` と `karpenter` が別リリースとして並びます。この 2 つは `var.karpenter_chart_version` という 1 つの変数から同じバージョンを受け取る設計なので、バージョンを上げるときはこの変数を変えて `terraform apply` すれば両者が揃って更新されます（Helm リリースは Terraform が管理しているので、手で `helm upgrade` はしません）。
+`karpenter-crd` と `karpenter` が見えます。この 2 つは `var.karpenter_chart_version` という 1 つの変数から同じバージョンを受け取る設計なので、バージョンを上げるときはこの変数を変えて `terraform apply` すれば両者が揃って更新されます（Helm リリースは Terraform が管理しているので、手で `helm upgrade` はしません）。
 
 ## 4. まだノードが増えていないことを確認する
 
