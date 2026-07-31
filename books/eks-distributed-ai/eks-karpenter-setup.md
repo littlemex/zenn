@@ -255,6 +255,20 @@ resource "null_resource" "wait_for_node_drain" {
 
 **注意 2: CRD が `Established` になる前の NodePool apply は失敗しうる。** `karpenter-crd` chart のインストール直後、まだ Kubernetes API サーバーに CRD が完全に登録されていない状態で `NodePool` リソースを apply すると失敗することがあります。これは一時的な状態なので、`terraform apply` を再実行すれば通ります。
 
+## Dynamic Resource Allocation（DRA）とは何か
+
+ここまで扱ってきた `nvidia.com/gpu` や `vpc.amazonaws.com/efa` のような拡張リソース（extended resource）は、GPU/Neuron や EFA インターフェースをノード上の device plugin（デバイスプラグイン）が数量として Kubernetes API サーバーに登録し、Pod 側は `resources.limits` に個数を書いて要求する、という枠組みです。device plugin はノードごとに動く DaemonSet で、デバイスを単純な整数カウントとして表現するため、Pod 側は「何個欲しいか」しか指定できず、GPU の世代やメモリ容量、トポロジといった属性を選んで要求することはできません。
+
+Dynamic Resource Allocation（動的リソース割り当て、DRA）は、この device plugin 方式に代わる新しいデバイス割り当ての仕組みです。DRA では `DeviceClass` / `ResourceClaim` / `ResourceClaimTemplate` という新しい API リソースを使い、Pod は「このクラスのデバイスを 1 つ要求する」という `ResourceClaim` を経由してデバイスにアクセスします。デバイスドライバはノード上のデバイスを `ResourceSlice` として公開し、そこにはモデル名やメモリ容量、トポロジといった豊富な属性が載るため、スケジューラは CEL（Common Expression Language）式でその属性を条件にデバイスを選べます。複数コンテナが同じ `ResourceClaim` を共有してデバイスを使い分けたり、マルチノード GPU 通信を `ComputeDomain` という単位で管理したりできる点も、単純なカウント方式の device plugin には無い特徴です。永続ボリュームを動的にプロビジョニングする仕組みに近い体験を、GPU/Neuron のようなアクセラレータにも持ち込むことが DRA の狙いです。DRA のコア API は Kubernetes 1.34 で GA（Stable）となり、1.35 以降はデフォルトで有効になっています。
+
+## Karpenter は DRA にまだ対応していない
+
+DRA が GA になったからといって、この book の構成にそのまま持ち込めるわけではありません。[Amazon EKS の GPU デバイス管理に関する AWS 公式ドキュメント](https://docs.aws.amazon.com/eks/latest/userguide/device-management-nvidia.html) は、Kubernetes 1.34 以降で EKS マネージド型ノードグループやセルフマネージド型ノードグループを使う新規デプロイに NVIDIA DRA driver を推奨しつつも、次の制約を明示しています: NVIDIA DRA driver は Karpenter および EKS Auto Mode では現状サポートされておらず、Karpenter と EKS Auto Mode では引き続き NVIDIA device plugin を使う必要があるという制約です。同ドキュメントはこの制約の追跡先として upstream の [KEP-5004](https://github.com/kubernetes/enhancements/issues/5004) を挙げています。
+
+KEP-5004 は正式には「DRA: Handle extended resource requests via DRA Driver」という提案で、DRA ドライバが公開するデバイスを、device plugin を介さずに `nvidia.com/gpu` のような従来の拡張リソース API 経由でも要求できるようにすることを目指しています。この仕組みが実現すると、同じクラスタの一部のノードが device plugin を使い、別の一部のノードが DRA ドライバを使うという混在運用や、既存の Pod マニフェストを書き換えずに DRA へ段階的に移行することが可能になる、という位置づけです。Karpenter や cluster-autoscaler のようなノードオートスケーラーが DRA の `ResourceClaim` を認識してスケールアウトの判断に反映できるようにする議論も、この KEP の作業範囲に含まれています。KEP のマイルストーンは次のとおりです: Alpha が Kubernetes 1.34、Beta が 1.35 から 1.36 に後ろ倒しされ、Stable（GA）の目標は 1.37 とされています。ただしこれは KEP が置いている目標であり、他の多くの KEP と同様に確定したスケジュールではないため、実際のリリースタイミングは前後する可能性がある点は留保しておきます。
+
+したがって、Karpenter でノードプロビジョニングを行うこの構成では、DRA ドライバは現時点で選択肢になりません。device plugin 方式（NVIDIA GPU Operator、aws-efa-k8s-device-plugin、Neuron device plugin）を使うことが、legacy な妥協ではなく現状で唯一実用的な選択です。この book の Terraform 実装が前提とする設計判断は ADR（決定 D9）にもまとめられており、Karpenter による柔軟な混在プロビジョニングを設計の中心に据えている以上、device plugin 方式を選ぶのは自然な帰結だと整理しています。KEP-5004 が進んで Karpenter からも DRA の `ResourceClaim` が扱えるようになれば、この判断は再検討の対象になります。
+
 # ワークショップ実施
 
 Karpenter は Basic01 の `terraform apply` に含めて導入済みの構成です。ここでは導入結果を確認します。
