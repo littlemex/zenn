@@ -19,13 +19,17 @@ Karpenter は、スケジュールできずに `Pending` のままになって�
 
 この構成で Managed Node Group ではなく Karpenter を選ぶ理由は 2 つあります。1 つは、この基盤で使うアクセラレータの型が `g6e` 系 GPU、`p5en` 系 GPU、`trn2` 系 Neuron など多様で、ワークロードごとに必要な型が変わることです。Managed Node Group はインスタンスタイプの組み合わせごとにグループを作る必要があり、型の種類が増えるほど管理コストが跳ね上がります。もう 1 つは、GPU/Neuron インスタンスは時間単価が高く、常時起動しておくコストが大きいことです。Karpenter は Pod が要求したときだけノードを起動し、不要になれば consolidation で終了させるため、使った分だけ課金する運用に向いています。
 
+:::message
+実際に柔軟にリソース確保ができるかどうかはさておき、Spot/On Demand/Capacity Block などの購入オプション、様々なインスタンスサイズやタイプ、を柔軟に扱えることは重要な要件としています。
+:::
+
 導入の実装上のポイントは 3 つあります。
 
 1 つ目は CRD の管理方法です。Karpenter が使う `EC2NodeClass` / `NodePool` / `NodeClaim` の CRD は、コントローラ本体の Helm chart（`karpenter`）とは別の chart（`karpenter-crd`）として提供されています。これは Helm の仕様上、chart の `crds/` ディレクトリに含まれる CRD は `helm upgrade` の対象外で、初回インストール時のスキーマのまま更新されないためです。`karpenter-crd` を同じバージョンで別チャートとして管理すれば、バージョンアップ時に CRD のスキーマも一緒に更新できます。
 
-2 つ目は認証方式です。Karpenter コントローラが Amazon EC2 の起動・終了などの AWS API を呼ぶために必要な権限は、ServiceAccount に IAM ロールをアノテーションで結び付ける IRSA 方式ではなく、Amazon EKS Pod Identity を使って付与します。Pod Identity は IAM ロールとの結び付けを ServiceAccount のアノテーションではなく EKS 側のリソース（Pod Identity Association）で完結させられるため、設定がシンプルになります。これが機能するには `eks-pod-identity-agent` アドオンが必要ですが、これは Basic01 の `terraform apply` で導入済みです。
+2 つ目は認証方式です。Karpenter コントローラが Amazon EC2 の起動・終了などの AWS API を呼ぶために必要な権限は、Amazon EKS Pod Identity を使って付与します。Pod Identity は IAM ロールとの結び付けを ServiceAccount のアノテーションではなく EKS 側のリソース（Pod Identity Association）で完結させられるため、設定がシンプルになります。これが機能するには `eks-pod-identity-agent` アドオンが必要ですがこれは導入済みです。
 
-3 つ目は Spot 中断への対応です。Karpenter は SQS の interruption queue を経由して、Spot インスタンスの中断通知や AWS のヘルスイベント、リバランス推奨を受け取り、対象ノード上の Pod を強制終了ではなく graceful に drain してから終了させます。この queue と、通知を queue に流す Amazon EventBridge ルールの作成も、Karpenter 導入の一部として行います。
+3 つ目は Spot 中断への対応です。Karpenter は SQS の interruption queue を経由して、Spot インスタンスの中断通知や AWS のヘルスイベントなどを受け、対象ノード上の Pod を強制終了ではなく graceful に drain してから終了させます。この queue と、通知を queue に流す Amazon EventBridge ルールの作成も、Karpenter 導入の一部として行います。
 
 以降で実際の Terraform コードを引用しながら、なぜその値・その書き方にしているのかを見ていきます。対象ファイルは [`karpenter.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/karpenter.tf) と [`iam.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/iam.tf) です。
 
