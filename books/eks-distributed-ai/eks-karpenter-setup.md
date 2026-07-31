@@ -226,19 +226,11 @@ resource "null_resource" "wait_for_node_drain" {
 
 **なぜこれが要るのか。** `kubectl_manifest` は `NodePool` / `NodeClaim` の削除を Kubernetes API が受理した瞬間に「完了」として報告しますが、実際のノード drain・Amazon EC2 インスタンス終了・ENI 解放は Karpenter コントローラが非同期に行う後処理です。GPU ノードが起動中に `terraform destroy` で Karpenter やその関連コントローラ（EFA デバイスプラグイン、Amazon EFS/Amazon FSx for Lustre CSI ドライバなど）を先に消してしまうと、その Amazon EC2 インスタンスは誰にも終了されずに課金され続ける「孤児」インスタンスになります。
 
-**`depends_on` はこう設計しています。** Terraform は destroy を `depends_on` の逆順で実行するため、この `null_resource` が `depends_on` に列挙している Karpenter・GPU Operator・EFA デバイスプラグイン・Amazon EFS/Amazon FSx for Lustre CSI・placement group・Amazon VPC エンドポイントは、すべてこの drain 待ちが完了した**後**に破棄されます。Amazon VPC エンドポイントが含まれているのは、destroy 中に NAT ゲートウェイが先に消えても、Karpenter コントローラが Amazon VPC エンドポイント経由で Amazon EC2/IAM/STS/SSM の API 呼び出しを続けられるようにするためです（詳細はソースコード中のコメントを参照）。
-
-## 注意
-
-**注意 1: `featureGates.reservedCapacity` を Helm values に書かない。** このフラグは Karpenter v1.13.0 のコンパイル時点で `true` がデフォルトになっており、本構成が必要とする挙動と一致します。デフォルトと同じ値をわざわざ values に固定すると、将来 chart のデフォルトが変わったときに追従できなくなるので、明示せずデフォルトに委ねます。バージョンごとのデフォルト値は chart の `values.yaml` で確認できます。
-
-**注意 2: CRD が `Established` になる前の NodePool apply は失敗しうる。** `karpenter-crd` chart のインストール直後、まだ Kubernetes API サーバーに CRD が完全に登録されていない状態で `NodePool` リソースを apply すると失敗することがあります。これは一時的な状態なので、`terraform apply` を再実行すれば通ります。
-
 ## Dynamic Resource Allocation（DRA）とは何か
 
-ここまで扱ってきた `nvidia.com/gpu` や `vpc.amazonaws.com/efa` のような拡張リソース（extended resource）は、GPU/Neuron や EFA インターフェースをノード上の device plugin（デバイスプラグイン）が数量として Kubernetes API サーバーに登録し、Pod 側は `resources.limits` に個数を書いて要求する、という枠組みです。device plugin はノードごとに動く DaemonSet で、デバイスを単純な整数カウントとして表現するため、Pod 側は「何個欲しいか」しか指定できず、GPU の世代やメモリ容量、トポロジといった属性を選んで要求することはできません。
+ここまで扱ってきた `nvidia.com/gpu` や `vpc.amazonaws.com/efa` のような拡張リソース（extended resource）は、GPU/Neuron や EFA インターフェースをノード上の device plugin が数量として Kubernetes API サーバーに登録し、Pod 側は `resources.limits` に個数を書いて要求する、という枠組みです。device plugin はノードごとに動く DaemonSet で、デバイスを単純な整数カウントとして表現するため、Pod 側は「何個欲しいか」しか指定できず、GPU の世代やメモリ容量、トポロジといった属性を選んで要求することはできません。
 
-Dynamic Resource Allocation（動的リソース割り当て、DRA）は、この device plugin 方式に代わる新しいデバイス割り当ての仕組みです。DRA では `DeviceClass` / `ResourceClaim` / `ResourceClaimTemplate` という新しい API リソースを使い、Pod は「このクラスのデバイスを 1 つ要求する」という `ResourceClaim` を経由してデバイスにアクセスします。デバイスドライバはノード上のデバイスを `ResourceSlice` として公開し、そこにはモデル名やメモリ容量、トポロジといった豊富な属性が載るため、スケジューラは CEL（Common Expression Language）式でその属性を条件にデバイスを選べます。複数コンテナが同じ `ResourceClaim` を共有してデバイスを使い分けたり、マルチノード GPU 通信を `ComputeDomain` という単位で管理したりできる点も、単純なカウント方式の device plugin には無い特徴です。永続ボリュームを動的にプロビジョニングする仕組みに近い体験を、GPU/Neuron のようなアクセラレータにも持ち込むことが DRA の狙いです。DRA のコア API は Kubernetes 1.34 で GA（Stable）となり、1.35 以降はデフォルトで有効になっています。
+Dynamic Resource Allocation（DRA）は、この device plugin 方式に代わる新しいデバイス割り当ての仕組みです。DRA では `DeviceClass` / `ResourceClaim` / `ResourceClaimTemplate` という新しい API リソースを使い、Pod は「このクラスのデバイスを 1 つ要求する」という `ResourceClaim` を経由してデバイスにアクセスします。デバイスドライバはノード上のデバイスを `ResourceSlice` として公開し、そこにはモデル名やメモリ容量、トポロジといった豊富な属性が載るため、スケジューラは CEL（Common Expression Language）式でその属性を条件にデバイスを選べます。複数コンテナが同じ `ResourceClaim` を共有してデバイスを使い分けたり、マルチノード GPU 通信を `ComputeDomain` という単位で管理したりできる点も、単純なカウント方式の device plugin には無い特徴です。永続ボリュームを動的にプロビジョニングする仕組みに近い体験を、GPU/Neuron のようなアクセラレータにも持ち込むことが DRA の狙いです。DRA のコア API は Kubernetes 1.34 で GA（Stable）となり、1.35 以降はデフォルトで有効になっています。
 
 ## Karpenter は DRA にまだ対応していない
 
