@@ -1,0 +1,90 @@
+<mxfile host="app.diagrams.net" modified="2026-08-02T03:00:00.000Z" agent="Claude" version="24.0.0">
+  <diagram id="imgcache-layers" name="Image Cache Layers">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- Title -->
+        <mxCell id="title" value="イメージキャッシュの層と「良性故障」の原則" style="text;html=1;align=center;verticalAlign=middle;fontSize=22;fontStyle=1;fontColor=#065F46;" vertex="1" parent="1">
+          <mxGeometry x="420" y="20" width="860" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="subtitle" value="キャッシュの寿命 = ノードの寿命。速くする層は、失敗しても素のコールド pull に退化するだけにする。" style="text;html=1;align=center;verticalAlign=middle;fontSize=14;fontColor=#374151;" vertex="1" parent="1">
+          <mxGeometry x="420" y="58" width="860" height="26" as="geometry" />
+        </mxCell>
+
+        <!-- ===== LEFT: LAYER STACK ===== -->
+        <mxCell id="stack-header" value="キャッシュは物理的に 4 層しかない" style="text;html=1;align=left;fontSize=15;fontStyle=1;fontColor=#065F46;" vertex="1" parent="1">
+          <mxGeometry x="60" y="100" width="500" height="24" as="geometry" />
+        </mxCell>
+
+        <!-- Layer 0 -->
+        <mxCell id="l0" value="&lt;b&gt;層 0: ネットワーク基礎&lt;/b&gt;&lt;br&gt;ECR interface endpoint + S3 gateway endpoint&lt;br&gt;（S3 endpoint 欠落だと全レイヤが NAT を通る）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D1FAE5;strokeColor=#059669;fontSize=13;align=left;spacingLeft=12;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="60" y="130" width="560" height="72" as="geometry" />
+        </mxCell>
+        <!-- Layer A -->
+        <mxCell id="la" value="&lt;b&gt;層 A: pull 経路（レジストリを近くする）&lt;/b&gt;&lt;br&gt;原則: ランタイム参照は全て自アカウント ECR 発&lt;br&gt;（外部ベースは CI で crane copy。nvcr.io は PTC 非対応）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D1FAE5;strokeColor=#059669;fontSize=13;align=left;spacingLeft=12;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="60" y="212" width="560" height="72" as="geometry" />
+        </mxCell>
+        <!-- Layer B -->
+        <mxCell id="lb" value="&lt;b&gt;層 B: ノード内保持（data-root と GC の躾）&lt;/b&gt;&lt;br&gt;accelerator は NVMe RAID0 で概ね完成&lt;br&gt;cpu は gp3 throughput 引き上げ + containerd 並列 DL + imageMaximumGCAge" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D1FAE5;strokeColor=#059669;fontSize=13;align=left;spacingLeft=12;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="60" y="294" width="560" height="80" as="geometry" />
+        </mxCell>
+        <!-- Layer C -->
+        <mxCell id="lc" value="&lt;b&gt;層 C: ノード跨ぎ再利用（主戦場）&lt;/b&gt;&lt;br&gt;恒久コア: headroom floor + 素の prewarm DaemonSet&lt;br&gt;状態はノードローカル containerd のみ。詰まったらノードを捨てる" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#A7F3D0;strokeColor=#047857;fontSize=13;fontStyle=0;align=left;spacingLeft=12;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="60" y="384" width="560" height="80" as="geometry" />
+        </mxCell>
+        <!-- Layer D -->
+        <mxCell id="ld" value="&lt;b&gt;層 D: ガバナンス（巨大重みの外出し）&lt;/b&gt;&lt;br&gt;イメージは code+依存のみ（目安 15GB 上限）&lt;br&gt;モデル重みは S3 + Mountpoint CSI / 推論 FW の S3 直接ロード" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D1FAE5;strokeColor=#059669;fontSize=13;align=left;spacingLeft=12;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="60" y="474" width="560" height="72" as="geometry" />
+        </mxCell>
+
+        <!-- ===== RIGHT TOP: CORE vs EXCLUDED ===== -->
+        <mxCell id="core-header" value="恒久コアに入れる / 入れない" style="text;html=1;align=left;fontSize=15;fontStyle=1;fontColor=#065F46;" vertex="1" parent="1">
+          <mxGeometry x="700" y="100" width="500" height="24" as="geometry" />
+        </mxCell>
+
+        <mxCell id="core-box" value="&lt;b&gt;恒久コア（退屈だが壊れない）&lt;/b&gt;&lt;br&gt;&lt;br&gt;・headroom floor（温かいノードを 1 台維持）&lt;br&gt;・prewarm DaemonSet（ConfigMap の digest を ctr pull）&lt;br&gt;・containerd 並列度チューニング（宣言的・無状態）&lt;br&gt;・状態原則: ノードローカルのみ。復旧 = ノード入れ替え" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#065F46;strokeColor=#047857;fontColor=#FFFFFF;fontSize=13;align=left;spacingLeft=12;verticalAlign=top;spacingTop=10;" vertex="1" parent="1">
+          <mxGeometry x="700" y="130" width="500" height="150" as="geometry" />
+        </mxCell>
+
+        <mxCell id="excl-box" value="&lt;b&gt;恒久コアから外す（計測で支配的と出るまで）&lt;/b&gt;&lt;br&gt;&lt;br&gt;・Spegel (P2P): 前提不一致 + mirror 遅延注入の有害ケース&lt;br&gt;・OpenKruise: ImagePullJob 一機能に特権常駐は過剰&lt;br&gt;・SOCI lazy pull: 実行中の Range GET 失敗が学習を殺す&lt;br&gt;・zstd 全面化: 自ビルド分のみ限定採用、ミラー再圧縮は禁止" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FEE2E2;strokeColor=#DC2626;fontSize=13;align=left;spacingLeft=12;verticalAlign=top;spacingTop=10;" vertex="1" parent="1">
+          <mxGeometry x="700" y="292" width="500" height="160" as="geometry" />
+        </mxCell>
+
+        <!-- ===== RIGHT BOTTOM: BENIGN FAILURE ===== -->
+        <mxCell id="benign-box" value="&lt;b&gt;良性故障の原則&lt;/b&gt;&lt;br&gt;&lt;br&gt;速くする層（prewarm / 並列化 / zstd）が全滅しても、&lt;br&gt;起きるのは「素のコールド pull に戻る」だけ。&lt;br&gt;ノード起動不能・学習中死亡につながる常駐データパス&lt;br&gt;（SOCI lazy / stateful ミラー / snapshot 焼込み）は排除する。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FEF3C7;strokeColor=#D97706;fontSize=13;align=left;spacingLeft=12;verticalAlign=top;spacingTop=10;" vertex="1" parent="1">
+          <mxGeometry x="700" y="464" width="500" height="150" as="geometry" />
+        </mxCell>
+
+        <!-- ===== PHASE STRIP (bottom) ===== -->
+        <mxCell id="phase-header" value="段階導入（すぐ効く順 × 壊しにくい順）" style="text;html=1;align=left;fontSize=15;fontStyle=1;fontColor=#065F46;" vertex="1" parent="1">
+          <mxGeometry x="60" y="640" width="600" height="24" as="geometry" />
+        </mxCell>
+
+        <mxCell id="p0" value="&lt;b&gt;Phase 0&lt;/b&gt;&lt;br&gt;計測&lt;br&gt;（待ち時間を分解）&lt;br&gt;+ containerd 並列化" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D1FAE5;strokeColor=#059669;fontSize=12;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="60" y="672" width="250" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="p1" value="&lt;b&gt;Phase 1&lt;/b&gt;&lt;br&gt;恒久コア投入&lt;br&gt;headroom floor&lt;br&gt;+ prewarm DaemonSet" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#A7F3D0;strokeColor=#047857;fontSize=12;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="345" y="672" width="250" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="p2" value="&lt;b&gt;Phase 2&lt;/b&gt;&lt;br&gt;条件付き最適化&lt;br&gt;自ビルド分のみ zstd&lt;br&gt;（計測で採否）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FEF3C7;strokeColor=#D97706;fontSize=12;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="630" y="672" width="250" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="p3" value="&lt;b&gt;Phase 3&lt;/b&gt;&lt;br&gt;再評価枠（既定不採用）&lt;br&gt;大規模同時 scale-out で&lt;br&gt;ECR 転送重複が支配的なら Spegel" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3F4F6;strokeColor=#9CA3AF;fontSize=12;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="915" y="672" width="285" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="parrow1" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#059669;" edge="1" parent="1" source="p0" target="p1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="parrow2" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#047857;" edge="1" parent="1" source="p1" target="p2"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="parrow3" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#D97706;" edge="1" parent="1" source="p2" target="p3"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <!-- Legend -->
+        <mxCell id="legend" value="凡例: 濃緑 = 恒久コアの主役 / 緑 = 恒久コア / 黄 = 条件付き・原則 / 赤 = 外す / 灰 = 再評価枠" style="text;html=1;align=left;fontSize=12;fontColor=#6B7280;" vertex="1" parent="1">
+          <mxGeometry x="60" y="770" width="900" height="20" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -14,4 +14,5 @@ chapters:
   - eks-observability
   - eks-neuron-trainium
   - eks-shared-storage
+  - eks-image-cache
   - eks-teardown-and-options
