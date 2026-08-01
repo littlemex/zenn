@@ -19,8 +19,8 @@ free: true
 
 素朴な発想では「キャッシュを足せば速くなる」と考えますが、この基盤には無視できない支配的な事実が 2 つあります。
 
-- **キャッシュの寿命はノードの寿命に等しい**。Karpenter は `WhenEmpty` と短い `consolidateAfter` でアイドルノードを即座に回収します（Basic04 で見た挙動です）。ノード内のキャッシュをいくら磨いても、ノードが消えればキャッシュも消えます。検証反復のコールド pull の主因はキャッシュ層の不在ではなく、ノードの入れ替わり（churn）です
-- **digest pin 運用が最強のキャッシュの味方になる**。イメージをタグではなく digest で参照すると、参照はイミュータブルになり「stale キャッシュ」という故障クラスがほぼ消滅します。`imagePullPolicy: IfNotPresent` を安全に使えるようになります
+- **キャッシュの寿命はノードの寿命に等しくなります**。Karpenter のノード回収の挙動はプールごとに異なり（Basic03 で導入した Karpenter の disruption 設定です）、EFA や予約系のアクセラレータプール（`gpu-p5en` / `trn2` など）は `consolidateAfter: Never` でノードを維持しますが、非 EFA のアクセラレータプール（`gpu-dev` など）と cpu プールは短い `consolidateAfter`（5m / 30s）でアイドルノードを回収します。ノード内のキャッシュをいくら磨いても、対象ノードが消えればキャッシュも消えます。検証反復のコールド pull の主因はキャッシュ層の不在ではなく、回収対象プールでのノードの入れ替わり（churn）です
+- **digest pin 運用が最強のキャッシュの味方になります**。イメージをタグではなく digest で参照すると、参照はイミュータブルになり「stale キャッシュ」という故障クラスがほぼ消滅します。`imagePullPolicy: IfNotPresent` を安全に使えるようになります
 
 この 2 点を踏まえると、キャッシュ設計の目的は「速くすること」だけでは足りません。**速くする仕組みが失敗したときに、素のコールド pull に静かに戻るだけで済むこと**、つまり良性の故障モードに閉じることが同じくらい重要です。ノードが起動できなくなったり、実行中の学習ジョブが死んだりする故障を持ち込む高速化は、この基盤には入れません。
 
@@ -42,11 +42,11 @@ ECR のレイヤ実体は S3 の presigned URL 経由で配られます。その
 
 ### 層 B: ノード内保持
 
-accelerator プール（gpu-p5en / gpu-dev / trn2）は概ね完成しています。nodeadm の `localStorage.strategy: Raid0` により containerd の data-root が NVMe instance store に載り、instance store は数 TB 級なので imageGC の既定閾値（85/80）に実質到達しません。ここで追加すべきは kubelet の `imageMaximumGCAge` を明示設定し、多世代 digest の無限堆積だけを防ぐことです。
+accelerator プール（`terraform.tfvars` の `accelerator_pools` に例として並ぶ `gpu-p5en` / `gpu-dev` / `trn2` のような構成、この変数の既定値は空マップです）は概ね完成しています。nodeadm の `localStorage.strategy: Raid0` により containerd の data-root が NVMe instance store に載り、instance store は数 TB 級なので imageGC の既定閾値（85/80）に実質到達しません。ここは本実装ではすでに IaC 固定済みで、kubelet の `imageMaximumGCAge` を `168h` に明示設定し、多世代 digest の無限堆積を防いでいます（`karpenter-resources.tf` の `local.image_maximum_gc_age` を `accelerator_user_data` に注入）。
 
-一方 cpu プールは NVMe を持たず、imagefs と nodefs が単一の gp3 に同居します。ここで見落とされがちな支配的ボトルネックは **gp3 のベースライン throughput 125MiB/s** です。イメージのダウンロードと展開で書き込みが二重に走り、ディスクだけで数分溶けます。EC2NodeClass の `blockDeviceMappings` で throughput と IOPS を引き上げるのが、今日できて絶対に壊れない改善です。
+一方 cpu プールは NVMe を持たず、imagefs と nodefs が単一の gp3 に同居します。ここで見落とされがちな支配的ボトルネックは **gp3 のベースライン throughput 125MiB/s** です。イメージのダウンロードと展開で書き込みが二重に走り、ディスクだけで数分溶けます。ここもすでに IaC 固定済みで、CPU 用 EC2NodeClass の `blockDeviceMappings` に `throughput = 500` / `iops = 6000`（`variables.tf` の `cpu_node_volume_throughput` / `cpu_node_volume_iops` の既定値）を設定し、gp3 のベースラインより高いスループットを確保しています。
 
-全プール共通で、kubelet の `serializeImagePulls: false` と `maxParallelImagePulls`、containerd の `max_concurrent_downloads` の引き上げを nodeadm の NodeConfig で注入します。宣言的でステートレスなので、失敗しても挙動が元に戻るだけです。
+全プール共通で、kubelet の `serializeImagePulls: false` と `maxParallelImagePulls: 8`、containerd の `max_concurrent_downloads: 8` の引き上げも、`karpenter-resources.tf` の `accelerator_user_data` / `cpu_user_data` で nodeadm の NodeConfig にすでに注入済みです。宣言的でステートレスなので、失敗しても挙動が元に戻るだけです。
 
 ### 層 C: ノード跨ぎ再利用
 
@@ -54,7 +54,7 @@ accelerator プール（gpu-p5en / gpu-dev / trn2）は概ね完成していま�
 
 この基盤の恒久コアは、次の 2 つだけで構成します。
 
-- **headroom floor**: 低優先度の pause Deployment で、作業時間帯の cpu プールに温かいキャッシュを持つノードを最小 1 台維持します。ノードが生き残る、すなわちキャッシュが生き残ることが、ノード provisioning 待ちとコールド pull の両方を同時に殺す最も効く一手です
+- **headroom floor**: 低優先度の pause Deployment で、cpu プールに温かいキャッシュを持つノードを常時 1 台維持します。ノードが生き残る、すなわちキャッシュが生き残ることが、ノード provisioning 待ちとコールド pull の両方を同時に殺す最も効く一手です
 - **prewarm DaemonSet（素朴実装）**: ConfigMap に列挙した pinned digest のリストを読んで `ctr` で pull するだけの DaemonSet です。ノードが新規参加すると自動で温まります。コントローラも CRD も不要で、pull が失敗してもワークロードは通常のコールド pull に落ちるだけという自明な故障挙動を持ちます
 
 この 2 つに共通する状態管理の原則は、**キャッシュの状態はノードローカルの containerd にしか持たせない**ことです。共有キャッシュサービスを置かないので、「詰まったらノードを入れ替えれば直る」という一点に復旧手順を固定できます。
@@ -65,7 +65,7 @@ P2P registry mirror の Spegel は魅力的に見えますが、恒久コアか�
 
 ### 層 D: ガバナンス
 
-キャッシュ戦略の最終防衛線は **「そもそも巨大イメージを作らせない」** ことです。モデル重みやデータセットをイメージレイヤに入れると、どの層のキャッシュ設計もいずれ破綻します。恒久ルールとして、イメージはコードと依存のみ（目安 15GB 上限）とし、重みは Amazon S3 に置いて Mountpoint for Amazon S3 CSI や推論フレームワークの S3 直接ロードで取得します。この使い分けは Basic10 の共有ストレージと地続きの判断です。
+キャッシュ戦略の最終防衛線は **「そもそも巨大イメージを作らせない」** ことです。モデル重みやデータセットをイメージレイヤに入れると、どの層のキャッシュ設計もいずれ破綻します。恒久ルールとして、イメージはコードと依存のみ（目安 15GB 上限）とし、重みは Amazon S3 に置いて Mountpoint for Amazon S3 CSI や推論フレームワークの S3 直接ロードで取得します。この使い分けは Basic10 の共有ストレージと地続きの判断です。ただし cpu プールで RL 学習のような ~18GB 級イメージを扱う既存の運用例もあり（`variables.tf` の `cpu_node_volume_size` のコメント）、15GB はあくまで新規イメージ設計時の目安であって、超える既存イメージを許さない絶対値ではありません。
 
 ## なぜ SOCI や Spegel を恒久コアに入れないか
 
@@ -81,27 +81,27 @@ Bottlerocket の実利はスナップショット事前ロード（`aws-samples/
 
 ## 全体の中での位置付け
 
-本章は Basic03 で導入した Karpenter のノード churn と、Basic10 の共有ストレージの判断の上に成り立っています。Karpenter がノードを積極的に回収するからこそキャッシュの寿命がノードの寿命に縛られ、だからこそ重みをイメージに入れず S3 に外出しするガバナンスが効いてきます。イメージキャッシュは単独の機能ではなく、ノードのライフサイクルとストレージ設計の交点にある運用最適化の層です。
+本章は Basic03 で導入した Karpenter のノード churn と、Basic10 の共有ストレージの判断の上に成り立っています。Karpenter が非 EFA/非予約プールのアイドルノードを回収するからこそキャッシュの寿命がノードの寿命に縛られ、だからこそ重みをイメージに入れず S3 に外出しするガバナンスが効いてきます。イメージキャッシュは単独の機能ではなく、ノードのライフサイクルとストレージ設計の交点にある運用最適化の層です。
 
 ## 注意
 
-**1. S3 gateway endpoint の欠落は他のどの施策より優先して潰す**
+**1. S3 gateway endpoint の欠落は他のどの施策より優先して潰します**
 
 ECR のレイヤは S3 presigned URL で配られるため、S3 gateway endpoint が無いと全レイヤが NAT を通ります。イメージが大きい基盤ほど、ここが帯域と課金の律速点になります。
 
-**2. imageGC が次に使うイメージを消す**
+**2. imageGC が次に使うイメージを消します**
 
 prewarm 済みでまだ使っていないイメージは、kubelet から見ると未使用であり imageGC の削除候補です。`imageMaximumGCAge` と閾値を prewarm 運用を前提に設計しないと、温めたそばから消される事故になります。
 
-**3. `imagePullPolicy: Always` はキャッシュ設計を裏切る**
+**3. `imagePullPolicy: Always` はキャッシュ設計を裏切ります**
 
 digest 参照でも `Always` は pod 起動ごとにレジストリへ問い合わせるため、レジストリや PTC の障害時に「キャッシュ済みなのに起動不能」という故障モードを作ります。digest pin と `IfNotPresent` を組みにします。
 
-**4. cpu プールの gp3 throughput は明示的に引き上げる**
+**4. cpu プールの gp3 throughput は明示的に引き上げます**
 
 gp3 のベースライン 125MiB/s のままだと、NVMe を持たない cpu プールではダウンロードと展開でディスクが律速します。`blockDeviceMappings` で throughput と IOPS を上げます。gp3 は throughput 課金が安く、ノード寿命が短いので月額影響は軽微です。
 
-**5. 高速化の層は必ず良性故障に閉じる**
+**5. 高速化の層は必ず良性故障に閉じます**
 
 prewarm、並列化、zstd といった高速化は、全滅しても素のコールド pull に戻るだけであるべきです。ノード起動不能や学習中死亡につながる仕組みを高速化のために持ち込まないことを、採否判断の第一原則にします。
 
@@ -122,23 +122,29 @@ kubectl get events --field-selector involvedObject.name=<pod> \
 
 `Scheduled` から `Pulling`、`Pulled`、`Started` までの各区間が、それぞれ provisioning・取得・展開のどこに時間を使っているかを示します。展開が支配的なら zstd が効き、取得が支配的なら prewarm や layer 経路が効く、という判断の土台になります。
 
-同時に、無リスクな containerd 並列化だけは即適用します。nodeadm の NodeConfig で次を注入します。
+無リスクな containerd/kubelet の並列化は、本実装ではすでに `karpenter-resources.tf` の `accelerator_user_data` / `cpu_user_data` から EC2NodeClass の `userData` として全プール共通で注入済みです。nodeadm の NodeConfig はブート時の userData なので稼働中ノードに即時反映はできませんが、次に Karpenter が立てる新規ノードからはこの設定で起動します。
 
 ```yaml
 apiVersion: node.eks.aws/v1alpha1
 kind: NodeConfig
 spec:
+  containerd:
+    config: |
+      [plugins."io.containerd.cri.v1.images"]
+        discard_unpacked_layers = false
+        max_concurrent_downloads = 8
   kubelet:
     config:
       serializeImagePulls: false
       maxParallelImagePulls: 8
+      imageMaximumGCAge: "168h"
 ```
 
 ## 2. 恒久コアを投入する
 
 計測で痛みの所在を確認したら、恒久コアの 2 点を入れます。
 
-headroom floor は、低優先度の pause Deployment で作業時間帯にノードを 1 台維持します。
+headroom floor は、低優先度の pause Deployment で cpu プールにノードを常時 1 台維持します。cpu プールを狙い撃ちする `nodeSelector: node-role: cpu`（`karpenter-resources.tf` の `nodepool_cpu` が付与するラベル）と、CPU NodePool の `consolidationPolicy: WhenEmptyOrUnderutilized` による consolidation で温めたノードごと入れ替わらないようにする `karpenter.sh/do-not-disrupt: "true"` アノテーションの両方が必須です。ここでは常時 1 台維持のコストを許容する前提を置き、作業時間帯だけに絞る CronJob 制御は行いません。
 
 ```yaml
 apiVersion: scheduling.k8s.io/v1
@@ -163,8 +169,12 @@ spec:
     metadata:
       labels:
         app: cache-headroom
+      annotations:
+        karpenter.sh/do-not-disrupt: "true"
     spec:
       priorityClassName: cache-headroom
+      nodeSelector:
+        node-role: cpu
       containers:
         - name: pause
           image: registry.k8s.io/pause:3.10
@@ -174,7 +184,7 @@ spec:
               memory: 1Gi
 ```
 
-prewarm DaemonSet は、ConfigMap に列挙した digest を各ノードで pull するだけの実装です。
+prewarm DaemonSet は、ConfigMap に列挙した digest を各ノードで pull するだけの実装です。ここで注意が要るのは、`ctr` は kubelet のクレデンシャルプロバイダを経由しないため、自アカウント ECR の digest pull に認証情報を素通りさせると 401 で全滅する点です。Pod Identity で IAM ロールを結び付けた ServiceAccount を使い、`aws ecr get-login-password` で取得したトークンを `ctr images pull --user AWS:<token>` に渡します。あわせて `containerd.sock` の hostPath マウントはノードの root 相当の権限を DaemonSet に与えるため、この DaemonSet 専用の最小権限 ServiceAccount に限定します。掲載する `tolerations: operator: Exists` は全プールに展開されるため、Capacity Block の trn2/p5en ノードにも常駐して vLLM/GPU 向けイメージまで pull します。instance store が数 TB 級なので実害は小さいものの、プールを絞りたい場合は ConfigMap をプール別に分けるか nodeSelector で対象ノードを限定します。
 
 ```yaml
 apiVersion: v1
@@ -201,16 +211,20 @@ spec:
       labels:
         app: image-prewarm
     spec:
+      serviceAccountName: image-prewarm
       tolerations:
         - operator: Exists
       containers:
         - name: prewarm
-          image: <account>.dkr.ecr.<region>.amazonaws.com/prewarm:latest
+          image: <account>.dkr.ecr.<region>.amazonaws.com/prewarm@sha256:...
           command: ["/bin/sh", "-c"]
           args:
             - |
+              token=$(aws ecr get-login-password --region <region>)
               for img in $(cat /config/images); do
-                ctr -n k8s.io images pull "$img" || true
+                if ! ctr -n k8s.io images pull --user "AWS:${token}" "$img"; then
+                  echo "[prewarm] pull failed for $img" >&2
+                fi
               done
               sleep infinity
           volumeMounts:
@@ -235,7 +249,7 @@ zstd 化は BuildKit の出力で行いますが、`force-compression=true` を�
 
 ```bash
 docker buildx build \
-  --output type=image,name=<ecr-repo>:<tag>,push=true,compression=zstd \
+  --output type=image,name=<ecr-repo>:<tag>,push=true,compression=zstd,oci-mediatypes=true \
   .
 ```
 
@@ -243,12 +257,15 @@ docker buildx build \
 
 ## 4. 良性故障を検証する
 
-恒久コアと最適化を入れたら、高速化の層を意図的に止めても pull が通ることを確認します。prewarm DaemonSet を止めた状態で新規ノードを立て、pod が通常のコールド pull で正常に起動することを見ます。
+恒久コアと最適化を入れたら、高速化の層を意図的に止めても pull が通ることを確認します。DaemonSet に `replicas` フィールドは存在しないため `kubectl scale` は使えません。代わりに、実在しないラベルを狙う `nodeSelector` を一時的に注入して Pod をどのノードにも乗せない状態にし、prewarm DaemonSet を止めた状態で新規ノードを立て、pod が通常のコールド pull で正常に起動することを見ます。
 
 ```bash
-kubectl -n kube-system scale daemonset image-prewarm --replicas=0
-# 新規ノードを誘発し、pod が Running になることを確認する
-kubectl -n kube-system rollout restart daemonset image-prewarm
+kubectl -n kube-system patch daemonset image-prewarm \
+  -p '{"spec":{"template":{"spec":{"nodeSelector":{"prewarm-disabled":"true"}}}}}'
+# 新規ノードを誘発し、prewarm を経由しない pod が Running になることを確認する
+# 検証後は nodeSelector のパッチを外して元に戻す
+kubectl -n kube-system patch daemonset image-prewarm \
+  --type json -p '[{"op":"remove","path":"/spec/template/spec/nodeSelector/prewarm-disabled"}]'
 ```
 
 高速化の層が全滅しても素のコールド pull に退化するだけである、という良性故障の性質を実地で確認できれば、この層を安心して恒久基盤に組み込めます。

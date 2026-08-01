@@ -23,7 +23,7 @@ free: true
 
 [vLLM](https://github.com/vllm-project/vllm) は、PagedAttention による高スループットな LLM 推論エンジンです。OpenAI 互換の HTTP API（`/v1/models`、`/v1/chat/completions` など）を提供するため、既存の OpenAI クライアントからそのまま呼び出せます。
 
-本章では、vLLM の公式イメージ `vllm/vllm-openai` を Kubernetes の `Deployment` として GPU ノードに載せ、軽量モデル `Qwen/Qwen2.5-0.5B-Instruct`（ゲートなし・小型で 1 枚の GPU に収まる）をサービングします。Helm チャート [`charts/experiments`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/charts/experiments) の `gpuServingVllm` ワークロードが GPU 向けの雛形で、`nodeSelector` でアクセラレータプールに載せ、`nvidia.com/gpu: 1` をリクエストします。
+本章では、vLLM の公式イメージ `vllm/vllm-openai` を Kubernetes の `Deployment` として GPU ノードに載せ、軽量モデル `Qwen/Qwen2.5-0.5B-Instruct`（ゲートなし・小型で 1 枚の GPU に収まる）をサービングします。Helm チャート [`charts/experiments`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/charts/experiments) の `gpuServingVllm` ワークロードが GPU 向けの雛形で、`nodeSelector` でアクセラレータプールに載せ、`nvidia.com/gpu: 1` をリクエストします。ゲート付きモデルを使う場合は、事前に `hf-token` という Secret を作っておくと、コンテナが `HF_TOKEN` 環境変数として自動的に読み込みます（未作成でも Pod は起動し、ゲートなしモデルでは何も参照されません）。
 
 推論は 1 ノードで完結するため、EFA も Capacity Block も要りません。Basic04 で `accelerator_pools` に GPU プールを定義してあれば、そのプールに Pod を投げるだけで Karpenter が GPU ノードを 1 台起動し、その上で vLLM が立ち上がります。
 
@@ -33,11 +33,13 @@ free: true
 
 ## 注意
 
-**on-demand GPU は容量が取れないことがあります。** GPU インスタンスは人気が高く、特定の AZ・特定のタイプで一時的に `InsufficientInstanceCapacity` になり、Karpenter が「filtered out all instance types」を出し続けることがあります。対策は Basic04 と同じで、`accelerator_pools` の `gpu-dev` プールで `zone` を変えて別の AZ を試すか、`instance_types` に `g6e.12xlarge` / `g5.12xlarge` のように複数を並べて Karpenter に選択肢を与えます。実際に単一 AZ・単一タイプに固定していて容量が取れなかったケースでも、複数 AZ・複数タイプを許可したら確保できました。
+**on-demand GPU は容量が取れないことがあります。** GPU インスタンスは人気が高く、特定の AZ・特定のタイプで一時的に `InsufficientInstanceCapacity` になり、起動に失敗し続けることがあります。また `accelerator_pools` の `instance_types` / `zone` の指定が狭すぎると、Karpenter が候補ゼロと判断して NodeClaim を作らないこともあります。いずれの場合も対策は Basic04 と同じで、`gpu-dev` プールで `zone` を変えて別の AZ を試すか、`instance_types` に `g6e.12xlarge` / `g5.12xlarge` のように複数を並べて Karpenter に選択肢を与えます。実際に単一 AZ・単一タイプに固定していて容量が取れなかったケースでも、複数 AZ・複数タイプを許可したら確保できました。
 
-**GPU Operator の初期化を待ちます。** Karpenter が GPU ノードを起動しても、NVIDIA GPU Operator が `nvidia.com/gpu` を advertise するまで数分かかります。それまで Pod は `Pending` のままですが、これは異常ではありません。
+**GPU Operator の初期化を待ちます。** Karpenter が GPU ノードを起動しても、NVIDIA GPU Operator が展開する device plugin が `nvidia.com/gpu` を advertise するまで数分かかります。それまで Pod は `Pending` のままですが、これは異常ではありません。
 
-**小さいノードのプールでは CPU リクエストを下げます。** `gpuServingVllm` の CPU リクエスト既定値は `8` で、g6e.12xlarge（48 vCPU）のような大きいノードを想定しています。g6.2xlarge / g5.2xlarge（8 vCPU）のような小さい GPU ノードのプールに載せると、システム予約を差し引いた割り当て可能 CPU が 8 に届かず、Karpenter が `no instance type has enough resources` を出して Pod が永久に `Pending` になります。Qwen2.5-0.5B のような小型モデルは 2 vCPU でも動くため、小さいノードのプールでは後述の手順で `--set gpuServingVllm.cpu=2` を付けて明示的に下げます。
+**CPU リクエストはノードサイズに合わせて調整します。** `gpuServingVllm` の CPU リクエスト既定値は `2` で、Qwen2.5-0.5B のような小型モデルであれば g6.2xlarge / g5.2xlarge（8 vCPU）のような小さい GPU ノードのプールでもそのまま載ります。大きいモデルをサービングする場合や、g6e.12xlarge（48 vCPU）のような大きいノードでより多くの CPU を割り当てたい場合は、`--set gpuServingVllm.cpu=<値>` で明示的に上げます。プールの割り当て可能 CPU を超える値を指定すると、Karpenter が `no instance type has enough resources` を出して Pod が永久に `Pending` になる点には注意します。
+
+**g6e.12xlarge はコストが高いので後片付けを徹底します。** g6e.12xlarge の on-demand 料金は 1 時間あたり 10 USD 前後です。GPU 1 枚しか使わない本章の用途には過剰なため、`gpu-dev` 以外に g5.xlarge / g6.xlarge のような小型プールを Basic04 の手順で別途用意できるなら、そちらを使うほうが低コストです。`gpu-dev` のまま進める場合は、動作確認が終わったら必ず後述の手順5で Deployment を削除し、GPU ノードを Karpenter に回収させます。
 
 # ワークショップ実施
 
@@ -64,20 +66,21 @@ helm template exp charts/experiments -n "$NAMESPACE" \
     | kubectl apply -f -
 ```
 
-g6e.12xlarge のような大きいノードのプールではこれで載りますが、g6.2xlarge / g5.2xlarge（8 vCPU）のような小さい GPU ノードのプールに載せる場合は、CPU とメモリのリクエストをノードに収まる値まで下げます。実機では次の設定で g5.xlarge（4 vCPU / 16 GiB / A10G 1 枚）の spot ノードに載せて動作を確認しました。
+CPU リクエストの既定値は `2` なので g6.2xlarge / g5.2xlarge（8 vCPU）のような小さい GPU ノードのプールでもそのまま載りますが、メモリのリクエスト既定値は `48Gi` で、g5.xlarge（4 vCPU / 16 GiB / A10G 1 枚）のような小さいノードには収まりません。この場合はメモリをノードに収まる値まで下げます。実機では次の設定で g5.xlarge の on-demand ノードに載せて動作を確認しました。
 
 ```bash
 helm template exp charts/experiments -n "$NAMESPACE" \
     --set gpuServingVllm.enabled=true \
     --set gpuServingVllm.model="$MODEL" \
-    --set gpuServingVllm.nodeRole=gpu-ddp \
-    --set gpuServingVllm.cpu=2 \
+    --set gpuServingVllm.nodeRole=gpu-dev \
     --set gpuServingVllm.memory=12Gi \
     | kubectl apply -f -
 ```
 
+`gpuServingVllm` の `memory` はコンテナの requests・limits 両方に使われ、さらに `/dev/shm`（`shmSize`、既定 `8Gi`）も `emptyDir: {medium: Memory}` としてコンテナのメモリ上限にカウントされます。16 GiB ノードで `memory=12Gi` に加えて既定 `shmSize=8Gi` を使うと合計がノードのメモリを超えるため、小さいノードでは `--set gpuServingVllm.shmSize=<値>` も合わせて下げる必要があります。
+
 :::message
-既定のイメージタグは `vllm/vllm-openai:latest` です。バージョンによって必要な GPU メモリや挙動が変わることがあるため、再現性が要る場合は `--set gpuServingVllm.image=vllm/vllm-openai:<固定タグ>` で明示的にピン留めしておくと安全です。
+既定のイメージタグは `vllm/vllm-openai:v0.6.3.post1` に固定済みです。`:latest` は使っていません。新しいバージョンの機能やモデル対応が必要な場合は `--set gpuServingVllm.image=vllm/vllm-openai:<タグ>` で明示的に指定します。
 :::
 
 ## 3. GPU ノードの起動と Pod の Ready を待つ
@@ -99,7 +102,7 @@ sleep 2   # フォワード確立を待つ（省くと connection refused にな
 curl -s localhost:8000/v1/models | python3 -m json.tool
 ```
 
-`/v1/models` にサービング中のモデルが表示されます（実機出力）。
+`/v1/models` にサービング中のモデルが表示されます（実機出力です）。
 
 ```json
 {
@@ -124,13 +127,13 @@ curl -s localhost:8000/v1/chat/completions \
   | python3 -m json.tool
 ```
 
-応答本文と `usage`（`prompt_tokens` / `completion_tokens` / `total_tokens`）が返れば、gpu-dev（g6e.12xlarge）の 1 枚の GPU で vLLM の推論が動いていることが確認できます（実測で prompt 36 / completion 31 / total 67 トークンの応答を確認）。なお `/v1/models` に出る `max_model_len` は Qwen2.5-0.5B 本来の 32K ではなく、チャートが軽量検証向けに `--max-model-len` を控えめに指定した値です。
+応答本文と `usage`（`prompt_tokens` / `completion_tokens` / `total_tokens`）が返れば、gpu-dev（g6e.12xlarge）の 1 枚の GPU で vLLM の推論が動いていることが確認できます（実測で prompt 36 / completion 31 / total 67 トークンの応答を確認しました）。なお `/v1/models` に出る `max_model_len` は Qwen2.5-0.5B 本来の 32K ではなく、チャートが軽量検証向けに `--max-model-len` を控えめに指定した値です。
 
-port-forward はバックグラウンド（`&`）で起動したので、確認が終わったら `kill %1`（または `jobs` で番号を確認して `kill %<n>`）で止めます。
+port-forward はバックグラウンド（`&`）で起動したので、確認が終わったら止めます。他にバックグラウンドジョブが無いか `jobs` で確認したうえで、対応する番号を `kill %<n>`（1 個だけなら `kill %1`）に指定します。
 
 ## 5. 後片付け
 
-推論サーバーを止めれば、GPU ノードは `consolidateAfter`（本構成の NodePool では 5 分に設定）のアイドル後に Karpenter が自動回収します。on-demand なので使った分だけの課金です。投入時と同じ `--set` を付けてレンダリングした結果を `kubectl delete` に渡すと、Deployment・Service を含めチャートが出力した全リソースを取りこぼしなく削除できます。
+推論サーバーを止めれば、GPU ノードは `consolidateAfter`（本構成の NodePool では 5 分に設定）のアイドル後に Karpenter が自動回収します。on-demand なので使った分だけの課金です。Deployment・Service の名前は `--set` の値に関わらず変わらないため、`gpuServingVllm.enabled=true` と `nodeRole` だけを付けてレンダリングした結果を `kubectl delete` に渡せば、投入時に指定した `model` や `memory` などの値を覚えておく必要なく、チャートが出力した全リソースを取りこぼしなく削除できます。
 
 ```bash
 helm template exp charts/experiments -n "$NAMESPACE" \
@@ -141,7 +144,7 @@ kubectl get nodeclaims -w        # GPU ノードが消えるのを確認
 
 # まとめ
 
-本章では、Capacity Block を使わずに on-demand の GPU ノード（g5 / g6e 系）へ vLLM の OpenAI 互換サーバーをデプロイし、軽量モデルで推論が動くことを確認しました。単一 GPU で完結するため EFA は不要で、Basic04 で定義した GPU プールに Pod を投げるだけで Karpenter がノードを起動します。on-demand の容量が取れないときは AZ と instance type を複数許可する、CPU リクエストをノードサイズに合わせる、という 2 点が実運用の勘所です。この上で大規模モデルやマルチノードの推論・学習に進む場合は、Basic06 の Capacity Block で GPU を確保します。
+本章では、Capacity Block を使わずに on-demand の GPU ノード（g5 / g6e 系）へ vLLM の OpenAI 互換サーバーをデプロイし、軽量モデルで推論が動くことを確認しました。単一 GPU で完結するため EFA は不要で、Basic04 で定義した GPU プールに Pod を投げるだけで Karpenter がノードを起動します。on-demand の容量が取れないときは AZ と instance type を複数許可する、メモリなどのリクエストをノードサイズに合わせる、動作確認が終わったら忘れずに Deployment を削除して GPU ノードを回収させる、という 3 点が実運用の勘所です。この上で大規模モデルやマルチノードの推論・学習に進む場合は、Basic06 の Capacity Block で GPU を確保します。
 
 # 参考資料
 

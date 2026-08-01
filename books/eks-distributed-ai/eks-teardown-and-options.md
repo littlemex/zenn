@@ -17,7 +17,7 @@ free: true
 
 `kubectl_manifest` の削除は、Kubernetes API がリクエストを**受理した瞬間**に Terraform 上で「完了」として扱われます。しかし `NodePool`/`NodeClaim` の実際のノード drain・Amazon EC2 終了・ENI 解放は、Karpenter コントローラが行う非同期処理です。この非同期処理が終わる前に Karpenter や GPU Operator・EFA/Neuron device plugin・Amazon EFS/Amazon FSx for Lustre CSI ドライバなど、ノードに紐づくリソースを持つコントローラを destroy してしまうと、アクセラレータノードの Amazon EC2 インスタンスが孤立し、誰も終了させないまま**課金だけが続く**事故になります。GPU/Neuron は時間単価が高く、このリスクは軽視できません。
 
-これを防ぐのが [`karpenter.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/karpenter.tf) の `null_resource.wait_for_node_drain` です。この対処の過程で NAT ゲートウェイの早期消失や IAM 残渣といった追加の障害が見つかり、[`vpc-endpoints.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/vpc-endpoints.tf) での対処も必要になりました。さらにオプション機能として、外部公開エンドポイントのデモ（[`alb-controller.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/alb-controller.tf) / [`cloudfront.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/cloudfront.tf)）も用意しています。以降で実際のコードを引用しながら、なぜその設計にしているのかを見ていきます。対象モジュールは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks) です。
+これを防ぐのが [`karpenter.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/karpenter.tf) の `null_resource.wait_for_node_drain` です。この対処の過程で NAT ゲートウェイの早期消失や IAM 残渣といった追加の障害が見つかり、[`vpc-endpoints.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/vpc-endpoints.tf) での対処も必要になりました。以降で実際のコードを引用しながら、なぜその設計にしているのかを見ていきます。対象モジュールは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks) です。
 
 ## wait_for_node_drain のポーリング
 
@@ -55,12 +55,39 @@ wait_for_empty() {
 }
 ```
 
-読みどころは `stdout` と `stderr` を分けて捕捉している点です。`kubectl get` は結果が 0 件でも exit 0 のまま「No resources found」を**標準エラー**に書きます。これを `2>&1` でまとめて捕捉すると、そのメッセージが 1 行としてカウントされてしまい、実際には 0 件なのに「まだ 1 件残っている」と永久に判定してしまうバグを踏みました（別セッションで `kubectl get` すると 0 件なのに、このループだけ 15 分以上「1 件残存」と報告し続けていたことで発覚）。`err_file` に `stderr` だけを分離して捕捉することでこれを防いでいます。
+読みどころは `stdout` と `stderr` を分けて捕捉している点です。`kubectl get` は結果が 0 件でも exit 0 のまま「No resources found」を**標準エラー**に書きます。これを `2>&1` でまとめて捕捉すると、そのメッセージが 1 行としてカウントされてしまい、実際には 0 件なのに「まだ 1 件残っている」と永久に判定してしまうバグを踏みました（別セッションで `kubectl get` すると 0 件なのに、このループだけ 15 分以上「1 件残存」と報告し続けていたことで発覚しました）。`err_file` に `stderr` だけを分離して捕捉することでこれを防いでいます。
 
-呼び出し側は 2 段階です。
+provisioner の実行フローは、事前分岐 2 つとポーリング 3 段階に分かれます。
+
+- クラスタ存在確認: `aws eks describe-cluster` が失敗する（クラスタが既に存在しない）場合、ポーリング不要として即 `exit 0` します。
+- kubeconfig 取得: クラスタは存在するのに `aws eks update-kubeconfig` が失敗する場合、状態を確認できないため安全側で `exit 1` します。
+- TrainJob 事前削除（best-effort）: NodeClaim を待つ前にクラスタ全体の TrainJob を削除します。
+- NodeClaim 待ち（必須）: 最大 30 分ポーリングし、タイムアウトすれば destroy を失敗させます。
+- EC2NodeClass 待ち（best-effort）: 最大 10 分ポーリングし、タイムアウトしても destroy を続行します。
+
+呼び出し側のコードは次のとおりです。
 
 ```bash
 # karpenter.tf（抜粋）
+if ! aws eks describe-cluster --name "${self.triggers.cluster_name}" --region "${self.triggers.region}" ... >/dev/null 2>&1; then
+  echo "wait_for_node_drain: cluster ${self.triggers.cluster_name} no longer exists, skipping drain wait"
+  exit 0
+fi
+aws eks update-kubeconfig --name "${self.triggers.cluster_name}" --region "${self.triggers.region}" ... --kubeconfig "$KCONF" >/dev/null 2>&1 \
+  || { echo "wait_for_node_drain: cluster exists but update-kubeconfig failed..." >&2; exit 1; }
+
+# Kubeflow Trainer v2 の TrainJob をクラスタ全体から先に削除する(best-effort)。
+# 素の terraform destroy では 04-teardown.sh の namespace 限定削除を経由しないため、
+# ここで削除しておかないと TrainJob の Pod がノードを占有し続け NodeClaim 待ちが
+# 30 分タイムアウトしてしまう。
+echo "wait_for_node_drain: deleting any TrainJobs before draining (best-effort)..."
+kubectl delete trainjob --all --all-namespaces --ignore-not-found=true --timeout=120s 2>/dev/null || {
+  # finalizer 強制解除フォールバック
+  for tj in $(kubectl get trainjob --all-namespaces -o jsonpath='...' 2>/dev/null); do
+    kubectl -n "$ns" patch trainjob "$name" --type=merge -p '{"metadata":{"finalizers":[]}}' 2>/dev/null || true
+  done
+}
+
 echo "wait_for_node_drain: waiting for Karpenter to terminate all accelerator NodeClaims..."
 if ! wait_for_empty "nodeclaims.karpenter.sh" "NodeClaim(s)" 180; then
   echo "wait_for_node_drain: NodeClaims still present after 30 minutes. Refusing to proceed..." >&2
@@ -74,6 +101,8 @@ fi
 exit 0
 ```
 
+事前確認のうち、`aws eks describe-cluster` が失敗する（クラスタが既に存在しない）場合はポーリング自体が不要なので即 `exit 0` にし、クラスタは存在するのに `aws eks update-kubeconfig` が失敗する場合は状態を確認できないため安全側で `exit 1` にしています。TrainJob の削除は `--timeout=120s` を付けた best-effort で、失敗してもフォールバックで finalizer を強制的に外し、先に進みます。これは `04-teardown.sh` が行う namespace 限定の TrainJob 削除とは別に、`terraform destroy` を直接叩いた場合でもクラスタ全体から TrainJob を確実に片付けるための保険です。
+
 1 段目の `NodeClaim` は 10 秒間隔で最大 180 回、つまり最大 30 分ポーリングし、タイムアウトすれば destroy を失敗させます（`exit 1`）。課金に直結するオブジェクトなので、ここは厳格に失敗させる設計です。2 段目の `EC2NodeClass` は同じ 10 秒間隔で最大 60 回、つまり最大 10 分ポーリングしますが、タイムアウトしても `exit 0` で destroy 全体は止めません。この非対称な扱いの理由は次のセクションで説明します。ドレイン時間はノード数やインスタンスタイプで変動するため（単一ノードの実測で概ね 9 分）、固定 sleep ではなく実状態を見る設計にしています。
 
 この `null_resource` は次のリソース群すべてに `depends_on` しています。
@@ -85,8 +114,10 @@ depends_on = [
   helm_release.gpu_operator,
   helm_release.aws_efa_k8s_device_plugin,
   helm_release.neuron,
+  helm_release.trainer,
   aws_eks_addon.efs_csi_driver,
   aws_eks_addon.fsx_csi_driver,
+  helm_release.openzfs_csi_driver,
   aws_security_group.efa_node,
   aws_placement_group.accelerator,
   aws_vpc_endpoint.interface,
@@ -94,11 +125,13 @@ depends_on = [
 ]
 ```
 
-Terraform の destroy は `depends_on` の**逆順**に進みます（A が B に `depends_on` していれば、destroy は A → B の順）。つまりこの一覧があることで、destroy 順序は必ず「`wait_for_node_drain`（ポーリングが走る）→ Karpenter/GPU Operator/EFA plugin/Neuron/Amazon EFS・Amazon FSx for Lustre CSI/EFA セキュリティグループ/placement group」の順に強制されます。もう一方の端、`NodePool`/`NodeClaim` の manifest 側は逆に `karpenter-resources.tf` でこの `null_resource` に `depends_on` しており、`NodePool` の削除が先に issue されてからポーリングが始まる形です。全体は「NodePool 削除 → この resource（待つ） → 各コントローラ破棄」という一方向の直線になり、循環は発生しません。
+`helm_release.trainer`（Kubeflow Trainer v2 のコントローラ）が含まれるのは、TrainJob の worker Pod がアクセラレータノード上で動くためです。`helm_release.openzfs_csi_driver` が含まれるのも同じ理由で、Amazon FSx for OpenZFS の PV がアクセラレータノードの Pod にマウントされているうちにドライバを消してしまうと解放処理が失敗するリスクがあるためです。
+
+Terraform の destroy は `depends_on` の**逆順**に進みます（A が B に `depends_on` していれば、destroy は A → B の順）。つまりこの一覧があることで、destroy 順序は必ず「`wait_for_node_drain`（ポーリングが走る）→ Karpenter/GPU Operator/EFA plugin/Neuron/Kubeflow Trainer v2/Amazon EFS・Amazon FSx for Lustre・Amazon FSx for OpenZFS CSI/EFA セキュリティグループ/placement group」の順に強制されます。もう一方の端、`NodePool`/`NodeClaim` の manifest 側は逆に `karpenter-resources.tf` でこの `null_resource` に `depends_on` しており、`NodePool` の削除が先に issue されてからポーリングが始まる形です。全体は「NodePool 削除 → この resource（待つ） → 各コントローラ破棄」という一方向の直線になり、循環は発生しません。
 
 ## Amazon VPC endpoints で NAT 依存を切る
 
-もう一つ見つかった障害が NAT ゲートウェイの早期消失です。NAT と Karpenter の間に明示的な依存関係がないため、`module.vpc` の NAT ゲートウェイがポーリング中に先に消えることがあります。Karpenter コントローラは private subnet で動き、Amazon EC2/IAM/STS/SSM への API 呼び出しを NAT 経由のアクセスに依存しているため、NAT 消失と同時に API がすべてタイムアウトし、`NodeClaim` の finalizer が外れず 30 分のタイムアウトに達してしまいます。`wait_for_node_drain` を `module.vpc` に直接依存させたいところですが、`triggers` が参照する `module.eks` が既に `module.vpc` に依存しているため循環依存になり不可能です。
+もう一つ見つかった障害が NAT ゲートウェイの早期消失です。NAT と Karpenter の間に明示的な依存関係がないため、`module.vpc` の NAT ゲートウェイがポーリング中に先に消えることがあります。Karpenter コントローラは private subnet で動き、Amazon EC2/IAM/STS/SSM への API 呼び出しを NAT 経由のアクセスに依存しているため、NAT 消失と同時に API がすべてタイムアウトし、`NodeClaim` の finalizer が外れず 30 分のタイムアウトに達してしまいます。`wait_for_node_drain` を `module.vpc` に直接 `depends_on` させる案は、実際には循環依存にはなりません（`wait_for_node_drain → module.vpc` は既存の `wait_for_node_drain → module.eks → module.vpc` と同方向で、循環になるとしたらその逆方向の `module.vpc → wait_for_node_drain` のはずです）。ここで採用したのは module 全体への `depends_on` という粗い単位ではなく、ネットワーク層そのものを NAT 非依存にする対処です。
 
 そこで `vpc-endpoints.tf` でネットワーク層側から対処します。
 
@@ -128,13 +161,13 @@ resource "aws_vpc_endpoint" "s3" {
 }
 ```
 
-Amazon EC2・STS・SSM の Interface VPC endpoint と Amazon S3 の Gateway endpoint を作成し、NAT の有無に関わらず Karpenter が AWS API を呼べるようにします。`wait_for_node_drain` はこれらの endpoint にも `depends_on` しているため（前節のリスト参照）、ポーリング中は消えません。
+Amazon EC2・STS・SSM の Interface VPC endpoint と Amazon S3 の Gateway endpoint を作成し、NAT の有無に関わらず Karpenter が AWS API を呼べるようにします。`wait_for_node_drain` はこれらの endpoint にも `depends_on` しているため（前節のリスト参照）、ポーリング中は消えません。Gateway endpoint（Amazon S3）は時間課金なし・ENI も持ちませんが、Interface VPC endpoint（Amazon EC2・STS・SSM）は AZ ごとに ENI を持ち常時の時間課金が発生します。破棄時の安全性を、恒久的な少額コストと引き換えに買っている設計です。
 
 ただし IAM はここに含まれていません。IAM はグローバルサービスで、リージョン単位の Interface endpoint を持たないためです。実際に `aws ec2 describe-vpc-endpoint-services` で確認すると `ec2`/`ec2-fips`/`ssm*`/`sts`/`sts-fips` は列挙されますが `iam` は存在せず、`com.amazonaws.<region>.iam` への `aws_vpc_endpoint` 作成は `InvalidServiceName` で失敗します。そのため Karpenter の `EC2NodeClass` 終了処理が呼ぶ `ListInstanceProfiles`（IAM API）は、NAT 消失後もタイムアウトし得ます。これが前節で `EC2NodeClass` のポーリングだけをベストエフォート（最大 10 分・タイムアウトしても `exit 0`）にしている理由です。課金停止に直結する `NodeClaim` の消失を待つのは必須としつつ、IAM という他手段のない経路に阻まれる可能性がある `EC2NodeClass` finalizer の解除まで destroy 全体を止めるのは実用的でないと判断しています。Amazon EC2 インスタンス自体は 1 段目の時点で終了済みであり、課金に影響しないオブジェクトのために destroy を止めるより先に進む方が合理的です。
 
 ## Amazon CloudFront デモ（オプション機能）の2段階 apply
 
-もう 1 つ、オプション機能として外部公開エンドポイントのデモを用意しています。`var.enable_demo_app`（既定 `false`）でゲートされ、`Client → Amazon CloudFront (HTTPS) → Application Load Balancer (HTTP/80) → Amazon EKS Pod` という経路をとります。
+これまでの破棄の話とは別に、オプション機能として外部公開エンドポイントのデモを用意しています（[`alb-controller.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/alb-controller.tf) / [`cloudfront.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/cloudfront.tf)）。`var.enable_demo_app`（既定 `false`）でゲートされ、`Client → Amazon CloudFront (HTTPS) → Application Load Balancer (HTTP/80) → Amazon EKS Pod` という経路をとります。
 
 AWS Load Balancer Controller 自体の権限付与は、Basic03 の Karpenter や Basic01 の EBS CSI ドライバと同じ Pod Identity パターンです。
 
@@ -182,7 +215,7 @@ resource "aws_vpc_security_group_ingress_rule" "alb_from_cloudfront" {
 }
 ```
 
-Layer 2 は Amazon CloudFront が付与する `X-Origin-Verify` ヘッダーを Ingress の `conditions` アノテーションで検証するアプリケーション層の制限です。
+Layer 2 は Amazon CloudFront が付与する `X-Origin-Verify` ヘッダーをアプリケーション層で検証する制限です。実際に検証を行うのは Application Load Balancer のリスナールールで、Ingress の `conditions` アノテーションはそのルールへヘッダー条件を設定する手段にあたります。
 
 ```hcl
 # cloudfront.tf（抜粋、Phase 2 のみ付与）
@@ -249,6 +282,7 @@ kubectl patch ec2nodeclass <name> --type=merge -p '{"metadata":{"finalizers":[]}
 cd infra/eks
 
 # Phase 1: ALB Controller + demo app
+# demo app の namespace は var.demo_namespace（既定 "demo"）で決まります。
 terraform apply -var enable_demo_app=true
 kubectl get ingress -n demo -w
 curl -i http://$(kubectl get ingress -n demo echo -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')/
@@ -260,14 +294,18 @@ terraform apply -var enable_demo_app=true -var enable_cloudfront=true
 curl -i "$(terraform output -raw cloudfront_domain_name)"
 
 # ALB への直接アクセスはタイムアウトする（SGが非CloudFront IPを遮断）
-curl -i --max-time 5 http://$(terraform output -raw alb_dns_name)
+curl -i --max-time 5 "$(terraform output -raw alb_dns_name)"
 ```
 
 Phase 2 の適用後、Application Load Balancer への直接アクセスがタイムアウトし、Amazon CloudFront 経由のアクセスのみ成功することを確認できれば、多層防御が機能しています。確認できたら、次の破棄手順に進みます（`enable_demo_app`/`enable_cloudfront` で作ったリソースも `--destroy` の `terraform destroy` でまとめて消えます）。
 
+`-var` はそのコマンド実行時だけの指定です。この後 `-var` を付けずに `terraform apply` すると、`enable_demo_app`/`enable_cloudfront` は既定の `false` に戻り、demo アプリと Amazon CloudFront のリソースが黙って削除されます。恒久的に有効にしたい場合は `terraform.tfvars` に `enable_demo_app = true`（Phase 2 まで進めるなら `enable_cloudfront = true` も）を書いておきます。
+
+なお Phase 1 の状態は、ヘッダー検証も SG 制限もないまま Application Load Balancer が internet-facing で公開されます。echo サーバーとはいえ、確認が済んだら速やかに Phase 2 へ進むか、次の破棄手順で destroy することを勧めます。
+
 ## 2. アクセラレータプールだけをドレインする
 
-`04-teardown.sh` は既定で、指定した namespace の Deployment/StatefulSet/Job/PyTorchJob/MPIJob を削除し、GPU/Neuron Pod の終了を確認したうえで Karpenter の NodePool を削除します。本 book の主力ワークロードである PyTorchJob（Basic02/Basic09 の DDP）もここで確実に消えます。ここで指定するのは、Basic01 以降のワークショップで使ってきた作業用 namespace（本 book では `distai`）です。
+`04-teardown.sh` は既定で、指定した namespace の Deployment/StatefulSet/Job/TrainJob/MPIJob を削除し、GPU/Neuron Pod の終了を確認したうえで Karpenter の NodePool を削除します。本 book の主力ワークロードである Kubeflow Trainer v2 の TrainJob（Basic02/Basic09 の DDP）もここで確実に消えます。ここで指定するのは、Basic01 以降のワークショップで使ってきた作業用 namespace（本 book では `distai`）です。
 
 ```bash
 cd infra/eks/scripts
@@ -304,5 +342,5 @@ kubectl get nodeclaims -w
 - [Amazon EKS ユーザーガイド](https://docs.aws.amazon.com/eks/latest/userguide/what-is-eks.html)
 - [Karpenter NodeClaim/NodePool](https://karpenter.sh/docs/concepts/)
 - [AWS Load Balancer Controller](https://kubernetes-sigs.github.io/aws-load-balancer-controller/)
-- [Amazon CloudFront と Application Load Balancer の連携](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/Introduction.html)
+- [Amazon CloudFront のカスタムオリジンヘッダー](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/add-origin-custom-headers.html)
 - [対象モジュール infra/eks](https://github.com/littlemex/distributed-ai/tree/main/infra/eks)
