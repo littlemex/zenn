@@ -16,7 +16,7 @@ free: true
 
 Capacity Block（CB）とは、H100/H200/AWS Trainium のような希少なアクセラレータを、固定の開始時刻・終了時刻・インスタンス数で前払い予約する Amazon EC2 の仕組みです。Spot インスタンスと違い、予約期間中に中断されることはありません。しかし Spot とは逆の意味で扱いが難しい面があります。期間が終わればどれだけジョブが残っていても強制的に容量が回収される、という一方向の期限が必ず来るためです。
 
-なぜ CB が必要になるのでしょうか。p5en.48xlarge や trn2.48xlarge のような大型インスタンスは、On-Demand で `RunInstances` を呼んでも `InsufficientInstanceCapacity` で弾かれることが多くあります。需要が旺盛な GPU/AWS Trainium は、AWS 側が容量をあらかじめ区切って予約販売する CB というチャネルでなければ実質手に入らない、というのが実務上の前提になります。
+なぜ CB が必要になるのでしょうか。p5en.48xlarge や trn2.48xlarge のような大型インスタンスは、On-Demand で `RunInstances` を呼んでも `InsufficientInstanceCapacity` で弾かれることが多くあります。ODCR（On-Demand Capacity Reservation）や Amazon SageMaker の予約系チャネルなど他の入手経路もありますが、本書のようなセルフマネージドな Amazon EKS 構成では、AWS 側が容量をあらかじめ区切って予約販売する CB が現実的な選択肢になります。
 
 CB を使う運用フローは次のようになります。
 
@@ -27,11 +27,11 @@ CB を使う運用フローは次のようになります。
 5. 終了時刻の 1 時間前に自動でアラートが飛ぶようにしておく
 6. 終了前にワークロードを退避し、teardown する
 
-この章に付属する helper script は `00-check-cb-offerings.sh` から `04-teardown.sh` までの 5 つで、上記の手順 1・2・3・4・6（検索・購入・反映・検証・teardown）にそれぞれ 1 対 1 で対応しています。番号の順に実行すれば迷わない構成にしています。手順 5 の期限アラートだけはスクリプト実行を挟まず、`cb_end_date` を設定するだけで Terraform が自動的に組み立てます。
+この章に付属する helper script は `00-check-cb-offerings.sh` から `04-teardown.sh` までの 5 つで、上記の手順 1・2・3・4・6（検索・購入・反映・検証・teardown）にそれぞれ 1 対 1 で対応しています。番号の順に実行すれば迷わない構成にしています。手順 5 の期限アラートだけはスクリプト実行を挟まず、`cb_reservation_id` を書くだけで Terraform が予約の終了時刻を自動的に読み取り、アラートを組み立てます。
 
-さらに、この構成には `cb_end_date` から自動的に期限アラートを組み立てる仕組みが入っています。プールに `cb_end_date` を書いておくと、Terraform が Amazon EventBridge Scheduler の one-shot スケジュールを 1 プールにつき 1 つ作り、終了 1 時間前に Amazon SNS へ通知します。発火後はそのスケジュール自体が自己削除されるため、`terraform apply` を重ねても過去の時刻でスケジュールを再作成しようとして API に拒否される、という事故を避けられます。
+さらに、この構成には予約の終了時刻から自動的に期限アラートを組み立てる仕組みが入っています。プールに `cb_reservation_id` を書いておくと、Terraform がその予約の終了時刻を自動的に読み取り、Amazon EventBridge Scheduler の one-shot スケジュールを 1 プールにつき 1 つ作り、終了 1 時間前に Amazon SNS へ通知します。発火後はそのスケジュール自体が自己削除されるため、`terraform apply` を重ねても過去の時刻でスケジュールを再作成しようとして API に拒否される、という事故を避けられます。プールの `cb_end_date` は、この自動導出された終了時刻を緊急時に上書きするための任意項目であり、通常は書く必要がありません。
 
-最後にコストの話をしておきます。CB は前払いで、購入後のキャンセルや返金はできません。p5en.48xlarge を 24 時間予約するだけで数百ドルから千ドル台のオーダーの upfront fee がかかります。したがって、CB を買う前に g6e のような On-Demand で十分に手が届く GPU インスタンスでコードとマニフェストの動作を検証しておき、CB は「動作確認済みのジョブを、確保した本番規模のアクセラレータに載せる」という最後のステップに使うのが安全な段階的アプローチになります。
+最後にコストの話をしておきます。CB は前払いで、購入後のキャンセルや返金はできません。p5en.48xlarge を 24 時間予約するだけで、千ドルから数千ドルのオーダーの upfront fee がかかります。したがって、CB を買う前に g6e のような On-Demand で十分に手が届く GPU インスタンスでコードとマニフェストの動作を検証しておき、CB は「動作確認済みのジョブを、確保した本番規模のアクセラレータに載せる」という最後のステップに使うのが安全な段階的アプローチになります。
 
 対象モジュールは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks) です。以降で実際の Terraform コードを引用しながら、予約メタデータの自動導出・期限アラートの組み立て方を見ていきます。
 
@@ -55,34 +55,41 @@ accelerator_pools = {
 
 `zone` を書いていない点に注目してください。`reserved` プールの AZ は Capacity Block の予約から自動導出される（`az.tf` が予約の AZ を読み取る）ため、通常は手書きしません。これにより、後日 CB が別の AZ に移っても、差し替えるのは新しい `cb_reservation_id` の 1 行だけで済みます。特定の AZ に固定したい特殊なケースだけ `zone` を明示指定でき、その値が予約の AZ と食い違うと後述の `check` ブロックが警告します。
 
-ここで最も事故につながりやすいのは、`cb_reservation_id` を書いたのに `capacity_type` を `"reserved"` にし忘れる、あるいはその逆というミスです。[`variables.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/variables.tf) の `accelerator_pools` には、この 2 方向のミスをそれぞれ弾く `validation` ブロックが用意されています。
+ここで最も事故につながりやすいのは、予約を指定したのに `capacity_type` を `"reserved"` にし忘れる、あるいはその逆というミスです。[`variables.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/variables.tf) の `accelerator_pools` には、この 2 方向のミスをそれぞれ弾く `validation` ブロックが用意されています。
 
 ```hcl
 # variables.tf（抜粋、accelerator_pools の validation）
 validation {
-  condition     = alltrue([for k, p in var.accelerator_pools : p.capacity_type != "reserved" || p.cb_reservation_id != ""])
-  error_message = "A pool with capacity_type \"reserved\" must set cb_reservation_id (cr-...)."
+  condition = alltrue([for k, p in var.accelerator_pools :
+    !(p.capacity_type == "reserved" || (p.capacity_types != null ? contains(p.capacity_types, "reserved") : false)) ||
+    (p.cb_reservation_id != null && p.cb_reservation_id != "") ||
+    length(try(p.capacity_reservations.ids, [])) > 0 ||
+    length(try(p.capacity_reservations.tags, {})) > 0
+  ])
+  error_message = "A pool that includes \"reserved\" must name a reservation: set capacity_reservations = { ids = [...] } (or tags), or the legacy cb_reservation_id (cr-...)."
 }
 ```
 
 ```hcl
 # variables.tf（抜粋、accelerator_pools の validation）
 validation {
-  # A cb_reservation_id set on a non-reserved pool is silently ignored: the NodeClass omits
-  # capacityReservationSelectorTerms, so the operator thinks they are drawing on a paid
-  # reservation but Karpenter launches on-demand/spot instead (double billing). Flag it.
-  condition     = alltrue([for k, p in var.accelerator_pools : p.cb_reservation_id == "" || p.capacity_type == "reserved"])
-  error_message = "A pool sets cb_reservation_id but capacity_type is not \"reserved\"; the reservation would be ignored and the pool billed on-demand/spot. Set capacity_type = \"reserved\" or clear cb_reservation_id."
+  condition = alltrue([for k, p in var.accelerator_pools :
+    (p.capacity_type == "reserved" || (p.capacity_types != null ? contains(p.capacity_types, "reserved") : false)) ||
+    ((p.cb_reservation_id == null || p.cb_reservation_id == "") && p.capacity_reservations == null)
+  ])
+  error_message = "A pool sets a reservation (capacity_reservations or cb_reservation_id) but does not include \"reserved\" in its capacity type(s); the reservation would be ignored. Add \"reserved\", or clear the reservation."
 }
 ```
 
-1 つ目は「`capacity_type` が `"reserved"` なのに `cb_reservation_id` が空」を弾きます。これがないと、`capacity_type = "reserved"` と書いたつもりで `cb_reservation_id` を書き忘れた場合に、予約なしの `reserved` プールという不整合な状態のまま apply が進んでしまいます。
+1 つ目は、`capacity_type`（または複数形の `capacity_types`）に `"reserved"` を含むプールが、`cb_reservation_id` にも `capacity_reservations` にも予約を指定していないケースを弾きます。Karpenter は開いている予約を自動探索しないため、これを書き忘れると CB ノードは永久に起動できません。
 
-2 つ目はその逆で、「`cb_reservation_id` を設定したのに `capacity_type` が `"reserved"` になっていない」を弾きます。コメントにもある通り、この組み合わせを見逃すと EC2NodeClass は `capacityReservationSelectorTerms` を持たずに生成され、前払いした予約はまるごと無視されて On-Demand で起動します。運用者は「予約を使っている」と思い込んだまま、前払い済みの CB 費用に加えて On-Demand の費用も別にかかる二重課金に陥ります。この 2 つの `validation` は、`cb_reservation_id` と `capacity_type` の組み合わせという構造的に検証できるミスを対象にしており、崩れた組み合わせを見つけた瞬間に plan 自体を失敗させて事故を未然に防ぎます。
+2 つ目はその逆で、予約を指定したのに `capacity_type`（または `capacity_types`）に `"reserved"` を含めていないケースを弾きます。この組み合わせが招く二重課金の実害は、後述の「注意 4」で詳しく扱います。この 2 つの `validation` は、予約の有無と `capacity_type` の組み合わせという構造的に検証できるミスを対象にしており、崩れた組み合わせを見つけた瞬間に plan 自体を失敗させて事故を未然に防ぎます。
 
 `cr-...` は AWS アカウントと予約に固有の値です。本書では実際の値を書かず、上記のように `cr-0123456789abcdef0` のようなプレースホルダで統一しています。実際の運用でも `cr-...` はリポジトリにコミットせず、`terraform.tfvars`（`.gitignore` の対象とする）のような環境固有の設定ファイルにのみ書くことを徹底してください。
 
-`cr-...` を正しく渡せば、あとは手で入力する項目はほとんど残りません。前述の [`capacity-block.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/capacity-block.tf) の `data "external" "capacity_reservations"` が `cb_reservation_id` だけから予約の `end_date`・`availability_zone`・`state` を自動的に読み取り、期限アラートや AZ 整合性チェックに使います。したがって `terraform.tfvars` に手で書く CB 関連の値は、原則 `cb_reservation_id` と `capacity_type = "reserved"` の 2 つだけで済みます。
+`cr-...` を正しく渡せば、あとは手で入力する項目はほとんど残りません。後述の [`capacity-block.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/capacity-block.tf) の `data "external" "capacity_reservations"` が `cb_reservation_id` だけから予約の `end_date`・`availability_zone`・`state` を自動的に読み取り、期限アラートや AZ 整合性チェックに使います。したがって `terraform.tfvars` に手で書く CB 関連の値は、原則 `cb_reservation_id` と `capacity_type = "reserved"` の 2 つだけで済みます。
+
+なお、`variables.tf` では `capacity_type`・`cb_reservation_id`・`zone` は LEGACY（単数形）フィールドと明記されており、`capacity_types`・`capacity_reservations`・`zones`（複数形）という新形式も用意されています。本章は単純さを優先して LEGACY 形式で統一しますが、新形式で `reserved` を指定する場合は AZ の自動導出が効かず、`zones` を明示指定しないと validation で弾かれる点だけ覚えておいてください。
 
 ## 予約メタデータの自動導出（capacity-block.tf）
 
@@ -94,9 +101,9 @@ data "external" "capacity_reservations" {
   count   = length(local.cb_reserved_pools) > 0 ? 1 : 0
   program = ["bash", "${path.module}/scripts/describe_capacity_reservations.sh"]
   query = {
-    ids    = local.cb_reservation_ids_csv
-    region = var.region
-    profile = coalesce(var.aws_profile, "")
+    ids     = local.cb_reservation_ids_csv
+    region  = var.region
+    profile = var.aws_profile != null ? var.aws_profile : ""
   }
 }
 
@@ -117,11 +124,11 @@ locals {
 
 読みどころは次の 3 点です。
 
-**AWS provider に `aws_ec2_capacity_reservation` data source が存在しない。** 購入側の `aws_ec2_capacity_block_offering` はありますが、既存の予約を読み取る data source は用意されていません。そのため `data "external"` で [`describe_capacity_reservations.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/describe_capacity_reservations.sh) を呼び、`aws ec2 describe-capacity-reservations` の結果を `"<予約ID>.end_date"` のようなフラットな文字列マップに整形して Terraform に戻しています。external data source はネストした値を返せない制約があるための形です。
+**AWS provider に `aws_ec2_capacity_reservation` data source が存在しません。** 購入側の `aws_ec2_capacity_block_offering` はありますが、既存の予約を読み取る data source は用意されていません。そのため `data "external"` で [`describe_capacity_reservations.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/describe_capacity_reservations.sh) を呼び、`aws ec2 describe-capacity-reservations` の結果を `"<予約ID>.end_date"` のようなフラットな文字列マップに整形して Terraform に戻しています。external data source はネストした値を返せない制約があるための形です。
 
-**`depends_on` を付けていない。** コメントにもある通り、この `data` ブロックの入力は `var` の値だけで決まるため、plan 時点で値が確定します。`depends_on` を付けてしまうと解決が apply まで遅延し、`end_date`/`zone` が plan 時点では unknown になってしまうため、意図的に付けていません。
+**`depends_on` を付けていません。** コメントにもある通り、この `data` ブロックの入力は `var` の値だけで決まるため、plan 時点で値が確定します。`depends_on` を付けてしまうと解決が apply まで遅延し、`end_date`/`zone` が plan 時点では unknown になってしまうため、意図的に付けていません。
 
-**「見つからない」と「AWS に到達できない」を区別するスクリプト設計。** `describe_capacity_reservations.sh` は、typo や削除済みの予約 ID による `InvalidCapacityReservationId` エラーは空の `{}` を返して「無害な not-found」として処理します（結果として state が空文字になり `check` ブロックが WARNING を出すだけで済みます）。一方、認証切れやネットワーク不通など**それ以外**のエラーは大きな声で失敗させます。ここで空マップを返してしまうと、plan が「予約が消えた」と誤認して稼働中の Amazon EventBridge スケジュールや Amazon SNS リソースの DELETE を計算してしまうためです。
+**見つからない場合と AWS に到達できない場合を区別するスクリプト設計になっています。** `describe_capacity_reservations.sh` は `--capacity-reservation-ids` で個別に ID を指定するのではなく、リージョン内の予約を `aws ec2 describe-capacity-reservations` で一括取得し、リクエストされた ID をクライアント側（jq）でフィルタします。これは、typo や削除済みの ID を 1 つでも渡すと API がバッチ全体を `InvalidCapacityReservationId` で拒否してしまう問題を避けるための設計です。見つからなかった ID は `found=false` に加えて `end_date`・`availability_zone`・`state` が空文字のエントリとして返り、「無害な not-found」として処理されます（結果として state が空文字になり `check` ブロックが WARNING を出すだけで済みます）。一方、認証切れやネットワーク不通など describe 呼び出し自体が失敗した場合は、スクリプトが標準エラーにメッセージを出して即座に終了します。もしここで見つからない予約も一律で空マップを返すような実装だったら、plan が「予約が消えた」と誤認して稼働中の Amazon EventBridge スケジュールや Amazon SNS リソースの DELETE を計算してしまう恐れがあります。
 
 ## check ブロックはなぜ apply を止めないか
 
@@ -134,7 +141,7 @@ check "capacity_block_ready" {
     condition = alltrue([
       for k, s in local.pool_cb_state : s == "active"
     ])
-    error_message = "A Capacity Block for a reserved accelerator pool is not active yet: ..."
+    error_message = "A Capacity Block for a reserved accelerator pool is not active: ..."
   }
   assert {
     condition = alltrue([
@@ -174,7 +181,7 @@ locals {
 
   cb_alert_schedule_expr = {
     for k, p in local.cb_alert_pools :
-    k => "at(${formatdate("YYYY-MM-DD'T'HH:mm:ss", timeadd(local.pool_cb_end_date[k], "-1h"))})"
+    k => "at(${formatdate("YYYY-MM-DD'T'hh:mm:ss", timeadd(local.pool_cb_end_date[k], "-1h"))})"
   }
 }
 
@@ -200,13 +207,15 @@ resource "aws_scheduler_schedule" "cb_expiry_alert" {
 }
 ```
 
-読みどころは次の 3 点です。
+読みどころは次の 4 点です。
 
-**2 段階のフィルタで `timeadd("")` のエラーを避ける。** `cb_pools_with_end_date` と `cb_alert_pools` が 1 つの `&&` 条件ではなく 2 段に分かれているのは、HCL が `&&` の右辺を必ず短絡評価するとは限らないためです。`local.pool_cb_end_date[k]` が空文字のまま `timeadd()` に渡ると即座にエラーになるので、空文字を弾く段と `timeadd()` を呼ぶ段を明確に分離しています。
+**`formatdate` のトークンは `hh` であり `HH` ではありません。** Terraform の `formatdate` は `hh` が 24 時間制、`HH` が 12 時間制という、他言語の日時フォーマット関数とは逆の対応になっています。ここで `HH` と書いてしまうと、午後の時刻を含むアラートが軒並みずれる実害が出ます。実装のコメントにも「hh = 24-hour hour (HH would be 12-hour)」と明記されており、このトークンは写経時に取り違えやすい罠です。
 
-**`action_after_completion = "DELETE"` による自己削除と、それに追従する `for_each` の除外ロジック。** スケジュールは発火すると AWS 側から自動的に消えます。そのため `cb_alert_pools` は、`cb_end_date - 1h`（アラート時刻）がすでに過去になったプールを `for_each` の対象からあらかじめ除外しています。これがないと、発火済みで消えたスケジュールに対して次の plan が「過去の時刻で作り直そう」としてしまい、Scheduler API の `at()` はいつも未来でなければならないため reject され続けます。なお、コード上のコメントにもある通り、plan 生成の直後にアラート時刻を過ぎ、その後 apply が走るという境界条件では、この仕組みでも構造的には救えず apply が失敗します。この場合は plan/apply をやり直せば解消します。
+**2 段階のフィルタで `timeadd("")` のエラーを避けています。** `cb_pools_with_end_date` と `cb_alert_pools` が 1 つの `&&` 条件ではなく 2 段に分かれているのは、HCL が `&&` の右辺を必ず短絡評価するとは限らないためです。`local.pool_cb_end_date[k]` が空文字のまま `timeadd()` に渡ると即座にエラーになるので、空文字を弾く段と `timeadd()` を呼ぶ段を明確に分離しています。
 
-**通知本文が参照するのは `local.pool_cb_end_date`、`each.value.cb_end_date` ではない。** `each.value.cb_end_date` は tfvars の生の値で、`capacity-block.tf` の自動導出が効いている今は多くの場合空文字です。スケジュール時刻の計算にも通知メッセージの組み立てにも `local.pool_cb_end_date`（導出済みの終了時刻）を使うことで、両者が食い違って「expires at 」のように日付が抜けたメッセージが届く事故を防いでいます。
+**`action_after_completion = "DELETE"` による自己削除に、`for_each` の除外ロジックが追従します。** スケジュールは発火すると AWS 側から自動的に消えます。そのため `cb_alert_pools` は、`cb_end_date - 1h`（アラート時刻）がすでに過去になったプールを `for_each` の対象からあらかじめ除外しています。これがないと、発火済みで消えたスケジュールに対して次の plan が「過去の時刻で作り直そう」としてしまい、Scheduler API の `at()` はいつも未来でなければならないため reject され続けます。なお、コード上のコメントにもある通り、plan 生成の直後にアラート時刻を過ぎ、その後 apply が走るという境界条件では、この仕組みでも構造的には救えず apply が失敗します。この場合は plan/apply をやり直せば解消します。
+
+**通知本文が参照するのは `local.pool_cb_end_date` であり、`each.value.cb_end_date` ではありません。** `each.value.cb_end_date` は tfvars の生の値で、`capacity-block.tf` の自動導出が効いている今は多くの場合空文字です。スケジュール時刻の計算にも通知メッセージの組み立てにも `local.pool_cb_end_date`（導出済みの終了時刻）を使うことで、両者が食い違って「expires at 」のように日付が抜けたメッセージが届く事故を防いでいます。
 
 ## 全体の中での位置付け
 
@@ -220,7 +229,7 @@ Basic04 までに作った `accelerator_pools` という型に、本章では「
 
 **注意 2: `capacity-reservation` taint も別に存在する。** CB ノードには、プールの `device_plugin` に応じた `nvidia.com/gpu` または `aws.amazon.com/neuron` の taint に加えて、予約ごとに値が変わる `capacity-reservation` taint も付きます。値が予約ごとに変わるため、ワークロード側は `operator: Exists` で値を問わずに tolerate する必要があります。`operator: Equal` で固定値を書いてしまうと、次に別の CB を買い直した瞬間にジョブがスケジュールされなくなります。
 
-**注意 3: `cb_end_date` は UTC 必須（末尾 `Z`）。** Amazon EventBridge Scheduler は `schedule_expression_timezone = "UTC"` で動いているため、`cb_end_date` にタイムゾーンオフセット付き（例: `+09:00`）の値を書くと、そのオフセットは無視されて UTC として再解釈されます。結果としてアラートが実際の期限から最大で日付をまたぐほどずれます。この構成では変数の `validation` で `cb_end_date` が空でない限り末尾が `Z` であることを強制し、plan 時点で弾いています。
+**注意 3: `cb_end_date` は UTC 必須（末尾 `Z`）。** `formatdate` は `cb_end_date` の年月日時分秒をそのまま文字列に整形するだけで、タイムゾーンオフセットの情報を持ち越しません。その結果できた `at()` 式にはタイムゾーン情報が一切含まれず、Amazon EventBridge Scheduler 側は `schedule_expression_timezone = "UTC"` で解釈します。したがって `cb_end_date` にタイムゾーンオフセット付き（例: `+09:00`）の値を書くと、その数字はオフセットを剥がされたうえで UTC の時刻として再解釈されます。結果としてアラートが実際の期限から最大で日付をまたぐほどずれます。この構成では変数の `validation` で `cb_end_date` が空でない限り末尾が `Z` であることを強制し、plan 時点で弾いています。
 
 **注意 4: `cb_reservation_id` を設定しても `capacity_type` を `"reserved"` にし忘れると予約が無視される。** `cb_reservation_id` だけ書いて `capacity_type` を `"on-demand"` のままにすると、EC2NodeClass は `capacityReservationSelectorTerms` を持たずに生成され、予約はまるごと無視されて On-Demand で起動します。前払いした予約分の費用に加えて On-Demand の費用も別にかかる、という二重コストに直結するため、この構成では変数の `validation` でこの組み合わせを明示的に弾いています。
 
@@ -270,12 +279,12 @@ gpu-p5en = {
   device_plugin     = "nvidia"
   capacity_type     = "reserved"
   cb_reservation_id = "cr-0123456789abcdef0"   # zone はこの予約から導出
-  cb_end_date       = "2026-07-21T12:00:00Z"
+  cb_end_date       = "2026-07-21T12:00:00Z"   # 省略可、予約から自動導出される値の緊急上書き用
   volume_size       = "500Gi"
 }
 ```
 
-`zone` は含まれません。前述のとおり `reserved` プールの AZ は予約から導出されるため、スクリプトも既定では `zone` 行を出しません。特定の AZ に固定したい場合だけ `--zone <az>` を渡すと、その明示指定を含んだブロックが出力されます。出力されたブロックを `terraform.tfvars` の `accelerator_pools` に貼り付けます。
+`zone` は含まれません。前述のとおり `reserved` プールの AZ は予約から導出されるため、スクリプトも既定では `zone` 行を出しません。特定の AZ に固定したい場合だけ `--zone <az>` を渡すと、その明示指定を含んだブロックが出力されます。`cb_end_date` も同様に、予約が返す実際の終了時刻を `capacity-block.tf` が自動導出するため、貼り付けなくても期限アラートは機能します。書いた場合はその値が予約側の `EndDate` より優先される緊急上書きとして働くので、予約を更新しても `cb_end_date` を書き換え忘れるとアラートが古い時刻のまま固定される点に注意してください。出力されたブロックを `terraform.tfvars` の `accelerator_pools` に貼り付けます。
 
 ## 4. apply して NodePool を確認する
 
@@ -286,7 +295,7 @@ kubectl get nodepool gpu-p5en
 kubectl get ec2nodeclass gpu-p5en
 ```
 
-apply が作るのは NodePool と EC2NodeClass の定義であって、この時点ではまだノードは立ちません。Karpenter は GPU を要求する Pod（Pending）が現れて初めてノードを起動します。実際にノードを立てるのは次の手順で、CB プールをターゲットにしたワークロードを投入したときです。ノードが立った後は次のコマンドで確認できます。
+apply が作るのは NodePool と EC2NodeClass の定義であって、この時点ではまだノードは立ちません。Karpenter は GPU を要求する Pod（Pending）が現れて初めてノードを起動します（Karpenter 自体のインストールと NodePool 生成の仕組みは Basic04 で構築済みという前提です）。実際にノードを立てるのは次の手順で、CB プールをターゲットにしたワークロードを投入したときです。ノードが立った後は次のコマンドで確認できます。
 
 ```bash
 kubectl get nodeclaims -l karpenter.sh/nodepool=gpu-p5en
@@ -316,14 +325,14 @@ terraform output cb_expiry_sns_topic_arn
 ```
 
 実機出力:
-```
+```text
 cb_expiry_alert_schedule_exprs = {
   "gpu-p5en" = "at(2026-07-21T11:00:00)"
 }
-cb_expiry_sns_topic_arn = "arn:aws:sns:<region>:<account>:distai-eks-<name>-cb-expiry-alert"
+cb_expiry_sns_topic_arn = "arn:aws:sns:<region>:<account>:<cluster_name>-cb-expiry-alert"
 ```
 
-`cb_end_date`（または予約から自動導出された終了時刻）の 1 時間前に `at()` 式の Amazon EventBridge Scheduler スケジュールが 1 つ作られ、共有 Amazon SNS トピックにメール通知が届きます。通知が来たらワークロードの graceful drain を開始します。
+予約から自動導出された終了時刻（または `cb_end_date` で明示的に上書きした終了時刻）の 1 時間前に `at()` 式の Amazon EventBridge Scheduler スケジュールが 1 つ作られ、共有 Amazon SNS トピックにメール通知が届きます。通知が来たらワークロードの graceful drain を開始します。
 
 メールを受け取るには、通知先アドレスを `terraform.tfvars` の `cb_alert_email_addresses` に設定して apply しておきます。設定すると Terraform が SNS トピックへの email サブスクリプションを作成しますが、AWS から確認メールが届くので、その中のリンクを一度クリックして承認するまで通知は届きません（SNS の仕様です）。
 
@@ -350,4 +359,3 @@ Deployment/StatefulSet/Job/MPIJob を削除し、GPU Pod が完全に終了し�
 - [Amazon EventBridge Scheduler](https://docs.aws.amazon.com/scheduler/latest/UserGuide/what-is-scheduler.html)
 - [awslabs/awsome-distributed-training](https://github.com/awslabs/awsome-distributed-training)
 - [対象モジュール infra/eks](https://github.com/littlemex/distributed-ai/tree/main/infra/eks)
-</content>

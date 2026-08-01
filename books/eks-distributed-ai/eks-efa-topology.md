@@ -25,7 +25,7 @@ EFA（Elastic Fabric Adapter）は AWS の高帯域・低遅延ネットワー�
 
 ### なぜ Karpenter は EFA を自動で付けないか
 
-Karpenter の EC2NodeClass は、`spec.networkInterfaces` を省略すると単一のデフォルト ENA（IP 通信用）だけを作ります。EFA を使うにはこのフィールドで以下を明示宣言する必要があります。
+Karpenter（karpenter-provider-aws v1.11 以降）の EC2NodeClass は、`spec.networkInterfaces` を省略すると単一のデフォルト ENA（IP 通信用）だけを作ります。EFA を使うにはこのフィールドで以下を明示宣言する必要があります（詳細は [Karpenter NodeClasses ドキュメントの spec.networkInterfaces](https://karpenter.sh/docs/concepts/nodeclasses/#specnetworkinterfaces) を参照してください）。
 
 - カード 0: `interfaceType: "interface"`（ノード IP 用、primary ENI）
 - カード 1〜N: `interfaceType: "efa-only"`（RDMA 専用、IP を持たない）
@@ -34,7 +34,14 @@ Karpenter の EC2NodeClass は、`spec.networkInterfaces` を省略すると単�
 
 ## EFA トポロジを EC2 API から動的に取得する
 
-EFA のカード枚数はインスタンスタイプごとに物理的に決まっていますが、命名規則からは導出できません。同じ g6e ファミリでも g6e.8xlarge 以下は EFA 非対応で g6e.12xlarge 以上は EFA 対応、同じ p5 系でも p5 は 32 カード・p5en は 16 カードというように、境界も枚数も型ごとに異なります。この知識を静的テーブルとしてコードに埋め込むと、新しい世代（g8e など）が出るたびに手で追記が必要になり、追記を忘れた型はビルドが落ちるか、あるいは黙って EFA が無効化されるという負債になります。
+EFA のカード枚数はインスタンスタイプごとに物理的に決まっていますが、命名規則からは導出できません。同じ g6e ファミリでも g6e.4xlarge 以下は EFA 非対応で g6e.8xlarge 以上は EFA 対応、同じ p5 系でも p5 は 32 カード・p5en は 16 カードというように、境界も枚数も型ごとに異なります。この境界はドキュメント改訂で変わり得るため、手元の型で確認したい場合は次のコマンドを実行してください。
+
+```bash
+aws ec2 describe-instance-types --instance-types <type> \
+  --query 'InstanceTypes[0].NetworkInfo.{EFA:EfaSupported,MaxEfa:EfaInfo.MaximumEfaInterfaces}'
+```
+
+この知識を静的テーブルとしてコードに埋め込むと、新しい世代（g8e など）が出るたびに手で追記が必要になり、追記を忘れた型はビルドが落ちるか、あるいは黙って EFA が無効化されるという負債になります。
 
 そこでこのモジュールでは、[`karpenter-resources.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/karpenter-resources.tf) で `data.aws_ec2_instance_type` を使い、pool の `instance_types` の EFA 情報を plan 時に EC2 の DescribeInstanceTypes API から取得します。
 
@@ -55,6 +62,8 @@ data "aws_ec2_instance_type" "pool_rep" {
 | g6e.48xlarge | true | 4 |
 | g6e.12xlarge | true | 1 |
 | g5.xlarge / g6.xlarge | false | (なし) |
+
+同じ g6e ファミリでも、g6e.48xlarge は `efa_maximum_interfaces = 4` のため後述の `multi_card` 判定が true になり multi-card 構成として解決されます。一方、本章の以降の例で使う g6e.12xlarge は 1 枚だけの single-card 構成です。「g6e = single-card」という単純化は本章の検証で使う g6e.12xlarge を指しており、g6e ファミリ全体に当てはまるわけではない点に注意してください。
 
 この値を使って [`locals.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/locals.tf) の `pool_efa` が EFA トポロジを解決します。pool 側で `efa_interface_count` を明示した場合はそれを優先し、未指定（既定値 `-1`）なら API の値を使います。
 
@@ -136,7 +145,7 @@ pool_network_interfaces = {
 EFA の SRD トラフィックは**通常の IP トラフィックではありません**。そのため、SG の egress ルールに `0.0.0.0/0` の CIDR を設定しても、SRD パケットは許可されません。必要なのは ingress と egress の**両方に self-referencing all-traffic ルール**を持つことです。
 
 ```hcl
-# sg.tf
+# sg.tf（抜粋、description フィールドは省略）
 
 # Ingress: peer EFA ノードからの全トラフィック（self-referencing）
 resource "aws_security_group_rule" "efa_node_ingress_self" {
@@ -201,25 +210,27 @@ precondition {
   error_message = "Pool ${each.key} (...) is a multi-card EFA instance but resolved to a single-card layout."
 }
 
-# Guard 3: 手動指定した efa_interface_count が EFA インターフェース数を超えないこと
+# (Guard 3 は削除済み: EC2 API 直結にしたことで「未知の型」という状態自体がなくなったため不要になりました)
+
+# Guard 4: 手動指定した efa_interface_count が EFA インターフェース数を超えないこと
 precondition {
   condition = (
     each.value.efa_interface_count < 0 ||
     each.value.efa_interface_count <= coalesce(data.aws_ec2_instance_type.pool_rep[local.pool_rep_instance_type[each.key]].efa_maximum_interfaces, 0)
   )
-  error_message = "Pool ${each.key} sets efa_interface_count = ..., but ... has only ... EFA interface(s)."
+  error_message = "Pool ${each.key} sets efa_interface_count = ..., but ... has only ... network card(s)."
 }
 ```
 
 :::message
-静的テーブル時代には「テーブルに無い未知のインスタンスタイプが黙って EFA=0 にフォールバックしないこと」を確認するガードがありましたが、EC2 API 直結にしたことで「未知の型」という状態自体がなくなったため、そのガードは不要になりました。pool が使う型は plan 時に必ず API で解決されます。
+静的テーブル時代には「テーブルに無い未知のインスタンスタイプが黙って EFA=0 にフォールバックしないこと」を確認するガードが Guard 3 として存在しましたが、EC2 API 直結にしたことで「未知の型」という状態自体がなくなったため、そのガードは不要になり削除されました。番号だけが欠番として残っているのはそのためです。pool が使う型は plan 時に必ず API で解決されます。
 :::
 
-各ガードはそれぞれ異なる事故を防ぎます。**Guard 1** は 1 つの NodePool に g6e と p5en のような異なる EFA トポロジのインスタンスタイプを混在させる設定を拒否します（`networkInterfaces` は pool 単位で 1 パターンしか生成できないため）。**Guard 2** は「multi-card のはずのインスタンスなのに解決結果が single-card 相当（count が 1 以下、または `multi_card = false` の上書き）になっている」という上書きミスを検出します。**Guard 3** は手動上書きが EFA インターフェース数を超えるケース（例: p5en の 16 に対して 32 を指定）を防ぎます。これを許すと Karpenter が存在しないカードを参照した `networkInterfaces` を生成し、`RunInstances` が失敗してリトライループに陥ります。
+各ガードはそれぞれ異なる事故を防ぎます。**Guard 1** は 1 つの NodePool に g6e と p5en のような異なる EFA トポロジのインスタンスタイプを混在させる設定を拒否します（`networkInterfaces` は pool 単位で 1 パターンしか生成できないため）。**Guard 2** は「multi-card のはずのインスタンスなのに解決結果が single-card 相当（count が 1 以下、または `multi_card = false` の上書き）になっている」という上書きミスを検出します。**Guard 4** は手動上書きが EFA インターフェース数を超えるケース（例: p5en の 16 に対して 32 を指定）を防ぎます。これを許すと Karpenter が存在しないカードを参照した `networkInterfaces` を生成し、`RunInstances` が失敗してリトライループに陥ります。
 
 ## EFA device plugin の supportedInstanceLabels 自動導出
 
-EFA を Pod にリソースとして見せるのは `aws-efa-k8s-device-plugin` の DaemonSet です。この chart は `supportedInstanceLabels` に列挙されたインスタンスタイプにしか nodeAffinity でスケジュールされず、chart デフォルトの一覧には g6e.12xlarge のような一部の EFA 対応タイプが含まれていません。デフォルトのままだとそのタイプのノードにはプラグインが乗らず、`vpc.amazonaws.com/efa` が永久に広告されないという、Guard 3 と同種の「静かなフォールバック」が device plugin 側でも起こり得ます。[`gpu-addons.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/gpu-addons.tf) はこれをクラスタが実際に使う pool から動的に導出することで防いでいます。
+EFA を Pod にリソースとして見せるのは `aws-efa-k8s-device-plugin` の DaemonSet です。この chart は `supportedInstanceLabels` に列挙されたインスタンスタイプにしか nodeAffinity でスケジュールされず、chart デフォルトの一覧には g6e.12xlarge のような一部の EFA 対応タイプが含まれていません。デフォルトのままだとそのタイプのノードにはプラグインが乗らず、`vpc.amazonaws.com/efa` が永久に広告されないという、静的テーブル時代に前述の削除済み Guard 3 が防いでいた「静かなフォールバック」と同種の問題が device plugin 側でも起こり得ます。[`gpu-addons.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/gpu-addons.tf) はこれをクラスタが実際に使う pool から動的に導出することで防いでいます。
 
 ```hcl
 # gpu-addons.tf
@@ -244,7 +255,7 @@ efa_device_plugin_values = merge(
 )
 ```
 
-`efa_supported_instance_types` は `local.pool_efa[k].count > 0` の pool だけから `instance_types` を集めるため、クラスタが実際に EFA を使う構成でだけ chart のデフォルト一覧を上書きします。空リストのときはあえて上書きせず chart デフォルトに委ねているのは、空の `supportedInstanceLabels` を渡すとデフォルト一覧そのものが消え、EFA 非対応クラスタでプラグインがどこにもスケジュールされなくなるためです。tolerations は `nvidia.com/gpu` と `aws.amazon.com/neuron` の両方の taint を許容しています。EFA は GPU プールと Neuron プールの両方から使われる共有アドオンなので、片方の toleration だけを付けると trn2 系のノードにプラグインが乗らず、そちらだけ `vpc.amazonaws.com/efa` が広告されないという非対称な障害になるためです。
+`efa_supported_instance_types` は `local.pool_efa[k].count > 0` の pool だけから `instance_types` を集めるため、クラスタが実際に EFA を使う構成でだけ chart のデフォルト一覧を上書きします。空リストになるのは `has_efa_pool = false`（EFA を使う pool が 1 つもない）場合で、そのときは `helm_release.aws_efa_k8s_device_plugin` 自体が `count = 0` でインストールされないため、この分岐に実際に到達することはありません。それでも空の `supportedInstanceLabels` を渡すとデフォルト一覧そのものが消えてしまうため、リリースが入らない場合に限られるとしても、あえて空上書きを避ける防御的な実装になっています。tolerations は `nvidia.com/gpu` と `aws.amazon.com/neuron` の両方の taint を許容しています。EFA は GPU プールと Neuron プールの両方から使われる共有アドオンなので、片方の toleration だけを付けると trn2 系のノードにプラグインが乗らず、そちらだけ `vpc.amazonaws.com/efa` が広告されないという非対称な障害になるためです。
 
 ## 全体の中での位置付け
 
@@ -260,17 +271,13 @@ p5en で `efa: 16` をリクエストすると schedulable は 15 のため Pod 
 
 bootstrap（TCP）は成功するのにデータ転送がハングします。NCCL ログに `Selected provider is efa` と出ている時点で「EFA は選ばれている」ため、ネットワーク側を疑わないと迷宮入りします。原因は SG の egress に self-referencing ルールが無いことです。
 
-**3. `NCCL_SOCKET_IFNAME` を positive 指定すると TCP fallback**
+**3. `NCCL_SOCKET_IFNAME` を positive 指定すると bootstrap に失敗する**
 
-`NCCL_SOCKET_IFNAME=efa0` のような書き方は失敗する場合があります。除外パターン `^lo,docker,veth` の方が安全です。
+`NCCL_SOCKET_IFNAME` が制御するのは EFA データパスの選択ではなく、bootstrap（rendezvous 用のソケット通信）に使うインターフェースです。`NCCL_SOCKET_IFNAME=efa0` のように EFA-only インターフェースを名指しすると、efa-only インターフェースは RDMA 専用で IP アドレスを持たないため、NCCL がソケットを bind できずに失敗します。除外パターン `^lo,docker,veth` を使えば、IP を持つインターフェース（ENA）だけが bootstrap に使われるため安全です。
 
 **4. EFA device plugin の chart version と app version の混同**
 
-`aws-efa-k8s-device-plugin` の Helm chart version とコンテナの app/image version は別系列です。chart version を指定する際に app version を代入すると、存在しないタグを参照して install が失敗します。
-
-**5. EFA トポロジは EC2 API から解決されるため未知の型が黙って EFA=0 にならない**
-
-インスタンスタイプの EFA 情報は plan 時に `data.aws_ec2_instance_type` から取得するため、pool が使う型は必ず EC2 API で解決されます。静的テーブル時代のように「テーブルに無い型が黙って EFA なしにフォールバックする」ことはなく、EFA 対応の型は `efa_supported = true` として自動で正しく扱われます。これは「ノードは起動するが NCCL が TCP になる」という最も診断しづらい障害モードを防ぐための設計です。
+`aws-efa-k8s-device-plugin` の Helm chart version（`gpu-addons.tf` の `var.efa_device_plugin_chart_version`）とコンテナの app/image version は別系列です。chart version を指定する際に app version を代入すると、存在しないタグを参照して install が失敗します。
 
 # ワークショップ実施
 
@@ -282,7 +289,7 @@ terraform output accelerator_pool_efa_schedulable
 
 期待される出力（定義したアクセラレータプールに応じて変わります。EFA を持たない cpu プールは含まれません）:
 
-```
+```text
 {
   "gpu-dev"  = 1
   "gpu-p5en" = 15
@@ -300,7 +307,7 @@ kubectl describe node <p5en-node> | grep "vpc.amazonaws.com/efa"
 
 実機出力（p5en.48xlarge）:
 
-```
+```text
   vpc.amazonaws.com/efa:  15
   vpc.amazonaws.com/efa:  15
 ```
@@ -315,7 +322,7 @@ kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-efa-k8s-device-plu
 
 期待される出力:
 
-```
+```text
 NAME                                 READY   STATUS    RESTARTS   AGE
 aws-efa-k8s-device-plugin-xxxxx      1/1     Running   0          19h
 aws-efa-k8s-device-plugin-yyyyy      1/1     Running   0          17h
@@ -326,7 +333,7 @@ EFA 対応ノード（p5en x2）それぞれに 1 Pod ずつ Running してい�
 ## 4. マルチノードで NCCL/EFA を検証する
 
 :::message
-マルチノード NCCL 検証には p5en x2 以上が必要です。p5en クラスのインスタンスは On-Demand ではまず取れないため、Capacity Block を購入してからここに戻ってきてください。手順 1〜3 は On-Demand の単一ノードでも確認できるので、まずそこまで進めても問題ありません。
+マルチノード NCCL 検証には p5en x2 以上が必要です。p5en クラスのインスタンスは On-Demand ではまず取れないため、Basic06「Capacity Block を取得して組み込む」の手順で Capacity Block を購入してからここに戻ってきてください。p5en.48xlarge の CB は前払いで数十万円/日規模の支出になり得るため、購入前に必ず最小購入単位と予約期間を確認してください。手順 1〜3 は On-Demand の単一ノードでも確認できるので、まずそこまで進めても問題ありません。
 :::
 
 マルチノードで NCCL が EFA を使っていることを検証します。検証用の MPIJob を作る namespace として、Basic01 で用意した作業用 namespace を使います。
@@ -337,14 +344,16 @@ kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -
 ./scripts/03-verify-nccl.sh --nodes 2 --gpus-per-node 8 --namespace "$NAMESPACE"
 ```
 
+このスクリプトは 2 ノードの NCCL `all_reduce_perf` を実行する MPIJob を内部で生成します。Worker Pod は `nvidia.com/gpu` と `vpc.amazonaws.com/efa` の両方の taint に対する toleration を持ち、`resources.limits` で `vpc.amazonaws.com/efa` を明示的にリクエストします。前節で見た通り、このリクエスト数が `terraform output accelerator_pool_efa_schedulable` の値を超えていると Pod は永久に Pending になるため、別のプールで実行する場合はスクリプトが要求する EFA 数を schedulable な値に合わせて調整してください。
+
 確認ポイントは次の 2 つです。
 
-- ログに `NET/OFI Selected provider is efa` が出ること（TCP fallback していない証拠）
-- `busbw` が高い値を示すこと
+- ログに `NET/OFI Selected provider is efa` が出ることを確認します（TCP fallback していない証拠になります）
+- `busbw` が高い値を示すことを確認します
 
 実機確認結果（2 ノード p5en.48xlarge、H200 x16、EFA 15 NIC）:
 
-```
+```text
 ip-10-0-xx-xx [7] NCCL INFO NET/OFI Selected provider is efa, fabric is efa-direct (found 15 nics)
 ip-10-0-yy-yy [6] NCCL INFO NET/OFI Selected provider is efa, fabric is efa-direct (found 15 nics)
 ```
@@ -377,7 +386,7 @@ env:
     value: "efa"
 ```
 
-`NCCL_SOCKET_IFNAME` は `^` で始まる**除外パターン**で書きます。`efa0,efa1,...` のような許可リスト方式だと、NCCL が EFA インターフェースを見つけられず TCP fallback する場合があります。
+`NCCL_SOCKET_IFNAME` は `^` で始まる**除外パターン**で書きます。`efa0,efa1,...` のような許可リスト方式で efa-only インターフェースを名指しすると、そのインターフェースは IP を持たないため NCCL が bootstrap 用のソケットを bind できず失敗します。除外パターンなら IP を持つインターフェース（ENA）だけが自動的に選ばれるため安全です。
 
 # まとめ
 
