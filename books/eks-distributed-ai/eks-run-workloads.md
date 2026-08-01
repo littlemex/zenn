@@ -37,6 +37,8 @@ free: true
 
 **GPU Operator の初期化を待ちます。** Karpenter が GPU ノードを起動しても、NVIDIA GPU Operator が `nvidia.com/gpu` を advertise するまで数分かかります。それまで Pod は `Pending` のままですが、これは異常ではありません。
 
+**小さいノードのプールでは CPU リクエストを下げます。** `gpuServingVllm` の CPU リクエスト既定値は `8` で、g6e.12xlarge（48 vCPU）のような大きいノードを想定しています。g6.2xlarge / g5.2xlarge（8 vCPU）のような小さい GPU ノードのプールに載せると、システム予約を差し引いた割り当て可能 CPU が 8 に届かず、Karpenter が `no instance type has enough resources` を出して Pod が永久に `Pending` になります。Qwen2.5-0.5B のような小型モデルは 2 vCPU でも動くため、小さいノードのプールでは後述の手順で `--set gpuServingVllm.cpu=2` を付けて明示的に下げます。
+
 # ワークショップ実施
 
 ## 1. 作業用 namespace を用意する
@@ -59,6 +61,18 @@ helm template exp charts/experiments -n "$NAMESPACE" \
     --set gpuServingVllm.enabled=true \
     --set gpuServingVllm.model="$MODEL" \
     --set gpuServingVllm.nodeRole=gpu-dev \
+    | kubectl apply -f -
+```
+
+g6e.12xlarge のような大きいノードのプールではこれで載りますが、g6.2xlarge / g5.2xlarge（8 vCPU）のような小さい GPU ノードのプールに載せる場合は、CPU とメモリのリクエストをノードに収まる値まで下げます。実機では次の設定で g5.xlarge（4 vCPU / 16 GiB / A10G 1 枚）の spot ノードに載せて動作を確認しました。
+
+```bash
+helm template exp charts/experiments -n "$NAMESPACE" \
+    --set gpuServingVllm.enabled=true \
+    --set gpuServingVllm.model="$MODEL" \
+    --set gpuServingVllm.nodeRole=gpu-ddp \
+    --set gpuServingVllm.cpu=2 \
+    --set gpuServingVllm.memory=12Gi \
     | kubectl apply -f -
 ```
 
