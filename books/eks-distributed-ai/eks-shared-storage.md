@@ -207,30 +207,76 @@ terraform output
 kubectl get pv
 ```
 
-実機出力:
+既定（`fsx_enabled = true` / `openzfs_enabled = true` / `efs_enabled = false`）で apply した直後の実機出力です。Amazon FSx for Lustre（`fsx-training`）と Amazon FSx for OpenZFS（`openzfs-shared`）の static PV が作られており、まだどの PVC も作っていないので `Available` です。
+
 ```
-NAME                   CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM                          AGE
-efs-neuron-workspace   1000Gi     RWX            Retain           Bound    smollm-test/efs-shared-claim   3d
-fsx-training           2400Gi     RWX            Retain           Bound    default/fsx-claim              3d
+NAME             CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS      CLAIM   STORAGECLASS   AGE
+fsx-training     4800Gi     RWX            Retain           Available            <unset>        7h
+openzfs-shared   256Gi      RWX            Retain           Available            <unset>        7h
 ```
 
-Amazon EFS（`efs-neuron-workspace`）と Amazon FSx for Lustre（`fsx-training`）が共に `Retain` + `RWX` で `Bound` になっています。
+Amazon EFS は既定で無効のため、この時点では EFS の PV は出てきません（後述の手順 5 で有効化すると `efs-neuron-workspace` が追加されます）。いずれの PV も `storageClassName` が空の static PV であり、動的プロビジョニングの StorageClass（`efs-shared`）とは別物である点に注意します。Amazon FSx for Lustre が `RWX` なのは、複数ノードの Pod から同時にチェックポイント書き込みやデータ読み出しができるようにするためです。
+
+## 3. Amazon FSx for Lustre に書き込み、ノードを跨いでデータが残ることを確認する
+
+PV は Terraform で作られていますが、PVC（Pod がマウントに使う参照）は手動で作ります。まず既定で有効な Amazon FSx for Lustre で試します。static PV に名前でバインドするため `volumeName` に PV 名を、`storageClassName` に空文字を指定します。
 
 ```bash
-kubectl get pvc -A
+kubectl apply -f - <<'EOF'
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fsx-claim
+  namespace: default
+spec:
+  accessModes: ["ReadWriteMany"]
+  storageClassName: ""
+  volumeName: fsx-training
+  resources:
+    requests:
+      storage: 4800Gi
+EOF
+kubectl get pvc fsx-claim
 ```
 
+`Bound` になったら、ファイルを書き込むテスト Pod を実行します。
+
+```bash
+kubectl run fsx-test --restart=Never --image=busybox \
+    --overrides='{"spec":{"containers":[{"name":"fsx-test","image":"busybox","command":["sh","-c","echo hello-fsx > /mnt/fsx/test.txt && cat /mnt/fsx/test.txt"],"volumeMounts":[{"name":"fsx","mountPath":"/mnt/fsx"}]}],"volumes":[{"name":"fsx","persistentVolumeClaim":{"claimName":"fsx-claim"}}]}}'
+kubectl logs fsx-test
 ```
-NAMESPACE     NAME               STATUS   VOLUME                 CAPACITY   ACCESS MODES   AGE
-default       fsx-claim          Bound    fsx-training           2400Gi     RWX            3d
-smollm-test   efs-shared-claim   Bound    efs-neuron-workspace   1000Gi     RWX            3d
+
+Pod のログに `hello-fsx` が出れば、Amazon FSx for Lustre のマウントと書き込みが成功しています。続いて Pod を削除し、別名の Pod から同じファイルを読み出します。
+
+```bash
+kubectl delete pod fsx-test
+kubectl run fsx-test2 --restart=Never --image=busybox \
+    --overrides='{"spec":{"containers":[{"name":"fsx-test2","image":"busybox","command":["cat","/mnt/fsx/test.txt"],"volumeMounts":[{"name":"fsx","mountPath":"/mnt/fsx"}]}],"volumes":[{"name":"fsx","persistentVolumeClaim":{"claimName":"fsx-claim"}}]}}'
+kubectl logs fsx-test2
 ```
 
-どちらも `storageClassName` が空の static PV であり、動的プロビジョニングの StorageClass（`efs-shared`）とは別物である点に注意します。Amazon FSx for Lustre が `RWX` なのは、複数ノードの Pod から同時にチェックポイント書き込みやデータ読み出しができるようにするためです。
+別名の Pod でも `hello-fsx` が読み出せます。Pod（ひいてはノード）が入れ替わっても、共有ストレージ上のデータが残り続けることが確認できます。
 
-## 3. Amazon EFS 用の PVC を作成し、書き込みテストを行う
+## 4. Amazon EFS を有効化する
 
-PV は Terraform で作られていますが、PVC（Pod がマウントに使う参照）は手動で作る必要があります。1 つの PV は 1 つの PVC にしか bind しません（RWX でも同じで、複数 Pod から使えるだけです）。手順 2 の実機出力は別の PVC（`efs-shared-claim`）が使い終えた後のクラスタのものなので、初回 apply 直後の PV は `Available` の状態にあり、ここで作る `efs-claim` がそこに bind します。
+Amazon EFS は既定で無効なので、マルチ AZ の RWX キャッシュを試すにはまず有効化します。`terraform.tfvars` に `efs_enabled = true` を追加して apply すると、Amazon EFS ファイルシステム・4 つの private subnet それぞれへのマウントターゲット・アクセスポイント・static PV（`efs-neuron-workspace`）が作られます。
+
+```bash
+echo 'efs_enabled = true' >> terraform.tfvars
+terraform apply
+```
+
+apply 完了後、マウントターゲットがすべて `available` になるまで数分かかります。PV が追加されたことを確認します。
+
+```bash
+kubectl get pv | grep efs
+# efs-neuron-workspace   1000Gi   RWX   Retain   Available   ...
+```
+
+## 5. Amazon EFS 用の PVC を作成し、書き込みテストを行う
+
+Amazon FSx と同じく、static PV に名前でバインドする PVC を作ります。1 つの PV は 1 つの PVC にしか bind しません（RWX でも同じで、複数 Pod から使えるだけです）。apply 直後の PV は `Available` なので、ここで作る `efs-claim` がそこに bind します。
 
 ```bash
 kubectl apply -f - <<'EOF'
@@ -268,7 +314,7 @@ Pod のログに `hello` が出力されれば、Amazon EFS のマウントと�
 kubectl logs efs-test
 ```
 
-## 4. Pod を削除して再作成し、データが残ることを確認する
+## 6. Pod を削除して再作成し、データが残ることを確認する
 
 ```bash
 kubectl delete pod efs-test
@@ -278,7 +324,7 @@ kubectl run efs-test2 --restart=Never \
 kubectl logs efs-test2
 ```
 
-別名の Pod でも `hello` が読み出せます。これが、Karpenter がノードを入れ替えても Pod が再スケジュールされた先で同じキャッシュを読み続けられる、という本章の要点そのものです。
+別名の Pod でも `hello` が読み出せます。これが、Karpenter がノードを入れ替えても Pod が再スケジュールされた先で同じキャッシュを読み続けられる、という本章の要点そのものです。Amazon FSx（手順 3）と Amazon EFS（手順 5〜6）のどちらでも、Pod をまたいでデータが残ることを実機で確認できました。
 
 # まとめ
 

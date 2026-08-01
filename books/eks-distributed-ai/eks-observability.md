@@ -132,7 +132,7 @@ kubectl port-forward -n monitoring svc/kps-grafana 3000:80 &
 # ユーザー: admin / パスワード: 手順1で設定した値
 ```
 
-ログイン後、左メニューの Dashboards から、kube-prometheus-stack が自動導入したダッシュボードが見えます（実機で 25 個）。
+ログイン後、左メニューの Dashboards から、kube-prometheus-stack が自動導入したダッシュボードが見えます（実機で 29 個。チャートのバージョンによって前後します）。
 
 - `Kubernetes / Compute Resources / Node (Pods)`: ノード単位の CPU/メモリを表示します
 - `Node Exporter / Nodes`: ノードのハードウェアメトリクスを表示します
