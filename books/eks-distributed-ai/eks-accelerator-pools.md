@@ -62,7 +62,7 @@ accelerator_pools = {
 
 設定を変えるとアロケーション結果がどう変わるかを、以下のシミュレータで試せます。
 
-@[codepen](https://codepen.io/littlemex/pen/PLACEHOLDER?default-tab=result)
+@[codepen](https://codepen.io/larcpwpp-the-styleful/pen/019fbdc6-b9c2-7eb1-809e-3c95429b1d9e?default-tab=result)
 
 インスタンスタイプ、capacity_types、zones を変えると、NodePool の requirement values、EFA topology、disruption 設定がリアルタイムで更新されます。
 
