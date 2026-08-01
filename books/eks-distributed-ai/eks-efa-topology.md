@@ -32,34 +32,31 @@ Karpenter の EC2NodeClass は、`spec.networkInterfaces` を省略すると単�
 
 この宣言はインスタンスタイプごとにカード枚数とレイアウトが異なるため、プールごとに手書きするとカード枚数を 1 つ間違えるだけで事故になります。以降では、この宣言を自動生成している実コードを引用しながら、設計意図を見ていきます。対象モジュールは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks) です。
 
-## EFA トポロジのルックアップテーブル
+## EFA トポロジを EC2 API から動的に取得する
 
-[`locals.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/locals.tf) にインスタンスタイプ別のカード枚数テーブルを置き、pool の `instance_types` から EFA トポロジを自動導出します。
+EFA のカード枚数はインスタンスタイプごとに物理的に決まっていますが、命名規則からは導出できません。同じ g6e ファミリでも g6e.8xlarge 以下は EFA 非対応で g6e.12xlarge 以上は EFA 対応、同じ p5 系でも p5 は 32 カード・p5en は 16 カードというように、境界も枚数も型ごとに異なります。この知識を静的テーブルとしてコードに埋め込むと、新しい世代（g8e など）が出るたびに手で追記が必要になり、追記を忘れた型はビルドが落ちるか、あるいは黙って EFA が無効化されるという負債になります。
+
+そこでこのモジュールでは、[`karpenter-resources.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/karpenter-resources.tf) で `data.aws_ec2_instance_type` を使い、pool の `instance_types` の EFA 情報を plan 時に EC2 の DescribeInstanceTypes API から取得します。
 
 ```hcl
-# locals.tf
-efa_capability = {
-  "p5.48xlarge"    = { cards = 32, multi_card = true }
-  "p5e.48xlarge"   = { cards = 32, multi_card = true }
-  "p5en.48xlarge"  = { cards = 16, multi_card = true }
-  "trn2.48xlarge"  = { cards = 16, multi_card = true }
-  "trn1.32xlarge"  = { cards = 8, multi_card = true }
-  "trn1n.32xlarge" = { cards = 16, multi_card = true }
-  "g6e.12xlarge"   = { cards = 1, multi_card = false }
-  "g6e.24xlarge"   = { cards = 1, multi_card = false }
-  "g6e.48xlarge"   = { cards = 1, multi_card = false }
-  # EFA 非対応の GPU タイプも cards = 0 で明示する。表に載せないと「未知のインスタンス
-  # タイプ」として後述の Guard 3 に弾かれるが、cards = 0 と明示すれば「EFA なしは既知の
-  # 選択」として通る。
-  "g5.12xlarge"    = { cards = 0, multi_card = false }
-  "g5.24xlarge"    = { cards = 0, multi_card = false }
-  "g5.48xlarge"    = { cards = 0, multi_card = false }
+# karpenter-resources.tf
+data "aws_ec2_instance_type" "pool_rep" {
+  for_each      = toset(flatten([for p in var.accelerator_pools : p.instance_types]))
+  instance_type = each.value
 }
 ```
 
-`multi_card = true`（p5/p5e/p5en/trn1n/trn2）はカード 0 が primary（ノード IP）、残りのカードが `efa-only` になるレイアウトです。`multi_card = false`（g6e、および EFA 非対応の g5）はカード 0 上に primary と EFA（またはなにも）が共存します。g5 を `cards = 0` で明示的に列挙しているのは「EFA 非対応です」という既知の事実を表に残すためで、単に書き忘れているのと Terraform 上は区別がつかないため、意図的にエントリを作っています。
+取得できる主な属性は `efa_supported`（EFA 対応可否）と `efa_maximum_interfaces`（EFA を張れる最大インターフェース数）です。実データは次の通りで、新旧の型で一貫して取得できます。
 
-このテーブルは pool 側で上書きできます。`pool_efa` がその解決ロジックです。
+| インスタンスタイプ | efa_supported | efa_maximum_interfaces |
+|---|---|---|
+| p5.48xlarge | true | 32 |
+| p5en.48xlarge | true | 16 |
+| g6e.48xlarge | true | 4 |
+| g6e.12xlarge | true | 1 |
+| g5.xlarge / g6.xlarge | false | (なし) |
+
+この値を使って [`locals.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/locals.tf) の `pool_efa` が EFA トポロジを解決します。pool 側で `efa_interface_count` を明示した場合はそれを優先し、未指定（既定値 `-1`）なら API の値を使います。
 
 ```hcl
 # locals.tf
@@ -68,12 +65,15 @@ pool_efa = {
     count = (
       p.efa_interface_count >= 0
       ? p.efa_interface_count
-      : try(local.efa_capability[local.pool_rep_instance_type[k]].cards, 0)
+      : (data.aws_ec2_instance_type.pool_rep[local.pool_rep_instance_type[k]].efa_supported
+        ? coalesce(data.aws_ec2_instance_type.pool_rep[local.pool_rep_instance_type[k]].efa_maximum_interfaces, 0)
+        : 0)
     )
     multi_card = (
       p.efa_multi_card != null
       ? p.efa_multi_card
-      : try(local.efa_capability[local.pool_rep_instance_type[k]].multi_card, false)
+      : (data.aws_ec2_instance_type.pool_rep[local.pool_rep_instance_type[k]].efa_supported &&
+         coalesce(data.aws_ec2_instance_type.pool_rep[local.pool_rep_instance_type[k]].efa_maximum_interfaces, 0) > 1)
     )
   }
 }
@@ -85,7 +85,11 @@ pool_efa_schedulable = {
 }
 ```
 
-`p.efa_interface_count >= 0` のときだけ pool の明示値を優先し、そうでなければテーブルから導出します（既定値は `-1` で「未指定」を表します）。この 2 段構えにより、通常は何も書かなくてもテーブルから自動導出され、特殊なプールだけ明示的に上書きできます。
+`efa_supported = false` の g5/g6 は `efa_maximum_interfaces` が null を返すため `coalesce(..., 0)` で 0 に丸めます。この API 直結の導出により、新しいインスタンスタイプはコード変更なしで正しく扱えます。
+
+:::message
+`efa_maximum_interfaces`（EFA を張れる数）は `maximum_network_cards`（物理ネットワークカードの総数）とは別の属性です。多くの型では一致しますが、概念が違うため EFA 数には必ず `efa_maximum_interfaces` を使います。Terraform AWS provider にこの属性が用意されているため、AWS CLI を別途叩く必要はありません。
+:::
 
 `pool_efa_schedulable` が **card 0 問題**の実体です。multi-card レイアウトでは**カード 0 がノード IP を運ぶため EFA-only として広告されません**。つまり以下のようになります。
 
@@ -167,9 +171,9 @@ resource "aws_security_group_rule" "efa_node_egress_self" {
 
 egress self-ref が無い場合の症状として、NCCL は bootstrap（TCP）に成功し `Selected provider is efa` と表示するものの、実際のデータ転送で `NET/OFI ... Error 15 (Unreachable remote)` が出てハングします。「EFA を選んだはずなのにデータが流れない」という診断困難な障害になります。
 
-## 4 つの precondition ガード
+## precondition ガード
 
-`pool_network_interfaces` はテーブル駆動で自動生成される一方、pool の書き方を間違えると存在しないカードを参照した `networkInterfaces` を生成してしまいます。`karpenter-resources.tf` の `kubectl_manifest.accelerator_nodeclass` には、この事故を plan 時に止めるための precondition が 4 つ並んでいます。
+`pool_network_interfaces` は自動生成される一方、pool の書き方を間違えると存在しないカードを参照した `networkInterfaces` を生成してしまいます。`karpenter-resources.tf` の `kubectl_manifest.accelerator_nodeclass` には、この事故を plan 時に止めるための precondition が並んでいます。EFA トポロジは前述の `data.aws_ec2_instance_type` から取得するため、いずれのガードも API の値（`efa_supported` / `efa_maximum_interfaces`）を参照します。
 
 ```hcl
 # karpenter-resources.tf（抜粋）
@@ -177,7 +181,9 @@ egress self-ref が無い場合の症状として、NCCL は bootstrap（TCP）�
 precondition {
   condition = length(distinct([
     for t in each.value.instance_types :
-    format("%d/%t", try(local.efa_capability[t].cards, 0), try(local.efa_capability[t].multi_card, false))
+    format("%d/%s",
+      data.aws_ec2_instance_type.pool_rep[t].efa_supported ? coalesce(data.aws_ec2_instance_type.pool_rep[t].efa_maximum_interfaces, 0) : 0,
+      data.aws_ec2_instance_type.pool_rep[t].efa_supported && coalesce(data.aws_ec2_instance_type.pool_rep[t].efa_maximum_interfaces, 0) > 1)
   ])) == 1
   error_message = "Pool ${each.key} mixes instance types with different EFA topologies ..."
 }
@@ -187,33 +193,29 @@ precondition {
   condition = (
     local.pool_efa[each.key].count == 0 ||
     !(
-      try(local.efa_capability[local.pool_rep_instance_type[each.key]].multi_card, false) &&
+      (data.aws_ec2_instance_type.pool_rep[local.pool_rep_instance_type[each.key]].efa_supported &&
+       coalesce(data.aws_ec2_instance_type.pool_rep[local.pool_rep_instance_type[each.key]].efa_maximum_interfaces, 0) > 1) &&
       (local.pool_efa[each.key].count <= 1 || !local.pool_efa[each.key].multi_card)
     )
   )
   error_message = "Pool ${each.key} (...) is a multi-card EFA instance but resolved to a single-card layout."
 }
 
-# Guard 3: 未知のインスタンスタイプが黙って EFA=0 にフォールバックしないこと
-precondition {
-  condition = (
-    contains(keys(local.efa_capability), local.pool_rep_instance_type[each.key]) ||
-    each.value.efa_interface_count >= 0
-  )
-  error_message = "Pool ${each.key} uses instance type ... which is not in the EFA capability table ..."
-}
-
-# Guard 4: 手動指定した efa_interface_count が物理カード数を超えないこと
+# Guard 3: 手動指定した efa_interface_count が EFA インターフェース数を超えないこと
 precondition {
   condition = (
     each.value.efa_interface_count < 0 ||
-    each.value.efa_interface_count <= try(local.efa_capability[local.pool_rep_instance_type[each.key]].cards, 999999)
+    each.value.efa_interface_count <= coalesce(data.aws_ec2_instance_type.pool_rep[local.pool_rep_instance_type[each.key]].efa_maximum_interfaces, 0)
   )
-  error_message = "Pool ${each.key} sets efa_interface_count = ..., but ... has only ... EFA card(s)."
+  error_message = "Pool ${each.key} sets efa_interface_count = ..., but ... has only ... EFA interface(s)."
 }
 ```
 
-4 つのガードはそれぞれ異なる事故を防ぎます。**Guard 1** は 1 つの NodePool に g6e と p5en のような異なる EFA トポロジのインスタンスタイプを混在させる設定を拒否します（`networkInterfaces` は pool 単位で 1 パターンしか生成できないため）。**Guard 2** は「multi-card のはずのインスタンスなのに解決結果が single-card 相当（count が 1 以下、または `multi_card = false` の上書き）になっている」という上書きミスを検出します。**Guard 3** が最も診断困難な障害を防ぐガードで、テーブルに存在しない未知のインスタンスタイプかつ `efa_interface_count` も未指定の場合、黒魔術的に `try(..., 0)` で EFA=0 に静かにフォールバックさせず、明示的に reject します。これが無いと「ノードは起動するが NCCL が TCP にフォールバックする」という、ログを読まないと分からない障害になります。**Guard 4** は逆に手動上書きが物理カード数を超えるケース（例: p5en の 16 カードに対して 32 を指定）を防ぎます。これを許すと Karpenter が存在しないカードを参照した `networkInterfaces` を生成し、`RunInstances` が失敗してリトライループに陥ります。
+:::message
+静的テーブル時代には「テーブルに無い未知のインスタンスタイプが黙って EFA=0 にフォールバックしないこと」を確認するガードがありましたが、EC2 API 直結にしたことで「未知の型」という状態自体がなくなったため、そのガードは不要になりました。pool が使う型は plan 時に必ず API で解決されます。
+:::
+
+各ガードはそれぞれ異なる事故を防ぎます。**Guard 1** は 1 つの NodePool に g6e と p5en のような異なる EFA トポロジのインスタンスタイプを混在させる設定を拒否します（`networkInterfaces` は pool 単位で 1 パターンしか生成できないため）。**Guard 2** は「multi-card のはずのインスタンスなのに解決結果が single-card 相当（count が 1 以下、または `multi_card = false` の上書き）になっている」という上書きミスを検出します。**Guard 3** は手動上書きが EFA インターフェース数を超えるケース（例: p5en の 16 に対して 32 を指定）を防ぎます。これを許すと Karpenter が存在しないカードを参照した `networkInterfaces` を生成し、`RunInstances` が失敗してリトライループに陥ります。
 
 ## EFA device plugin の supportedInstanceLabels 自動導出
 
@@ -266,9 +268,9 @@ bootstrap（TCP）は成功するのにデータ転送がハングします。NC
 
 `aws-efa-k8s-device-plugin` の Helm chart version とコンテナの app/image version は別系列です。chart version を指定する際に app version を代入すると、存在しないタグを参照して install が失敗します。
 
-**5. 未知のインスタンスタイプは黙って EFA=0 にフォールバックしない**
+**5. EFA トポロジは EC2 API から解決されるため未知の型が黙って EFA=0 にならない**
 
-ルックアップテーブルに存在しないインスタンスタイプで `efa_interface_count` も未指定の場合、`karpenter-resources.tf` の precondition が明示的に reject します。黙って EFA なしにフォールバックすることはありません。これは「ノードは起動するが NCCL が TCP になる」という最も診断しづらい障害モードを防ぐための設計です。
+インスタンスタイプの EFA 情報は plan 時に `data.aws_ec2_instance_type` から取得するため、pool が使う型は必ず EC2 API で解決されます。静的テーブル時代のように「テーブルに無い型が黙って EFA なしにフォールバックする」ことはなく、EFA 対応の型は `efa_supported = true` として自動で正しく扱われます。これは「ノードは起動するが NCCL が TCP になる」という最も診断しづらい障害モードを防ぐための設計です。
 
 # ワークショップ実施
 
