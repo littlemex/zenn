@@ -138,7 +138,33 @@ trn2 には大きく 2 つのシェイプがあり、必要なデバイス数で
 
 ## 1. terraform.tfvars に Neuron プールを追加する
 
-`accelerator_pools` に、Capacity Block を使う trn2 のプールを追加します。
+その前に、**使いたい Trainium が Basic01 で選んだリージョンに存在するか**を確認してください。Trainium は提供リージョンが限られており、しかもシェイプごとに異なります。存在しないタイプを書くと、EC2 の `DescribeInstanceTypes` がそのタイプを返さないため plan の段階で止まります。
+
+```text
+Error: reading EC2 Instance Type: api error InvalidInstanceType:
+The following supplied instance types do not exist: [trn2.48xlarge]
+```
+
+本書の執筆時点で実測した可用性は次のとおりです。
+
+| インスタンスタイプ | 存在を確認したリージョン |
+|---|---|
+| trn2.48xlarge | us-east-2 |
+| trn2.3xlarge | ap-southeast-4 |
+| trn1.32xlarge | us-east-1 / us-east-2 / us-west-2 / ap-southeast-4 |
+| inf2.48xlarge | us-east-1 / us-east-2 / us-west-2 / ap-northeast-1 |
+
+trn2 の 2 つのシェイプが同じリージョンに無いことに注意してください。手元のリージョンで何が使えるかは次のコマンドで確認できます（返ってこないタイプはそのリージョンに存在しません）。
+
+```bash
+aws ec2 describe-instance-types --region <region> \
+  --instance-types trn2.48xlarge trn2.3xlarge trn1.32xlarge inf2.48xlarge \
+  --query 'InstanceTypes[].InstanceType' --output text
+```
+
+使いたいタイプが Basic01 のリージョンに無い場合は、そのリージョン用に別の作業ディレクトリと state を用意してクラスタを立てるのが安全です（同じ state で `region` だけ書き換えると、既存クラスタを作り直そうとします）。
+
+リージョンを確認したら、`accelerator_pools` に Capacity Block を使う trn2 のプールを追加します。
 
 ```hcl
 trn2 = {
