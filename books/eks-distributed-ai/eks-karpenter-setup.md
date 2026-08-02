@@ -258,7 +258,16 @@ kubectl -n karpenter get pods
 kubectl get crd | grep karpenter
 ```
 
-`ec2nodeclasses.karpenter.k8s.aws` / `nodeclaims.karpenter.sh` / `nodepools.karpenter.sh` の 3 つが表示されれば、`karpenter-crd` chart による CRD 登録が完了しています。
+実機出力（Karpenter 1.13.0）:
+
+```text
+ec2nodeclasses.karpenter.k8s.aws
+nodeclaims.karpenter.sh
+nodeoverlays.karpenter.sh
+nodepools.karpenter.sh
+```
+
+中核となる `ec2nodeclasses.karpenter.k8s.aws` / `nodeclaims.karpenter.sh` / `nodepools.karpenter.sh` の 3 つが表示されれば、`karpenter-crd` chart による CRD 登録が完了しています。`nodeoverlays.karpenter.sh` は本書では使いませんが、同じ chart が登録するため一覧に現れます（表示される CRD の数は Karpenter のバージョンで変わり得ます）。
 
 ## 3. 2 つのチャートが別々に入っていることを確認する
 
@@ -268,17 +277,29 @@ helm list -n karpenter
 
 `karpenter-crd` と `karpenter` が見えます。この 2 つは `var.karpenter_chart_version` という 1 つの変数から同じバージョンを受け取る設計なので、バージョンを上げるときはこの変数を変えて `terraform apply` すれば両者が揃って更新されます（Helm リリースは Terraform が管理しているので、手で `helm upgrade` はしません）。
 
-## 4. まだノードが増えていないことを確認する
+## 4. NodePool と、まだノードが増えていないことを確認する
 
 ```bash
+kubectl get nodepool
 kubectl get nodes
 ```
 
-この時点では `NodePool` を 1 つも定義していないため、Karpenter はまだ起動先の情報を持ちません。表示されるノードは Basic01 の System ノードのみで、GPU/Neuron ノードは増えていません。これが demand-driven なプロビジョニングの動作確認になります。
+`kubectl get nodepool` には `cpu` が 1 つ表示されます。これは `cpu_nodepool_enabled`（既定 `true`）によって Basic01 の apply で作られたもので、Basic02 の CPU DDP がこのプールにノードを起こしていました。アクセラレータ用の NodePool は `accelerator_pools` が空のままなのでまだ存在せず、次章で定義します。
+
+```text
+NAME   NODECLASS   NODES   READY   AGE
+cpu    cpu         0       True    5m
+```
+
+一方 `kubectl get nodes` に見えるのは Basic01 の System ノードだけです（Basic02 で起きた cpu ノードは、ワークロードが終わったあと `consolidateAfter` で回収されています）。NodePool が存在しても、それを要求する Pod がなければノードは立ちません。これが demand-driven なプロビジョニングの動作確認になります。
+
+`NODES` 列が 0 であることと、`READY` が `True`（= Karpenter がこの NodePool を受理して起動待機している）ことの両方を確認してください。
 
 # まとめ
 
-本章では、GPU/Neuron ノードを要求に応じて起動する Karpenter を導入しました。CRD を別チャート（`karpenter-crd`）で管理してバージョンアップに追従できるようにし、認証は Pod Identity、Spot 中断は SQS interruption queue で graceful に処理する構成です。この時点ではまだノードは増えませんが、次章で `accelerator_pools` を定義すると、この Karpenter が実際に GPU/Neuron ノードを起動し始めます。
+本章では、ノードを要求に応じて起動する Karpenter の構成を確認しました。CRD を別チャート（`karpenter-crd`）で管理してバージョンアップに追従できるようにし、認証は Pod Identity、Spot 中断は SQS interruption queue で graceful に処理する構成です。
+
+Basic02 の CPU DDP がノードを得られていたのは、`cpu` NodePool が Basic01 の apply で先に作られていたからでした。本章でその仕組みを確認したので、次章では `accelerator_pools` を定義して、同じ Karpenter に GPU ノードを起動させます。
 
 # 参考資料
 

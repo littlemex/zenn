@@ -67,7 +67,7 @@ TrainJob 側は台数（`numNodes`）とノードあたりのプロセス数（`
 
 ## 学習結果の保存先と共有ストレージ
 
-本章の 2 つのワークロードは、MNIST のデータと学習スナップショットを共有ストレージに保存します。既定の保存先は単一 AZ の **Amazon FSx for OpenZFS** です。ストレージの詳細は後続の章でで扱いますが、`openzfs_enabled` が既定で有効なため、`terraform apply` の時点でファイルシステムと静的 PersistentVolume（`openzfs-shared`）はすでに作られています。本章では、既に作成済みの PVC（`openzfs-claim`）をそのまま利用し、コンテナの `/shared` にマウントして使います。
+本章の 2 つのワークロードは、MNIST のデータと学習スナップショットを共有ストレージに保存します。既定の保存先は単一 AZ の **Amazon FSx for OpenZFS** です。ストレージの詳細は後続の章で扱いますが、`openzfs_enabled` が既定で有効なため、`terraform apply` の時点でファイルシステムと静的 PersistentVolume（`openzfs-shared`）はすでに作られています。この PV を掴む PersistentVolumeClaim は Helm チャートが `shared-claim` という名前で自動生成するので、読者が用意する必要はありません。コンテナの `/shared` にマウントされます。
 
 後半の複数ノード TrainJob でも、スナップショットの保存は rank 0 が担当します。そのため、どのノードから書かれても同じ場所に成果物が集まる共有ストレージ（ReadWriteMany）が要ります。単一ノードの torchrun でも同じ共有ストレージを使い、入口から同じ `/shared` 規約に揃えておくと 2 段目への流れが素直になります。共有ファイルシステム上での同時書き込みによる破損を避けるため、`ddp.py` は MNIST のダウンロードとスナップショット書き込みを rank 0 だけが行います。
 
@@ -165,7 +165,7 @@ kubectl get pods -n kubeflow-system
 
 ## 3. 単一ノードで torchrun を動かす（前半）
 
-まず 1 ノードの中で 2 プロセスの DDP を動かします。`gpu.enabled` を付けないのでこのまま CPU（gloo）で動きます。`nprocPerNode=2` は 1 ノード内に立てる rank 数です。前のステップでビルドしたイメージの URI を `torchrunTrain.image` に渡します。共有ストレージは Basic01 で作成済みの `openzfs-claim` PVC を再利用するため、`sharedStorage.existingClaimName` に渡します。
+まず 1 ノードの中で 2 プロセスの DDP を動かします。`gpu.enabled` を付けないのでこのまま CPU（gloo）で動きます。`nprocPerNode=2` は 1 ノード内に立てる rank 数です。前のステップでビルドしたイメージの URI を `torchrunTrain.image` に渡します。共有ストレージの PVC はチャートが自動生成するので、指定は不要です。
 
 ```bash
 # step 2 から続けて infra/eks にいる前提です。ターミナルを変えた場合は cd infra/eks した上で
@@ -176,7 +176,6 @@ kubectl get pods -n kubeflow-system
 kubectl delete job ddp-torchrun -n "$NAMESPACE" --ignore-not-found
 
 helm template exp charts/experiments -n "$NAMESPACE" \
-    --set sharedStorage.existingClaimName=openzfs-claim \
     --set torchrunTrain.enabled=true \
     --set torchrunTrain.image="$IMAGE" \
     --set torchrunTrain.backend=gloo \
@@ -190,7 +189,7 @@ helm template exp charts/experiments -n "$NAMESPACE" \
 :::
 
 :::message
-`sharedStorage.existingClaimName` を渡すのは、共有ストレージの静的 PV （`openzfs-shared`）が 1 つしかなく、1 つの PVC にしかバインドできないためです。Basic01 で `openzfs-claim` がこの PV を掴んでいるので、チャートに新しい PVC を作らせるとバインド先が無く永久に `Pending` になります。既存の PVC を再利用するようこの値を渡すと、その競合を避けられます。
+共有ストレージの静的 PV（`openzfs-shared`）は 1 つしかなく、1 つの PVC にしかバインドできません。チャートはこの制約を前提に、`shared-claim` という単一の PVC を生成してその PV に bind します（`charts/experiments/templates/shared-pvc.yaml`）。すでに自分で PVC を作って PV を掴ませている場合だけ `--set sharedStorage.existingClaimName=<その PVC 名>` でチャートの生成を抑止し、既存の PVC を再利用してください。指定しなければ競合は起きません。
 :::
 
 Pod が `Running` になるまでログは出ません。初回は CPU ノードの起動とイメージ pull で数分かかるので、`kubectl wait` で Pod が Ready になるのを待ってから、続けてログを追います。
@@ -229,7 +228,7 @@ kubectl wait --for=condition=complete job/ddp-torchrun -n "$NAMESPACE" --timeout
 
 ```bash
 kubectl run peek --rm -it --restart=Never --image=busybox:1.36 -n "$NAMESPACE" \
-  --overrides='{"spec":{"containers":[{"name":"peek","image":"busybox:1.36","command":["ls","-lh","/shared/output/torchrun-gloo"],"volumeMounts":[{"name":"s","mountPath":"/shared"}]}],"volumes":[{"name":"s","persistentVolumeClaim":{"claimName":"openzfs-claim"}}]}}'
+  --overrides='{"spec":{"containers":[{"name":"peek","image":"busybox:1.36","command":["ls","-lh","/shared/output/torchrun-gloo"],"volumeMounts":[{"name":"s","mountPath":"/shared"}]}],"volumes":[{"name":"s","persistentVolumeClaim":{"claimName":"shared-claim"}}]}}'
 ```
 
 `snapshot.pt` が表示されれば、DDP 学習は完走してモデルが保存されています。確認できたら Job を削除します。
@@ -250,7 +249,6 @@ kubectl delete job ddp-torchrun -n "$NAMESPACE"
 kubectl delete trainjob ddp-trainjob -n "$NAMESPACE" --ignore-not-found
 
 helm template exp charts/experiments -n "$NAMESPACE" \
-    --set sharedStorage.existingClaimName=openzfs-claim \
     --set trainjobTrain.enabled=true \
     --set trainjobTrain.image="$IMAGE" \
     --set trainjobTrain.nodeRole=cpu \
@@ -279,10 +277,13 @@ kubectl wait --for=condition=ready pod -l "$SEL" -n "$NAMESPACE" --timeout=15m
 kubectl logs -f -l "$SEL" -n "$NAMESPACE"
 ```
 
-前半の単一ノードと違い、rank 0 と rank 1 は別々の Pod なのでログも分かれます。`node-0-0` では rank 0 が gloo backend で起動します。スナップショットの保存は rank 0 が担当するため、その行は `node-0-0` 側にのみ現れます。MNIST は step 3 で同じ `/shared` にダウンロード済みなので、ここでは再ダウンロードされず download 行は出ません（step 3 を飛ばして後半だけ実行した場合は、ここで rank 0 が一度だけダウンロードします）。
+前半の単一ノードと違い、rank 0 と rank 1 は別々の Pod なのでログも分かれます。`node-0-0` では rank 0 が gloo backend で起動します。スナップショットの保存は rank 0 が担当するため、その行は `node-0-0` 側にのみ現れます。
+
+`downloading MNIST to /shared/mnist-data` の行は、step 3 で同じ `/shared` に取得済みでも毎回出力されます。`ddp.py` が全 rank から無条件に `download=True` を渡す実装になっているためです（rank 0 だけが取得して他 rank が barrier で待つ形にすると、取得が collective の初期化タイムアウトを超えた場合にデッドロックするため、こちらを選んでいます）。torchvision 側は既にファイルが揃っていれば実際の再取得をスキップするので、2 回目以降のこの行は「確認しただけ」を意味します。
 
 ```
 [rank 0/2] backend=gloo cuda_available=False device_count=0
+[rank 0/2] downloading MNIST to /shared/mnist-data
 [rank 0/2] starting training: 3 epochs, batch_size 32
 [rank 0/2] epoch 0 | steps 938 | loss 0.5312
 [rank 0/2] epoch 0 | snapshot saved to /shared/output/trainjob/snapshot.pt
@@ -317,7 +318,7 @@ kubectl logs -l "jobset.sigs.k8s.io/jobset-name=ddp-trainjob,batch.kubernetes.io
 ```bash
 kubectl wait --for=condition=Complete trainjob/ddp-trainjob -n "$NAMESPACE" --timeout=30m
 kubectl run peek --rm -it --restart=Never --image=busybox:1.36 -n "$NAMESPACE" \
-  --overrides='{"spec":{"containers":[{"name":"peek","image":"busybox:1.36","command":["ls","-lh","/shared/output/trainjob"],"volumeMounts":[{"name":"s","mountPath":"/shared"}]}],"volumes":[{"name":"s","persistentVolumeClaim":{"claimName":"openzfs-claim"}}]}}'
+  --overrides='{"spec":{"containers":[{"name":"peek","image":"busybox:1.36","command":["ls","-lh","/shared/output/trainjob"],"volumeMounts":[{"name":"s","mountPath":"/shared"}]}],"volumes":[{"name":"s","persistentVolumeClaim":{"claimName":"shared-claim"}}]}}'
 ```
 
 `wait` が返り、`snapshot.pt` があれば、2 ノードの分散学習は完走しています。確認できたら削除します。

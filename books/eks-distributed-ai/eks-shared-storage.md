@@ -267,10 +267,24 @@ kubectl logs fsx-test2
 
 ## 4. Amazon EFS を有効化する
 
-Amazon EFS は既定で無効なので、マルチ AZ の RWX キャッシュを試すにはまず有効化します。`terraform.tfvars` に `efs_enabled = true` を設定して apply すると、Amazon EFS ファイルシステム・4 つの private subnet それぞれへのマウントターゲット・アクセスポイント・static PV（`efs-neuron-workspace`）が作られます。`terraform.tfvars` に既に `efs_enabled` のエントリがある場合は追記でなく書き換えます（同じキーを重複して書くと HCL のパースエラーになります）。
+Amazon EFS は既定で無効なので、マルチ AZ の RWX キャッシュを試すにはまず有効化します。`terraform.tfvars` の `efs_enabled` を `true` に**書き換えて** apply すると、Amazon EFS ファイルシステム・4 つの private subnet それぞれへのマウントターゲット・アクセスポイント・static PV（`efs-neuron-workspace`）が作られます。
+
+`terraform.tfvars.example` には `efs_enabled = false` が最初から書かれているため、Basic01 でそれをコピーした場合は必ずこのエントリが存在します。`echo 'efs_enabled = true' >> terraform.tfvars` のように追記すると、同じキーが 2 回現れて plan が次のエラーで止まります。
+
+```text
+Error: Attribute redefined
+The argument "efs_enabled" was already set at terraform.tfvars:169,1-12.
+```
+
+エディタで書き換えるか、次のように既存行を置換してください。
 
 ```bash
-echo 'efs_enabled = true' >> terraform.tfvars  # 既存のエントリがある場合は追記でなく編集する
+# 既存の efs_enabled 行を true に置換する（行が無い場合だけ追記される）
+grep -q '^efs_enabled' terraform.tfvars \
+  && sed -i.bak 's/^efs_enabled.*/efs_enabled = true/' terraform.tfvars \
+  || echo 'efs_enabled = true' >> terraform.tfvars
+
+grep '^efs_enabled' terraform.tfvars   # efs_enabled = true が 1 行だけ出ることを確認
 terraform apply
 ```
 
