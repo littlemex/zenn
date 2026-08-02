@@ -237,22 +237,45 @@ Basic04 までに作った `accelerator_pools` という型に、本章では「
 
 # ワークショップ実施
 
+本章の実機検証は p4d.24xlarge（NVIDIA A100 40GB x8、EFA x4）2 台の Capacity Block で実施しました。以降のコマンド出力はすべてこの構成の実測値です。読者が別のインスタンスタイプで進める場合、台数や EFA の枚数は当然変わります。本章のスクリプトはそうした値を決め打ちせず AWS API から取得する作りにしてあるので、コマンドはそのまま使えます。
+
 ## 1. オファリングを検索する（読み取りのみ、課金なし）
 
 ```bash
 cd infra/eks/scripts
-./00-check-cb-offerings.sh --region us-east-2 --duration-hours 24
+./00-check-cb-offerings.sh \
+  --region us-west-2 \
+  --instance-types p4d.24xlarge \
+  --instance-count 2 \
+  --duration-hours 24
 ```
 
-`describe-capacity-block-offerings` を叩き、インスタンスタイプ・AZ・開始/終了時刻・upfront fee の一覧を表示するだけの read-only スクリプトです。この時点ではまだ何も購入していないので、何度実行してもコストは発生しません。欲しいインスタンスタイプ・期間・台数で候補が出るまでオプションを変えて試します。
+`describe-capacity-block-offerings` を叩き、インスタンスタイプ・AZ・開始/終了時刻・upfront fee の一覧を表示するだけの read-only スクリプトです。この時点ではまだ何も購入していないので、何度実行してもコストは発生しません。
+
+実機出力（p4d.24xlarge x2、24 時間）:
+
+```
+--- p4d.24xlarge ---
+  OfferingId             AZ               Cnt   Hrs   UpfrontUSD  USD/inst-hour
+  cb-0785c7267b6908e72   us-west-2d         2    24       566.40          11.80
+    start 2026-08-02T11:30:00+00:00  end 2026-08-03T11:30:00+00:00
+```
+
+`UpfrontUSD` は「そのブロック全体（台数 x 期間すべて）」の前払い総額です。1 台 1 時間あたりに割り戻した `USD/inst-hour` も併記されるので、同じインスタンスタイプの On-Demand 単価と直接比較できます。この例では 2 台 24 時間で 566.40 USD、1 台 1 時間あたり 11.80 USD でした。
+
+`--instance-types` を省略すると、`describe-instance-types` に `supported-usage-class=capacity-block` を問い合わせてそのリージョンで CB が買えるインスタンスタイプを列挙し、それぞれの価格を順に表示します。新しい世代が出てもスクリプトを書き換える必要はありません。
+
+:::message
+そのリージョン・期間・台数の組み合わせで在庫が無い場合は `(no offerings available — sold out for this window/size)` と表示されます。アカウントの CB 上限に達している場合は AWS API のエラー文がそのまま表示されるため、「売り切れ」と「上限不足」を区別できます。台数を減らす、期間を変える、別の AZ やリージョンを試す、といった調整で候補が出ることがあります。
+:::
 
 ## 2. CB を購入する（ここで課金が発生する）
 
 ```bash
 ./01-purchase-cb.sh \
-  --offering-id <offering-id> \
-  --instance-type p5en.48xlarge \
-  --instance-count 1
+  --offering-id cb-0785c7267b6908e72 \
+  --instance-type p4d.24xlarge \
+  --instance-count 2
 ```
 
 このスクリプトは実際に `purchase-capacity-block` を呼びます。実行前に upfront fee を含む価格サマリーを表示し、`y` の入力を求める確認プロンプトを挟みます。ここでの購入は取り消しできないため、必ず予算の承認を得てから `y` を入力してください。購入が成功すると Capacity Reservation ID（`cr-...`）と `EndDate` が出力されます。
@@ -266,23 +289,25 @@ CB の購入は前払いで、キャンセルや返金はできません。`00-c
 ```bash
 ./02-post-purchase.sh \
   --cr-id cr-0123456789abcdef0 \
-  --end-date 2026-07-21T12:00:00Z \
-  --instance-type p5en.48xlarge \
-  --pool gpu-p5en
+  --end-date 2026-08-03T11:30:00Z \
+  --instance-type p4d.24xlarge \
+  --pool gpu-p4d
 ```
 
 このスクリプトは AWS に対して何も呼びません。前のステップで得た `cr-...` と終了時刻を、`accelerator_pools` に貼り付けられる HCL ブロックとして標準出力に整形するだけです。
 
 ```hcl
-gpu-p5en = {
-  instance_types    = ["p5en.48xlarge"]
+gpu-p4d = {
+  instance_types    = ["p4d.24xlarge"]
   device_plugin     = "nvidia"
   capacity_type     = "reserved"
   cb_reservation_id = "cr-0123456789abcdef0"   # zone はこの予約から導出
-  cb_end_date       = "2026-07-21T12:00:00Z"   # 省略可、予約から自動導出される値の緊急上書き用
+  cb_end_date       = "2026-08-03T11:30:00Z"   # 省略可、予約から自動導出される値の緊急上書き用
   volume_size       = "500Gi"
 }
 ```
+
+`device_plugin` はインスタンスタイプのファミリから決まります。`trn` または `inf` で始まれば `neuron`、それ以外は `nvidia` が入るので、Trainium/Inferentia の CB を買った場合も同じスクリプトがそのまま使えます（Neuron の場合は Neuron 用 AMI を指す `ami_ssm_parameter` の行も併せて出力されます）。
 
 `zone` は含まれません。前述のとおり `reserved` プールの AZ は予約から導出されるため、スクリプトも既定では `zone` 行を出しません。特定の AZ に固定したい場合だけ `--zone <az>` を渡すと、その明示指定を含んだブロックが出力されます。`cb_end_date` も同様に、予約が返す実際の終了時刻を `capacity-block.tf` が自動導出するため、貼り付けなくても期限アラートは機能します。書いた場合はその値が予約側の `EndDate` より優先される緊急上書きとして働くので、予約を更新しても `cb_end_date` を書き換え忘れるとアラートが古い時刻のまま固定される点に注意してください。出力されたブロックを `terraform.tfvars` の `accelerator_pools` に貼り付けます。
 
@@ -291,31 +316,64 @@ gpu-p5en = {
 ```bash
 cd infra/eks
 terraform apply
-kubectl get nodepool gpu-p5en
-kubectl get ec2nodeclass gpu-p5en
+kubectl get nodepool gpu-p4d
+kubectl get ec2nodeclass gpu-p4d
 ```
 
 apply が作るのは NodePool と EC2NodeClass の定義であって、この時点ではまだノードは立ちません。Karpenter は GPU を要求する Pod（Pending）が現れて初めてノードを起動します（Karpenter 自体のインストールと NodePool 生成の仕組みは Basic04 で構築済みという前提です）。実際にノードを立てるのは次の手順で、CB プールをターゲットにしたワークロードを投入したときです。ノードが立った後は次のコマンドで確認できます。
 
 ```bash
-kubectl get nodeclaims -l karpenter.sh/nodepool=gpu-p5en
+kubectl get nodeclaims -l karpenter.sh/nodepool=gpu-p4d
 kubectl get nodes -l karpenter.sh/capacity-type=reserved
 ```
 
-`CAPACITY = reserved` の NodeClaim が表示され、`ZONE` が予約の AZ に一致していれば、CB からのノード起動は成功です。
+実機出力（p4d の Capacity Block は us-west-2d に確保したもの）:
+
+```text
+NAME            TYPE           CAPACITY   ZONE         NODE                                         READY
+gpu-p4d-5zlm9   p4d.24xlarge   reserved   us-west-2d   ip-10-0-115-100.us-west-2.compute.internal   True
+```
+
+`CAPACITY = reserved` の NodeClaim が表示され、`ZONE` が予約の AZ に一致していれば、CB からのノード起動は成功です。ここで `zone` を `terraform.tfvars` に一切書いていないことを思い出してください。`us-west-2d` は予約から自動導出された値です。
 
 ## 5. マルチノードなら NCCL/EFA を検証する
 
-検証用の MPIJob を作る namespace として、Basic01 で用意した作業用 namespace を使います（開き直した場合に備えて冪等に用意し直します）。
+CB で確保した複数ノードが実際に EFA/RDMA で通信できているかを確認します。手順の詳細と各指定の意味は Basic05「EFA でマルチノード通信を検証する」に譲り、ここでは CB プールを対象に実行するコマンドだけ示します。
 
 ```bash
 export NAMESPACE=distai
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
-./03-verify-nccl.sh --nodes 2 --gpus-per-node 8 \
-  --namespace "$NAMESPACE" --image <nccl-tests-image>
+
+POOL=gpu-p4d
+GPU=$(kubectl get nodes -l node-role=$POOL \
+  -o jsonpath="{.items[0].status.allocatable['nvidia\.com/gpu']}")
+EFA=$(kubectl get nodes -l node-role=$POOL \
+  -o jsonpath="{.items[0].status.allocatable['vpc\.amazonaws\.com/efa']}")
+
+helm template exp charts/experiments -n "$NAMESPACE" \
+  --set namespace="$NAMESPACE" \
+  --set ncclSshd.enabled=true --set ncclSshd.nodeRole=$POOL \
+  --set ncclSshd.gpuCount=$GPU --set ncclSshd.efaCount=$EFA \
+  --set ncclSshd.image=public.ecr.aws/hpc-cloud/nccl-tests:cuda12.8.1-efa1.42.0-ofiv1.16.0-ncclv2.27.5-1-testsv2.16.4 \
+  | kubectl apply -f -
 ```
 
-MPIJob を使って 2 ノード間の `all_reduce_perf` を実行し、busbw（EFA 経由の実効帯域）を確認します。単体ノードの NVLink 内帯域だけでなく、CB で確保した複数ノードが実際に EFA/RDMA で正しく通信できているかをここで確かめます。
+GPU と EFA の枚数をノードの `.status.allocatable` から読んでいる点が要点です。EFA の schedulable 数はインスタンスファミリごとに違うため（p4d は 3、p5en は 15、p5 は 31）、決め打ちすると別のファミリでは Pod が永久に Pending になります。`nodeRole` に CB プール名を渡すことで、検証対象を予約ノードだけに限定できます。
+
+イメージは自前でビルドする必要はありません。AWS が公開している `public.ecr.aws/hpc-cloud/nccl-tests` に、libfabric・aws-ofi-nccl・Open MPI と `all_reduce_perf` が同梱されたタグが用意されています。CUDA のバージョンだけ手元の GPU 世代に合うものを選んでください。
+
+CB で確保した 2 台の p4d を使った実測結果は次のとおりです。
+
+```text
+NET/OFI Selected provider is efa, fabric is efa (found 3 nics)
+```
+
+| 構成 | 通信経路 | busbw（1 GB all_reduce） |
+|---|---|---|
+| 1 ノード 8 GPU | NVLink のみ | 227.1 GB/s |
+| 2 ノード 16 GPU | ノード間は EFA | 57.9 GB/s |
+
+`found 3 nics` が手順 4 で確認した schedulable EFA 数と一致し、TCP へ落ちずに EFA が使われていることが確認できます。CB で確保した複数ノードが RDMA で正しく通信できている、という本手順の目的はここで達成されます。
 
 ## 6. 期限アラートを確認する
 
@@ -327,7 +385,7 @@ terraform output cb_expiry_sns_topic_arn
 実機出力:
 ```text
 cb_expiry_alert_schedule_exprs = {
-  "gpu-p5en" = "at(2026-07-21T11:00:00)"
+  "gpu-p4d" = "at(2026-08-03T10:30:00)"
 }
 cb_expiry_sns_topic_arn = "arn:aws:sns:<region>:<account>:<cluster_name>-cb-expiry-alert"
 ```
@@ -344,7 +402,7 @@ cb_alert_email_addresses = ["you@example.com"]
 ## 7. teardown する
 
 ```bash
-./04-teardown.sh --namespace "$NAMESPACE" --nodepool gpu-p5en
+./04-teardown.sh --namespace "$NAMESPACE" --nodepool gpu-p4d
 ```
 
 Deployment/StatefulSet/Job/MPIJob を削除し、GPU Pod が完全に終了したのを確認したうえで Karpenter の NodePool を削除します。CB のノード自体は予約期間の終了時に AWS 側で強制回収されるため、このスクリプトは「ワークロードを安全に退避させる」ところまでを担当します。クラスタ全体を壊す `terraform destroy` は `--destroy` を明示した場合のみ実行されます。
