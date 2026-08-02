@@ -337,15 +337,21 @@ kubectl get nodes -l node-role=gpu-p4d \
 ## 3. EFA device plugin の稼働を確認する
 
 ```bash
-kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-efa-k8s-device-plugin
+kubectl get pods -n kube-system -l name=aws-efa-k8s-device-plugin
 ```
 
-期待される出力:
+実機出力（EFA 対応ノード 2 台）:
 
 ```text
 NAME                              READY   STATUS    RESTARTS   AGE
-aws-efa-k8s-device-plugin-4kzst   1/1     Running   0          2m
-aws-efa-k8s-device-plugin-r8xqp   1/1     Running   0          2m
+aws-efa-k8s-device-plugin-d4vvd   1/1     Running   0          114m
+aws-efa-k8s-device-plugin-pjb26   1/1     Running   0          124m
+```
+
+セレクタが `name=` であって `app.kubernetes.io/name=` ではない点に注意してください。この DaemonSet が付けているラベルは `name` の方だけなので、`app.kubernetes.io/name` で絞ると 1 件も返らず「導入されていない」と誤解します。ラベルを覚えるより、DaemonSet 自体を見るほうが確実です。
+
+```bash
+kubectl get ds -n kube-system aws-efa-k8s-device-plugin
 ```
 
 EFA 対応ノード（p4d x2）それぞれに 1 Pod ずつ Running していれば問題ありません。
