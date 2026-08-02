@@ -66,18 +66,43 @@ helm template exp charts/experiments -n "$NAMESPACE" \
     | kubectl apply -f -
 ```
 
-CPU リクエストの既定値は `2` なので g6.2xlarge / g5.2xlarge（8 vCPU）のような小さい GPU ノードのプールでもそのまま載りますが、メモリのリクエスト既定値は `48Gi` で、g5.xlarge（4 vCPU / 16 GiB / A10G 1 枚）のような小さいノードには収まりません。この場合はメモリをノードに収まる値まで下げます。実機では次の設定で g5.xlarge の on-demand ノードに載せて動作を確認しました。
+CPU リクエストの既定値は `2` なので g6.2xlarge / g5.2xlarge（8 vCPU）のような小さい GPU ノードのプールでもそのまま載りますが、メモリのリクエスト既定値は `48Gi` で、`gpu-ddp` が選びうる g6.xlarge / g5.xlarge（4 vCPU / 16 GiB / GPU 1 枚）のような小さいノードには収まりません。この場合はメモリを下げますが、**下げる値は `/dev/shm` と合わせて決める必要があります**。
+
+`gpuServingVllm` の `memory` はコンテナの requests・limits 両方に使われ、加えて `/dev/shm`（`shmSize`、既定 `8Gi`）が `emptyDir: {medium: Memory}` として**同じコンテナのメモリ上限にカウントされます**。つまり実際の要求は `memory + shmSize` です。16 GiB のノードの allocatable は約 12.4 GiB なので、`memory=12Gi` だけを指定して `shmSize` を既定の 8Gi に残すと合計 20Gi となり、**どのノードにも載りません**。
+
+:::message alert
+このとき Pod は単に Pending になるのではなく、**Karpenter がノードを起こし続けます**。スケジューラが「メモリ不足」と報告するため Karpenter は「もっと大きいノードを足せば載る」と解釈しますが、`instance_types` に並べたどのタイプでも足りないので、起動と失敗を繰り返します。実際にこの設定で放置したところ **spot ノードが 11 台まで増えました**（本来必要なのは 1 台です）。spot でも課金は発生するため、Pending の Pod を見つけたら NodeClaim の数を必ず確認してください。
+
+```bash
+kubectl get nodeclaims -l karpenter.sh/nodepool=gpu-ddp
+```
+
+意図した台数を超えていれば、原因の Pod を削除してから NodeClaim を消します（Pod を残したまま NodeClaim を消すと、また起動し直します）。
+
+```bash
+kubectl delete deploy gpu-vllm -n "$NAMESPACE"
+kubectl delete nodeclaims -l karpenter.sh/nodepool=gpu-ddp
+```
+:::
+
+小さいノードに載せるには、両方を下げて合計を allocatable 未満に収めます。実機では次の設定で g6.xlarge に載せて動作を確認しました。
 
 ```bash
 helm template exp charts/experiments -n "$NAMESPACE" \
     --set gpuServingVllm.enabled=true \
     --set gpuServingVllm.model="$MODEL" \
     --set gpuServingVllm.nodeRole=gpu-ddp \
-    --set gpuServingVllm.memory=12Gi \
+    --set gpuServingVllm.memory=8Gi \
+    --set gpuServingVllm.shmSize=2Gi \
     | kubectl apply -f -
 ```
 
-`gpuServingVllm` の `memory` はコンテナの requests・limits 両方に使われ、さらに `/dev/shm`（`shmSize`、既定 `8Gi`）も `emptyDir: {medium: Memory}` としてコンテナのメモリ上限にカウントされます。16 GiB ノードで `memory=12Gi` に加えて既定 `shmSize=8Gi` を使うと合計がノードのメモリを超えるため、小さいノードでは `--set gpuServingVllm.shmSize=<値>` も合わせて下げる必要があります。
+`8Gi + 2Gi = 10Gi` で、16 GiB ノードの allocatable（約 12.4 GiB）に収まります。ノードの実際の値は次のコマンドで確認できます。プールが複数のインスタンスタイプを並べている場合は、**最も小さいタイプに収まる値**を選んでください。
+
+```bash
+kubectl get nodes -l node-role=gpu-ddp \
+  -o custom-columns='NAME:.metadata.name,TYPE:.metadata.labels.node\.kubernetes\.io/instance-type,MEM:.status.allocatable.memory'
+```
 
 :::message
 既定のイメージタグは `vllm/vllm-openai:v0.6.3.post1` に固定済みです。`:latest` は使っていません。新しいバージョンの機能やモデル対応が必要な場合は `--set gpuServingVllm.image=vllm/vllm-openai:<タグ>` で明示的に指定します。
