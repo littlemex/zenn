@@ -249,15 +249,37 @@ kubectl config current-context
 # ここまでの手順で infra/eks にいる前提です（別の場所にいる場合は cd <repo>/infra/eks）
 cd tests
 
-# 基盤テスト: control-plane / system-nodes / karpenter / training-operator /
-#            csi-drivers / storage-mount (FSx read/write)
+# 基盤テスト: control-plane / system-nodes / karpenter / trainer /
+#            csi-drivers / device-plugins / storage-mount (FSx read/write)
 ./run-tests.sh --profile <tfvars と同じ profile>
-
-# GPU テストも含める場合 (Karpenter がノードを起動するため 5-10 分)
-./run-tests.sh --with-gpu --profile <tfvars と同じ profile> --gpu-count 4
 ```
 
-基盤テストが全 PASS であれば、Karpenter・CSI ドライバ・Training Operator・共有ストレージが正常に機能しており、Basic02 以降のワークショップに進む準備ができています。GPU テストの `--gpu-count` には NodePool のインスタンスタイプが持つ GPU 枚数を渡します（g6e.12xlarge なら 4、p5en.48xlarge なら 8）。GPU テストで ICE（InsufficientInstanceCapacity）により起動できない場合は AWS 側のキャパシティ問題であり、インフラの不具合ではありません。
+クラスタ名とリージョンは `terraform output` から自動で解決されるので指定は不要です（`--cluster-name` / `--region` で明示的に上書きすることもできます）。実機出力は次のようになります。
+
+```text
+STATUS   TEST                                DETAIL
+--------------------------------------------------------------
+PASS     control-plane                       6s
+PASS     system-nodes                        6s
+PASS     karpenter                           10s
+PASS     trainer                             6s
+PASS     csi-drivers                         44s
+PASS     device-plugins                      8s
+PASS     storage-mount                       54s
+--------------------------------------------------------------
+PASS: 7  FAIL: 0  SKIP: 0  TOTAL: 7
+```
+
+全 PASS であれば、Karpenter・CSI ドライバ・Kubeflow Trainer・共有ストレージが正常に機能しており、Basic02 以降のワークショップに進む準備ができています。`device-plugins` は GPU/EFA/Neuron の device plugin の DaemonSet を見る項目で、該当プールが無い段階では対象が存在しないため「該当なし」として PASS します。
+
+GPU テストは Basic04 でアクセラレータプールを定義した後に実行できます。
+
+```bash
+# Karpenter が GPU ノードを起動するため 5-10 分かかります
+./run-tests.sh --with-gpu --profile <tfvars と同じ profile> --gpu-count 1
+```
+
+対象の NodePool は cpu 以外の NodePool から自動選択されます（`--gpu-nodepool` で明示指定も可能）。`--gpu-count` には検証したい GPU 枚数を渡します（g6.2xlarge なら 1、g6e.12xlarge なら 4、p4d.24xlarge なら 8）。GPU テストで ICE（InsufficientInstanceCapacity）により起動できない場合は AWS 側のキャパシティ問題であり、インフラの不具合ではありません。
 
 # まとめ
 
