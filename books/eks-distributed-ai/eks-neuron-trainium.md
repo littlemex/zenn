@@ -125,7 +125,16 @@ Basic04 で作った `accelerator_pools` の型は GPU/Neuron 共通です。本
 
 # ワークショップ実施
 
-trn2.48xlarge を 2 台使い、単一ノードでのデバイス認識から 2 ノードの EFA 越し DDP までを順に確認します。ワークロードは Helm チャート `charts/experiments` で管理しており、`helm template ... | kubectl apply -f -` でレンダリングして適用します（`helm install` は使いません）。
+ワークロードは Helm チャート `charts/experiments` で管理しており、`helm template ... | kubectl apply -f -` でレンダリングして適用します（`helm install` は使いません）。
+
+trn2 には大きく 2 つのシェイプがあり、必要なデバイス数で選びます。どちらも同じ `accelerator_pools` の書き方で扱えます。
+
+| インスタンスタイプ | Trainium2 デバイス | NeuronCore（LNC=2） | EFA schedulable | 本章での用途 |
+|---|---|---|---|---|
+| trn2.3xlarge | 1 | 4 | 1 | 手順 1〜3（プール投入・デバイス認識・単一デバイス実行） |
+| trn2.48xlarge | 16 | 64 | 15 | 手順 4〜5（2 ノード EFA 越し DDP、world_size 64） |
+
+手順 4 以降のマルチノード DDP は trn2.48xlarge を 2 台使って検証したものです。手順 1〜3 は最小構成の trn2.3xlarge 1 台でも同じように確認でき、本書ではその構成でも再現しています。デバイス数と EFA 枚数以外は手順が変わらないため、まず 3xlarge で配線を確かめてから 48xlarge の Capacity Block に進む、という段取りが取れます。
 
 ## 1. terraform.tfvars に Neuron プールを追加する
 
@@ -133,15 +142,17 @@ trn2.48xlarge を 2 台使い、単一ノードでのデバイス認識から 2 
 
 ```hcl
 trn2 = {
-  instance_types    = ["trn2.48xlarge"]
+  instance_types    = ["trn2.3xlarge"]
   device_plugin     = "neuron"
   capacity_type     = "reserved"
   cb_reservation_id = "<capacity-block-reservation-id>" # zone はこの予約から導出
-  cb_end_date       = "<RFC3339 UTC の期限>"
+  ami_ssm_parameter = "/aws/service/eks/optimized-ami/1.35/amazon-linux-2023/x86_64/neuron/recommended/image_id"
 }
 
-# 複数の Neuron デバイスを 1 プロセスから跨いで使うので Scheduler Extension を有効化
-neuron_enable_scheduler = true
+# Scheduler Extension は 1 プロセスが複数の Neuron デバイスを跨いで使うときに必要になります。
+# trn2.3xlarge はデバイスが 1 個なので、この検証では有効化していません。
+# trn2.48xlarge（16 デバイス）で複数デバイスを跨ぐ場合は次を有効にします。
+# neuron_enable_scheduler = true
 ```
 
 `device_plugin = "neuron"` に切り替えている以外、フィールドの構造は Basic04 で書いた GPU プールと同じです。`cb_reservation_id` は事前に確保した Capacity Block の予約 ID に置き換えます。`zone` は書いていません。`reserved` プールの AZ は予約から自動導出される（`az.tf` が予約の AZ を読み取る）ので、trn2 プールでも Basic06 の GPU プールと同じく手書き不要です。プール名（map のキー）が Karpenter のノードラベル `node-role=<プール名>` になる点は後で使うので覚えておいてください。ここでは `trn2` としています。
@@ -153,7 +164,17 @@ cd infra/eks
 terraform apply
 ```
 
-`has_neuron_pool` が `true` になったことを検知して、Neuron device plugin と Scheduler Extension が導入されます。EFA device plugin もすでに `aws.amazon.com/neuron` taint を tolerate する設定で導入済みのため、追加の変更は不要です。Capacity Block が `active` になっていれば、この後 Pod を投入した時点で Karpenter が trn2.48xlarge を起動します。
+`has_neuron_pool` が `true` になったことを検知して、Neuron device plugin が導入されます（Scheduler Extension は `neuron_enable_scheduler` を有効にした場合のみ）。EFA device plugin もすでに `aws.amazon.com/neuron` taint を tolerate する設定で導入済みのため、追加の変更は不要です。
+
+実機では apply 直後に両方の DaemonSet が入り、対象ノードがまだ無いので `DESIRED` は 0 のままです。
+
+```text
+NAME                        DESIRED   CURRENT   READY   AGE
+aws-efa-k8s-device-plugin   0         0         0       3m
+neuron-device-plugin        0         0         0       3m
+```
+
+Capacity Block が `active` になっていれば、この後 Pod を投入した時点で Karpenter が trn2 を起動し、両 DaemonSet がそのノードに配られます。
 
 ## 3. 単一ノードで device plugin の advertise を確認する
 
@@ -173,10 +194,92 @@ helm template exp charts/experiments \
 kubectl -n "$NAMESPACE" exec neuron-probe -- neuron-ls
 ```
 
-trn2.48xlarge では 16 個の Trainium2 デバイスが表示されます。ノードの allocatable を見ると、`aws.amazon.com/neuron: 16` と `aws.amazon.com/neuroncore: 64` は Neuron device plugin が、`vpc.amazonaws.com/efa: 15` は別の DaemonSet である EFA device plugin が、それぞれ advertise していることが確認できます。この `neuroncore: 64` は、後述する LNC=2 のもとでの論理 NeuronCore 数です。EFA が 16 枚のカードに対して 15 なのは、この構成ではネットワークカード 0 をノードの IP を担う ENA として構成し、残る 15 枚を EFA 専用インターフェースとして立てているためです（EC2 の制約上、カード 0 のインターフェースは ENA を含む必要があります）。したがって Pod がスケジュール要求に使える EFA は 15 枚になります。実際に要求できる枚数はインスタンスタイプとノードの起動時構成で決まるので、`terraform output accelerator_pool_efa_schedulable` の値か、ノードの allocatable を直接確認するのが確実です。
+実機出力（trn2.3xlarge）:
+
+```text
+instance-type: trn2.3xlarge
+instance-id: i-0123456789abcdef0
+logical-neuroncore-config: 2
++--------+--------+----------+--------+--------------+----------+------+
+| NEURON | NEURON |  NEURON  | NEURON |     PCI      |   CPU    | NUMA |
+| DEVICE | CORES  | CORE IDS | MEMORY |     BDF      | AFFINITY | NODE |
++--------+--------+----------+--------+--------------+----------+------+
+| 0      | 4      | 0-3      | 96 GB  | 0000:33:00.0 | 0-11     | 0    |
++--------+--------+----------+--------+--------------+----------+------+
+```
+
+Trainium2 デバイスが 1 個、その上に論理 NeuronCore が 4 つ（`logical-neuroncore-config: 2` = LNC=2 のもとでの数）、デバイスメモリ 96 GB という構成です。ノード側の allocatable も同じ数字を示します。
+
+```bash
+kubectl get nodes -l node-role=trn2 -o custom-columns=\
+'NAME:.metadata.name,NEURON:.status.allocatable.aws\.amazon\.com/neuron,CORE:.status.allocatable.aws\.amazon\.com/neuroncore,EFA:.status.allocatable.vpc\.amazonaws\.com/efa'
+```
+
+実機出力:
+
+```text
+NAME                                             NEURON   CORE   EFA
+ip-10-0-25-147.ap-southeast-4.compute.internal   1        4      1
+```
+
+`aws.amazon.com/neuron: 1` と `aws.amazon.com/neuroncore: 4` は Neuron device plugin が、`vpc.amazonaws.com/efa: 1` は別の DaemonSet である EFA device plugin が、それぞれ advertise しています。trn2.3xlarge は EFA カードが 1 枚だけの single-card 構成なので、schedulable も 1 です。
+
+対して trn2.48xlarge では `neuron: 16` / `neuroncore: 64` / `efa: 15` になります。EFA が 16 枚のカードに対して 15 なのは、ネットワークカード 0 をノードの IP を担う ENA として構成し、残る 15 枚を EFA 専用インターフェースとして立てるためです（EC2 の制約上、カード 0 のインターフェースは ENA を含む必要があります）。要求できる枚数はインスタンスタイプごとに違うので、決め打ちせず `terraform output accelerator_pool_efa_schedulable` の値か、ノードの allocatable を直接参照してください。
 
 :::message
 Karpenter は hugepages を「新しいノードをどのインスタンスタイプで立てるか」の判断材料として扱いません。そのため、まだ対象ノードが存在せずプロビジョニングを誘発するプローブ Pod で `hugepages-2Mi` を要求すると、Karpenter が「条件を満たすインスタンスタイプがない」と誤判定して NodeClaim を作らず、Pod が永久に Pending になります。プローブでは hugepages を要求しないのはこのためです。一方、次の 2 ノード DDP は起動済みのノードに対して適用するので hugepages を要求できます。
+:::
+
+### 単一デバイスで計算まで通す
+
+`neuron-ls` はデバイスの列挙しかしないため、Neuron ランタイムの初期化までは検証できません。実際に計算を流して初めて、ドライバとランタイムの整合が確認できます。`neuronProbe` は hugepages を要求しない設計なので、ノードが起動したあとに hugepages を持つ Pod を別途立てて実行します。
+
+```bash
+# neuronProbe がデバイスを掴んでいるので先に退かす（trn2.3xlarge はデバイス 1 個）
+kubectl -n "$NAMESPACE" delete pod neuron-probe
+
+# hugepages 付きの Pod でランタイムを初期化する
+kubectl -n "$NAMESPACE" exec neuron-compute -- python -c "
+import torch, torch_xla.core.xla_model as xm
+d = xm.xla_device()
+a = torch.ones(512, 512, device=d) * 3
+b = torch.ones(512, 512, device=d) * 4
+c = torch.matmul(a, b)
+xm.mark_step()
+print('device:', d)
+print('matmul[0,0]:', float(c[0,0].cpu()))
+"
+```
+
+実機出力（trn2.3xlarge、デバイス 1 個）:
+
+```text
+Compiler status PASS
+device: xla:0
+matmul[0,0]: 6144.0
+```
+
+`512 * 3 * 4 = 6144` が返り、NEFF のコンパイルも `PASS` しています。ここまで通れば、ドライバ・ランタイム・torch-neuronx の 3 層が噛み合っていることが確認できます。
+
+:::message alert
+この計算を実行する Pod では `hugepages-2Mi` を要求してください。Neuron ランタイムは hugepages を必要とし、要求していない Pod では `neuron-ls` が成功しても `nrt_init` が `NRT_FAILURE` で失敗します。前述のとおり Karpenter はノードの新規起動判断に hugepages を使わないため、「ノードを起動させる Pod は hugepages なし、計算を流す Pod は hugepages あり」と役割を分けるのが安全です。
+:::
+
+:::message alert
+コンテナの Neuron SDK は、ノード AMI のドライバより新しくしてはいけません。ドライバのバージョンは次のコマンドで確認できます。
+
+```bash
+kubectl -n "$NAMESPACE" exec <pod> -- bash -lc 'NEURON_RT_LOG_LEVEL=INFO python -c "import torch_xla.core.xla_model as xm; xm.xla_device()" 2>&1 | grep -i "neuron driver"'
+```
+
+実機では次のように出力され、ランタイム 2.32.31（SDK 2.30 の DLC）に対してドライバが 2.29 でした。
+
+```text
+INFO NRT:nrt_init  Neuron Runtime 2.32.31.0 built on May 16 2026
+INFO NRT:nrt_init  Found neuron driver: 2.29
+```
+
+この組み合わせでは HBM の初期化までは成功するのに、直後の `dmem_buf_copyin`（ホストからデバイスへの DMA コピー）で失敗します。原因と暫定回避策は後述の「検証時の注意」で扱いますが、最も素直な解決は DLC のタグをドライバに合わせることです。上記の環境ではイメージを `sdk2.29.1` に下げるだけで、最適化を無効化せずに計算が通りました。使用中の AMI のドライバに対応する SDK バージョンの DLC タグを選んでください。
 :::
 
 ## 4. 2 ノードの EFA 越し DDP を動かす
