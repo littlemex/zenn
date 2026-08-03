@@ -205,7 +205,7 @@ helm template exp charts/experiments -n "$NAMESPACE" \
 ```
 
 :::message
-`sharedStorage.existingClaimName` を渡し忘れると、`apply` は次のエラーでレンダリング自体に失敗します（Pod が Pending になるのではなく、その場で分かります）。この章で `torchrunTrain`/`trainjobTrain` を有効にするすべての `helm template` 呼び出しにこの `--set` が必要です。
+`sharedStorage.existingClaimName` を渡し忘れると、`apply` は次のエラーでレンダリング自体に失敗します。この章で `torchrunTrain`/`trainjobTrain` を有効にするすべての `helm template` 呼び出しにこの `--set` が必要です。
 
 ```text
 Error: execution error at (experiments/templates/torchrun-train.yaml:101:65):
