@@ -501,5 +501,5 @@ CB は前払いで取り消しができないため、On-Demand で動作確認�
 
 - [Amazon EC2 Capacity Blocks for ML](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/capacity-blocks-using.html)
 - [Amazon EventBridge Scheduler](https://docs.aws.amazon.com/scheduler/latest/UserGuide/what-is-scheduler.html)
-- [awslabs/awsome-distributed-training](https://github.com/awslabs/awsome-distributed-training)
+- [awslabs/awsome-distributed-ai](https://github.com/awslabs/awsome-distributed-ai)
 - [対象モジュール infra/eks](https://github.com/littlemex/distributed-ai/tree/main/infra/eks)
