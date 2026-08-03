@@ -67,7 +67,9 @@ TrainJob 側は台数（`numNodes`）とノードあたりのプロセス数（`
 
 ## 学習結果の保存先と共有ストレージ
 
-本章の 2 つのワークロードは、MNIST のデータと学習スナップショットを共有ストレージに保存します。既定の保存先は単一 AZ の **Amazon FSx for OpenZFS** です。ストレージの詳細は後続の章で扱いますが、`openzfs_enabled` が既定で有効なため、`terraform apply` の時点でファイルシステムと静的 PersistentVolume（`openzfs-shared`）はすでに作られています。この PV を掴む PersistentVolumeClaim は Helm チャートが `shared-claim` という名前で自動生成するので、読者が用意する必要はありません。コンテナの `/shared` にマウントされます。
+本章の 2 つのワークロードは、MNIST のデータと学習スナップショットを共有ストレージに保存します。既定の保存先は単一 AZ の **Amazon FSx for OpenZFS** です。ストレージの詳細は後続の章で扱いますが、`openzfs_enabled` が既定で有効なため、`terraform apply` の時点でファイルシステムと静的 PersistentVolume（`openzfs-shared`）はすでに作られています。
+
+この PV を掴む PersistentVolumeClaim（`shared-claim`）は、Helm チャートは作りません。読者が `kubectl apply` で 1 回だけ作り、その名前を `--set sharedStorage.existingClaimName=shared-claim` で各ワークロードに渡します。なぜチャートに作らせないのかは、この後の「共有 PVC を用意する」ステップと、章末の「共有 PVC を消してみる」ステップで実際に手を動かしながら説明します。要点だけ先に言うと、静的 PV は同時に 1 つの PVC としか結びつきません。PVC の生成をワークロードのレンダリングに乗せると、PVC の寿命がその都度の `apply`/`delete` に引きずられてしまい、PV 側の寿命（Terraform が管理する、基盤が続く限り存在するもの）とズレてしまいます。PVC の作成を「基盤を用意する」タイミングに切り離し、以降は何度ワークロードを消して作り直しても同じ PVC を使い続けられるようにするのが、ここで一度だけ手動で作る理由です。
 
 後半の複数ノード TrainJob でも、スナップショットの保存は rank 0 が担当します。そのため、どのノードから書かれても同じ場所に成果物が集まる共有ストレージ（ReadWriteMany）が要ります。単一ノードの torchrun でも同じ共有ストレージを使い、入口から同じ `/shared` 規約に揃えておくと 2 段目への流れが素直になります。共有ファイルシステム上での同時書き込みによる破損を避けるため、`ddp.py` はスナップショットの書き込みを rank 0 だけが行います。MNIST のダウンロードは全 rank が実行します（既にファイルが揃っていれば torchvision 側が再取得をスキップします）。
 
@@ -159,9 +161,26 @@ kubectl get crd trainjobs.trainer.kubeflow.org
 kubectl get pods -n kubeflow-system
 ```
 
-## 3. 単一ノードで torchrun を動かす（前半）
+## 3. 共有 PVC を用意する
 
-まず 1 ノードの中で 2 プロセスの DDP を動かします。`gpu.enabled` を付けないのでこのまま CPU（gloo）で動きます。`nprocPerNode=2` は 1 ノード内に立てる rank 数です。前のステップでビルドしたイメージの URI を `torchrunTrain.image` に渡します。共有ストレージの PVC はチャートが自動生成するので、指定は不要です。
+本章の 2 つのワークロード（`torchrunTrain`/`trainjobTrain`）は共有ストレージへの書き込みが要りますが、そのための PVC はチャートが作りません。ここで 1 回だけ、自分で `kubectl apply` して作ります。
+
+```bash
+# infra/eks にいる前提です
+POOL_PV=$(terraform output -json shared_storage | jq -r '.fsx_openzfs.persistent_volume')
+sed "s/__VOLUME_NAME__/${POOL_PV}/" manifests/shared-pvc.yaml | kubectl apply -n "$NAMESPACE" -f -
+kubectl get pvc shared-claim -n "$NAMESPACE"
+```
+
+`STATUS` が `Bound` になれば準備完了です。このマニフェスト（`manifests/shared-pvc.yaml`）は名前空間ごとに 1 回だけ適用するもので、以降の各ステップで `--set sharedStorage.existingClaimName=shared-claim` としてこの PVC の名前を渡します。
+
+:::message
+なぜチャートが PVC を自動生成しないのか、実際に手を動かして確かめてみましょう。ワークロードの Job/TrainJob を作り直すたびに PVC も一緒に作り直す設計だったらどうなるか、というのを本章の最後の「共有 PVC を消してみる」ステップで体験します。先に結論だけ言うと、PV は PVC を「名前」ではなく「オブジェクトの実体（UID）」で覚えるため、同じ名前で PVC を作り直しても新しい実体とみなされ、二度と bind できなくなります（`Released` という状態で止まります）。PVC の生成をワークロードの `apply`/`delete` から切り離し、基盤を用意するこのステップで 1 回だけ作ることで、この事故を避けています。
+:::
+
+## 4. 単一ノードで torchrun を動かす（前半）
+
+まず 1 ノードの中で 2 プロセスの DDP を動かします。この章の Job は `parallelism` を指定しない素の `batch/v1` Job なので **Pod は 1 つだけ**で、その 1 コンテナの中で `torchrun --standalone --nproc_per_node=2` 自身が 2 つの学習プロセス（rank 0, rank 1）を fork します。複数の Pod が立つわけではありません（後半の TrainJob は Pod ごとに 1 rank で、そちらは Pod が複数に分かれます。今の段階では違いだけ覚えておいてください。詳しくは次の step 5 で説明します）。`gpu.enabled` を付けないのでこのまま CPU（gloo）で動きます。`nprocPerNode=2` は 1 コンテナ内に fork する rank 数です。前のステップでビルドしたイメージの URI を `torchrunTrain.image` に、直前のステップで作った PVC の名前を `sharedStorage.existingClaimName` に渡します。
 
 ```bash
 # step 2 から続けて infra/eks にいる前提です。ターミナルを変えた場合は cd infra/eks した上で
@@ -177,34 +196,12 @@ helm template exp charts/experiments -n "$NAMESPACE" \
     --set torchrunTrain.backend=gloo \
     --set torchrunTrain.nodeRole=cpu \
     --set torchrunTrain.nprocPerNode=2 \
+    --set sharedStorage.existingClaimName=shared-claim \
     | kubectl apply -f -
 ```
 
 :::message
 同名の `batch/v1` Job（`ddp-torchrun`）がすでに存在すると、`kubectl apply` は `job.batch/ddp-torchrun unchanged` と表示するだけで新しい定義を適用しません（Job の Pod テンプレートは作成後に変更できないためです）。前回の実行が残ったまま気づかず、古い完了済み Job を「動いた」と誤認しやすいので、投入の前に必ず削除します。
-:::
-
-:::message
-共有ストレージの静的 PV（`openzfs-shared`）は 1 つしかなく、1 つの PVC にしかバインドできません。チャートはこの制約を前提に、`shared-claim` という単一の PVC を生成してその PV に bind します（`charts/experiments/templates/shared-pvc.yaml`）。すでに自分で PVC を作って PV を掴ませている場合だけ `--set sharedStorage.existingClaimName=<その PVC 名>` でチャートの生成を抑止し、既存の PVC を再利用してください。指定しなければ競合は起きません。
-:::
-
-:::message alert
-`shared-claim` を一度 `kubectl delete pvc` などで消してから作り直すと、Pod が起動せず `Pending` のまま止まることがあります。この PV は `reclaimPolicy: Retain` なので、bind していた PVC が消えても `Available` には戻らず、消えた PVC への参照（`claimRef`）を持ったまま `Released`状態で残ります。新しい `shared-claim`（名前は同じでも UID は別オブジェクト）はこの参照と一致しないため bind できず、Pod は次のようなイベントを出したまま `Pending` を続けます。
-
-```text
-Warning  FailedScheduling  karpenter          pvc is considered unbound because it does not
-                                              contain annotation pv.kubernetes.io/bind-completed
-Warning  FailedBinding     persistentvolume-controller  volume "openzfs-shared" already bound
-                                                          to a different claim.
-```
-
-`kubectl get pv openzfs-shared` の `STATUS` が `Released` になっていたら、古い参照を消して再利用可能に戻します。
-
-```bash
-kubectl patch pv openzfs-shared --type=json -p '[{"op": "remove", "path": "/spec/claimRef"}]'
-```
-
-数秒で `STATUS` が `Bound` に変わり、`Pending` だった PVC と Pod もそれに続いて解決します。他の静的 PV（`fsx-training`、`efs-neuron-workspace`）も同じ `Retain` なので、PVC を消して作り直す操作をした後は同じ症状が起きえます。
 :::
 
 Pod が `Running` になるまでログは出ません。初回は CPU ノードの起動とイメージ pull で数分かかるので、`kubectl wait` で Pod が Ready になるのを待ってから、続けてログを追います。
@@ -217,20 +214,6 @@ kubectl logs -f -l job-name=ddp-torchrun -n "$NAMESPACE"
 :::message alert
 `kubectl logs -f`（`-f` は follow）は、走行中の Pod にストリーム接続してログを追うコマンドです。Job が完了した後に `-f` を付けて実行すると、追従先の走行中 Pod が無いため `error: timed out waiting for the condition` になります（ビルドや学習の失敗ではありません）。さらに Job の Pod は完了後に短時間で回収されるため、`-f` を外しても `pods ... not found` でログが取れないことがあります。ログはあくまで Pod が `Running` の間に追うものと考え、上記のように `kubectl wait` で Ready を待ってすぐ follow するのが確実です。完了後に成功を確かめる方法は後述します。
 :::
-
-2 つの rank は同じ 1 つのログストリームに出力するため、両者の行が入り混じって流れます。各 rank が backend の選択・データのロード・各エポックの loss を出すので、同じ形式の行が rank 0 と rank 1 の両方から出ます。
-
-```
-[rank 0/2] backend=gloo cuda_available=False device_count=0
-[rank 1/2] backend=gloo cuda_available=False device_count=0
-[rank 0/2] downloading MNIST to /shared/mnist-data
-[rank 1/2] downloading MNIST to /shared/mnist-data
-[rank 0/2] starting training: 3 epochs, batch_size 32
-[rank 1/2] starting training: 3 epochs, batch_size 32
-[rank 0/2] epoch 0 | steps 938 | loss 0.4123
-[rank 1/2] epoch 0 | steps 938 | loss 0.4098
-[rank 0/2] epoch 0 | snapshot saved to /shared/output/torchrun-gloo/snapshot.pt
-```
 
 MNIST のダウンロードは全 rank が実行し、初回のこの step で共有ストレージ上の `/shared/mnist-data` に落ちます（`download=True` は冪等で、既にファイルが揃っていれば torchvision 側が再取得をスキップします。rank 0 だけが取得して他 rank を barrier で待たせる形にすると、取得が collective の初期化タイムアウトを超えた場合にデッドロックするため、こちらを選んでいます）。各 rank は `DistributedSampler` によってデータセットの異なる部分を担当し、勾配を all-reduce で共有しながら同じモデルを更新します。エポックが進むと loss が減少します。`ddp.py` は各エポックの終わりに（`SAVE_EVERY` の既定は 1）rank 0 だけがスナップショットを共有ストレージ上の `/shared/output/torchrun-gloo/snapshot.pt` へ上書き保存し、3 エポックを終えて両 rank が正常終了します。「保存は rank 0 のみが行う」というのは DDP の定石で、全 rank が同じモデルを持っているため保存は 1 つで足ります（共有ファイルシステムでは全 rank が同じファイルへ同時書き込みすると破損しかねない、という実務上の理由もあります）。
 
@@ -268,11 +251,11 @@ kubectl run peek --rm -it --restart=Never --image=busybox:1.36 -n "$NAMESPACE" \
 kubectl delete job ddp-torchrun -n "$NAMESPACE"
 ```
 
-## 4. 複数ノードで TrainJob を動かす（後半）
+## 5. 複数ノードで TrainJob を動かす（後半）
 
-次に、同じ学習を 2 ノードにまたがる TrainJob で動かします。
+次に、同じ学習を 2 ノードにまたがる TrainJob で動かします。前半との最大の違いは Pod の数です。前半は 1 Pod（1 コンテナ）の中で `torchrun` が 2 プロセスを fork していましたが、ここからは **rank ごとに別々の Pod、別々のノード**に分かれます。rank 0 と rank 1 は同じコンテナのプロセスではなく、ネットワーク越しに通信する別々の Pod です。
 
-`numNodes=2` がノード数、`nprocPerNode=1` が各ノード内のプロセス数です（Helm の `nprocPerNode` は TrainJob の `numProcPerNode` に対応します）。本 book がクラスタに用意した Runtime（[`torch-distributed-eks`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/clustertrainingruntime-eks.yaml)）に `topologyKey: kubernetes.io/hostname` の podAntiAffinity が入っているので、2 つの Pod は必ず別ノードに分かれて配置されます。
+`numNodes=2` がノード数、`nprocPerNode=1` が各ノード内のプロセス数です（Helm の `nprocPerNode` は TrainJob の `numProcPerNode` に対応します）。本 book がクラスタに用意した Runtime（[`torch-distributed-eks`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/clustertrainingruntime-eks.yaml)）に `topologyKey: kubernetes.io/hostname` の podAntiAffinity が入っているので、2 つの Pod は必ず別ノードに分かれて配置されます。PVC は前半と同じ `shared-claim` を使い回します。
 
 ```bash
 # torchrun の Job と同じ理由で、同名の TrainJob が残っていると apply がスキップされる。
@@ -285,6 +268,7 @@ helm template exp charts/experiments -n "$NAMESPACE" \
     --set trainjobTrain.nodeRole=cpu \
     --set trainjobTrain.numNodes=2 \
     --set trainjobTrain.nprocPerNode=1 \
+    --set sharedStorage.existingClaimName=shared-claim \
     | kubectl apply -f -
 ```
 
@@ -300,7 +284,7 @@ kubectl get pods -n "$NAMESPACE" -o wide -l jobset.sigs.k8s.io/jobset-name=ddp-t
 kubectl get trainjob ddp-trainjob -n "$NAMESPACE" -w
 ```
 
-rank 0 が載る Pod のログを追います。Pod 名は末尾のランダム文字が変わるので、決め打ちせずラベルで選びます。rank 0 は JobSet の completion index 0 なので、`batch.kubernetes.io/job-completion-index=0` と jobset 名の 2 つのラベルで一意に選べます。前半と同じく、ログは Pod が `Running` の間に追います（完了後は Pod が回収されて `logs -f` が `timed out` になります。前半の step 3 の注意書きを参照してください）。
+rank 0 が載る Pod のログを追います。Pod 名は末尾のランダム文字が変わるので、決め打ちせずラベルで選びます。rank 0 は JobSet の completion index 0 なので、`batch.kubernetes.io/job-completion-index=0` と jobset 名の 2 つのラベルで一意に選べます。前半と同じく、ログは Pod が `Running` の間に追います（完了後は Pod が回収されて `logs -f` が `timed out` になります。前半の step 4 の注意書きを参照してください）。
 
 ```bash
 SEL="jobset.sigs.k8s.io/jobset-name=ddp-trainjob,batch.kubernetes.io/job-completion-index=0"
@@ -308,9 +292,9 @@ kubectl wait --for=condition=ready pod -l "$SEL" -n "$NAMESPACE" --timeout=15m
 kubectl logs -f -l "$SEL" -n "$NAMESPACE"
 ```
 
-前半の単一ノードと違い、rank 0 と rank 1 は別々の Pod なのでログも分かれます。`node-0-0` では rank 0 が gloo backend で起動します。スナップショットの保存は rank 0 が担当するため、その行は `node-0-0` 側にのみ現れます。
+前半の単一ノード（1 Pod 内の fork）とはログの出方がここで初めて変わります。`node-0-0` と `node-0-1` は別々の Pod・別々のノードで動く独立したプロセスなので、`kubectl logs` も Pod ごとに別々に取る必要があります（前半のように 1 つの `logs` 呼び出しで両 rank が混在することはありません）。`node-0-0` では rank 0 が gloo backend で起動します。スナップショットの保存は rank 0 が担当するため、その行は `node-0-0` 側にのみ現れます。
 
-`downloading MNIST to /shared/mnist-data` の行は、step 3 で同じ `/shared` に取得済みでも毎回出力され、しかも rank 0 と rank 1 の両方に出ます。`ddp.py` が全 rank から無条件に `download=True` を渡す実装になっているためです。torchvision 側は既にファイルが揃っていれば実際の再取得をスキップするので、2 回目以降のこの行は「確認しただけ」を意味します。
+`downloading MNIST to /shared/mnist-data` の行は、step 4 で同じ `/shared` に取得済みでも毎回出力され、しかも rank 0 と rank 1 の両方に出ます。`ddp.py` が全 rank から無条件に `download=True` を渡す実装になっているためです。torchvision 側は既にファイルが揃っていれば実際の再取得をスキップするので、2 回目以降のこの行は「確認しただけ」を意味します。
 
 ```
 [rank 0/2] backend=gloo cuda_available=False device_count=0
@@ -359,9 +343,44 @@ kubectl run peek --rm -it --restart=Never --image=busybox:1.36 -n "$NAMESPACE" \
 kubectl delete trainjob ddp-trainjob -n "$NAMESPACE"
 ```
 
+## 6. 共有 PVC を消してみる
+
+最後に、step 3 で触れた「なぜチャートが PVC を自動生成しないのか」を実際に確かめます。ワークロード（Job/TrainJob）を消すのと同じ感覚で、共有 PVC 自体を消してみましょう。
+
+```bash
+kubectl delete pvc shared-claim -n "$NAMESPACE"
+kubectl get pv openzfs-shared
+```
+
+`STATUS` が `Released` になっているはずです。`Available`（誰にも bound されていない、次の PVC を待てる状態）ではなく `Released`（前の持ち主の後始末を待っている状態）である点に注目してください。この状態で、もう一度 `shared-claim` を作り直してみます。
+
+```bash
+POOL_PV=$(terraform output -json shared_storage | jq -r '.fsx_openzfs.persistent_volume')
+sed "s/__VOLUME_NAME__/${POOL_PV}/" manifests/shared-pvc.yaml | kubectl apply -n "$NAMESPACE" -f -
+kubectl get pvc shared-claim -n "$NAMESPACE"
+```
+
+`STATUS` はいつまでも `Pending` のままで、`Bound` になりません。名前を `shared-claim` のまま揃えても、PV 側は新しい PVC を古い PVC と同一視してくれないのです。
+
+:::message alert
+PV は PVC を「名前」ではなく、bind が成立した瞬間に書き込まれる PVC の **UID**（オブジェクトとしての実体）で覚えています。PVC を削除して同じ名前で作り直すと、Kubernetes 内部では UID が異なる別オブジェクトになるため、PV の `claimRef` はどの新しい PVC にも一致しません。しかも Kubernetes には `Released → Available` の自動遷移がなく、これは仕様です。データが残っている可能性のあるボリュームを、審査なしに次の PVC へ渡さないための安全機構です。もしこの PV の `reclaimPolicy` が `Delete` だったら、`kubectl delete pvc` の瞬間に基盤側のボリュームまで削除されて学習成果物が消えていたはずです。`Retain`（このマニフェストの既定）はその代わりに「宙に浮いた」状態で止まり、人間の判断を待ちます。
+:::
+
+復旧するには、PV の `claimRef` のうち `uid` と `resourceVersion` だけを取り除きます。`claimRef` 全体を消すのではないことに注意してください。`name`/`namespace` を残すことで、PV は「その名前の PVC が来たら bind する」という pre-bind 状態に戻り、無関係な別の PVC に横取りされるレースを防げます。
+
+```bash
+kubectl patch pv openzfs-shared --type json \
+  -p '[{"op":"remove","path":"/spec/claimRef/uid"},{"op":"remove","path":"/spec/claimRef/resourceVersion"}]'
+kubectl get pvc shared-claim -n "$NAMESPACE"
+```
+
+数秒待つと `shared-claim` が `Bound` に変わります。他の静的 PV（`fsx-training`、`efs-neuron-workspace`）も同じ `Retain` なので、それらを使っている場合も同じ症状・同じ復旧手順になります。
+
+これで step 3 で 1 回だけ手動作成した理由が実感できたはずです。PVC の生成をワークロードの `apply`/`delete` に乗せていたら、ワークロードを作り直すたびにこの `Released` を踏むことになります。基盤を用意するタイミングで 1 回だけ作り、以降のワークロードはその PVC の**名前を渡すだけ**にする、というこの章の設計はこの事故を避けるためのものです。
+
 # まとめ
 
-本章では、GPU を使わずに Amazon EKS の CPU ノード上で MNIST MLP の DDP 学習を 2 段構えで動かしました。前半はオペレータ不要の `torchrun`（`batch/v1` Job）で 1 ノード内の 2 プロセスを走らせ、後半は Kubeflow Trainer v2 の TrainJob で 2 ノードにまたがる分散学習を走らせました。いずれも gloo backend で動かし、loss が減少すること、そして rank 0 のみがスナップショットを共有ストレージに保存するという DDP の基本動作を確認しました。
+本章では、GPU を使わずに Amazon EKS の CPU ノード上で MNIST MLP の DDP 学習を 2 段構えで動かしました。前半はオペレータ不要の `torchrun`（`batch/v1` Job）で 1 ノード内の 2 プロセスを走らせ、後半は Kubeflow Trainer v2 の TrainJob で 2 ノードにまたがる分散学習を走らせました。いずれも gloo backend で動かし、loss が減少すること、そして rank 0 のみがスナップショットを共有ストレージに保存するという DDP の基本動作を確認しました。さらに、共有ストレージの PVC を意図的に削除して `Released` 状態を再現し、`claimRef` の `uid`/`resourceVersion` だけを取り除く復旧手順まで体験しました。静的プロビジョニングされた PV は PVC を名前ではなく実体（UID）で覚えるという、この基盤の共有ストレージ全体を貫く重要な性質です。
 
 # 参考資料
 
