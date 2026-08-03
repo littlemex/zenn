@@ -214,11 +214,15 @@ terraform apply
 ## 3. kubeconfig を設定してノードを確認する
 
 ```bash
+# 自分の環境に合わせて設定してください
+export REGION=xxx
+export PROFILE=xxx
+
 # terraform.tfvars に aws_profile を設定した場合は、同じ profile をここでも渡します
 # （または事前に export AWS_PROFILE=<name>）。素の [default] で認証している場合は
 # --profile を省略します。
 aws eks update-kubeconfig --name "$(terraform output -raw cluster_name)" \
-  --region <region> --profile <tfvars と同じ profile>
+  --region $REGION --profile $PROFILE
 kubectl get nodes
 
 # インスタンスタイプまで見たい場合
@@ -230,7 +234,7 @@ kubectl get nodes -o custom-columns='NAME:.metadata.name,TYPE:.metadata.labels.n
 あわせて NAT が AZ ごとに分かれていることも確認しておきます。プライベートルートテーブルの `0.0.0.0/0` が、それぞれ別の NAT を向いているのが期待する状態です。
 
 ```bash
-aws ec2 describe-route-tables --region <region> \
+aws ec2 describe-route-tables --region $REGION \
   --filters "Name=vpc-id,Values=$(terraform output -raw vpc_id)" "Name=tag:Name,Values=*private*" \
   --query 'RouteTables[].[Tags[?Key==`Name`]|[0].Value,Routes[?DestinationCidrBlock==`0.0.0.0/0`]|[0].NatGatewayId]' \
   --output text
@@ -280,7 +284,7 @@ cd tests
 
 # 基盤テスト: control-plane / system-nodes / karpenter / trainer /
 #            csi-drivers / device-plugins / storage-mount (FSx read/write)
-./run-tests.sh --profile <tfvars と同じ profile>
+./run-tests.sh --profile $PROFILE
 ```
 
 クラスタ名とリージョンは `terraform output` から自動で解決されるので指定は不要です（`--cluster-name` / `--region` で明示的に上書きすることもできます）。実機出力は次のようになります。
@@ -308,7 +312,7 @@ GPU テストは Basic04 でアクセラレータプールを定義した後に�
 
 ```bash
 # Karpenter が GPU ノードを起動するため 5-10 分かかります
-./run-tests.sh --with-gpu --profile <tfvars と同じ profile> --gpu-count 1
+./run-tests.sh --with-gpu --profile $PROFILE --gpu-count 1
 ```
 
 ```text
