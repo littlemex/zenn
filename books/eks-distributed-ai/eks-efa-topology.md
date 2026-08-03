@@ -372,7 +372,7 @@ env:
 
 Basic05 の apply で作られたのは NodePool と EC2NodeClass の定義だけで、この時点ではまだノードは 1 台も立っていません。Karpenter は Pod の要求を見て初めてノードを起動します。
 
-ここで 1 つ順序の制約があります。次に投入する `ncclSshd` は EFA の RDMA 登録のために hugepages を要求しますが、Karpenter は hugepages を「どのインスタンスタイプなら足りるか」の判断に使いません。そのため hugepages を要求する Pod でノードの新規起動を誘発しようとすると、`no instance type has enough resources` と判定されて NodeClaim が作られず、Pod は永久に `Pending` になります。したがって先に hugepages を要求しない GPU Pod で 2 台のノードを起こし、そのうえで測定ワークロードを載せます。
+ここで 1 つ順序の制約があります。Karpenter は hugepages を「どのインスタンスタイプなら足りるか」の判断に使いません。そのため hugepages を要求する Pod でノードの新規起動を誘発しようとすると、`no instance type has enough resources` と判定されて NodeClaim が作られず、Pod は永久に `Pending` になります。本章で使う `ncclTrainjob` は hugepages を要求しないので原理的にはこの罠を踏みませんが、`mpirun` 方式の `ncclSshd` や Neuron 側のプローブは hugepages を要求するため該当します。どの方式でも通る順序として、先に hugepages を要求しない GPU Pod で 2 台のノードを起こし、そのうえで測定ワークロードを載せる形にします。ノードの起動とイメージの pull を測定と切り離せるので、測定側の Pod が長時間 `Pending` に見えて原因を切り分けにくくなるのも避けられます。
 
 まず 2 台分のノードを起こします。GPU だけを要求する使い捨ての Pod を 2 つ投入します。各 Pod がそのインスタンスの GPU を全数要求するので同一ノードには同居できず、`podAntiAffinity` も併せて別ノードへの配置を明示しています（GPU 数を減らして流用すると 2 つが 1 ノードに載り、2 台目が起動しません）。`sleep` を待ち時間より長く取っているのは、片方のノード起動が遅れている間に先の Pod が `Succeeded` に落ちて `kubectl wait` が満たされなくなるのを避けるためです。
 
@@ -433,19 +433,19 @@ echo "gpu=$GPU efa=$EFA"   # p4d.24xlarge では gpu=8 efa=3
 
 helm template exp charts/experiments -n "$NAMESPACE" \
   --set namespace="$NAMESPACE" \
-  --set ncclSshd.enabled=true \
-  --set ncclSshd.nodeRole=$POOL \
-  --set ncclSshd.gpuCount=$GPU \
-  --set ncclSshd.efaCount=$EFA \
-  --set ncclSshd.image=public.ecr.aws/hpc-cloud/nccl-tests:cuda12.8.1-efa1.42.0-ofiv1.16.0-ncclv2.27.5-1-testsv2.16.4 \
+  --set ncclTrainjob.enabled=true \
+  --set ncclTrainjob.nodeRole=$POOL \
+  --set ncclTrainjob.gpuCount=$GPU \
+  --set ncclTrainjob.efaCount=$EFA \
+  --set ncclTrainjob.image=763104351884.dkr.ecr.us-west-2.amazonaws.com/pytorch-training:2.10.0-gpu-py313-cu130-ubuntu22.04-ec2-v1.11 \
   | kubectl apply -f -
 ```
 
-`ncclSshd` は 2 つの Pod を別ノードに立て、それぞれに sshd を常駐させて、片方から `mpirun` で相手を叩く構成です。`nccl-tests` は MPI ベースなので rendezvous は `mpirun` が担います。
+`ncclTrainjob` は Basic02 と同じ Kubeflow Trainer v2 の TrainJob で、`torch.distributed` の `all_reduce` を 2 ノードにまたがって回します。ノードをまたぐ起動の段取り、つまり「どのプロセスが rank いくつで、どこに集合するか」は TrainJob が担います。Trainer が `PET_NNODES` / `PET_NPROC_PER_NODE` / `PET_NODE_RANK` / `PET_MASTER_ADDR` を各 Pod に注入し、`torchrun` がそれを既定値として読むという仕組みです。
 
 指定の要点は 3 つあります。
 
-第一に、`ncclSshd.nodeRole` にはプール名を渡します。ノードの GPU SKU を表す `nvidia.com/gpu.product` で選びたくなりますが、このラベルは GPU Operator が起動済みのノードに後から付与するものなので、Karpenter が「どのインスタンスタイプを起動するか」を判断する材料になりません。これを nodeSelector に使うと Karpenter は次のように要求を拒否し、2 台目のノードが永久に起動しません。
+第一に、`nodeRole` にはプール名を渡します。ノードの GPU SKU を表す `nvidia.com/gpu.product` で選びたくなりますが、このラベルは GPU Operator が起動済みのノードに後から付与するものなので、Karpenter が「どのインスタンスタイプを起動するか」を判断する材料になりません。これを nodeSelector に使うと Karpenter は次のように要求を拒否し、2 台目のノードが永久に起動しません。
 
 ```text
 Failed to schedule pod, incompatible requirements,
@@ -454,18 +454,31 @@ label "nvidia.com/gpu.product" does not have known values
 
 Karpenter が起動時に付ける `node-role=<プール名>` を使えば、ノードがまだ存在しない状態からプロビジョニングを誘発できます。
 
-第二に、`gpuCount` と `efaCount` は上のように AWS 側から読んだ値を渡します。EFA の schedulable 数はファミリごとに違うため、固定値を書くと別のファミリでは必ず Pod が Pending になります。
+第二に、`gpuCount` と `efaCount` は上のように AWS 側から読んだ値を渡します。EFA の schedulable 数はファミリごとに違うため、固定値を書くと別のファミリでは必ず Pod が Pending になります。`gpuCount` は 1 ノードあたりのプロセス数にもなるので、8 GPU のノードなら 8 プロセスが 1 GPU ずつ担当します。
 
-第三に、SSH 鍵の配布は不要です。チャートがレンダリング時に鍵ペアを生成して Secret として両 Pod に配るため、Pod が `Running` になった時点で `mpirun` がそのまま通ります。
+第三に、イメージは `torchrun` と EFA 用の `aws-ofi-nccl` プラグインの**両方**を持つものを選びます。ここが最も間違いやすい箇所です。
 
-:::message
-`helm template` は実行ごとに新しい鍵を生成します。上の例のようにパイプで一度に `kubectl apply` するか、いったんファイルに書き出してから適用してください。2 回に分けてレンダリングすると server と client が別々の鍵を持つことになり、SSH が通りません。
+:::message alert
+本書に出てくる他の 2 つのイメージは、どちらもこの用途には使えません。
+
+`nccl-tests` のイメージは Open MPI 前提で `torchrun` を持たないため、Pod が即座に `exec: "torchrun": executable file not found in $PATH` で落ちます。これは失敗が明示されるので気づけます。
+
+危険なのは Basic02 でビルドした `ddp-sample` のイメージです。`torchrun` は持ちますが素の PyTorch イメージなので EFA プラグインがありません。この場合 NCCL はエラーを出さず、自前の TCP ソケット通信に**黙って切り替えます**。ベンチマークは完走し、それらしい数値も出るので、EFA を測ったつもりで実際には TCP を測っていたという結果になります。帯域の数値だけでは区別できないため、手順 6 で説明するログ行の確認が必須です。
+
+`torchrun` と EFA プラグインの両方を持つイメージとして、AWS Deep Learning Containers があります。利用可能なタグは次のように調べられます。
+
+```bash
+aws ecr describe-images --registry-id 763104351884 --repository-name pytorch-training \
+  --query 'sort_by(imageDetails,&imagePushedAt)[-20:].imageTags[]' --output text | tr '\t' '\n'
+```
 :::
 
-2 つの Pod には hostname 単位の `podAntiAffinity` が入っているため、必ず別ノードに分かれます。これが 2 台目のノードの起動を誘発します。
+2 つの Pod には runtime が hostname 単位の `podAntiAffinity` を入れているため、必ず別ノードに分かれます。同一ノードに載ると NCCL は NVLink だけで通信を完結させてしまい、EFA について何も検証できないテストになります。
 
 :::message
-hugepages とノード起動の制約は Neuron 側のプローブでも同じです。EFA を使うワークロードは RDMA 登録のために hugepages を要求するので、新しいプールで検証を始めるときは常にこの「hugepages なしの Pod でノードを起こしてから載せる」順序になります。
+この検証には ssh も sshd も SSH 鍵も `privileged` も必要ありません。`mpirun` を ssh 越しに使う方式（このチャートには `ncclSshd` として残してあります）だと、Pod に sshd を常駐させ、鍵ペアを両 Pod に配り、EFA デバイスのために `privileged: true` を与える必要がありました。それに加えて、起動の失敗が `mpirun` の内部で起きるため Kubernetes 側からは Pod もイベントもログも正常に見えたまま無反応になる、という厄介な故障の仕方をします。TrainJob なら失敗は Pod の状態として観測できます。
+
+一方で `ncclSshd` にも残す価値があります。`nccl-tests` の `all_reduce_perf` が出す busbw は広く公開されている数値と直接比較できるため、他の環境の測定値と突き合わせたいときはそちらを使ってください。
 :::
 
 ## 4. ノード上の EFA リソースを確認する
@@ -481,8 +494,8 @@ kubectl get nodes -l node-role=$POOL \
 p4d.24xlarge 2 台での実機出力:
 
 ```text
-ip-10-0-115-100.us-west-2.compute.internal	3
-ip-10-0-124-216.us-west-2.compute.internal	3
+ip-10-0-a-b.us-west-2.compute.internal	3
+ip-10-0-c-d.us-west-2.compute.internal	3
 ```
 
 `terraform output` が示した 3 と、ノードが実際に広告している 3 が一致しました。物理カード 4 枚に対して 3 であることが、card 0 が EFA として使えないことの実証です。
@@ -522,57 +535,59 @@ EFA 対応ノード（p4d x2）それぞれに 1 Pod ずつ Running していれ
 
 ## 6. マルチノードで NCCL/EFA の帯域を測る
 
-両 Pod が `Running` になったら、server 側から `mpirun` でベンチマークを起動します。
+TrainJob は投入した時点で走り始めるので、あらためて起動する操作はありません。進行と結果を Pod のログで確認します。
 
 ```bash
-SIP=$(kubectl -n "$NAMESPACE" get pod nccl-server -o jsonpath='{.status.podIP}')
-CIP=$(kubectl -n "$NAMESPACE" get pod nccl-client -o jsonpath='{.status.podIP}')
-
-kubectl -n "$NAMESPACE" exec nccl-server -- bash -lc "
-/opt/amazon/openmpi/bin/mpirun --allow-run-as-root -np $((2 * GPU)) \
-  -H $SIP:$GPU,$CIP:$GPU --mca plm_rsh_args '-p 2222' \
-  -x FI_PROVIDER=efa -x FI_EFA_USE_DEVICE_RDMA=1 -x FI_EFA_FORK_SAFE=1 \
-  -x NCCL_SOCKET_IFNAME='^lo,docker,veth' \
-  -x NCCL_DEBUG=INFO -x NCCL_DEBUG_SUBSYS=INIT,NET \
-  -x LD_LIBRARY_PATH -x PATH \
-  /opt/nccl-tests/build/all_reduce_perf -b 512M -e 1G -f 2 -g 1"
+kubectl -n "$NAMESPACE" get trainjob nccl-trainjob
+kubectl -n "$NAMESPACE" logs -l jobset.sigs.k8s.io/jobset-name=nccl-trainjob --tail=-1 \
+  | grep -E "Selected provider|Using network|\[bench\]"
 ```
-
-`NCCL_DEBUG` は `INFO` にします。次に確認する `NET/OFI Selected provider is efa` の行は `INFO` レベルでしか出力されず、`WARN` では EFA が使われた証拠が得られません。`NCCL_DEBUG_SUBSYS=INIT,NET` で対象サブシステムを絞り、ログが溢れるのを防いでいます。両 Pod は `hostNetwork` なので Pod IP はノード IP と一致します。
-
 
 確認ポイントは次の 2 つです。
 
-- ログに `NET/OFI Selected provider is efa` が出ることを確認します（TCP fallback していない証拠になります）
+- ログに `NET/OFI Selected provider is efa` と `Using network Libfabric` が出ることを確認します（TCP に落ちていない証拠になります）
 - `busbw` が高い値を示すことを確認します
 
-実機確認結果（2 ノード p4d.24xlarge、A100 x16、EFA 3 NIC/ノード、`all_reduce_perf` 16 ランク）:
+`NCCL_DEBUG` はチャートが `INFO` に設定しています。`Selected provider is efa` の行は `INFO` レベルでしか出力されず、`WARN` では EFA が使われた証拠が得られません。`NCCL_DEBUG_SUBSYS=INIT,NET` で対象サブシステムを絞り、ログが溢れるのを防いでいます。
+
+実機確認結果（2 ノード p4d.24xlarge、A100 x16、EFA 3 NIC/ノード、16 プロセス）:
 
 ```text
-ip-10-0-115-100:318:365 [2] NCCL INFO NET/OFI Using transport protocol SENDRECV (platform set)
-ip-10-0-115-100:318:365 [2] NCCL INFO NET/OFI Selected provider is efa, fabric is efa (found 3 nics)
-ip-10-0-124-216:273:320 [0] NCCL INFO NET/OFI Selected provider is efa, fabric is efa (found 3 nics)
+nccl-trainjob-node-0-0:172:172 [0] NCCL INFO NET/Plugin: Loaded net plugin Libfabric (v11)
+nccl-trainjob-node-0-0:172:172 [0] NCCL INFO Using network Libfabric
+nccl-trainjob-node-0-0:172:172 [0] NCCL INFO NET/OFI Selected provider is efa, fabric is efa (found 3 nics)
+nccl-trainjob-node-0-0:172:172 [0] NCCL INFO NET/OFI Using Libfabric version 2.4
+nccl-trainjob-node-0-1:172:172 [0] NCCL INFO NET/OFI Selected provider is efa, fabric is efa (found 3 nics)
 ```
 
 両ノードで `efa` プロバイダが選択され、3 NIC が認識されています。この `found 3 nics` が、手順 1 で見た `terraform output accelerator_pool_efa_schedulable` の `gpu-p4d = 3`（= 4 − 1）と一致していることが重要です。カード枚数から 1 引いた値が、そのまま NCCL が掴む NIC 数になります。
 
-busbw 実測値:
+帯域の実測値:
+
+```text
+[bench] world_size=16 ranks/node=8
+[bench]   512 MB     18.00 ms  algbw   29.82 GB/s  busbw   55.91 GB/s
+[bench]  1024 MB     34.83 ms  algbw   30.82 GB/s  busbw   57.80 GB/s
+[bench] done
+```
 
 | メッセージサイズ | algbw | busbw |
 |---|---|---|
-| 512 MB | 30.0 GB/s | 56.2 GB/s |
-| 1024 MB | 30.9 GB/s | 57.9 GB/s |
+| 512 MB | 29.8 GB/s | 55.9 GB/s |
+| 1024 MB | 30.8 GB/s | 57.8 GB/s |
 
-上のコマンドは `-b 512M -e 1G -f 2` なので測定点は 512 MB と 1024 MB の 2 つで、この 2 点の平均 busbw は 57.0 GB/s でした。`-b` を小さくすればより小さいメッセージサイズも測れますが、EFA が効いているかの判定には大きいサイズの方が向きます（小さいメッセージでは通信の立ち上がりコストが支配的で、帯域が出るところまで到達しません）。EFA が効いていることを確かめるには絶対値だけでなく比較対象が必要なので、同じコマンドを単一ノード 8 GPU（ノードをまたがないので NVLink のみ）で実行した値を並べます。
+測定するサイズは `ncclTrainjob.sizesMb` で変えられますが、EFA が効いているかの判定には大きいサイズの方が向きます。小さいメッセージでは通信の立ち上がりコストが支配的で、帯域が出るところまで到達しません。
+
+EFA が効いていることを確かめるには絶対値だけでなく比較対象が必要です。同じ構成で単一ノードに閉じた場合（ノードをまたがないので NVLink のみ）の値と並べます。
 
 | 構成 | 通信経路 | busbw（1 GB） |
 |---|---|---|
 | 1 ノード 8 GPU | NVLink のみ | 227.1 GB/s |
-| 2 ノード 16 GPU | ノード間は EFA | 57.9 GB/s |
+| 2 ノード 16 GPU | ノード間は EFA | 57.8 GB/s |
 
-ノードをまたぐと NVLink の約 4 分の 1 に落ちますが、これは想定どおりです。p4d.24xlarge の EFA は 4 カード構成で、そのうち通信に使えるのは 3 枚なので、NVLink の帯域には及びません。重要なのは 57.9 GB/s という値が TCP 経由（一般に数 GB/s 台）では到達できない水準にあることで、これが EFA/RDMA が実際に使われている証拠になります。EFA カードが 16 枚ある p5en や 32 枚ある p5 では、この数字はさらに大きくなります。
+ノードをまたぐと NVLink の約 4 分の 1 に落ちますが、これは想定どおりです。p4d.24xlarge の EFA は 4 カード構成で、そのうち通信に使えるのは 3 枚なので、NVLink の帯域には及びません。重要なのは 57.8 GB/s という値が TCP 経由（一般に数 GB/s 台）では到達できない水準にあることで、これが EFA/RDMA が実際に使われている証拠になります。EFA カードが 16 枚ある p5en や 32 枚ある p5 では、この数字はさらに大きくなります。
 
-この 2 つの値は同じ構成で日を変えて複数回測っても 57-58 GB/s と 227 GB/s に収まりました。読者の環境で桁が違う値（たとえばノード間が数 GB/s 台）になった場合は、EFA ではなく TCP にフォールバックしている可能性が高いので、先に `Selected provider is efa` の行が出ているかを確認してください。
+この 2 つの値は同じ構成で日を変えて複数回測っても 57-58 GB/s と 227 GB/s に収まりました。`mpirun` 版で測った値（同一ハードウェアで 57.0 GB/s）ともほぼ一致します。読者の環境で桁が違う値（たとえばノード間が数 GB/s 台）になった場合は、EFA ではなく TCP にフォールバックしている可能性が高いので、先に `Selected provider is efa` の行が出ているかを確認してください。
 
 :::message
 `fabric` の表示は `efa` と `efa-direct` の 2 種類があります。上の実測では `efa` が選択されており、同時に `Using transport protocol SENDRECV (platform set)` が出ています。どちらが選ばれるかはインスタンス世代・libfabric・aws-ofi-nccl のバージョンの組み合わせで決まるため、`efa-direct` でなくても異常ではありません。判定の要点は `Selected provider is efa` であること、つまり TCP へ落ちていないことです。
