@@ -194,7 +194,7 @@ GPU 専用のダッシュボードは kube-prometheus-stack には含まれな�
 
 # まとめ
 
-本章では、kube-prometheus-stack を Helm で導入し、GPU Operator 同梱の DCGM exporter が公開する GPU メトリクスを Prometheus で収集、Grafana の UI で可視化するところまでを実行しました。`serviceMonitorSelectorNilUsesHelmValues: false` で DCGM の ServiceMonitor を拾わせるのがポイントで、Capacity Block で確保した p5en x2 の 16 GPU すべてのメトリクスが取得できることを実機で確認しました。observability は Terraform 管理外の追加コンポーネントなので、必要なときだけ入れる運用ができます。
+本章では、kube-prometheus-stack を Helm で導入し、GPU Operator 同梱の DCGM exporter が公開する GPU メトリクスを Prometheus で収集、Grafana の UI で可視化するところまでを実行しました。`serviceMonitorSelectorNilUsesHelmValues: false` で DCGM の ServiceMonitor を拾わせるのがポイントで、Capacity Block で確保した p4d.24xlarge 2 台の 16 GPU と、別プールの推論ノード 1 GPU を合わせた 17 系列すべてでメトリクスが取得できることを実機で確認しました。observability は Terraform 管理外の追加コンポーネントなので、必要なときだけ入れる運用ができます。
 
 # 参考資料
 
