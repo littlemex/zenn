@@ -285,8 +285,43 @@ cd infra/eks
 # demo app の namespace は var.demo_namespace（既定 "demo"）で決まります。
 terraform apply -var enable_demo_app=true
 kubectl get ingress -n demo -w
-curl -i http://$(kubectl get ingress -n demo echo -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')/
 ```
+
+`ingress` に `ADDRESS` が入っても、Application Load Balancer 自体のプロビジョニングとターゲット登録はまだ続いています。この間の `curl` はタイムアウトするので、ターゲットが `healthy` になるのを待ってから叩きます。
+
+```bash
+ALB=$(kubectl get ingress -n demo echo -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+
+# ターゲットが healthy になるまで待つ（初回は数分かかります）
+TG=$(aws elbv2 describe-target-groups \
+  --query "TargetGroups[?contains(TargetGroupName,'echo')].TargetGroupArn" --output text)
+aws elbv2 describe-target-health --target-group-arn "$TG" \
+  --query 'TargetHealthDescriptions[].[Target.Id,TargetHealth.State,TargetHealth.Reason]' --output text
+
+curl -i "http://${ALB}/"
+```
+
+:::message alert
+ターゲットが `unhealthy` のまま `Target.Timeout` で止まり、`curl` が 504 を返す場合はセキュリティグループを疑ってください。本書の実装で実際に踏んだ 2 つの原因があります（どちらも修正済みですが、自分で構成を変えたときに再発し得ます）。
+
+1 つ目は、Karpenter が選ぶセキュリティグループに `kubernetes.io/cluster/<クラスタ名>` タグを持つものが 2 つ以上あるケースです。AWS Load Balancer Controller は Pod の ENI からセキュリティグループを 1 つに決められないと、バックエンド側の許可ルールを作るのを諦めて 15 秒ごとに再試行し続けます。コントローラのログにこう出ます。
+
+```text
+expected exactly one securityGroup tagged with kubernetes.io/cluster/<クラスタ名>
+for eni eni-..., got: [sg-..., sg-...]
+```
+
+Application Load Balancer は `active` になり、ノードも `Ready` なので、症状はここを指しません。次で確認できます。
+
+```bash
+kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller --tail=20 \
+  | grep -i "exactly one securityGroup"
+```
+
+本書の実装は、`karpenter.sh/discovery` タグをノード用のセキュリティグループだけに付けることでこれを避けています。EKS が作るクラスタ用セキュリティグループにこのタグを足すと、Karpenter が両方をノードに付けてこの状態になります。`terraform plan` が同じ検査を持っているので、自分でタグを増やした場合は plan の警告として出ます。
+
+2 つ目は、ノード用セキュリティグループの自己参照ルールがポート 80 を含まないケースです。`terraform-aws-eks` の既定は TCP 1025-65535 だけを許可するので、Pod が 80 番のような低いポートで listen していると、**別ノードの Pod からの通信だけが落ちます**。同じノードで動く kubelet の readiness probe は途中にセキュリティグループを挟まないので成功し続け、Pod は `Ready` に見えます。本書の実装はノード間で全ポートを許可して解消しています。
+:::
 
 ```bash
 # Phase 2: CloudFront + SG制限 + ヘッダー検証を追加
@@ -312,6 +347,32 @@ cd infra/eks/scripts
 export NAMESPACE=distai
 ./04-teardown.sh --namespace "$NAMESPACE"
 ```
+
+削除対象の NodePool はクラスタに問い合わせて決まります。`accelerator_pools` は読者が自分で定義するマップなので、スクリプトが決め打ちできる名前は存在しません。代わりに、Terraform モジュールがアクセラレータプールに付ける device taint（`nvidia.com/gpu` / `aws.amazon.com/neuron`）を持つ NodePool をすべて対象にします。実機では次のように出ます。
+
+```text
+Discovered accelerator NodePool(s): gpu-ddp gpu-p4d
+=== Teardown Plan ===
+  Namespace  : distai
+  NodePool(s): gpu-ddp gpu-p4d
+  Destroy    : false
+```
+
+taint を持たない cpu プールは対象外です。これは `terraform destroy` が自身の最後の処理を走らせる場所を残しておく必要があるためで、次の手順 4 でまとめて消えます。
+
+削除のあと、device リソースを持つノードが残っていないかを必ず出します。ここに GPU や Neuron のノードが並んでいるのに「Teardown complete」と出た場合、削除が効いていないので放置しないでください。
+
+```text
+Accelerator nodes still registered:
+  ip-10-0-a-b...  p4d.24xlarge  nvidia.com/gpu=8
+  (still billing — they drain asynchronously; watch: kubectl get nodeclaims -w)
+```
+
+対象を明示したい場合は `--nodepool` を繰り返し指定できます（`--nodepool gpu-ddp --nodepool gpu-p4d`）。存在しない名前を渡した場合は警告を出して止まらずに進むので、`kubectl get nodepool` で実際の名前を確かめてください。
+
+:::message alert
+プールを 1 つ取り残すと、そのノードは課金され続けます。GPU や Neuron は時間単価が高いので、上の「Accelerator nodes still registered」が `none` になるまで確認してから次へ進んでください。
+:::
 
 ## 3. ドレインの過程を観察する
 
