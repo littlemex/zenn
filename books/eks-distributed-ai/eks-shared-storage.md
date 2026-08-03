@@ -203,8 +203,38 @@ PERSISTENT_2 SSD の容量は 1,200 GiB か 2,400 GiB の倍数でしか指定�
 
 ```bash
 cd infra/eks
-terraform output
+terraform output shared_storage
 ```
+
+実機出力（3 層すべてを有効にした状態）:
+
+```text
+{
+  "efs" = {
+    "dns_name" = "fs-0123456789abcdef0.efs.us-west-2.amazonaws.com"
+    "enabled" = true
+    "id" = "fs-0123456789abcdef0"
+    "persistent_volume" = "efs-neuron-workspace"
+  }
+  "fsx_lustre" = {
+    "dns_name" = "fs-0123456789abcdef1.fsx.us-west-2.amazonaws.com"
+    "enabled" = true
+    "id" = "fs-0123456789abcdef1"
+    "mount_name" = "abcd1234"
+    "persistent_volume" = "fsx-training"
+    "storage_capacity" = "4800"
+  }
+  "fsx_openzfs" = {
+    "dns_name" = "fs-0123456789abcdef2.fsx.us-west-2.amazonaws.com"
+    "enabled" = true
+    "id" = "fs-0123456789abcdef2"
+    "persistent_volume" = "openzfs-shared"
+    "storage_capacity" = "256"
+  }
+}
+```
+
+`enabled` がその層を使うかどうか、`persistent_volume` がその層を裏づける静的 PV の名前です。FSx for Lustre の `mount_name` は CSI ドライバが DNS 名と併せて必要とする値で、コンソールからは見つけにくいのでここに出しています。無効な層は `enabled = false` で id が空になるため、この 1 コマンドで「どの層が有効か」も分かります。
 
 初回 apply の時点で、既定で有効な Amazon FSx for Lustre（`fsx_enabled = true`）と Amazon FSx for OpenZFS（`openzfs_enabled = true`）のファイルシステムはすでに作られています。Amazon EFS は既定で無効（`efs_enabled = false`、CSI ドライバだけは常設）なので、使う場合は `terraform.tfvars` に `efs_enabled = true` を設定してから `terraform apply` します。本章では代表として Amazon EFS と Amazon FSx for Lustre を扱います。
 
