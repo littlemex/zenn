@@ -214,7 +214,7 @@ helm template exp charts/experiments \
   | kubectl apply -f -
 ```
 
-このプローブ Pod は `node-role=trn2` の nodeSelector で Neuron プールに固定され、`aws.amazon.com/neuron` taint への toleration を持ちます。最初の 1 回は Karpenter が trn2.48xlarge を起動するため数分かかります。Pod が `Running` になったら、内部で `neuron-ls` を実行してデバイスが列挙されるか確認します。
+このプローブ Pod は `node-role=trn2` の nodeSelector で Neuron プールに固定され、`aws.amazon.com/neuron` taint への toleration を持ちます。最初の 1 回は Karpenter が trn2.3xlarge を起動するため数分かかります。Pod が `Running` になったら、内部で `neuron-ls` を実行してデバイスが列挙されるか確認します。
 
 ```bash
 kubectl -n "$NAMESPACE" exec neuron-probe -- neuron-ls
@@ -260,11 +260,50 @@ Karpenter は hugepages を「新しいノードをどのインスタンスタ�
 
 `neuron-ls` はデバイスの列挙しかしないため、Neuron ランタイムの初期化までは検証できません。実際に計算を流して初めて、ドライバとランタイムの整合が確認できます。`neuronProbe` は hugepages を要求しない設計なので、ノードが起動したあとに hugepages を持つ Pod を別途立てて実行します。
 
+この Pod は `neuronProbe` と同じ DLC イメージを使い、`hugepages-2Mi` を足しただけのものです。チャートには含まれないので、次のように直接作ります。ノードは既に起動しているので、hugepages を要求しても Karpenter の判断を狂わせません。
+
 ```bash
 # neuronProbe がデバイスを掴んでいるので先に退かす（trn2.3xlarge はデバイス 1 個）
 kubectl -n "$NAMESPACE" delete pod neuron-probe
 
-# hugepages 付きの Pod でランタイムを初期化する
+# hugepages 付きの Pod を立てる。image は neuronProbe と同じ DLC を指定する
+DLC=763104351884.dkr.ecr.<region>.amazonaws.com/pytorch-inference-neuronx:2.9.0-neuronx-py312-sdk2.29.1-ubuntu24.04
+
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: neuron-compute
+  namespace: $NAMESPACE
+spec:
+  restartPolicy: Never
+  nodeSelector: { node-role: trn2 }
+  tolerations:
+    - { key: aws.amazon.com/neuron, operator: Exists, effect: NoSchedule }
+    - { key: capacity-reservation, operator: Exists, effect: NoSchedule }
+  containers:
+    - name: compute
+      image: $DLC
+      command: ["sleep", "3600"]
+      resources:
+        limits:
+          aws.amazon.com/neuron: "1"
+          vpc.amazonaws.com/efa: "1"
+          hugepages-2Mi: 2Gi
+          memory: 16Gi
+        requests:
+          cpu: "4"
+          memory: 16Gi
+      volumeMounts:
+        - { name: shm, mountPath: /dev/shm }
+  volumes:
+    - name: shm
+      emptyDir: { medium: Memory, sizeLimit: 8Gi }
+EOF
+
+kubectl -n "$NAMESPACE" wait --for=condition=ready pod/neuron-compute --timeout=10m
+
+# ランタイムを初期化して計算を流す
 kubectl -n "$NAMESPACE" exec neuron-compute -- python -c "
 import torch, torch_xla.core.xla_model as xm
 d = xm.xla_device()
@@ -318,7 +357,7 @@ helm template exp charts/experiments \
   | kubectl apply -f -
 ```
 
-チャートは `experiments.namespace` という共通ヘルパーで namespace を決めているため、`--set namespace=$NAMESPACE` の形で渡す必要があります。`helm template` の `-n` オプションだけでは、テンプレート側が参照する `.Values.namespace` には反映されません。
+チャートは `experiments.namespace` という共通ヘルパーで namespace を決めます。既定の `namespace: ""` のままなら `helm template` の `-n` がそのまま使われるので、通常は `-n "$NAMESPACE"` だけで足ります。`--set namespace=<名前>` はそれを明示的に上書きしたいときの手段です。
 
 2 台目の trn2 が起動して両 Pod が `Running` になったら、あとは両ノードで `torchrun` を起動するだけです。ここでの rendezvous は `torchrun` の `--master-addr` / `--master-port` に master ノードの IP を直接渡す方式なので、torchrun 自体に Pod 間の SSH は必要ありません。ただし、このテンプレートには両 Pod が `Running` になった後に SSH 鍵を配布する手順も用意されています（NCCL 版ワークロードと同じ作りで各 Pod に sshd を持っているため）。今回の all-reduce の疎通確認だけであれば鍵配布は不要ですが、後述の MNIST MLP のように別のマルチプロセス実行方式を試す場合に備えて用意されている手順、と理解しておいてください。両 Pod は hostNetwork なので Pod IP はノード IP と一致します。
 

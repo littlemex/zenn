@@ -24,7 +24,7 @@ Karpenter は consolidate（アイドルノードの回収、Basic04 で見た `
 
 この 2 つの用途に対して、実装（`infra/eks`）は次の設計判断をしています。**既定で有効な共有ストレージは、Amazon FSx for Lustre（高スループット・スクラッチ、`fsx_enabled = true`）と Amazon FSx for OpenZFS（NFS ベースの home・共有領域、`openzfs_enabled = true`）という単一 AZ の 2 層**です。この 2 層はどのアクセラレータプールも 1 つの AZ に固定される（EFA/RDMA が AZ 内通信であり、Capacity Block も単一 AZ のため）前提と揃っており、awsome-distributed-ai の構成を踏襲しています。**Amazon EFS（`efs.tf`）はこの既定構成から降格された opt-in レイヤー**（`efs_enabled = false` が既定）で、マルチ AZ・RWX が必要な場合、具体的には Karpenter がノードを別 AZ に入れ替えても同じ HF キャッシュ・NEFF を読み続けたい場合にだけ有効化します。本章では、この 3 つの共有ストレージのうち **Amazon EFS と Amazon FSx for Lustre** を代表として解説します。
 
-**Amazon EFS（`efs.tf`）** はマルチ AZ・ReadWriteMany（RWX）のファイルシステムです。private subnet ごとにマウントターゲットを配置するため、Capacity Block の GPU/Neuron ノードがどの AZ に居ても同じキャッシュをマウントできます。複数の推論・学習 Pod が同時に同じ HF キャッシュや NEFF を読みに来る RWX の要件にも合います。Pod Identity で `aws-efs-csi-driver` の Controller に IAM ロールを紐付け、Amazon EKS アドオンとして導入しますが、このアドオン自体は `efs_enabled` の値に関わらず常設され、ファイルシステム本体・マウントターゲット・アクセスポイント・static PV だけが `efs_enabled = true` のときに作られます。
+**Amazon EFS（`efs.tf`）** はマルチ AZ・ReadWriteMany（RWX）のファイルシステムです。private subnet ごとにマウントターゲットを配置するため、Capacity Block の GPU/Neuron ノードがどの AZ に居ても同じキャッシュをマウントできます。複数の推論・学習 Pod が同時に同じ HF キャッシュや NEFF を読みに来る RWX の要件にも合います。Pod Identity で `aws-efs-csi-driver` の Controller に IAM ロールを紐付け、Amazon EKS アドオンとして導入しますが、このアドオン自体は `efs_enabled` の値に関わらず常設され、ファイルシステム本体・マウントターゲット・アクセスポイント・StorageClass（`efs-shared`）・static PV だけが `efs_enabled = true` のときに作られます。
 
 **Amazon FSx for Lustre** は単一 AZ に固定された高スループット SSD のスクラッチ領域です（`fsx.tf`）。PERSISTENT_2 デプロイタイプを使い、既定で有効（`fsx_enabled = true`）です。単一 AZ である代わりに、Amazon EFS よりも高い読み書きスループットを持ち、大規模データセットの読み出しや学習チェックポイントの書き込みに向きます。
 
@@ -297,7 +297,7 @@ kubectl logs fsx-test2
 
 ## 4. Amazon EFS を有効化する
 
-Amazon EFS は既定で無効なので、マルチ AZ の RWX キャッシュを試すにはまず有効化します。`terraform.tfvars` の `efs_enabled` を `true` に**書き換えて** apply すると、Amazon EFS ファイルシステム・4 つの private subnet それぞれへのマウントターゲット・アクセスポイント・static PV（`efs-neuron-workspace`）が作られます。
+Amazon EFS は既定で無効なので、マルチ AZ の RWX キャッシュを試すにはまず有効化します。`terraform.tfvars` の `efs_enabled` を `true` に**書き換えて** apply すると、Amazon EFS ファイルシステム・private subnet ごとのマウントターゲット（`length(module.vpc.private_subnets)` 個。`us-east-2` なら 3、`us-west-2` なら 4）・アクセスポイント・StorageClass・static PV（`efs-neuron-workspace`）が作られます。
 
 `terraform.tfvars.example` には `efs_enabled = false` が最初から書かれているため、Basic01 でそれをコピーした場合は必ずこのエントリが存在します。`echo 'efs_enabled = true' >> terraform.tfvars` のように追記すると、同じキーが 2 回現れて plan が次のエラーで止まります。
 
