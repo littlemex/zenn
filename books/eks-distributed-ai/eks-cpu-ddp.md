@@ -242,10 +242,10 @@ kubectl logs -f -l job-name=ddp-torchrun -n "$NAMESPACE"
 [rank 1/2] mlflow disabled
 [rank 1/2] epoch 0 | steps 938 | loss 0.1981
 [rank 0/2] epoch 0 | steps 938 | loss 0.1993
-[rank 0/2] epoch 0 | snapshot saved to /shared/output/torchrun-gloo/snapshot.pt
+[rank 0/2] epoch 0 | snapshot saved to /shared/output/torchrun-gloo/snapshot.pt # 共有ストレージに書き込み
 ```
 
-MNIST のダウンロードは全 rank が実行し、初回のこの step で共有ストレージ上の `/shared/mnist-data` に落ちます（`download=True` は冪等で、既にファイルが揃っていれば torchvision 側が再取得をスキップします。rank 0 だけが取得して他 rank を barrier で待たせる形にすると、取得が collective の初期化タイムアウトを超えた場合にデッドロックするため、こちらを選んでいます）。各 rank は `DistributedSampler` によってデータセットの異なる部分を担当し、勾配を all-reduce で共有しながら同じモデルを更新します。エポックが進むと loss が減少します。`ddp.py` は各エポックの終わりに（`SAVE_EVERY` の既定は 1）rank 0 だけがスナップショットを共有ストレージ上の `/shared/output/torchrun-gloo/snapshot.pt` へ上書き保存します。上の出力で `snapshot saved` の行が rank 0 からしか出ていないのがそれです。「保存は rank 0 のみが行う」というのは DDP の定石で、全 rank が同じモデルを持っているため保存は 1 つで足ります（共有ファイルシステムでは全 rank が同じファイルへ同時書き込みすると破損しかねない、という実務上の理由もあります）。
+MNIST のダウンロードは全 rank が実行し、初回のこの step で共有ストレージ上の `/shared/mnist-data` に落ちます（`download=True` は冪等で、既にファイルが揃っていれば torchvision 側が再取得をスキップします。rank 0 だけが取得して他 rank を barrier で待たせる形にすると、取得が collective の初期化タイムアウトを超えた場合にデッドロックするため、こちらを選んでいます）。各 rank は `DistributedSampler` によってデータセットの異なる部分を担当し、勾配を all-reduce で共有しながら同じモデルを更新します。エポックが進むと loss が減少します。`ddp.py` は各エポックの終わりに（`SAVE_EVERY` の既定は 1）rank 0 だけがスナップショットを共有ストレージ上へ上書き保存します。上の出力で `snapshot saved` の行が rank 0 からしか出ていないのがそれです。「保存は rank 0 のみが行う」というのは DDP の定石で、全 rank が同じモデルを持っているため保存は 1 つで足ります（共有ファイルシステムでは全 rank が同じファイルへ同時書き込みすると破損しかねない、という実務上の理由もあります）。
 
 100 エポックの完走を待つ必要はありません。`epoch N | loss ...` の行がいくつか流れて学習が進んでいることを確認できたら、`Ctrl-C` でログの追従を止めて次に進みます。
 
