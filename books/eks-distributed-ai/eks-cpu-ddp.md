@@ -106,10 +106,6 @@ export NAMESPACE=distai
 kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
 ```
 
-:::message
-本章のワークショップ全体（イメージのビルドから 2 つの学習ジョブまで）を一括で実行するスクリプトが [`infra/eks/scripts/run-basic02.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/run-basic02.sh) に用意されていますが、現状そのままでは動きません。ビルドが手元の docker/finch を使う旧フローである点と、参照する ECR リポジトリ名が旧名の `ddp-sample` に固定されている点の 2 つが、現在の実装（クラスタ内ビルド、リポジトリ名の既定は `<cluster_name>-ddp-sample`）と食い違っています。本章は以降の手順を順に実行してください。
-:::
-
 ## 2. 学習用イメージを用意する
 
 2 つのワークロードは、MNIST MLP を DDP で学習する `ddp.py` を焼き込んだ専用イメージ `ddp-sample` を共用します。`ddp.py` は [awslabs/awsome-distributed-ai の DDP サンプル](https://github.com/awslabs/awsome-distributed-ai/tree/main/3.test_cases/pytorch/ddp) をベースに、保存先を共有 PVC へ寄せて adapt したものです。Dockerfile はリポジトリの [`infra/eks/manifests/ddp-sample/`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/manifests/ddp-sample) に置いてあります。
