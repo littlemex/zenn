@@ -113,7 +113,7 @@ variable "neuron_enable_scheduler" {
 
 ## 全体の中での位置付け
 
-Basic04 で作った `accelerator_pools` の型は GPU/Neuron 共通です。本章はその型に `device_plugin = "neuron"` のエントリを 1 つ追加し、`neuron-addons.tf` が条件付きで Neuron device plugin を導入するところから始めて、Basic05 で見た EFA を使ったマルチノード構成を Neuron 側でも実際に動かすところまでを扱います。GPU 側では NCCL がその役割を担っていましたが、Neuron では torch-neuronx（PyTorch/XLA バックエンド）と Neuron 用の collective 通信ライブラリがその役割を担います。
+Basic04 で作った `accelerator_pools` の型は GPU/Neuron 共通です。本章はその型に `device_plugin = "neuron"` のエントリを 1 つ追加し、`neuron-addons.tf` が条件付きで Neuron device plugin を導入するところから始めて、Basic06 で見た EFA を使ったマルチノード構成を Neuron 側でも実際に動かすところまでを扱います。GPU 側では NCCL がその役割を担っていましたが、Neuron では torch-neuronx（PyTorch/XLA バックエンド）と Neuron 用の collective 通信ライブラリがその役割を担います。
 
 ## 設計上の注意
 
@@ -181,7 +181,7 @@ trn2 = {
 # neuron_enable_scheduler = true
 ```
 
-`device_plugin = "neuron"` に切り替えている以外、フィールドの構造は Basic04 で書いた GPU プールと同じです。`cb_reservation_id` は事前に確保した Capacity Block の予約 ID に置き換えます。`zone` は書いていません。`reserved` プールの AZ は予約から自動導出される（`az.tf` が予約の AZ を読み取る）ので、trn2 プールでも Basic06 の GPU プールと同じく手書き不要です。プール名（map のキー）が Karpenter のノードラベル `node-role=<プール名>` になる点は後で使うので覚えておいてください。ここでは `trn2` としています。
+`device_plugin = "neuron"` に切り替えている以外、フィールドの構造は Basic04 で書いた GPU プールと同じです。`cb_reservation_id` は事前に確保した Capacity Block の予約 ID に置き換えます。`zone` は書いていません。`reserved` プールの AZ は予約から自動導出される（`az.tf` が予約の AZ を読み取る）ので、trn2 プールでも Basic05 の GPU プールと同じく手書き不要です。プール名（map のキー）が Karpenter のノードラベル `node-role=<プール名>` になる点は後で使うので覚えておいてください。ここでは `trn2` としています。
 
 ## 2. apply する
 
@@ -393,7 +393,7 @@ TDRV:dmem_buf_copyin  Copy from buffer to memory failed
 
 **Karpenter + Neuron の NPD/DRA は非サポートです。** 前掲のとおり、`neuron-helm-chart` の NPD/DRA はこの構成では無効化しています。
 
-**Capacity Block の期限に注意してください。** trn2 のような高性能インスタンスは Capacity Block で確保することが多く、期限が来るとインスタンスは自動的に回収されます（実際、今回の検証でも期限の少し前にインスタンスが `shutting-down` に入りました）。長時間の実験は期限に余裕を持って始め、`cb_end_date` を設定して期限前アラート（Basic06 参照）を受け取れるようにしておくと安全です。
+**Capacity Block の期限に注意してください。** trn2 のような高性能インスタンスは Capacity Block で確保することが多く、期限が来るとインスタンスは自動的に回収されます（実際、今回の検証でも期限の少し前にインスタンスが `shutting-down` に入りました）。長時間の実験は期限に余裕を持って始め、`cb_end_date` を設定して期限前アラート（Basic05 参照）を受け取れるようにしておくと安全です。
 
 ## 検証後のクリーンアップ
 
@@ -403,7 +403,7 @@ trn2.48xlarge は Capacity Block を使っていても高額な構成なので�
 kubectl delete ns "$NAMESPACE"
 ```
 
-Namespace を削除すると配下の Pod・ConfigMap もまとめて消えます。Namespace 削除後、Karpenter がノード側のスケールインをどう判断するかは各プールの `disruption` 設定に依存します。ワークロードが無くなった trn2 ノードが実際に `terminating` に遷移したかどうかは、`kubectl get nodes` やコンソールの EC2 インスタンス一覧で確認してください。ノードが残り続けている場合は、Basic06 で扱った Capacity Block の期限アラートに加えて、手動でノードの状態を確認する運用を挟むと安全です。プール自体を使い終えた場合は、`terraform.tfvars` から `trn2` プールのエントリを削除して `terraform apply` すれば、NodePool/EC2NodeClass も含めて片付きます。
+Namespace を削除すると配下の Pod・ConfigMap もまとめて消えます。Namespace 削除後、Karpenter がノード側のスケールインをどう判断するかは各プールの `disruption` 設定に依存します。ワークロードが無くなった trn2 ノードが実際に `terminating` に遷移したかどうかは、`kubectl get nodes` やコンソールの EC2 インスタンス一覧で確認してください。ノードが残り続けている場合は、Basic05 で扱った Capacity Block の期限アラートに加えて、手動でノードの状態を確認する運用を挟むと安全です。プール自体を使い終えた場合は、`terraform.tfvars` から `trn2` プールのエントリを削除して `terraform apply` すれば、NodePool/EC2NodeClass も含めて片付きます。
 
 # まとめ
 

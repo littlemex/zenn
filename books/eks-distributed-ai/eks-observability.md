@@ -35,7 +35,7 @@ DCGM exporter のメトリクスを Prometheus に拾わせるには、2 つが�
 
 ## 全体の中での位置付け
 
-本章は Basic07（GPU ワークロード）の直後に置いています。Basic07 では on-demand の GPU 1 枚で vLLM の推論を動かしましたが、より大規模な学習・推論では Basic06 の Capacity Block で p5en x2 のような複数ノード・複数 GPU を確保します。いずれの場合も、その GPU が実際にどう使われているかは、そのままでは見えません。本章の observability を入れると、GPU の使用率がリアルタイムで Grafana に表示されます。「動かす（Basic07）→ 見える化する（Basic08）」という一続きの流れです。observability は基盤の構築・破棄とは独立しているため、必要なときだけ入れる運用でも構いません。
+本章は Basic07（GPU ワークロード）の直後に置いています。Basic07 では on-demand の GPU 1 枚で vLLM の推論を動かしましたが、より大規模な学習・推論では Basic05 の Capacity Block で p5en x2 のような複数ノード・複数 GPU を確保します。いずれの場合も、その GPU が実際にどう使われているかは、そのままでは見えません。本章の observability を入れると、GPU の使用率がリアルタイムで Grafana に表示されます。「動かす（Basic07）→ 見える化する（Basic08）」という一続きの流れです。observability は基盤の構築・破棄とは独立しているため、必要なときだけ入れる運用でも構いません。
 
 ## 注意
 
@@ -138,7 +138,7 @@ ServiceMonitor が拾われていることを確認したら、DCGM の GPU 使�
 curl -s "http://localhost:9090/api/v1/query?query=DCGM_FI_DEV_GPU_UTIL" | python3 -m json.tool | head
 ```
 
-返る系列数は、そのクラスタにある GPU の総数と一致します。GPU 1 枚ずつを数えるので、ノードが混在していれば合算されます。本書の検証時は Basic06 の Capacity Block の p4d.24xlarge（A100 x8）2 台と、Basic07 の vLLM が載った g6.xlarge（L4 x1）1 台が同時に動いていたため、**17 系列**が返りました。
+返る系列数は、そのクラスタにある GPU の総数と一致します。GPU 1 枚ずつを数えるので、ノードが混在していれば合算されます。本書の検証時は Basic05 の Capacity Block の p4d.24xlarge（A100 x8）2 台と、Basic07 の vLLM が載った g6.xlarge（L4 x1）1 台が同時に動いていたため、**17 系列**が返りました。
 
 系列数だけでは分かりにくいので、ノードと GPU モデルごとに数えると構成が見えます。
 

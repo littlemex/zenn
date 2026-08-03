@@ -8,8 +8,8 @@ chapters:
   - eks-cpu-ddp
   - eks-karpenter-setup
   - eks-accelerator-pools
-  - eks-efa-topology
   - eks-capacity-block
+  - eks-efa-topology
   - eks-run-workloads
   - eks-observability
   - eks-neuron-trainium
