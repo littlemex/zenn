@@ -138,7 +138,33 @@ ServiceMonitor が拾われていることを確認したら、DCGM の GPU 使�
 curl -s "http://localhost:9090/api/v1/query?query=DCGM_FI_DEV_GPU_UTIL" | python3 -m json.tool | head
 ```
 
-Basic07 の vLLM のように GPU 1 枚だけの場合は、1 系列だけが返ります。Basic06 の Capacity Block で確保した p5en x2（H200 x8 x2）のような環境では、**16 系列**の GPU メトリクスが返ります（gpu=0..7 が各ノード分）。これで 2 ノード 16 GPU すべてのメトリクスが収集されていることが確認できます。
+返る系列数は、そのクラスタにある GPU の総数と一致します。GPU 1 枚ずつを数えるので、ノードが混在していれば合算されます。本書の検証時は Basic06 の Capacity Block の p4d.24xlarge（A100 x8）2 台と、Basic07 の vLLM が載った g6.xlarge（L4 x1）1 台が同時に動いていたため、**17 系列**が返りました。
+
+系列数だけでは分かりにくいので、ノードと GPU モデルごとに数えると構成が見えます。
+
+```bash
+curl -s "http://localhost:9090/api/v1/query?query=DCGM_FI_DEV_GPU_UTIL" \
+  | python3 -c "
+import json, sys
+from collections import Counter
+r = json.load(sys.stdin)['data']['result']
+print('系列数:', len(r))
+c = Counter((m['metric'].get('Hostname'), m['metric'].get('modelName')) for m in r)
+for (host, model), n in sorted(c.items()):
+    print(f'  {model:26s} {n} GPU  ({host})')
+"
+```
+
+実機出力:
+
+```text
+系列数: 17
+  NVIDIA A100-SXM4-40GB      8 GPU  (ip-10-0-a-b...)
+  NVIDIA A100-SXM4-40GB      8 GPU  (ip-10-0-c-d...)
+  NVIDIA L4                  1 GPU  (ip-10-0-e-f...)
+```
+
+これで、Capacity Block で確保した 2 ノード 16 GPU と、別プールの推論ノード 1 GPU のすべてからメトリクスが集まっていることが確認できます。系列が返らない場合や期待より少ない場合は、手順 3 の Targets 画面で該当ノードの dcgm-exporter が `UP` になっているかを先に確認してください。
 
 ## 5. Grafana の UI にアクセスする
 
