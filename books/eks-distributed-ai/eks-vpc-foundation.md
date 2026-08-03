@@ -65,7 +65,7 @@ module "vpc" {
 
 **`one_nat_gateway_per_az = true` の意味**: NAT ゲートウェイを AZ ごとに 1 つ置き、各 AZ のプライベートルートテーブルはその AZ 自身の NAT を向きます。VPC は `local.azs` の全 AZ にまたがるので、2 AZ なら NAT も 2 つ、3 AZ なら 3 つ作られます。
 
-当初この基盤は `single_nat_gateway = true` で単一 NAT にしていました。計算が単一 AZ に寄る（EFA の集団通信も FSx for Lustre も Capacity Block も単一 AZ 前提）ので AZ ごとに NAT を作る利点は薄い、という判断です。これを AZ ごとに変えたのは、単一 NAT がその AZ 単位の単一障害点になり、影響範囲が「その AZ のワークロード」ではなく**クラスタ全体のイメージ pull** に及ぶためです。プライベートサブネットのノードは外向き通信を NAT に依存しており、NAT を置いた AZ が劣化すると、他の AZ のノードもレジストリに到達できなくなります。NAT の時間課金は 1 つあたり `$0.045/h`（us-east-2）で、同リージョンの `p4d.24xlarge` オンデマンド `$21.96/h` に対して桁が 3 つ違います。AZ 障害の切り離しを買う対価としては無視できる差です。
+当初この基盤は `single_nat_gateway = true` で単一 NAT にしていました。計算が単一 AZ に寄る（EFA の集団通信も FSx for Lustre も Capacity Block も単一 AZ 前提）ので AZ ごとに NAT を作る利点は薄い、という判断です。これを AZ ごとに変えたのは、単一 NAT がその AZ 単位の単一障害点になり、影響範囲が「その AZ のワークロード」ではなく**クラスタ全体のイメージ pull** に及ぶためです。プライベートサブネットのノードは外向き通信を NAT に依存しており、NAT を置いた AZ が劣化すると、他の AZ のノードもレジストリに到達できなくなります。NAT の時間課金は 1 つあたり `$0.045/h`（us-east-2）で、例えば同リージョンの `p4d.24xlarge` オンデマンド `$21.96/h` に対して桁が 3 つ違います。AZ 障害の切り離しを買う対価としては無視できる差です。
 
 もう一つの理由は、単一 NAT だと**別 AZ のノードの外向き通信が AZ をまたぐ**点です。NAT がある AZ 以外で起動したノードのトラフィックは AZ 間転送を経由するため、レイテンシと AZ 間転送料金が乗ります。Capacity Block はどの AZ に落ちるか事前に決められず、この基盤の VPC がリージョンの全 AZ にまたがるのはまさにそのためなので、「計算がどの AZ に来ても、その AZ に NAT がある」状態を既定にしておく方が構成として素直です。
 
@@ -220,6 +220,9 @@ terraform apply
 aws eks update-kubeconfig --name "$(terraform output -raw cluster_name)" \
   --region <region> --profile <tfvars と同じ profile>
 kubectl get nodes
+
+# インスタンスタイプまで見たい場合
+kubectl get nodes -o custom-columns='NAME:.metadata.name,TYPE:.metadata.labels.node\.kubernetes\.io/instance-type,ROLE:.metadata.labels.node-role,CAP:.metadata.labels.karpenter\.sh/capacity-type'
 ```
 
 `kubectl get nodes` で m5 系のノードが 2 台 `Ready` 状態で表示されれば、System ノードグループの起動は成功です。
@@ -283,15 +286,18 @@ cd tests
 クラスタ名とリージョンは `terraform output` から自動で解決されるので指定は不要です（`--cluster-name` / `--region` で明示的に上書きすることもできます）。実機出力は次のようになります。
 
 ```text
+==============================
+ Test Summary
+==============================
 STATUS   TEST                                DETAIL
 --------------------------------------------------------------
-PASS     control-plane                       6s
-PASS     system-nodes                        6s
-PASS     karpenter                           10s
-PASS     trainer                             6s
-PASS     csi-drivers                         44s
-PASS     device-plugins                      8s
-PASS     storage-mount                       54s
+PASS     control-plane                       4s
+PASS     system-nodes                        3s
+PASS     karpenter                           8s
+PASS     trainer                             3s
+PASS     csi-drivers                         29s
+PASS     device-plugins                      11s
+PASS     storage-mount                       42s
 --------------------------------------------------------------
 PASS: 7  FAIL: 0  SKIP: 0  TOTAL: 7
 ```
@@ -303,6 +309,27 @@ GPU テストは Basic04 でアクセラレータプールを定義した後に�
 ```bash
 # Karpenter が GPU ノードを起動するため 5-10 分かかります
 ./run-tests.sh --with-gpu --profile <tfvars と同じ profile> --gpu-count 1
+```
+
+```text
+==============================
+ Test Summary
+==============================
+STATUS   TEST                                DETAIL
+--------------------------------------------------------------
+PASS     control-plane                       3s
+PASS     system-nodes                        4s
+PASS     karpenter                           7s
+PASS     trainer                             4s
+PASS     csi-drivers                         28s
+PASS     device-plugins                      11s
+PASS     storage-mount                       43s
+PASS     gpu-node-launch+nvidia-smi          86s
+PASS     nvidia-smi-check                    2s
+PASS     cuda-vector-add                     17s
+PASS     gpu-fsx-mount                       12s
+--------------------------------------------------------------
+PASS: 11  FAIL: 0  SKIP: 0  TOTAL: 11
 ```
 
 対象の NodePool は cpu 以外の NodePool から自動選択されます（`--gpu-nodepool` で明示指定も可能）。`--gpu-count` には検証したい GPU 枚数を渡します（g6.2xlarge なら 1、g6e.12xlarge なら 4、p4d.24xlarge なら 8）。GPU テストで ICE（InsufficientInstanceCapacity）により起動できない場合は AWS 側のキャパシティ問題であり、インフラの不具合ではありません。
