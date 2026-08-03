@@ -332,7 +332,28 @@ curl -i "$(terraform output -raw cloudfront_domain_name)"
 curl -i --max-time 5 "$(terraform output -raw alb_dns_name)"
 ```
 
-Phase 2 の適用後、Application Load Balancer への直接アクセスがタイムアウトし、Amazon CloudFront 経由のアクセスのみ成功することを確認できれば、多層防御が機能しています。確認できたら、次の破棄手順に進みます（`enable_demo_app`/`enable_cloudfront` で作ったリソースも `--destroy` の `terraform destroy` でまとめて消えます）。
+Phase 2 の適用後、Application Load Balancer への直接アクセスがタイムアウトし、Amazon CloudFront 経由のアクセスのみ成功することを確認できれば、多層防御が機能しています。実機では次の結果になりました。
+
+```text
+--- CloudFront 経由 ---
+HTTP 200
+--- ALB 直接 ---
+HTTP 000
+```
+
+`000` は curl が応答を得られずタイムアウトしたことを示します。接続が拒否されるのではなく無応答になるのは、セキュリティグループが破棄したパケットに何も返さないためです。確認できたら、次の破棄手順に進みます（`enable_demo_app`/`enable_cloudfront` で作ったリソースも `--destroy` の `terraform destroy` でまとめて消えます）。
+
+:::message
+Phase 2 では Amazon CloudFront 用の ACM 証明書を扱うため、`us-east-1` 向けのプロバイダが追加で使われます。ここで `terraform plan` が次のように失敗する場合があります。
+
+```text
+Error: No valid credential sources found
+Error: failed to refresh cached credentials, process provider error:
+credential process timed out: signal: killed
+```
+
+認証情報そのものの問題ではなく、`credential_process` を使う構成で 2 つ目のリージョンの認証が同時に走ってタイムアウトしただけです。先に `aws sts get-caller-identity --region us-east-1` を一度実行して認証情報をキャッシュさせておけば通ります。
+:::
 
 `-var` はそのコマンド実行時だけの指定です。この後 `-var` を付けずに `terraform apply` すると、`enable_demo_app`/`enable_cloudfront` は既定の `false` に戻り、demo アプリと Amazon CloudFront のリソースが黙って削除されます。恒久的に有効にしたい場合は `terraform.tfvars` に `enable_demo_app = true`（Phase 2 まで進めるなら `enable_cloudfront = true` も）を書いておきます。
 
@@ -381,6 +402,18 @@ kubectl get nodeclaims -w
 ```
 
 単一ノードの構成であれば概ね 9 分前後で 0 件になります。`NodePool` 削除の直後は NodeClaim がまだ `Terminating` で残り、Karpenter が Amazon EC2 インスタンスの終了をバックグラウンドで進めていることが分かります。
+
+この時間はインスタンスタイプで大きく変わります。EFA を複数枚持つノードは ENI の解放に時間がかかり、本書の検証では EFA 4 枚の p4d.24xlarge 1 台が `shutting-down` から `terminated` になるまで**約 20 分**を要しました。Pod の退避（ドレイン）自体は 1 分ほどで終わっており、残りはすべて EC2 側の非同期処理です。次のコマンドで、Kubernetes 側が終わったあとに EC2 側がまだ動いていることを確かめられます。
+
+```bash
+kubectl get nodeclaim <name> \
+  -o jsonpath='{range .status.conditions[?(@.type=="Drained")]}Drained={.status}{"\n"}{end}'
+aws ec2 describe-instances \
+  --filters "Name=private-dns-name,Values=<node-name>" \
+  --query 'Reservations[0].Instances[0].[State.Name,NetworkInterfaces[].InterfaceType]' --output text
+```
+
+`Drained=True` が出たあとも `shutting-down` が続き、`efa-only` の ENI が一覧から順に消えていきます。`04-teardown.sh` の `NodeClaim` 待ちが最大 30 分なのは、この幅を吸収するためです。EFA を多く積んだノードを複数台まとめて畳む場合、9 分では終わらない前提で待ってください。
 
 ## 4. クラスタ全体を破棄する
 

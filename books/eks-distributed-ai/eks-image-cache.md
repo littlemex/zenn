@@ -19,7 +19,7 @@ free: true
 
 素朴な発想では「キャッシュを足せば速くなる」と考えますが、この基盤には無視できない支配的な事実が 2 つあります。
 
-- **キャッシュの寿命はノードの寿命に等しくなります**。Karpenter のノード回収の挙動はプールごとに異なり（Basic03 で導入した Karpenter の disruption 設定です）、EFA や予約系のアクセラレータプール（Basic05 で作る `gpu-p4d` や Basic09 の `trn2` など）は `consolidateAfter: Never` でノードを維持しますが、非 EFA のアクセラレータプール（Basic04 の `gpu-ddp` など）と cpu プールは短い `consolidateAfter`（5m / 30s）でアイドルノードを回収します。ノード内のキャッシュをいくら磨いても、対象ノードが消えればキャッシュも消えます。検証反復のコールド pull の主因はキャッシュ層の不在ではなく、回収対象プールでのノードの入れ替わり（churn）です
+- **キャッシュの寿命はノードの寿命に等しくなります**。Karpenter のノード回収の挙動はプールごとに異なり（Basic03 で導入した Karpenter の disruption 設定です）、EFA や予約系のアクセラレータプール（Basic06 で作る `gpu-p4d` や Basic09 の `trn2` など）は `consolidateAfter: Never` でノードを維持しますが、非 EFA のアクセラレータプール（Basic04 の `gpu-ddp` など）と cpu プールは短い `consolidateAfter`（5m / 30s）でアイドルノードを回収します。ノード内のキャッシュをいくら磨いても、対象ノードが消えればキャッシュも消えます。検証反復のコールド pull の主因はキャッシュ層の不在ではなく、回収対象プールでのノードの入れ替わり（churn）です
 - **digest pin 運用が最強のキャッシュの味方になります**。イメージをタグではなく digest で参照すると、参照はイミュータブルになり「stale キャッシュ」という故障クラスがほぼ消滅します。`imagePullPolicy: IfNotPresent` を安全に使えるようになります
 
 この 2 点を踏まえると、キャッシュ設計の目的は「速くすること」だけでは足りません。**速くする仕組みが失敗したときに、素のコールド pull に静かに戻るだけで済むこと**、つまり良性の故障モードに閉じることが同じくらい重要です。ノードが起動できなくなったり、実行中の学習ジョブが死んだりする故障を持ち込む高速化は、この基盤には入れません。
@@ -296,13 +296,58 @@ prewarm 済みノードでは `Pulling` イベントすら出ず、`Container im
 
 この結果は取得が支配的だったこの環境の数字です。手順 1 の計測で展開が支配的だと出た場合に限り、次の zstd 化に進んでください。
 
-zstd 化は BuildKit の出力で行いますが、`force-compression=true` を付けて外部ベースイメージまで再圧縮してはいけません。ベースレイヤの digest が変わって共有・キャッシュヒットを壊すためです。自分が積む新規レイヤだけを zstd にする混在方式が正解です。
+zstd 化は BuildKit の出力で行います。Basic02 のクラスタ内ビルドがそのまま使えるので、`imageBuild.zstd=true` を足すだけです。
 
 ```bash
-docker buildx build \
-  --output type=image,name=<ecr-repo>:<tag>,push=true,compression=zstd,oci-mediatypes=true \
-  .
+cd infra/eks
+ECR_URL=$(terraform output -raw ddp_sample_ecr_url)
+
+kubectl delete job build-ddp-sample-v2-zstd -n image-builder --ignore-not-found
+
+helm template exp charts/experiments -n "$NAMESPACE" \
+    --set imageBuild.enabled=true \
+    --set imageBuild.repository="$ECR_URL" \
+    --set imageBuild.tag=v2-zstd \
+    --set imageBuild.zstd=true \
+    -s templates/image-build-ddp-sample.yaml \
+    | kubectl apply -f -
+
+kubectl -n image-builder wait --for=condition=complete \
+    job/build-ddp-sample-v2-zstd --timeout=30m
 ```
+
+これは BuildKit の出力指定に `compression=zstd,oci-mediatypes=true` を足したものです。`oci-mediatypes` は省略できません。zstd のレイヤは OCI のメディアタイプでしか表現できず、Docker v2 のマニフェストでは記述できないためです。
+
+ここで `force-compression=true` を付けてはいけません。外部のベースイメージまで再圧縮してしまい、ベースレイヤの digest が変わって共有とキャッシュヒットの両方を壊します。付けなければ、そのビルドが新しく積むレイヤだけが zstd になり、ベースは元のまま残ります。この混在した形が、圧縮の利点と共有の利点を同時に保つ唯一の形です。参照実装は `force-compression` を設定できないようにしてあります。
+
+混在になっていることは、push 後のマニフェストで確かめられます。
+
+```bash
+aws ecr batch-get-image --repository-name "$(terraform output -raw ddp_sample_ecr_url | cut -d/ -f2-)" \
+  --image-ids imageTag=v2-zstd --query 'images[0].imageManifest' --output text \
+  | python3 -c "
+import json, sys
+for i, l in enumerate(json.load(sys.stdin)['layers']):
+    print(f\"layer{i}: {l['mediaType']}  {l['size']:,} bytes\")
+"
+```
+
+実機出力（gzip のままのベースと、zstd になった自ビルド層が混在している）:
+
+```text
+layer0: application/vnd.oci.image.layer.v1.tar+gzip  30,439,933 bytes
+layer1: application/vnd.oci.image.layer.v1.tar+gzip  7,215,230 bytes
+layer2: application/vnd.oci.image.layer.v1.tar+gzip  3,300,282,353 bytes
+layer3: application/vnd.oci.image.layer.v1.tar+gzip  32 bytes
+layer4: application/vnd.oci.image.layer.v1.tar+gzip  99 bytes
+layer5: application/vnd.oci.image.layer.v1.tar+zstd  16 bytes
+layer6: application/vnd.oci.image.layer.v1.tar+zstd  3,892 bytes
+layer7: application/vnd.oci.image.layer.v1.tar+zstd  16 bytes
+```
+
+3.3 GB を占める layer2 は `tar+gzip` のままで、サイズも zstd 化しなかったビルドとバイト単位で一致しています。つまりベースレイヤの digest は変わっておらず、同じベースを使う他のイメージとの共有もノード上のキャッシュヒットも保たれています。マニフェスト全体のメディアタイプも `application/vnd.oci.image.manifest.v1+json` に変わっており、`oci-mediatypes` が効いていることが確認できます。
+
+この例のように自ビルド層が数 KB しかない場合、zstd の効果はほぼありません。zstd が意味を持つのは、自分で積むレイヤが大きく、かつ手順 1 の計測で展開が支配的だと出たときだけです。
 
 外部イメージをミラーする場合は `crane copy` で無変換のままコピーします。ミラーでの再圧縮は digest が変わって上流の署名と provenance を無効化するため禁止です。
 
