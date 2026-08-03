@@ -39,8 +39,8 @@ module "vpc" {
   public_subnets  = local.public_subnets  # vpc_cidr の上半分から AZ ごとに /24 を導出
 
   enable_nat_gateway     = true
-  single_nat_gateway     = true
-  one_nat_gateway_per_az = false
+  single_nat_gateway     = false
+  one_nat_gateway_per_az = true      # NAT を AZ ごとに 1 つ置きます
 
   enable_dns_hostnames = true
   enable_dns_support   = true
@@ -61,9 +61,15 @@ module "vpc" {
 
 ここで `azs` / `private_subnets` / `public_subnets` に渡している 3 つの `local.*` が、この構成の設計上の肝です。いずれも [`az.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/az.tf) で `var.region` と `var.vpc_cidr` から自動導出しており、通常のデプロイでは AZ もサブネット CIDR も一切手書きしません。tfvars に書くのは `region` とプールのインスタンスタイプだけで済みます。
 
-**AZ とサブネット CIDR の自動導出**: `local.azs` は `var.azs` が `null`（既定）ならそのリージョンの標準 AZ を `sort` して全件返します。`us-west-2` や `us-east-2` なら 4 つの AZ すべてに VPC がまたがります。サブネット CIDR も `var.private_subnet_cidrs` / `var.public_subnet_cidrs` が `null`（既定）なら `var.vpc_cidr` から AZ ごとに 1 つずつ切り出します。デフォルトではうまく AZ を適切な CIDR で切ってくれていると思っていただければ大丈夫です。
+**AZ とサブネット CIDR の自動導出**: `local.azs` は `var.azs` が `null`（既定）ならそのリージョンの標準 AZ を `sort` して全件返します。`us-east-2` なら 3 つ、`us-west-2` なら 4 つの AZ すべてに VPC がまたがります（AZ 数はリージョンによって違うので、`aws ec2 describe-availability-zones --region <region> --filters Name=opt-in-status,Values=opt-in-not-required` で確認できます）。サブネット CIDR も `var.private_subnet_cidrs` / `var.public_subnet_cidrs` が `null`（既定）なら `var.vpc_cidr` から AZ ごとに 1 つずつ切り出します。デフォルトではうまく AZ を適切な CIDR で切ってくれていると思っていただければ大丈夫です。
 
-**`single_nat_gateway = true` の意味**: NAT ゲートウェイを AZ ごとに作らず 1 つだけにしています。本番の可用性設計では、AZ 障害の影響を切り離すためと、AZ をまたぐ転送料金を避けるために AZ ごとに NAT を置きます。ところがこの基盤では、EFA の集団通信も FSx for Lustre も Capacity Block も単一 AZ が前提で、性能を出したいワークロードは自然と 1 つの AZ に集まります。そのため計算そのものが単一 AZ に寄っており、その AZ に NAT を同居させる限り、AZ ごとに NAT を作る利点は薄いです。GPU に比べて費用は安いため NAT を全てのリージョンで事前に用意しておくという考え方もできますし推奨されますが、今回は単位 AZ のみで NAT を作っていることに留意してください。そしてクラスター作成後に別の AZ で計算ノードが起動する場合でも勝手に NAT をその AZ で立てるわけではないです。ただし、通信の動作自体は別の AZ に NAT があっても問題はないです。
+**`one_nat_gateway_per_az = true` の意味**: NAT ゲートウェイを AZ ごとに 1 つ置き、各 AZ のプライベートルートテーブルはその AZ 自身の NAT を向きます。VPC は `local.azs` の全 AZ にまたがるので、2 AZ なら NAT も 2 つ、3 AZ なら 3 つ作られます。
+
+当初この基盤は `single_nat_gateway = true` で単一 NAT にしていました。計算が単一 AZ に寄る（EFA の集団通信も FSx for Lustre も Capacity Block も単一 AZ 前提）ので AZ ごとに NAT を作る利点は薄い、という判断です。これを AZ ごとに変えたのは、単一 NAT がその AZ 単位の単一障害点になり、影響範囲が「その AZ のワークロード」ではなく**クラスタ全体のイメージ pull** に及ぶためです。プライベートサブネットのノードは外向き通信を NAT に依存しており、NAT を置いた AZ が劣化すると、他の AZ のノードもレジストリに到達できなくなります。NAT の時間課金は 1 つあたり `$0.045/h`（us-east-2）で、同リージョンの `p4d.24xlarge` オンデマンド `$21.96/h` に対して桁が 3 つ違います。AZ 障害の切り離しを買う対価としては無視できる差です。
+
+もう一つの理由は、単一 NAT だと**別 AZ のノードの外向き通信が AZ をまたぐ**点です。NAT がある AZ 以外で起動したノードのトラフィックは AZ 間転送を経由するため、レイテンシと AZ 間転送料金が乗ります。Capacity Block はどの AZ に落ちるか事前に決められず、この基盤の VPC がリージョンの全 AZ にまたがるのはまさにそのためなので、「計算がどの AZ に来ても、その AZ に NAT がある」状態を既定にしておく方が構成として素直です。
+
+なお、外向き通信は NAT だけに依存しているわけではありません。ECR・Amazon EC2・STS・SSM・CloudWatch Logs・EKS Auth は [`vpc-endpoints.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/vpc-endpoints.tf) の VPC endpoint 経由で NAT を通らずに到達します。NAT が担うのは `nvcr.io` や `quay.io`、`registry.k8s.io` といった ECR 以外のレジストリと、Interface endpoint を持たない IAM です。endpoint で NAT 依存を切る設計は Basic11、イメージ pull の経路そのものは Advanced01 で扱います。
 
 **`private_subnet_tags` の `karpenter.sh/discovery`**: このタグが後の章で効いてきます。Karpenter は「ノードを起動してよいサブネット」をこのタグで検出します。ここで**プライベートサブネットにだけ**タグを付け、`public_subnet_tags` には付けていない点が重要です。もし共通の `tags` に含めてしまうと全サブネットに伝搬してパブリックサブネットにも付き、Karpenter がそこにノードを立ててしまいます。この構成はパブリックサブネットにパブリック IP を自動付与しない設定なので、そこに立ったノードは外向きの到達経路を持たず、`nodeadm` によるクラスタ参加に失敗します。
 
@@ -197,7 +203,7 @@ terraform apply
 `terraform apply` は state に記録されたリソースだけを管理し、state に無いリソースが AWS 側に存在するかどうかは確認しません。このため profile の取り違え方によって 2 種類の事故が起きます。1 つ目は、state が空（またはそのリソースを未追跡）のまま、既にリソースが存在するアカウントに profile が向くケースです。IAM ロール・KMS エイリアス・CloudWatch ロググループのように名前に一意制約があるリソースは `EntityAlreadyExists` で失敗し、FSx ファイルシステムのように名前の一意制約が無いリソースはエラーにならず二重作成されて課金が始まります（apply が途中で失敗しても、並行して作成が始まった FSx はそのまま完成まで走り切ります）。2 つ目は、state にリソースが記録済みのまま別アカウントに profile が向くケースで、この場合は Terraform が「管理下のリソースがすべて消えた」と判断し、エラーも出さずに丸ごと作り直します。後者はエラーで止まらないぶん気づきにくく、より危険です。重複作成された FSx はコンソールで `fs-` から始まる ID を確認して手動で削除しない限り課金が続くため、apply の前に必ず `aws sts get-caller-identity` で Account と ARN を確認してください。step 1 で `expected_account_id` を設定しておけば、認証情報が別アカウントを指したまま apply しようとしても plan の段階で停止するので、この事故そのものを起こさせない歯止めになります。
 :::
 
-`terraform apply` は、Amazon VPC・NAT ゲートウェイ・Amazon EKS コントロールプレーン・System ノードグループに加えて、その上で動く Karpenter コントローラ・各 CSI ドライバ・Kubeflow Training Operator・共有ストレージ（既定の FSx）まで、クラスタスコープの基盤を一度に作ります。`accelerator_pools` が空なので GPU/Neuron ノードだけは立ちません。所要時間が大きいのはコントロールプレーンの起動と FSx ファイルシステム（特に FSx for Lustre）の作成で、いずれも単独で 10〜15 分級です。両者は VPC さえできれば並行して作られるため単純な足し算にはなりませんが、それでも全体では 20〜30 分程度を見ておくと安全です。
+`terraform apply` は、Amazon VPC・AZ ごとの NAT ゲートウェイ・Amazon EKS コントロールプレーン・System ノードグループに加えて、その上で動く Karpenter コントローラ・各 CSI ドライバ・Kubeflow Training Operator・共有ストレージ（既定の FSx）まで、クラスタスコープの基盤を一度に作ります。`accelerator_pools` が空なので GPU/Neuron ノードだけは立ちません。所要時間が大きいのはコントロールプレーンの起動と FSx ファイルシステム（特に FSx for Lustre）の作成で、いずれも単独で 10〜15 分級です。両者は VPC さえできれば並行して作られるため単純な足し算にはなりませんが、それでも全体では 20〜30 分程度を見ておくと安全です。
 
 :::message
 `terraform apply` は 20〜30 分ほどかかります（コントロールプレーンと FSx の作成が支配的です）。コントロールプレーンが `ACTIVE` になり、FSx ファイルシステムが `AVAILABLE` になるまで待ちましょう。
@@ -215,6 +221,24 @@ kubectl get nodes
 ```
 
 `kubectl get nodes` で m5 系のノードが 2 台 `Ready` 状態で表示されれば、System ノードグループの起動は成功です。
+
+あわせて NAT が AZ ごとに分かれていることも確認しておきます。プライベートルートテーブルの `0.0.0.0/0` が、それぞれ別の NAT を向いているのが期待する状態です。
+
+```bash
+aws ec2 describe-route-tables --region <region> \
+  --filters "Name=vpc-id,Values=$(terraform output -raw vpc_id)" "Name=tag:Name,Values=*private*" \
+  --query 'RouteTables[].[Tags[?Key==`Name`]|[0].Value,Routes[?DestinationCidrBlock==`0.0.0.0/0`]|[0].NatGatewayId]' \
+  --output text
+```
+
+実機出力は次のようになります（2 AZ 構成の例で、AZ ごとにルートテーブルと NAT が 1 対 1 に対応しています）。
+
+```text
+<cluster>-private-<region>a	nat-0ea8dxxxxxxxxxxxx
+<cluster>-private-<region>b	nat-09c50xxxxxxxxxxxx
+```
+
+`<cluster>-private` という AZ 名の付かない行が 1 つだけ返り、NAT も 1 つしか出ない場合は単一 NAT の構成です。`single_nat_gateway` / `one_nat_gateway_per_az` の値を確認してください。
 
 :::message alert
 `kubectl` が `Unauthorized`（`error: You must be logged in to the server`）で弾かれる場合、原因はほぼ 2 つです。1 つ目は、`terraform apply` を実行したプリンシパルと `kubectl` を実行するプリンシパルが食い違っているケースです。`enable_cluster_creator_admin_permissions = true` はクラスタを作成したプリンシパルにだけ管理者権限を与えるため、`apply` を名前付き profile（AWS SSO や assume-role）で実行したのに `update-kubeconfig` を素の `[default]` で叩くと、両者が別プリンシパルになり弾かれます。`aws sts get-caller-identity` で両者のプリンシパルを確認します。assume-role の場合はセッション名部分が違っていても問題なく、`assumed-role/<ロール名>` までが一致していれば認証は通ります（アクセスエントリは基底の IAM ロール ARN 単位でマッチするためです）。一致していなければ `update-kubeconfig` に `apply` と同じ `--profile` を渡す（または `export AWS_PROFILE`）と解消します。自分のロールが登録済みかは `aws eks list-access-entries --cluster-name <name>` でも確認できます。2 つ目は、`apply` 直後にアクセスエントリがまだ認証レイヤに伝播していないケースで、この場合は 1〜2 分待って再実行すれば通ります。
