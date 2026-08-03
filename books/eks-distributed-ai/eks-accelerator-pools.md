@@ -120,6 +120,8 @@ helm template exp charts/experiments -n "$NAMESPACE" \
     --set trainjobTrain.nprocPerNode=1 \
     --set trainjobTrain.gpu.enabled=true \
     --set trainjobTrain.gpu.count=1 \
+    --set torchrunTrain.totalEpochs=100 \
+    --set sharedStorage.existingClaimName=shared-claim \
     | kubectl apply -f -
 ```
 
@@ -132,6 +134,19 @@ helm template exp charts/experiments -n "$NAMESPACE" \
 ## 3. 実行と確認
 
 TrainJob が展開する Pod は JobSet の規則で名付けられるため、Pod 名を決め打ちせずラベルで選びます。
+
+```bash
+# インスタンス数とタイプを確認する
+kubectl get nodes -o custom-columns='NAME:.metadata.name,TYPE:.metadata.labels.node\.kubernetes\.io/instance-type,ROLE:.metadata.labels.node-role,CAP:.metadata.labels.karpenter\.sh/capacity-type'
+```
+
+```
+NAME                                             TYPE         ROLE      CAP
+ip-10-0-12-230.ap-northeast-1.compute.internal   g6.2xlarge   gpu-ddp   spot
+ip-10-0-26-130.ap-northeast-1.compute.internal   g6.2xlarge   gpu-ddp   spot
+ip-10-0-57-98.ap-northeast-1.compute.internal    m5.xlarge    system    <none>
+ip-10-0-93-66.ap-northeast-1.compute.internal    m5.xlarge    system    <none>
+```
 
 ```bash
 kubectl get pods -n "$NAMESPACE" -o wide -l jobset.sigs.k8s.io/jobset-name=ddp-trainjob
