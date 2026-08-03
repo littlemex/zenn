@@ -85,7 +85,7 @@ NVIDIA GPU Operator は Basic03 の時点では入っていません。`accelera
 
 ## 2. TrainJob で 2 ノード DDP を投入する
 
-Kubeflow Trainer v2 の TrainJob(`trainer.kubeflow.org/v1alpha1`)には `nodeSelector` や `tolerations` を直接書くフィールドがありません。Pod スペックの土台は Basic02 で見た `ClusterTrainingRuntime`(`torch-distributed-eks`)が持っており、そこに焼き込まれた `nodeSelector: { node-role: <値> }` がどのプールに載せるかを決めます。したがって GPU プールへ切り替えるには、TrainJob の中身を書き換えるのではなく、Helm の `trainjobTrain.nodeRole` を `gpu-ddp` に切り替えて `torch-distributed-eks` を再レンダリングします。
+Kubeflow Trainer v2 の TrainJob には `nodeSelector` や `tolerations` を直接書くフィールドがありません。Pod スペックの土台は Basic02 で確認した `ClusterTrainingRuntime`(`torch-distributed-eks`)が持っており、そこに焼き込まれた `nodeSelector: { node-role: <値> }` がどのプールに載せるかを決めます。したがって GPU プールへ切り替えるには、TrainJob の中身を書き換えるのではなく、Helm の `trainjobTrain.nodeRole` を `gpu-ddp` に切り替えて `torch-distributed-eks` を再レンダリングします。
 
 Basic02 と同じ `ddp.py`(CUDA が見えれば nccl backend を自動選択するコード)を、同じ `ddp-sample` イメージ(CUDA ベース)で動かすので、学習コード・イメージのどちらも変更不要です。変わるのは Helm に渡す値(`nodeRole`、`gpu.enabled`、`gpu.count`)だけです。
 
