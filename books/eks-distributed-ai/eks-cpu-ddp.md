@@ -42,7 +42,7 @@ free: true
 
 複数ノードの PyTorch 学習を Kubernetes で動かす方法として、MPIJob（MPI Operator）に torchrun を載せる構成もあります。MPIJob 自体は Open MPI 以外に Intel MPI や MPICH も扱える汎用的なものです。ただし Launcher Pod が各 Worker へ SSH でログインして起動コマンドを撒く前提です。そのため PyTorch の DDP に流用すると、コンテナに sshd を仕込み SSH 鍵を配るという、PyTorch 本来は要らない足回りを抱え込みます。
 
-Kubeflow の学習ジョブは世代ごとに改善がなされており v1 と v2 があり過渡期です。Kubeflow Training Operator v1 が提供する PyTorchJob（`kubeflow.org/v1`）で、[awslabs/awsome-distributed-training の DDP サンプル](https://github.com/awslabs/awsome-distributed-training/tree/main/3.test_cases/pytorch/ddp/kubernetes) もこれを使っています。ただし v1 は upstream でレガシー扱いになり（`release-1.9` ブランチで当面メンテされますが、公式は後継への移行を推奨）、本 book では後継の Kubeflow Trainer v2 の TrainJob（`trainer.kubeflow.org/v1alpha1`）を主線に採用してみました。
+Kubeflow の学習ジョブは世代ごとに改善がなされており v1 と v2 があり過渡期です。Kubeflow Training Operator v1 が提供する PyTorchJob（`kubeflow.org/v1`）で、[awslabs/awsome-distributed-ai の DDP サンプル](https://github.com/awslabs/awsome-distributed-ai/tree/main/3.test_cases/pytorch/ddp/kubernetes) もこれを使っています。ただし v1 は upstream でレガシー扱いになり（`release-1.9` ブランチで当面メンテされますが、公式は後継への移行を推奨）、本 book では後継の Kubeflow Trainer v2 の TrainJob（`trainer.kubeflow.org/v1alpha1`）を主線に採用してみました。
 
 :::message
 Kubeflow Trainer v2 の API はまだ `v1alpha1`（アルファ）です。将来のバージョンでフィールド名が変わる可能性があります。
@@ -69,7 +69,7 @@ TrainJob 側は台数（`numNodes`）とノードあたりのプロセス数（`
 
 本章の 2 つのワークロードは、MNIST のデータと学習スナップショットを共有ストレージに保存します。既定の保存先は単一 AZ の **Amazon FSx for OpenZFS** です。ストレージの詳細は後続の章で扱いますが、`openzfs_enabled` が既定で有効なため、`terraform apply` の時点でファイルシステムと静的 PersistentVolume（`openzfs-shared`）はすでに作られています。この PV を掴む PersistentVolumeClaim は Helm チャートが `shared-claim` という名前で自動生成するので、読者が用意する必要はありません。コンテナの `/shared` にマウントされます。
 
-後半の複数ノード TrainJob でも、スナップショットの保存は rank 0 が担当します。そのため、どのノードから書かれても同じ場所に成果物が集まる共有ストレージ（ReadWriteMany）が要ります。単一ノードの torchrun でも同じ共有ストレージを使い、入口から同じ `/shared` 規約に揃えておくと 2 段目への流れが素直になります。共有ファイルシステム上での同時書き込みによる破損を避けるため、`ddp.py` は MNIST のダウンロードとスナップショット書き込みを rank 0 だけが行います。
+後半の複数ノード TrainJob でも、スナップショットの保存は rank 0 が担当します。そのため、どのノードから書かれても同じ場所に成果物が集まる共有ストレージ（ReadWriteMany）が要ります。単一ノードの torchrun でも同じ共有ストレージを使い、入口から同じ `/shared` 規約に揃えておくと 2 段目への流れが素直になります。共有ファイルシステム上での同時書き込みによる破損を避けるため、`ddp.py` はスナップショットの書き込みを rank 0 だけが行います。MNIST のダウンロードは全 rank が実行します（既にファイルが揃っていれば torchvision 側が再取得をスキップします）。
 
 保存先は Helm の `sharedStorage.backend` で切り替えられます。既定の `openzfs` のほかに、`fsx`（FSx for Lustre）、リージョン規模のマルチ AZ 共有が要るときは `efs` を選べます。3 つのバックエンドはいずれも Terraform 側で静的 PV が用意される設計で、選んだバックエンドの `var.<x>_enabled` が有効になっている必要があります。既定で `openzfs` と `fsx` は有効、`efs` は無効（ドライバのみ常設）です。
 
@@ -85,7 +85,7 @@ TrainJob 側は台数（`numNodes`）とノードあたりのプロセス数（`
 
 ソースの取得も BuildKit に任せます。この book のリポジトリは公開されているので、BuildKit の Git コンテキスト機能（`context=https://<repo>#<ブランチ>:<サブディレクトリ>`）で clone からビルドまでを完結でき、ソースを取得するための事前の `git clone` は要りません。先ほどの initContainer は ECR 認証トークンを用意するためだけのもので、ソース取得には関与しません。
 
-イメージのサイズには注意が要ります。BuildKit はベースイメージの展開とレイヤのスナップショットをノードのローカルディスク上で行うため、ビルド中に一時的に大きなディスクを消費します。この消費はノードの ephemeral-storage としてカウントされるので、ビルド Job には `ephemeral-storage` の requests/limits を設定して同居 Pod が eviction されるのを防いでいます。BuildKit の作業ディレクトリは Pod の emptyDir に載せており、これも同じ ephemeral-storage 予算に含まれます。ピーク時のディスク使用量は、展開後の非圧縮ファイルシステムと各レイヤのスナップショットの合計で、イメージの内容に依存しますが目安として push 後サイズの 4〜5 倍程度です。本章の `ddp-sample` は push 後で約 3GB で、実測でも既定の 30Gi 予算・CPU ノードの既定ルートディスク（50GiB）に十分収まりました。数十 GB 級の重いイメージを扱う場合は、ビルド専用の大容量ノードプールを opt-in で用意する仕組みも入れてあります。
+イメージのサイズには注意が要ります。BuildKit はベースイメージの展開とレイヤのスナップショットをノードのローカルディスク上で行うため、ビルド中に一時的に大きなディスクを消費します。この消費はノードの ephemeral-storage としてカウントされるので、ビルド Job には `ephemeral-storage` の requests/limits を設定して同居 Pod が eviction されるのを防いでいます。BuildKit の作業ディレクトリは Pod の emptyDir に載せており、これも同じ ephemeral-storage 予算に含まれます。ピーク時のディスク使用量は、展開後の非圧縮ファイルシステムと各レイヤのスナップショットの合計で、イメージの内容に依存しますが目安として push 後サイズの 4〜5 倍程度です。本章の `ddp-sample` は push 後で約 3GB で、実測でも既定の 30Gi 予算・CPU ノードの既定ルートディスク（`cpu_node_volume_size` の既定 150Gi）に十分収まりました。数十 GB 級の重いイメージを扱う場合は、ビルド専用の大容量ノードプールを opt-in で用意する仕組みも入れてあります。
 
 この作業領域はノードのローカルディスクを使い、FSx や NFS のような共有ファイルシステムには移しません。ネットワークストレージ上でビルドすると、拡張属性（file capabilities）の非対応やタイムスタンプ精度の違いによるレイヤ差分検出の不整合から、壊れたイメージが生成される恐れがあります。ビルドの一時領域は常にローカルディスクを使うのが正解です。
 
@@ -107,12 +107,12 @@ kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -
 ```
 
 :::message
-本章のワークショップ全体を一発で実行するスクリプトが [`infra/eks/scripts/run-basic02.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/run-basic02.sh) に用意されています。
+本章のワークショップ全体（イメージのビルドから 2 つの学習ジョブまで）を一括で実行するスクリプトが [`infra/eks/scripts/run-basic02.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/run-basic02.sh) に用意されていますが、現状そのままでは動きません。ビルドが手元の docker/finch を使う旧フローである点と、参照する ECR リポジトリ名が旧名の `ddp-sample` に固定されている点の 2 つが、現在の実装（クラスタ内ビルド、リポジトリ名の既定は `<cluster_name>-ddp-sample`）と食い違っています。本章は以降の手順を順に実行してください。
 :::
 
 ## 2. 学習用イメージを用意する
 
-2 つのワークロードは、MNIST MLP を DDP で学習する `ddp.py` を焼き込んだ専用イメージ `ddp-sample` を共用します。`ddp.py` は [awslabs/awsome-distributed-training の DDP サンプル](https://github.com/awslabs/awsome-distributed-training/tree/main/3.test_cases/pytorch/ddp) をベースに、保存先を共有 PVC へ寄せて adapt したものです。Dockerfile はリポジトリの [`infra/eks/manifests/ddp-sample/`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/manifests/ddp-sample) に置いてあります。
+2 つのワークロードは、MNIST MLP を DDP で学習する `ddp.py` を焼き込んだ専用イメージ `ddp-sample` を共用します。`ddp.py` は [awslabs/awsome-distributed-ai の DDP サンプル](https://github.com/awslabs/awsome-distributed-ai/tree/main/3.test_cases/pytorch/ddp) をベースに、保存先を共有 PVC へ寄せて adapt したものです。Dockerfile はリポジトリの [`infra/eks/manifests/ddp-sample/`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/manifests/ddp-sample) に置いてあります。
 
 このイメージのビルドは、上述した BuildKit で実施します。ビルド先の ECR URL は Terraform の出力から取得できます。イメージタグはワークショップ用に `v1` を使います（再ビルドするときは `v2` のようにタグを進めると、`latest` のキャッシュ問題を避けられます）。
 
@@ -149,7 +149,7 @@ kubectl -n image-builder logs job/build-ddp-sample-v1 -c ecr-login    # 認証 i
 ```
 
 :::message
-数十 GB 級の重いイメージは、前述のとおりピークディスクが push 後サイズの 4〜5 倍になり共有 CPU プールの 50Gi ルートに収まりません。その場合は `terraform apply` 時に `image_builder_dedicated_pool = true` を設定すると、NVMe インスタンスストアを束ねた大容量ローカルディスクのビルド専用ノードプール（taint で隔離、ビルドが終われば自動で 0 台に戻る）が用意されます。Helm 側では `--set imageBuild.dedicatedPool.enabled=true --set imageBuild.ephemeralStorage=150Gi` のように指定します。
+数十 GB 級の重いイメージは、前述のとおりピークディスクが push 後サイズの 4〜5 倍になり共有 CPU プールの 150Gi ルートに収まりません。その場合は `terraform apply` 時に `image_builder_dedicated_pool = true` を設定すると、NVMe インスタンスストアを束ねた大容量ローカルディスクのビルド専用ノードプール（taint で隔離、ビルドが終われば自動で 0 台に戻る）が用意されます。Helm 側では `--set imageBuild.dedicatedPool.enabled=true --set imageBuild.ephemeralStorage=150Gi` のように指定します。
 :::
 
 :::message
@@ -209,6 +209,7 @@ kubectl logs -f -l job-name=ddp-torchrun -n "$NAMESPACE"
 [rank 0/2] backend=gloo cuda_available=False device_count=0
 [rank 1/2] backend=gloo cuda_available=False device_count=0
 [rank 0/2] downloading MNIST to /shared/mnist-data
+[rank 1/2] downloading MNIST to /shared/mnist-data
 [rank 0/2] starting training: 3 epochs, batch_size 32
 [rank 1/2] starting training: 3 epochs, batch_size 32
 [rank 0/2] epoch 0 | steps 938 | loss 0.4123
@@ -216,7 +217,7 @@ kubectl logs -f -l job-name=ddp-torchrun -n "$NAMESPACE"
 [rank 0/2] epoch 0 | snapshot saved to /shared/output/torchrun-gloo/snapshot.pt
 ```
 
-MNIST のダウンロードは rank 0 だけが行い（他 rank は barrier で待って同じ実体を読む）、初回のこの step で共有ストレージ上の `/shared/mnist-data` に落ちます。各 rank は `DistributedSampler` によってデータセットの異なる部分を担当し、勾配を all-reduce で共有しながら同じモデルを更新します。エポックが進むと loss が減少します。`ddp.py` は各エポックの終わりに（`SAVE_EVERY` の既定は 1）rank 0 だけがスナップショットを共有ストレージ上の `/shared/output/torchrun-gloo/snapshot.pt` へ上書き保存し、3 エポックを終えて両 rank が正常終了します。「保存は rank 0 のみが行う」というのは DDP の定石で、全 rank が同じモデルを持っているため保存は 1 つで足ります（共有ファイルシステムでは全 rank が同じファイルへ同時書き込みすると破損しかねない、という実務上の理由もあります）。
+MNIST のダウンロードは全 rank が実行し、初回のこの step で共有ストレージ上の `/shared/mnist-data` に落ちます（`download=True` は冪等で、既にファイルが揃っていれば torchvision 側が再取得をスキップします。rank 0 だけが取得して他 rank を barrier で待たせる形にすると、取得が collective の初期化タイムアウトを超えた場合にデッドロックするため、こちらを選んでいます）。各 rank は `DistributedSampler` によってデータセットの異なる部分を担当し、勾配を all-reduce で共有しながら同じモデルを更新します。エポックが進むと loss が減少します。`ddp.py` は各エポックの終わりに（`SAVE_EVERY` の既定は 1）rank 0 だけがスナップショットを共有ストレージ上の `/shared/output/torchrun-gloo/snapshot.pt` へ上書き保存し、3 エポックを終えて両 rank が正常終了します。「保存は rank 0 のみが行う」というのは DDP の定石で、全 rank が同じモデルを持っているため保存は 1 つで足ります（共有ファイルシステムでは全 rank が同じファイルへ同時書き込みすると破損しかねない、という実務上の理由もあります）。
 
 完了を待ちます。初回は Karpenter が CPU ノードを立ち上げ、学習イメージを pull するため、学習開始までに数分の追加時間がかかります。学習本体と合わせて余裕を見て 30 分のタイムアウトにしています。
 
@@ -279,7 +280,7 @@ kubectl logs -f -l "$SEL" -n "$NAMESPACE"
 
 前半の単一ノードと違い、rank 0 と rank 1 は別々の Pod なのでログも分かれます。`node-0-0` では rank 0 が gloo backend で起動します。スナップショットの保存は rank 0 が担当するため、その行は `node-0-0` 側にのみ現れます。
 
-`downloading MNIST to /shared/mnist-data` の行は、step 3 で同じ `/shared` に取得済みでも毎回出力されます。`ddp.py` が全 rank から無条件に `download=True` を渡す実装になっているためです（rank 0 だけが取得して他 rank が barrier で待つ形にすると、取得が collective の初期化タイムアウトを超えた場合にデッドロックするため、こちらを選んでいます）。torchvision 側は既にファイルが揃っていれば実際の再取得をスキップするので、2 回目以降のこの行は「確認しただけ」を意味します。
+`downloading MNIST to /shared/mnist-data` の行は、step 3 で同じ `/shared` に取得済みでも毎回出力され、しかも rank 0 と rank 1 の両方に出ます。`ddp.py` が全 rank から無条件に `download=True` を渡す実装になっているためです。torchvision 側は既にファイルが揃っていれば実際の再取得をスキップするので、2 回目以降のこの行は「確認しただけ」を意味します。
 
 ```
 [rank 0/2] backend=gloo cuda_available=False device_count=0
@@ -300,10 +301,11 @@ kubectl logs -f -l "$SEL" -n "$NAMESPACE"
 kubectl logs -l "jobset.sigs.k8s.io/jobset-name=ddp-trainjob,batch.kubernetes.io/job-completion-index=1" -n "$NAMESPACE"
 ```
 
-`node-0-1` では rank 1 が同じく gloo backend で起動し、rank 0 の MNIST ダウンロード完了を barrier で待ってから学習に加わり、各エポックの loss を出して最後に `done` で終わります。ダウンロードとスナップショット保存の行は rank 0 側にしか出ません。
+`node-0-1` では rank 1 が同じく gloo backend で起動し、各エポックの loss を出して最後に `done` で終わります。ダウンロードの行は rank 1 側にも出ますが、スナップショット保存の行は rank 0 側にしか出ません。
 
 ```
 [rank 1/2] backend=gloo cuda_available=False device_count=0
+[rank 1/2] downloading MNIST to /shared/mnist-data
 [rank 1/2] starting training: 3 epochs, batch_size 32
 [rank 1/2] epoch 0 | steps 938 | loss 0.5289
 [rank 1/2] epoch 1 | steps 938 | loss 0.2301
@@ -337,6 +339,6 @@ kubectl delete trainjob ddp-trainjob -n "$NAMESPACE"
 - [torchrun (Elastic Launch)](https://pytorch.org/docs/stable/elastic/run.html)
 - [Kubeflow Trainer v2 (TrainJob)](https://trainer.kubeflow.org/en/latest/)
 - [Kubeflow Training Operator v1 (PyTorchJob、レガシー)](https://trainer.kubeflow.org/en/latest/legacy-v1/user-guides/pytorch.html)
-- [awslabs/awsome-distributed-training の DDP テストケース (Kubernetes)](https://github.com/awslabs/awsome-distributed-training/tree/main/3.test_cases/pytorch/ddp/kubernetes)
+- [awslabs/awsome-distributed-ai の DDP テストケース (Kubernetes)](https://github.com/awslabs/awsome-distributed-ai/tree/main/3.test_cases/pytorch/ddp/kubernetes)
 - [対象ワークロード torchrunTrain（charts/experiments）](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/torchrun-train.yaml)
 - [対象ワークロード trainjobTrain（charts/experiments）](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/trainjob-train.yaml)

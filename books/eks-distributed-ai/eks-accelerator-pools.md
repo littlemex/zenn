@@ -79,9 +79,11 @@ accelerator_pools = {
 
 ## 1. 前提を確認する
 
-- Basic03 で Karpenter + GPU Operator が導入済み
+- Basic03 で Karpenter が導入済み
 - `terraform apply` で gpu-ddp プールが作成済み(NodePool + EC2NodeClass)
 - Basic02 で作った `ddp-sample` イメージ(ECR に push 済み)
+
+NVIDIA GPU Operator は Basic03 の時点では入っていません。`accelerator_pools` に `device_plugin = "nvidia"` のプールが 1 つ以上あることを条件(`local.has_gpu_pool`)に導入されるため、本章で `gpu-ddp` プールを足して `terraform apply` した時点で初めてインストールされます。したがって上記 2 つ目の apply は、プールの NodePool/EC2NodeClass と GPU Operator を同時に作ることになり、初回はその分だけ時間がかかります。
 
 ## 2. TrainJob で 2 ノード DDP を投入する
 

@@ -201,7 +201,7 @@ resource "null_resource" "wait_for_node_drain" {
   triggers = {
     cluster_name = module.eks.cluster_name
     region       = var.region
-    aws_profile  = coalesce(var.aws_profile, "")
+    aws_profile  = var.aws_profile != null ? var.aws_profile : ""
   }
 
   depends_on = [
@@ -209,8 +209,10 @@ resource "null_resource" "wait_for_node_drain" {
     helm_release.gpu_operator,
     helm_release.aws_efa_k8s_device_plugin,
     helm_release.neuron,
+    helm_release.trainer,
     aws_eks_addon.efs_csi_driver,
     aws_eks_addon.fsx_csi_driver,
+    helm_release.openzfs_csi_driver,
     aws_security_group.efa_node,
     aws_placement_group.accelerator,
     aws_vpc_endpoint.interface,
@@ -238,7 +240,7 @@ DRA が GA になったからといって、この book の構成にそのまま
 
 KEP-5004 は正式には「DRA: Handle extended resource requests via DRA Driver」という提案で、DRA ドライバが公開するデバイスを、device plugin を介さずに `nvidia.com/gpu` のような従来の拡張リソース API 経由でも要求できるようにすることを目指しています。この仕組みが実現すると、同じクラスタの一部のノードが device plugin を使い、別の一部のノードが DRA ドライバを使うという混在運用や、既存の Pod マニフェストを書き換えずに DRA へ段階的に移行することが可能になる、という位置づけです。Karpenter や cluster-autoscaler のようなノードオートスケーラーが DRA の `ResourceClaim` を認識してスケールアウトの判断に反映できるようにする議論も、この KEP の作業範囲に含まれています。KEP のマイルストーンは次のとおりです: Alpha が Kubernetes 1.34、Beta が 1.35 から 1.36 に後ろ倒しされ、Stable（GA）の目標は 1.37 とされています。ただしこれは KEP が置いている目標であり、他の多くの KEP と同様に確定したスケジュールではないため、実際のリリースタイミングは前後する可能性がある点は留保しておきます。
 
-したがって、Karpenter でノードプロビジョニングを行うこの構成では、DRA ドライバは現時点で選択肢になりません。device plugin 方式（NVIDIA GPU Operator、aws-efa-k8s-device-plugin、Neuron device plugin）を使うことが、legacy な妥協ではなく現状で唯一実用的な選択です。KKarpenter からも DRA の `ResourceClaim` が扱えるようになれば、この判断は再検討の対象になります。
+したがって、Karpenter でノードプロビジョニングを行うこの構成では、DRA ドライバは現時点で選択肢になりません。device plugin 方式（NVIDIA GPU Operator、aws-efa-k8s-device-plugin、Neuron device plugin）を使うことが、legacy な妥協ではなく現状で唯一実用的な選択です。Karpenter からも DRA の `ResourceClaim` が扱えるようになれば、この判断は再検討の対象になります。
 
 # ワークショップ実施
 

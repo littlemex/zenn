@@ -75,12 +75,13 @@ Slurm や AWS ParallelCluster に慣れた方は、「ログインノードは�
 - AWS Trainium/AWS Inferentia (Neuron) 対応の設計 (Basic09)
 - 単一 AZ の Amazon FSx (OpenZFS と Lustre) を既定に据える共有ストレージ設計 (Basic10)
 - 課金を取り残さない安全な破棄と、オプションの公開エンドポイント (Basic11)
+- イメージキャッシュ戦略を恒久基盤に組み込む設計 (Advanced01)
 
 # 必要なもの
 
 - AWS アカウント
 - AdministratorAccess 相当の IAM 権限 (Amazon EKS・Amazon EC2・Amazon VPC・IAM・Amazon FSx・Amazon EFS の作成権限)
-- ローカルまたは CloudShell に Terraform 1.5+ / AWS CLI v2 / kubectl / helm
+- ローカルまたは CloudShell に Terraform 1.9+ / AWS CLI v2 / kubectl / helm
 - GPU/Neuron インスタンス (特に p5en などの Capacity Block) を使う場合はサービスクォータと予算の確認
 
 :::message alert
