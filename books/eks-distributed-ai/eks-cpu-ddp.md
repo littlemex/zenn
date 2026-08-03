@@ -145,7 +145,7 @@ kubectl -n image-builder wait --for=condition=complete \
 kubectl -n image-builder logs -f job/build-ddp-sample-v1              # BuildKit 本体
 kubectl -n image-builder logs job/build-ddp-sample-v1 -c ecr-login    # 認証 init が失敗したとき
 ```
-
+::::details 補足
 :::message
 数十 GB 級の重いイメージは、前述のとおりピークディスクが push 後サイズの 4〜5 倍になり共有 CPU プールの 150Gi ルートに収まりません。その場合は `terraform apply` 時に `image_builder_dedicated_pool = true` を設定すると、NVMe インスタンスストアを束ねた大容量ローカルディスクのビルド専用ノードプール（taint で隔離、ビルドが終われば自動で 0 台に戻る）が用意されます。Helm 側では `--set imageBuild.dedicatedPool.enabled=true --set imageBuild.ephemeralStorage=150Gi` のように指定します。
 :::
@@ -153,6 +153,7 @@ kubectl -n image-builder logs job/build-ddp-sample-v1 -c ecr-login    # 認証 i
 :::message
 rootless BuildKit は非特権（`CAP_SYS_ADMIN` 不要、uid 1000）で動きますが、内部の rootlesskit が使う `clone`/`unshare` 系のシステムコールが `RuntimeDefault` の seccomp プロファイルでブロックされるため、ビルドコンテナは `seccompProfile: Unconfined` を指定する必要があります。これは Pod Security Admission の `baseline`/`restricted` に抵触するので、`image-builder` namespace だけは PSA の enforce を緩め（`warn`/`audit` は `baseline` のまま可視化）、単発のビルド Job 専用に隔離しています。この設定は `terraform apply`（`image_builder_enabled`）が行うので、利用者側の追加操作は不要です。
 :::
+::::
 
 続いて、後半で使う Kubeflow Trainer v2 が入っていることを確認します。Basic01 の `terraform apply`（`trainer_enabled` が既定で有効）で導入済みのはずなので、TrainJob の CRD が見えることと、コントロールプレーン（`kubeflow-system` の manager と JobSet）が動いていることを確かめておきます。
 
