@@ -1,5 +1,5 @@
 ---
-title: "Basic04 - GPU DDP をヘテロジニアスなプールで回す"
+title: "Basic04 - GPU で分散学習を体験する"
 free: true
 ---
 
@@ -133,6 +133,8 @@ helm template exp charts/experiments -n "$NAMESPACE" \
 
 ## 3. 実行と確認
 
+TrainJob が展開する Pod は JobSet の規則で名付けられるため、Pod 名を決め打ちせずラベルで選びます。
+
 ```bash
 kubectl get pods -n "$NAMESPACE" -o wide -l jobset.sigs.k8s.io/jobset-name=ddp-trainjob
 kubectl get trainjob ddp-trainjob -n "$NAMESPACE" -w
@@ -144,7 +146,7 @@ Karpenter が 2 台の g5/g6 ノードを起動し、それぞれに 1 GPU ず�
 kubectl get nodeclaims -l karpenter.sh/nodepool=gpu-ddp
 ```
 
-実機出力（本書の検証時）:
+実機出力:
 
 ```text
 NAME            TYPE         CAPACITY    ZONE         NODE                                        READY
@@ -152,7 +154,7 @@ gpu-ddp-9clls   g6.2xlarge   spot        us-west-2a   ip-10-0-0-254.us-west-2.co
 gpu-ddp-qhczq   g6.2xlarge   on-demand   us-west-2a   ip-10-0-27-109.us-west-2.compute.internal   True
 ```
 
-これが Intent F の動作そのものです。1 台目は spot で取れましたが、2 台目は同じ条件の spot 在庫が無く on-demand にフォールバックして台数を充足しています。`CAPACITY` 列が 2 台で異なるのは失敗ではなく、単一の capacity type に固定していたら 2 台目が取れずに `Pending` のままだった状況を、フォールバックが救っている状態です。
+1 台目は spot で取れましたが、2 台目は同じ条件の spot 在庫が無く on-demand にフォールバックして台数を充足しています。`CAPACITY` 列が 2 台で異なるのは失敗ではなく、単一の capacity type に固定していたら 2 台目が取れずに `Pending` のままだった状況を、フォールバックが救っている状態です。ここは状況によって spot x2 で取れるケースもあります。
 
 rank 0(completion index 0)のログを追います。
 
@@ -174,23 +176,13 @@ kubectl logs -f -l "$SEL" -n "$NAMESPACE"
 [rank 0/2] done
 ```
 
-:::message
-`resuming from snapshot at epoch 2` が出て epoch 2 だけで終わるのは正常です。Basic02 の TrainJob が同じ `/shared/output/trainjob/snapshot.pt` に 3 エポック分のスナップショットを残しているため、`ddp.py` がそれを検出して続きから再開します（CPU で学習した重みを GPU で引き継ぐので、backend が gloo から nccl に変わっても再開できます）。3 エポックすべてを GPU で走らせたい場合は、投入前にスナップショットを削除してください。
-
-```bash
-kubectl run rm-snap --rm -i --restart=Never -n "$NAMESPACE" \
-  --image=public.ecr.aws/docker/library/busybox:1.36 \
-  --overrides='{"spec":{"containers":[{"name":"rm","image":"public.ecr.aws/docker/library/busybox:1.36","command":["rm","-f","/shared/output/trainjob/snapshot.pt"],"volumeMounts":[{"name":"s","mountPath":"/shared"}]}],"volumes":[{"name":"s","persistentVolumeClaim":{"claimName":"shared-claim"}}]}}'
-```
-:::
-
 :::message alert
-本章の構成は spot 前提の 2 ノード DDP です。spot ノードが中断されると、その rank のプロセスが失われて collective 全体(all-reduce)が止まり、学習は失敗します。`torch-distributed-eks` は Pod に `karpenter.sh/do-not-disrupt: "true"` を付けていますが、これは Karpenter 自身による自発的な退去(consolidation など)を止めるだけで、AWS 側のスポット中断そのものは防げません。短時間の検証用途に留め、長時間の学習では `ddp.py` のチェックポイント間隔を詰めるか、Basic05 で扱う Capacity Block(reserved)の利用を検討してください。
+本章の構成は spot 前提の 2 ノード DDP です。spot ノードが中断されると、その rank のプロセスが失われて collective 全体(all-reduce)が止まり、学習は失敗します。`torch-distributed-eks` は Pod に `karpenter.sh/do-not-disrupt: "true"` を付けていますが、これは Karpenter 自身による自発的な退去(consolidation など)を止めるだけで、AWS 側のスポット中断そのものは防げません。
 :::
 
 # Intent F と Intent M の違い
 
-本章の構成は **Intent F(フォールバック)** です。
+今回作成したプール確保の方式の二つの構成について解説します。
 
 - **Intent F**: 1 つのプールに複数の capacity_types を並べます。Karpenter は reserved を最優先し、それ以外は価格の低いものから選ぶため、結果として spot が on-demand より先に選ばれ、取れなければ次にフォールバックして台数充足を目指します。全ノードが同じプール・同じ NodePool に属します。
 - **Intent M**: reserved+spot を 1 プールに入れ、reserved ノードで長期訓練を走らせつつ spot ノードで推論やデータ前処理を同時に動かします。訓練 rank は nodeSelector `karpenter.sh/capacity-type: reserved` で reserved にピン留めし、spot に置きたい推論等は同じキーで `spot` にピン留めします。どちらの capacity-type に留まりたいかを Pod 側が明示的に指定する仕組みです。
@@ -199,10 +191,7 @@ kubectl run rm-snap --rm -i --restart=Never -n "$NAMESPACE" \
 
 # まとめ
 
-- `accelerator_pools` に 1 エントリ書くだけで、ヘテロジニアスな GPU DDP 環境が立ち上がります
-- spot+on-demand フォールバック(Intent F)でコストと可用性を両立できます
-- EFA 不要な小規模 DDP なら TCP gloo で十分に動きます
-- 大規模・EFA 必須のシナリオは Basic05(Capacity Block)と Basic06(EFA topology)で扱います
+`accelerator_pools` に 1 エントリ書くだけで、ヘテロジニアスな GPU DDP 環境が立ち上がりました。
 
 # 参考資料
 
