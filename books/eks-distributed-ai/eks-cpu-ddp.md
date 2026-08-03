@@ -183,6 +183,8 @@ kubectl get pvc shared-claim -n "$NAMESPACE"
 
 まず 1 ノードの中で 2 プロセスの DDP を動かします。この章の Job は `parallelism` を指定しない素の `batch/v1` Job なので **Pod は 1 つだけ**で、その 1 コンテナの中で `torchrun --standalone --nproc_per_node=2` 自身が 2 つの学習プロセス（rank 0, rank 1）を fork します。複数の Pod が立つわけではありません（後半の TrainJob は Pod ごとに 1 rank で、そちらは Pod が複数に分かれます。今の段階では違いだけ覚えておいてください。詳しくは次の step 5 で説明します）。`gpu.enabled` を付けないのでこのまま CPU（gloo）で動きます。`nprocPerNode=2` は 1 コンテナ内に fork する rank 数です。前のステップでビルドしたイメージの URI を `torchrunTrain.image` に、直前のステップで作った PVC の名前を `sharedStorage.existingClaimName` に渡します。
 
+`ddp.py` の既定は 3 エポックで、MNIST + MLP という小さい組み合わせでは 1 分足らずで完走してしまい、ログを `follow` しても途中経過を眺める前に終わります。そこで最初から `torchrunTrain.totalEpochs=100` を渡して、学習が進む様子を実際に見られる長さにしておきます。
+
 ```bash
 # step 2 から続けて infra/eks にいる前提です。ターミナルを変えた場合は cd infra/eks した上で
 # 変数を再取得します: ECR_URL=$(terraform output -raw ddp_sample_ecr_url); IMAGE=${ECR_URL}:v1
@@ -197,9 +199,20 @@ helm template exp charts/experiments -n "$NAMESPACE" \
     --set torchrunTrain.backend=gloo \
     --set torchrunTrain.nodeRole=cpu \
     --set torchrunTrain.nprocPerNode=2 \
+    --set torchrunTrain.totalEpochs=100 \
     --set sharedStorage.existingClaimName=shared-claim \
     | kubectl apply -f -
 ```
+
+:::message
+`sharedStorage.existingClaimName` を渡し忘れると、`apply` は次のエラーでレンダリング自体に失敗します（Pod が Pending になるのではなく、その場で分かります）。この章で `torchrunTrain`/`trainjobTrain` を有効にするすべての `helm template` 呼び出しにこの `--set` が必要です。
+
+```text
+Error: execution error at (experiments/templates/torchrun-train.yaml:101:65):
+sharedStorage.existingClaimName is required — apply manifests/shared-pvc.yaml once
+(per namespace) and pass its name here.
+```
+:::
 
 :::message
 同名の `batch/v1` Job（`ddp-torchrun`）がすでに存在すると、`kubectl apply` は `job.batch/ddp-torchrun unchanged` と表示するだけで新しい定義を適用しません（Job の Pod テンプレートは作成後に変更できないためです）。前回の実行が残ったまま気づかず、古い完了済み Job を「動いた」と誤認しやすいので、投入の前に必ず削除します。
@@ -216,41 +229,49 @@ kubectl logs -f -l job-name=ddp-torchrun -n "$NAMESPACE"
 `kubectl logs -f`（`-f` は follow）は、走行中の Pod にストリーム接続してログを追うコマンドです。Job が完了した後に `-f` を付けて実行すると、追従先の走行中 Pod が無いため `error: timed out waiting for the condition` になります（ビルドや学習の失敗ではありません）。さらに Job の Pod は完了後に短時間で回収されるため、`-f` を外しても `pods ... not found` でログが取れないことがあります。ログはあくまで Pod が `Running` の間に追うものと考え、上記のように `kubectl wait` で Ready を待ってすぐ follow するのが確実です。完了後に成功を確かめる方法は後述します。
 :::
 
-MNIST のダウンロードは全 rank が実行し、初回のこの step で共有ストレージ上の `/shared/mnist-data` に落ちます（`download=True` は冪等で、既にファイルが揃っていれば torchvision 側が再取得をスキップします。rank 0 だけが取得して他 rank を barrier で待たせる形にすると、取得が collective の初期化タイムアウトを超えた場合にデッドロックするため、こちらを選んでいます）。各 rank は `DistributedSampler` によってデータセットの異なる部分を担当し、勾配を all-reduce で共有しながら同じモデルを更新します。エポックが進むと loss が減少します。`ddp.py` は各エポックの終わりに（`SAVE_EVERY` の既定は 1）rank 0 だけがスナップショットを共有ストレージ上の `/shared/output/torchrun-gloo/snapshot.pt` へ上書き保存し、3 エポックを終えて両 rank が正常終了します。「保存は rank 0 のみが行う」というのは DDP の定石で、全 rank が同じモデルを持っているため保存は 1 つで足ります（共有ファイルシステムでは全 rank が同じファイルへ同時書き込みすると破損しかねない、という実務上の理由もあります）。
+2 つの rank は同じ 1 コンテナのプロセスなので、標準出力も 1 つのログストリームに合流し、両者の行が入り混じって流れます。実機では次のように出ました（`totalEpochs=100` を渡しているので `starting training: 100 epochs` になります。loss の値は初期重みの乱数に依存するため実行ごとに変わります）。
 
-既定の 3 エポックは MNIST + MLP という小さい組み合わせでは 1 分足らずで終わってしまい、ログを `follow` しても途中経過を眺める前に完走してしまいます。`torchrunTrain.totalEpochs` でエポック数を増やせます。
-
-```bash
-helm template exp charts/experiments -n "$NAMESPACE" \
-    --set torchrunTrain.enabled=true \
-    --set torchrunTrain.image="$IMAGE" \
-    --set torchrunTrain.backend=gloo \
-    --set torchrunTrain.nodeRole=cpu \
-    --set torchrunTrain.nprocPerNode=2 \
-    --set torchrunTrain.totalEpochs=100 \
-    | kubectl apply -f -
+```text
+[rank 1/2] backend=gloo cuda_available=False device_count=0
+[rank 0/2] backend=gloo cuda_available=False device_count=0
+[rank 1/2] downloading MNIST to /shared/mnist-data
+[rank 0/2] downloading MNIST to /shared/mnist-data
+[rank 1/2] starting training: 100 epochs, batch_size 32
+[rank 0/2] starting training: 100 epochs, batch_size 32
+[rank 0/2] mlflow disabled
+[rank 1/2] mlflow disabled
+[rank 1/2] epoch 0 | steps 938 | loss 0.1981
+[rank 0/2] epoch 0 | steps 938 | loss 0.1993
+[rank 0/2] epoch 0 | snapshot saved to /shared/output/torchrun-gloo/snapshot.pt
 ```
 
-エポック数を増やしても、途中で Job を消して構いません。スナップショットは各エポックの終わりに保存されているので、`kubectl delete job ddp-torchrun` した時点で最後に完了したエポックまでの状態が `/shared` に残ります（進行中だったエポックの分は保存されないので、消えるのはそのエポックだけです）。同じコマンドで Job を再投入すると、`resuming from snapshot at epoch <N>` と出て、消したところから学習が続きます。この resume の仕組みは `--total-epochs` を大きくして途中で止めたときのためだけでなく、ノードの入れ替えや Karpenter の consolidation で Pod が意図せず落ちた場合の耐性にもなっています。
+MNIST のダウンロードは全 rank が実行し、初回のこの step で共有ストレージ上の `/shared/mnist-data` に落ちます（`download=True` は冪等で、既にファイルが揃っていれば torchvision 側が再取得をスキップします。rank 0 だけが取得して他 rank を barrier で待たせる形にすると、取得が collective の初期化タイムアウトを超えた場合にデッドロックするため、こちらを選んでいます）。各 rank は `DistributedSampler` によってデータセットの異なる部分を担当し、勾配を all-reduce で共有しながら同じモデルを更新します。エポックが進むと loss が減少します。`ddp.py` は各エポックの終わりに（`SAVE_EVERY` の既定は 1）rank 0 だけがスナップショットを共有ストレージ上の `/shared/output/torchrun-gloo/snapshot.pt` へ上書き保存します。上の出力で `snapshot saved` の行が rank 0 からしか出ていないのがそれです。「保存は rank 0 のみが行う」というのは DDP の定石で、全 rank が同じモデルを持っているため保存は 1 つで足ります（共有ファイルシステムでは全 rank が同じファイルへ同時書き込みすると破損しかねない、という実務上の理由もあります）。
 
-完了を待ちます。初回は Karpenter が CPU ノードを立ち上げ、学習イメージを pull するため、学習開始までに数分の追加時間がかかります。学習本体と合わせて余裕を見て 30 分のタイムアウトにしています。
+100 エポックの完走を待つ必要はありません。`epoch N | loss ...` の行がいくつか流れて学習が進んでいることを確認できたら、`Ctrl-C` でログの追従を止めて次に進みます。
+
+ここで、学習を完走前に止めてみます。`kubectl delete job` は実行中の Pod も一緒に削除するので、100 エポックの途中でも学習は即座に終わります。
 
 ```bash
-kubectl wait --for=condition=complete job/ddp-torchrun -n "$NAMESPACE" --timeout=30m
+kubectl delete job ddp-torchrun -n "$NAMESPACE"
 ```
 
-ログを追い損ねても、学習結果は共有ストレージに残るので完了を確認できます。`ddp.py` が rank 0 で保存したスナップショットが `/shared` にあるかを、同じ PVC をマウントした使い捨ての Pod から覗きます。
+止めた時点までの学習成果が共有ストレージに残っていることを確認します。同じ PVC をマウントした使い捨ての Pod から覗きます。
 
 ```bash
 kubectl run peek --rm -it --restart=Never --image=busybox:1.36 -n "$NAMESPACE" \
   --overrides='{"spec":{"containers":[{"name":"peek","image":"busybox:1.36","command":["ls","-lh","/shared/output/torchrun-gloo"],"volumeMounts":[{"name":"s","mountPath":"/shared"}]}],"volumes":[{"name":"s","persistentVolumeClaim":{"claimName":"shared-claim"}}]}}'
 ```
 
-`snapshot.pt` が表示されれば、DDP 学習は完走してモデルが保存されています。確認できたら Job を削除します。
+`snapshot.pt` が表示されれば、途中まで進んだモデルが保存されています。実機では次のように出ました。
 
-```bash
-kubectl delete job ddp-torchrun -n "$NAMESPACE"
+```text
+total 3M
+-rw-r--r--    1 root     root        2.6M Aug  3 12:01 snapshot.pt
 ```
+
+スナップショットは各エポックの終わりに保存されるので、削除した時点で最後に完了したエポックまでの状態が残ります（進行中だったエポックの分は保存されないので、失われるのはそのエポックだけです）。同じコマンドで Job を再投入すると `resuming from snapshot at epoch <N>` と出て、消したところから学習が続きます。この resume の仕組みは手で止めたときのためだけでなく、ノードの入れ替えや Karpenter の consolidation で Pod が意図せず落ちた場合の耐性にもなっています。
+
+ジョブが最後まで走り切るのを待って完了状態を確認する流れは、次の TrainJob で試します（そちらはエポック数を既定のままにするので数十秒で終わります）。
 
 ## 5. 複数ノードで TrainJob を動かす（後半）
 
