@@ -26,7 +26,7 @@ free: true
 単一 AZ への固定は、本章の目的である「確実に 2 台確保する」こととは緊張関係にあります。AZ を 1 つに絞るとその AZ の spot 在庫が尽きていれば取得できず、複数 AZ に広げれば可能性は上がります。ここでは 4 インスタンスタイプ × 2 capacity-type の組み合わせで確保しやすさを確保しつつ、AZ は 1 つに固定するトレードオフを選んでいます。これは EFA や FSx など AZ をまたげないコンポーネントとの将来的な整合を優先したためです。
 
 :::message
-本章の accelerator_pools capacity-mix 実装は、基本的なユースケースをカバーする初期バージョンです。今後、実運用のフィードバックに基づき EFA 対応の大規模訓練シナリオや Capacity Block との連携パターンを追加していきます。
+本章の accelerator_pools capacity-mix 実装は、基本的なユースケースをカバーする初期バージョンです。今後、実運用に基づき EFA 対応の大規模訓練シナリオや Capacity Block との連携パターンを追加していきます。
 :::
 
 ## accelerator_pools の設定
@@ -45,8 +45,6 @@ accelerator_pools = {
 }
 ```
 
-`zones` は書いていません。Basic01 の `terraform.tfvars` で設定した `region` の最初の AZ(`local.azs[0]`)に自動導出されるため、on-demand/spot プールでは基本的に手書き不要です。特定の AZ に固定したい場合だけ、その region で解決済みの AZ(例: `region = "us-east-2"` なら `zones = ["us-east-2a"]`)を明示してください。
-
 この 1 エントリから、Karpenter の NodePool と EC2NodeClass が自動生成されます。
 
 ### 設定の意味
@@ -54,9 +52,9 @@ accelerator_pools = {
 | フィールド | 値 | 効果 |
 |---|---|---|
 | instance_types | g6.2xlarge, g5.2xlarge, g6.xlarge, g5.xlarge | 4 種のうちキャパシティがあるものを Karpenter が選択 |
-| capacity_types | ["spot", "on-demand"] | spot 優先、取れなければ on-demand にフォールバック(Intent F) |
+| capacity_types | ["spot", "on-demand"] | spot 優先、取れなければ on-demand にフォールバック |
 | zones | 未指定(`local.azs[0]` に自動導出) | 将来 Basic05 で追加する Capacity Block プールと同じ AZ に配置し、共有ストレージ接続に備える |
-| efa_interface_count | 0 | 小型 GPU に EFA は不要(TCP gloo で十分) |
+| efa_interface_count | 0 | 小型 GPU に EFA なし(TCP gloo) |
 | labels | workload=ddp-basic04 | 追加のラベル。Pod からプールを選ぶ第一級の手段は、プール名(map のキー)がそのまま Karpenter のノードラベル `node-role=<プール名>` になる仕組みで、`labels` はさらに細かくルーティングしたいときの補助です |
 
 ### プール確保ロジックの全体像
