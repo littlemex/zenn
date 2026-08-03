@@ -188,6 +188,25 @@ helm template exp charts/experiments -n "$NAMESPACE" \
 共有ストレージの静的 PV（`openzfs-shared`）は 1 つしかなく、1 つの PVC にしかバインドできません。チャートはこの制約を前提に、`shared-claim` という単一の PVC を生成してその PV に bind します（`charts/experiments/templates/shared-pvc.yaml`）。すでに自分で PVC を作って PV を掴ませている場合だけ `--set sharedStorage.existingClaimName=<その PVC 名>` でチャートの生成を抑止し、既存の PVC を再利用してください。指定しなければ競合は起きません。
 :::
 
+:::message alert
+`shared-claim` を一度 `kubectl delete pvc` などで消してから作り直すと、Pod が起動せず `Pending` のまま止まることがあります。この PV は `reclaimPolicy: Retain` なので、bind していた PVC が消えても `Available` には戻らず、消えた PVC への参照（`claimRef`）を持ったまま `Released`状態で残ります。新しい `shared-claim`（名前は同じでも UID は別オブジェクト）はこの参照と一致しないため bind できず、Pod は次のようなイベントを出したまま `Pending` を続けます。
+
+```text
+Warning  FailedScheduling  karpenter          pvc is considered unbound because it does not
+                                              contain annotation pv.kubernetes.io/bind-completed
+Warning  FailedBinding     persistentvolume-controller  volume "openzfs-shared" already bound
+                                                          to a different claim.
+```
+
+`kubectl get pv openzfs-shared` の `STATUS` が `Released` になっていたら、古い参照を消して再利用可能に戻します。
+
+```bash
+kubectl patch pv openzfs-shared --type=json -p '[{"op": "remove", "path": "/spec/claimRef"}]'
+```
+
+数秒で `STATUS` が `Bound` に変わり、`Pending` だった PVC と Pod もそれに続いて解決します。他の静的 PV（`fsx-training`、`efs-neuron-workspace`）も同じ `Retain` なので、PVC を消して作り直す操作をした後は同じ症状が起きえます。
+:::
+
 Pod が `Running` になるまでログは出ません。初回は CPU ノードの起動とイメージ pull で数分かかるので、`kubectl wait` で Pod が Ready になるのを待ってから、続けてログを追います。
 
 ```bash
@@ -214,6 +233,21 @@ kubectl logs -f -l job-name=ddp-torchrun -n "$NAMESPACE"
 ```
 
 MNIST のダウンロードは全 rank が実行し、初回のこの step で共有ストレージ上の `/shared/mnist-data` に落ちます（`download=True` は冪等で、既にファイルが揃っていれば torchvision 側が再取得をスキップします。rank 0 だけが取得して他 rank を barrier で待たせる形にすると、取得が collective の初期化タイムアウトを超えた場合にデッドロックするため、こちらを選んでいます）。各 rank は `DistributedSampler` によってデータセットの異なる部分を担当し、勾配を all-reduce で共有しながら同じモデルを更新します。エポックが進むと loss が減少します。`ddp.py` は各エポックの終わりに（`SAVE_EVERY` の既定は 1）rank 0 だけがスナップショットを共有ストレージ上の `/shared/output/torchrun-gloo/snapshot.pt` へ上書き保存し、3 エポックを終えて両 rank が正常終了します。「保存は rank 0 のみが行う」というのは DDP の定石で、全 rank が同じモデルを持っているため保存は 1 つで足ります（共有ファイルシステムでは全 rank が同じファイルへ同時書き込みすると破損しかねない、という実務上の理由もあります）。
+
+既定の 3 エポックは MNIST + MLP という小さい組み合わせでは 1 分足らずで終わってしまい、ログを `follow` しても途中経過を眺める前に完走してしまいます。`torchrunTrain.totalEpochs` でエポック数を増やせます。
+
+```bash
+helm template exp charts/experiments -n "$NAMESPACE" \
+    --set torchrunTrain.enabled=true \
+    --set torchrunTrain.image="$IMAGE" \
+    --set torchrunTrain.backend=gloo \
+    --set torchrunTrain.nodeRole=cpu \
+    --set torchrunTrain.nprocPerNode=2 \
+    --set torchrunTrain.totalEpochs=100 \
+    | kubectl apply -f -
+```
+
+エポック数を増やしても、途中で Job を消して構いません。スナップショットは各エポックの終わりに保存されているので、`kubectl delete job ddp-torchrun` した時点で最後に完了したエポックまでの状態が `/shared` に残ります（進行中だったエポックの分は保存されないので、消えるのはそのエポックだけです）。同じコマンドで Job を再投入すると、`resuming from snapshot at epoch <N>` と出て、消したところから学習が続きます。この resume の仕組みは `--total-epochs` を大きくして途中で止めたときのためだけでなく、ノードの入れ替えや Karpenter の consolidation で Pod が意図せず落ちた場合の耐性にもなっています。
 
 完了を待ちます。初回は Karpenter が CPU ノードを立ち上げ、学習イメージを pull するため、学習開始までに数分の追加時間がかかります。学習本体と合わせて余裕を見て 30 分のタイムアウトにしています。
 
