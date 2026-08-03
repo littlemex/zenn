@@ -11,16 +11,16 @@ free: true
 
 ![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 
-本章で扱うのは、この図のうち **Karpenter が起動するアクセラレータノードのプール定義**です。Basic03 で入れた Karpenter が実際に GPU ノードを立てられるようにするのがゴールで、EFA を使う大規模構成は Basic06 で扱い、そのために必要な容量の確保は Basic05 で扱います。
+本章で扱うのは、この図のうち **Karpenter が起動するアクセラレータノードのプール定義**です。Basic03 で入れた Karpenter が実際に GPU ノードを立てられるようにするのがゴールです。
 
 ## このシナリオが解決する課題
 
-分散学習の実機検証では「とにかく GPU ノードを 2 台確保して DDP を回したい」という要求が頻繁に発生します。しかし単一のインスタンスタイプに絞ると、そのサイズがキャパシティ不足のとき InsufficientInstanceCapacity で詰まります。
+分散学習の実機検証では「とにかく GPU ノードを 2 台確保して DDP を回したい」という要求が頻繁に発生します。しかし単一のインスタンスタイプに絞ると、そのサイズがキャパシティ不足のときキャパシティエラーで詰まります。
 
 本章のアプローチは次の通りです。
 
 - g5(A10G)と g6(L4)を**ヘテロジニアスに混ぜます**: 片方が取れなくても他方でノードが立ちます
-- spot を第一優先、on-demand をフォールバックにします: コストを抑えつつ確実に 2 台確保します(Intent F)
+- spot を第一優先、on-demand をフォールバックにします: コストを抑えつつ確実に 2 台確保します
 - 単一 AZ に固定します: gloo/TCP バックエンドの DDP でも cross-AZ レイテンシを避けます
 
 単一 AZ への固定は、本章の目的である「確実に 2 台確保する」こととは緊張関係にあります。AZ を 1 つに絞るとその AZ の spot 在庫が尽きていれば取得できず、複数 AZ に広げれば可能性は上がります。ここでは 4 インスタンスタイプ × 2 capacity-type の組み合わせで確保しやすさを確保しつつ、AZ は 1 つに固定するトレードオフを選んでいます。これは EFA や FSx など AZ をまたげないコンポーネントとの将来的な整合を優先したためです。
@@ -80,7 +80,7 @@ accelerator_pools = {
 - Karpenter が導入済み
 - Basic02 で作った `ddp-sample` イメージ(ECR に push 済み)
 
-NVIDIA GPU Operator は Basic03 の時点では入っていません。`accelerator_pools` に `device_plugin = "nvidia"` のプールが 1 つ以上あることを条件(`local.has_gpu_pool`)に導入されるため、本章で `gpu-ddp` プールを足して `terraform apply` した時点で初めてインストールされます。したがって上記 2 つ目の apply は、プールの NodePool/EC2NodeClass と GPU Operator を同時に作ることになり、初回はその分だけ時間がかかります。
+NVIDIA GPU Operator は Basic03 の時点では入っていません。`accelerator_pools` に `device_plugin = "nvidia"` のプールが 1 つ以上あることを条件(`local.has_gpu_pool`)に導入されるため、本章で `gpu-ddp` プールを足して `terraform apply` した時点で初めてインストールされます。
 
 ```hcl
 accelerator_pools = {
@@ -120,16 +120,12 @@ helm template exp charts/experiments -n "$NAMESPACE" \
     --set trainjobTrain.nprocPerNode=1 \
     --set trainjobTrain.gpu.enabled=true \
     --set trainjobTrain.gpu.count=1 \
-    --set torchrunTrain.totalEpochs=100 \
+    --set trainjobTrain.totalEpochs=100 \
     --set sharedStorage.existingClaimName=shared-claim \
     | kubectl apply -f -
 ```
 
 `trainjobTrain.nodeRole=gpu-ddp` が `torch-distributed-eks` の `nodeSelector.node-role` を `gpu-ddp` に、`trainjobTrain.gpu.enabled=true` が `resourcesPerNode.limits.nvidia.com/gpu` と `nvidia.com/gpu` taint への toleration を有効にします。TrainJob 自体の名前は常に `ddp-trainjob` です。
-
-:::message alert
-`ClusterTrainingRuntime` はクラスタスコープの単一オブジェクトです。このコマンドを実行すると、Basic02 で作った `nodeRole=cpu` の `torch-distributed-eks` が `nodeRole=gpu-ddp` に上書きされます。クラスタを他の用途と共有している場合は、同名のランタイムを奪い合う点に注意してください。
-:::
 
 ## 3. 実行と確認
 
@@ -173,12 +169,8 @@ kubectl logs -f -l "$SEL" -n "$NAMESPACE"
 [rank 0/2] starting training: 3 epochs, batch_size 32
 [rank 0/2] epoch 2 | steps 938 | loss 0.0523
 [rank 0/2] epoch 2 | snapshot saved to /shared/output/trainjob/snapshot.pt
-[rank 0/2] done
+...
 ```
-
-:::message alert
-本章の構成は spot 前提の 2 ノード DDP です。spot ノードが中断されると、その rank のプロセスが失われて collective 全体(all-reduce)が止まり、学習は失敗します。`torch-distributed-eks` は Pod に `karpenter.sh/do-not-disrupt: "true"` を付けていますが、これは Karpenter 自身による自発的な退去(consolidation など)を止めるだけで、AWS 側のスポット中断そのものは防げません。
-:::
 
 # Intent F と Intent M の違い
 
