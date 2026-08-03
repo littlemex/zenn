@@ -11,7 +11,7 @@ free: true
 
 ![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 
-本章で扱うのは、この図のうち **Karpenter が起動するアクセラレータノードのプール定義**です。Basic03 で入れた Karpenter が実際に GPU ノードを立てられるようにするのがゴールで、EFA を使う大規模構成は Basic05 以降で扱います。
+本章で扱うのは、この図のうち **Karpenter が起動するアクセラレータノードのプール定義**です。Basic03 で入れた Karpenter が実際に GPU ノードを立てられるようにするのがゴールで、EFA を使う大規模構成は Basic06 で扱い、そのために必要な容量の確保は Basic05 で扱います。
 
 ## このシナリオが解決する課題
 
@@ -55,7 +55,7 @@ accelerator_pools = {
 |---|---|---|
 | instance_types | g6.2xlarge, g5.2xlarge, g6.xlarge, g5.xlarge | 4 種のうちキャパシティがあるものを Karpenter が選択 |
 | capacity_types | ["spot", "on-demand"] | spot 優先、取れなければ on-demand にフォールバック(Intent F) |
-| zones | 未指定(`local.azs[0]` に自動導出) | 将来 Basic06 で追加する Capacity Block プールと同じ AZ に配置し、共有ストレージ接続に備える |
+| zones | 未指定(`local.azs[0]` に自動導出) | 将来 Basic05 で追加する Capacity Block プールと同じ AZ に配置し、共有ストレージ接続に備える |
 | efa_interface_count | 0 | 小型 GPU に EFA は不要(TCP gloo で十分) |
 | labels | workload=ddp-basic04 | 追加のラベル。Pod からプールを選ぶ第一級の手段は、プール名(map のキー)がそのまま Karpenter のノードラベル `node-role=<プール名>` になる仕組みで、`labels` はさらに細かくルーティングしたいときの補助です |
 
@@ -172,7 +172,7 @@ kubectl run rm-snap --rm -i --restart=Never -n "$NAMESPACE" \
 :::
 
 :::message alert
-本章の構成は spot 前提の 2 ノード DDP です。spot ノードが中断されると、その rank のプロセスが失われて collective 全体(all-reduce)が止まり、学習は失敗します。`torch-distributed-eks` は Pod に `karpenter.sh/do-not-disrupt: "true"` を付けていますが、これは Karpenter 自身による自発的な退去(consolidation など)を止めるだけで、AWS 側のスポット中断そのものは防げません。短時間の検証用途に留め、長時間の学習では `ddp.py` のチェックポイント間隔を詰めるか、Basic06 で扱う Capacity Block(reserved)の利用を検討してください。
+本章の構成は spot 前提の 2 ノード DDP です。spot ノードが中断されると、その rank のプロセスが失われて collective 全体(all-reduce)が止まり、学習は失敗します。`torch-distributed-eks` は Pod に `karpenter.sh/do-not-disrupt: "true"` を付けていますが、これは Karpenter 自身による自発的な退去(consolidation など)を止めるだけで、AWS 側のスポット中断そのものは防げません。短時間の検証用途に留め、長時間の学習では `ddp.py` のチェックポイント間隔を詰めるか、Basic05 で扱う Capacity Block(reserved)の利用を検討してください。
 :::
 
 # Intent F と Intent M の違い
@@ -182,14 +182,14 @@ kubectl run rm-snap --rm -i --restart=Never -n "$NAMESPACE" \
 - **Intent F**: 1 つのプールに複数の capacity_types を並べます。Karpenter は reserved を最優先し、それ以外は価格の低いものから選ぶため、結果として spot が on-demand より先に選ばれ、取れなければ次にフォールバックして台数充足を目指します。全ノードが同じプール・同じ NodePool に属します。
 - **Intent M**: reserved+spot を 1 プールに入れ、reserved ノードで長期訓練を走らせつつ spot ノードで推論やデータ前処理を同時に動かします。訓練 rank は nodeSelector `karpenter.sh/capacity-type: reserved` で reserved にピン留めし、spot に置きたい推論等は同じキーで `spot` にピン留めします。どちらの capacity-type に留まりたいかを Pod 側が明示的に指定する仕組みです。
 
-両方とも `capacity_types` リストで表現しますが、使い方が異なります。詳しくは Basic06(Capacity Block)で扱います。
+両方とも `capacity_types` リストで表現しますが、使い方が異なります。詳しくは Basic05(Capacity Block)で扱います。
 
 # まとめ
 
 - `accelerator_pools` に 1 エントリ書くだけで、ヘテロジニアスな GPU DDP 環境が立ち上がります
 - spot+on-demand フォールバック(Intent F)でコストと可用性を両立できます
 - EFA 不要な小規模 DDP なら TCP gloo で十分に動きます
-- 大規模・EFA 必須のシナリオは Basic05(EFA topology)と Basic06(Capacity Block)で扱います
+- 大規模・EFA 必須のシナリオは Basic05(Capacity Block)と Basic06(EFA topology)で扱います
 
 # 参考資料
 

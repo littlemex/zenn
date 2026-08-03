@@ -1,8 +1,14 @@
 ---
-title: "Basic06 - Capacity Block を取得して組み込む"
+title: "Basic05 - Capacity Block を取得して組み込む"
 free: true
 ---
-本章では、Basic04 で `accelerator_pools` に用意しておいた `capacity_type = "reserved"` という選択肢を実際に使い、H200/AWS Trainium の予約キャパシティ（Capacity Block）を Amazon EKS クラスタに組み込みます。予約の検索・購入から `terraform.tfvars` への反映、NCCL/EFA での動作確認、期限管理までの一連の運用フローを扱います。
+本章では、Basic04 で `accelerator_pools` に用意しておいた `capacity_type = "reserved"` という選択肢を実際に使い、H200/AWS Trainium の予約キャパシティ（Capacity Block）を Amazon EKS クラスタに組み込みます。予約の検索・購入から `terraform.tfvars` への反映、ノードが起動するところまでの確認、期限管理までを扱います。確保したノードで実際にマルチノード通信が出ているかの検証は、次章の Basic06 で行います。
+
+本章がこの位置にあるのは、次章で EFA のマルチノード通信を検証するために、EFA を複数枚持つインスタンスが 2 台以上必要になるためです。この規模のインスタンスは On-Demand ではまず確保できず、しかも EFA/RDMA は AZ をまたげないので同一 AZ に揃える必要もあります。Capacity Block はこの 2 つを同時に満たす現実的な唯一の手段なので、先に容量を押さえてから検証に進みます。
+
+:::message alert
+Capacity Block は開始時刻と終了時刻が固定で、期間が過ぎれば容量は強制的に回収されます。本章で予約を確保したら、間を置かずに Basic06 の検証まで進めてください。本章と次章を別の日に分けると、確保した時間を待機に費やすことになります。
+:::
 
 # 解説
 
@@ -23,11 +29,13 @@ CB を使う運用フローは次のようになります。
 1. `describe-capacity-block-offerings` でオファリング（購入可能な予約の候補）を検索する
 2. オファリングを選んで購入し、Capacity Reservation ID（`cr-...`）を受け取る
 3. `cr-...` を `accelerator_pools` の該当プールに書き込み `terraform apply` する
-4. NCCL/EFA でノード間通信を検証する
-5. 終了時刻の 1 時間前に自動でアラートが飛ぶようにしておく
+4. 終了時刻の 1 時間前に自動でアラートが飛ぶようにしておく
+5. 確保したノードでワークロードを動かす（本書では Basic06 の NCCL/EFA 検証）
 6. 終了前にワークロードを退避し、teardown する
 
-この章に付属する helper script は `00-check-cb-offerings.sh` から `04-teardown.sh` までの 5 つで、上記の手順 1・2・3・4・6（検索・購入・反映・検証・teardown）にそれぞれ 1 対 1 で対応しています。番号の順に実行すれば迷わない構成にしています。手順 5 の期限アラートだけはスクリプト実行を挟まず、`cb_reservation_id` を書くだけで Terraform が予約の終了時刻を自動的に読み取り、アラートを組み立てます。
+このうち本章が扱うのは手順 1 から 4 までと、予約の一生を締める 6 の位置づけです。手順 5 は次章の Basic06 が担い、teardown（手順 6）の実行手順も検証を終えたあとに実行するものなので Basic06 の末尾に置いています。
+
+この章に付属する helper script は `00-check-cb-offerings.sh` から `04-teardown.sh` までの 4 つです。`00`・`01`・`02` が上記の手順 1・2・3（検索・購入・反映）に 1 対 1 で対応し、`04-teardown.sh` が手順 6 に対応します（`03` は欠番です）。手順 4 の期限アラートだけはスクリプト実行を挟まず、`cb_reservation_id` を書くだけで Terraform が予約の終了時刻を自動的に読み取り、アラートを組み立てます。
 
 さらに、この構成には予約の終了時刻から自動的に期限アラートを組み立てる仕組みが入っています。プールに `cb_reservation_id` を書いておくと、Terraform がその予約の終了時刻を自動的に読み取り、Amazon EventBridge Scheduler の one-shot スケジュールを 1 プールにつき 1 つ作り、終了 1 時間前に Amazon SNS へ通知します。発火後はそのスケジュール自体が自己削除されるため、`terraform apply` を重ねても過去の時刻でスケジュールを再作成しようとして API に拒否される、という事故を避けられます。プールの `cb_end_date` は、この自動導出された終了時刻を緊急時に上書きするための任意項目であり、通常は書く必要がありません。
 
@@ -219,7 +227,7 @@ resource "aws_scheduler_schedule" "cb_expiry_alert" {
 
 ## 全体の中での位置付け
 
-Basic04 までに作った `accelerator_pools` という型に、本章では「予約 ID をどう埋めるか」という運用手順を積み重ねます。プール定義そのものの構造は変わりません。CB は容量調達の一手段であり、NodePool/NodeClass の設計自体には手を入れないという点が、この章を Basic04〜Basic05 の続きとして位置づける根拠になります。
+Basic04 までに作った `accelerator_pools` という型に、本章では「予約 ID をどう埋めるか」という運用手順を積み重ねます。プール定義そのものの構造は変わりません。CB は容量調達の一手段であり、NodePool/NodeClass の設計自体には手を入れないという点が、この章を Basic04 の続きとして位置づける根拠になります。本章で確保したノードを実際に使うのは次章の Basic06 で、そこで EFA のマルチノード通信を検証します。
 
 ## 注意
 
@@ -320,14 +328,16 @@ kubectl get nodepool gpu-p4d
 kubectl get ec2nodeclass gpu-p4d
 ```
 
-apply が作るのは NodePool と EC2NodeClass の定義であって、この時点ではまだノードは立ちません。Karpenter は GPU を要求する Pod（Pending）が現れて初めてノードを起動します（Karpenter 自体のインストールと NodePool 生成の仕組みは Basic04 で構築済みという前提です）。実際にノードを立てるのは次の手順で、CB プールをターゲットにしたワークロードを投入したときです。ノードが立った後は次のコマンドで確認できます。
+apply が作るのは NodePool と EC2NodeClass の定義であって、この時点ではまだノードは立ちません。Karpenter は GPU を要求する Pod（Pending）が現れて初めてノードを起動します（Karpenter 自体のインストールと NodePool 生成の仕組みは Basic04 で構築済みという前提です）。実際にノードが立つのは、次章 Basic06 で CB プールをターゲットにした検証ワークロードを投入したときなので、ここで確認するのは定義が正しく作られたことまでです。
+
+ノードが立ったあと、それが予約から起動したことを確かめるコマンドを先に示しておきます。実行するのは Basic06 の手順 3 でワークロードを投入したあとです。
 
 ```bash
 kubectl get nodeclaims -l karpenter.sh/nodepool=gpu-p4d
 kubectl get nodes -l karpenter.sh/capacity-type=reserved
 ```
 
-実機出力（p4d の Capacity Block は us-west-2d に確保したもの）:
+実機出力（p4d の Capacity Block は us-west-2d に確保したもの。2 台のうち 1 台分を抜粋）:
 
 ```text
 NAME            TYPE           CAPACITY   ZONE         NODE                                         READY
@@ -336,128 +346,7 @@ gpu-p4d-5zlm9   p4d.24xlarge   reserved   us-west-2d   ip-10-0-115-100.us-west-2
 
 `CAPACITY = reserved` の NodeClaim が表示され、`ZONE` が予約の AZ に一致していれば、CB からのノード起動は成功です。ここで `zone` を `terraform.tfvars` に一切書いていないことを思い出してください。`us-west-2d` は予約から自動導出された値です。
 
-## 5. マルチノードで NCCL/EFA を検証する
-
-ここが Capacity Block を確保した目的の確認です。予約した複数ノードが実際に EFA/RDMA で通信できているかを測ります。EFA の仕組みそのもの（カード枚数の導出、card 0 問題、セキュリティグループの要件）は Basic05 で扱っているので、手順 3 までを終えていることを前提にします。
-
-:::message
-テストは 2 ノードで実行するので、手順 4 で `CAPACITY = reserved` のノードが 2 台起動していることを先に確認してください。1 台しか確保していない場合、この手順は実行できません（同一ノードに 2 つの Pod を載せると NCCL が NVLink だけで通信を完結させ、EFA について何も検証できないテストになるため、後述の podAntiAffinity で明示的に禁止しています）。
-:::
-
-EFA の枚数も GPU の枚数もインスタンスタイプごとに違うため、コマンドに直接書かず、対象プールのノードの `.status.allocatable`（device plugin が実際に広告している値）から読み取って渡します。
-
-```bash
-export NAMESPACE=distai
-kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
-
-POOL=gpu-p4d
-GPU=$(kubectl get nodes -l node-role=$POOL \
-  -o jsonpath="{.items[0].status.allocatable['nvidia\.com/gpu']}")
-EFA=$(kubectl get nodes -l node-role=$POOL \
-  -o jsonpath="{.items[0].status.allocatable['vpc\.amazonaws\.com/efa']}")
-echo "gpu=$GPU efa=$EFA"   # p4d.24xlarge では gpu=8 efa=3
-
-helm template exp charts/experiments -n "$NAMESPACE" \
-  --set namespace="$NAMESPACE" \
-  --set ncclSshd.enabled=true \
-  --set ncclSshd.nodeRole=$POOL \
-  --set ncclSshd.gpuCount=$GPU \
-  --set ncclSshd.efaCount=$EFA \
-  --set ncclSshd.image=public.ecr.aws/hpc-cloud/nccl-tests:cuda12.8.1-efa1.42.0-ofiv1.16.0-ncclv2.27.5-1-testsv2.16.4 \
-  | kubectl apply -f -
-```
-
-`ncclSshd` は 2 つの Pod を別ノードに立て、それぞれに sshd を常駐させて、片方から `mpirun` で相手を叩く構成です。`nccl-tests` は MPI ベースなので rendezvous は `mpirun` が担います。
-
-指定の要点は 3 つあります。
-
-第一に、`ncclSshd.nodeRole` にはプール名を渡します。ノードの GPU SKU を表す `nvidia.com/gpu.product` で選びたくなりますが、このラベルは GPU Operator が起動済みのノードに後から付与するものなので、Karpenter が「どのインスタンスタイプを起動するか」を判断する材料になりません。これを nodeSelector に使うと Karpenter は次のように要求を拒否し、2 台目のノードが永久に起動しません。
-
-```text
-Failed to schedule pod, incompatible requirements,
-label "nvidia.com/gpu.product" does not have known values
-```
-
-Karpenter が起動時に付ける `node-role=<プール名>` を使えば、ノードがまだ存在しない状態からプロビジョニングを誘発できます。
-
-第二に、`gpuCount` と `efaCount` は上のようにノードから読んだ値を渡します。EFA の schedulable 数はファミリごとに違うため、固定値を書くと別のファミリでは必ず Pod が Pending になります。
-
-第三に、SSH 鍵の配布は不要です。チャートがレンダリング時に鍵ペアを生成して Secret として両 Pod に配るため、Pod が `Running` になった時点で `mpirun` がそのまま通ります。
-
-:::message
-`helm template` は実行ごとに新しい鍵を生成します。上の例のようにパイプで一度に `kubectl apply` するか、いったんファイルに書き出してから適用してください。2 回に分けてレンダリングすると server と client が別々の鍵を持つことになり、SSH が通りません。
-:::
-
-2 つの Pod には hostname 単位の `podAntiAffinity` が入っており、同じノードに載ることはありません。同一ノードに載ると NCCL は NVLink だけで通信を完結させてしまい、EFA について何も検証できないテストになるためです。
-
-:::message alert
-`hugepages` を要求する Pod でノードの新規起動を誘発しないでください。Karpenter は hugepages を「どのインスタンスタイプなら足りるか」の判断に使わないため、`no instance type has enough resources` と判定して NodeClaim を作らず、Pod が永久に Pending になります。2 台目以降のノードは hugepages を要求しない Pod で先に起動させ、そのうえで hugepages を使うベンチマークを載せてください。この制約は Neuron 側のプローブでも同じです。
-:::
-
-両 Pod が `Running` になったら、server 側から `mpirun` でベンチマークを起動します。
-
-```bash
-SIP=$(kubectl -n "$NAMESPACE" get pod nccl-server -o jsonpath='{.status.podIP}')
-CIP=$(kubectl -n "$NAMESPACE" get pod nccl-client -o jsonpath='{.status.podIP}')
-
-kubectl -n "$NAMESPACE" exec nccl-server -- bash -lc "
-/opt/amazon/openmpi/bin/mpirun --allow-run-as-root -np $((2 * GPU)) \
-  -H $SIP:$GPU,$CIP:$GPU --mca plm_rsh_args '-p 2222' \
-  -x FI_PROVIDER=efa -x FI_EFA_USE_DEVICE_RDMA=1 -x FI_EFA_FORK_SAFE=1 \
-  -x NCCL_SOCKET_IFNAME='^lo,docker,veth' \
-  -x NCCL_DEBUG=INFO -x NCCL_DEBUG_SUBSYS=INIT,NET \
-  -x LD_LIBRARY_PATH -x PATH \
-  /opt/nccl-tests/build/all_reduce_perf -b 512M -e 1G -f 2 -g 1"
-```
-
-`NCCL_DEBUG` は `INFO` にします。次に確認する `NET/OFI Selected provider is efa` の行は `INFO` レベルでしか出力されず、`WARN` では EFA が使われた証拠が得られません。`NCCL_DEBUG_SUBSYS=INIT,NET` で対象サブシステムを絞り、ログが溢れるのを防いでいます。両 Pod は `hostNetwork` なので Pod IP はノード IP と一致します。
-
-
-確認ポイントは次の 2 つです。
-
-- ログに `NET/OFI Selected provider is efa` が出ることを確認します（TCP fallback していない証拠になります）
-- `busbw` が高い値を示すことを確認します
-
-実機確認結果（2 ノード p4d.24xlarge、A100 x16、EFA 3 NIC/ノード、`all_reduce_perf` 16 ランク）:
-
-```text
-ip-10-0-115-100:318:365 [2] NCCL INFO NET/OFI Using transport protocol SENDRECV (platform set)
-ip-10-0-115-100:318:365 [2] NCCL INFO NET/OFI Selected provider is efa, fabric is efa (found 3 nics)
-ip-10-0-124-216:273:320 [0] NCCL INFO NET/OFI Selected provider is efa, fabric is efa (found 3 nics)
-```
-
-両ノードで `efa` プロバイダが選択され、3 NIC が認識されています。この `found 3 nics` が、手順 1 で見た `terraform output accelerator_pool_efa_schedulable` の `gpu-p4d = 3`（= 4 − 1）と一致していることが重要です。カード枚数から 1 引いた値が、そのまま NCCL が掴む NIC 数になります。
-
-busbw 実測値:
-
-| メッセージサイズ | algbw | busbw |
-|---|---|---|
-| 32 MB | 15.7 GB/s | 29.4 GB/s |
-| 128 MB | 24.5 GB/s | 46.0 GB/s |
-| 512 MB | 30.0 GB/s | 56.2 GB/s |
-| 1024 MB | 30.9 GB/s | 57.9 GB/s |
-
-平均 busbw は 57.0 GB/s でした。EFA が効いていることを確かめるには絶対値だけでなく比較対象が必要なので、同じコマンドを単一ノード 8 GPU（ノードをまたがないので NVLink のみ）で実行した値を並べます。
-
-| 構成 | 通信経路 | busbw（1 GB） |
-|---|---|---|
-| 1 ノード 8 GPU | NVLink のみ | 227.1 GB/s |
-| 2 ノード 16 GPU | ノード間は EFA | 57.9 GB/s |
-
-ノードをまたぐと NVLink の約 4 分の 1 に落ちますが、これは想定どおりです。p4d.24xlarge の EFA は 4 カード構成で、そのうち通信に使えるのは 3 枚なので、NVLink の帯域には及びません。重要なのは 57.9 GB/s という値が TCP 経由（一般に数 GB/s 台）では到達できない水準にあることで、これが EFA/RDMA が実際に使われている証拠になります。EFA カードが 16 枚ある p5en や 32 枚ある p5 では、この数字はさらに大きくなります。
-
-この 2 つの値は同じ構成で日を変えて複数回測っても 57-58 GB/s と 227 GB/s に収まりました。読者の環境で桁が違う値（たとえばノード間が数 GB/s 台）になった場合は、EFA ではなく TCP にフォールバックしている可能性が高いので、先に `Selected provider is efa` の行が出ているかを確認してください。
-
-:::message
-`fabric` の表示は `efa` と `efa-direct` の 2 種類があります。上の実測では `efa` が選択されており、同時に `Using transport protocol SENDRECV (platform set)` が出ています。どちらが選ばれるかはインスタンス世代・libfabric・aws-ofi-nccl のバージョンの組み合わせで決まるため、`efa-direct` でなくても異常ではありません。判定の要点は `Selected provider is efa` であること、つまり TCP へ落ちていないことです。
-:::
-
-:::message
-NCCL テストを実行するには、テスト対象の GPU が他の Pod（Ray ワーカーなど）に占有されていないことが前提です。既存のワークロードを停止してからテストを実行してください。
-:::
-
-
-## 6. 期限アラートを確認する
+## 5. 期限アラートを確認する
 
 ```bash
 terraform output cb_expiry_alert_schedule_exprs
@@ -481,19 +370,11 @@ cb_expiry_sns_topic_arn = "arn:aws:sns:<region>:<account>:<cluster_name>-cb-expi
 cb_alert_email_addresses = ["you@example.com"]
 ```
 
-## 7. teardown する
-
-```bash
-./04-teardown.sh --namespace "$NAMESPACE" --nodepool gpu-p4d
-```
-
-Deployment/StatefulSet/Job/MPIJob を削除し、GPU Pod が完全に終了したのを確認したうえで Karpenter の NodePool を削除します。CB のノード自体は予約期間の終了時に AWS 側で強制回収されるため、このスクリプトは「ワークロードを安全に退避させる」ところまでを担当します。クラスタ全体を壊す `terraform destroy` は `--destroy` を明示した場合のみ実行されます。
-
 # まとめ
 
-本章では、Basic04 で用意した `capacity_type = "reserved"` を使い、Capacity Block の検索・購入から `terraform.tfvars` への反映、確保したノードでのマルチノード NCCL/EFA 帯域測定、期限アラート、teardown までの一連の運用フローを構築しました。
+本章では、Basic04 で用意した `capacity_type = "reserved"` を使い、Capacity Block の検索・購入から `terraform.tfvars` への反映、NodePool の確認、期限アラートまでを構築しました。
 
-手で書いたのは予約 ID と `capacity_type = "reserved"` の 2 つだけです。AZ は予約から自動導出され、期限アラートも予約の終了時刻から組み立てられます。実測では p4d.24xlarge 2 台で busbw 57.9 GB/s（単一ノード NVLink は 227.1 GB/s）が出て、NCCL のログが `Selected provider is efa (found 3 nics)` を示しました。この `3` が Basic05 で見た schedulable EFA 数と一致することが、EFA が意図どおり配線されている証拠になります。
+手で書いたのは予約 ID と `capacity_type = "reserved"` の 2 つだけです。AZ は予約から自動導出され、期限アラートも予約の終了時刻から組み立てられます。ここまでで確保できたのは容量であって、その容量が期待どおりの帯域を出すかはまだ分かっていません。確保したノードで EFA が正しく配線され、ノード間で実際に帯域が出ているかの検証と、終わったあとの teardown は次章の Basic06 で扱います。
 
 CB は前払いで取り消しができないため、On-Demand で動作確認を済ませたジョブを最後に載せる、という段階的な使い方が安全です。価格は `00-check-cb-offerings.sh` が「ブロック全体の総額」と「1 台 1 時間あたり」の両方で示すので、購入前に On-Demand 単価と比較できます。`capacity_type` の指定漏れによる二重課金など、Terraform の `validation` で弾いている落とし穴も合わせて押さえておけば、期限管理まで含めた CB 運用を事故なく回せます。
 

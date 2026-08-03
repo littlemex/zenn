@@ -1,9 +1,13 @@
 ---
-title: "Basic05 - EFA でマルチノード通信を検証する"
+title: "Basic06 - EFA でマルチノード通信を検証する"
 free: true
 ---
 
-本章では、Karpenter が起動するノードで EFA が正しく構成されるまでを扱います。EFA のインターフェース数とレイアウトをインスタンスタイプから自動導出する仕組み、Pod が要求できる EFA 数がカード枚数より 1 つ少なくなる card 0 問題、そしてセキュリティグループの見落としがちな設定を押さえ、導出された値がノードに反映されていることを実機で確認します。ノード間で実際に帯域が出ているかの測定は、EFA を複数枚持つインスタンスを 2 台以上確保する必要があるため Basic06 で扱います。
+本章では、Karpenter が起動するノードで EFA が正しく構成され、実際にノード間で帯域が出ていることまでを確認します。EFA のインターフェース数とレイアウトをインスタンスタイプから自動導出する仕組み、Pod が要求できる EFA 数がカード枚数より 1 つ少なくなる card 0 問題、そしてセキュリティグループの見落としがちな設定を押さえたうえで、Basic05 で確保した Capacity Block のノード 2 台で NCCL の帯域を測ります。
+
+:::message
+本章の帯域測定は、EFA を複数枚持つインスタンスが 2 台以上、しかも同一 AZ に必要です。Basic05 で Capacity Block を確保していることを前提にしています。まだ確保していない場合でも、解説部分と、ノードを必要としない手順 1（`terraform output` による schedulable EFA 数の確認）・手順 2（環境変数の書き方）までは先に読み進められます。手順 3 以降は Basic05 で確保した Capacity Block が必要です。
+:::
 
 # 解説
 
@@ -259,7 +263,7 @@ efa_device_plugin_values = merge(
 
 ## 全体の中での位置付け
 
-本章は、前章までで Karpenter が起動したアクセラレータノードの上に成り立っています。ノードそのものは既に `Ready` になっていますが、EFA インターフェースが正しい枚数で広告され、セキュリティグループが SRD トラフィックを通し、実際の NCCL 通信が TCP にフォールバックせず EFA 経由で流れているかは、ノードが `Ready` であることとは別に確認が必要です。本章はこの「ノードは立っているが通信は本当に EFA を使っているか」を検証する層にあたります。
+本章は、Basic05 で Capacity Block から確保したアクセラレータノードの上に成り立っています。ノードそのものは既に `Ready` になっていますが、EFA インターフェースが正しい枚数で広告され、セキュリティグループが SRD トラフィックを通し、実際の NCCL 通信が TCP にフォールバックせず EFA 経由で流れているかは、ノードが `Ready` であることとは別に確認が必要です。本章はこの「ノードは立っているが通信は本当に EFA を使っているか」を検証する層にあたります。Basic05 が容量の調達を担い、本章がその容量が使い物になっているかの検証を担う、という分担です。
 
 ## 注意
 
@@ -321,7 +325,7 @@ aws ec2 describe-instance-types --instance-types g6.2xlarge g5.2xlarge g6e.12xla
 
 `efa_supported = false` の型は `efa_maximum_interfaces` が `None`（null）を返すため、モジュール側は `coalesce(..., 0)` で 0 に丸めます。EFA を使わないプールに EFA 関連の設定を書く必要がないのは、この導出があるからです。
 
-Capacity Block で EFA 対応の大型インスタンスを追加すると、同じ output に値が増えます。Basic06 で p4d.24xlarge のプール（`gpu-p4d`）を追加した状態では次のようになります。
+Capacity Block で EFA 対応の大型インスタンスを追加すると、同じ output に値が増えます。Basic05 で p4d.24xlarge のプール（`gpu-p4d`）を追加した状態では次のようになります。
 
 ```text
 {
@@ -344,9 +348,129 @@ Capacity Block で EFA 対応の大型インスタンスを追加すると、同
 
 同じ p5 系でも p5 は 32 枚、p5en は 16 枚と倍違います。「multi-card なら 15」と覚えるのではなく、必ずこの `terraform output` かノードの allocatable を見る、というのがこの表の要点です。
 
-## 2. ノード上の EFA リソースを確認する
+## 2. NCCL_SOCKET_IFNAME の書き方を押さえる
 
-手順 1 の値が実際にノードへ反映されているかを確認します。この手順は **EFA 対応インスタンスが起動している必要がある**ため、Basic04 の `gpu-ddp`（EFA 非対応）では実行できません。Basic06 で Capacity Block のプールを立てたあと、あるいは g6e.12xlarge のような EFA 対応 GPU を On-Demand で 1 台起動できた場合に実施してください。
+次の手順で投入する測定ワークロードは、環境変数に以下を渡します。自分でワークロードを書く場合も同じ形にします。
+
+```yaml
+env:
+  - name: NCCL_SOCKET_IFNAME
+    value: "^lo,docker,veth"
+  - name: FI_PROVIDER
+    value: "efa"
+```
+
+要点は `NCCL_SOCKET_IFNAME` を `^` で始まる除外パターンで書くことです。`efa0,efa1,...` のような許可リスト方式で名指しすると bootstrap に失敗します（理由は前述の「注意 3」を参照してください）。
+
+## 3. 測定ワークロードを投入してノードを起動する
+
+ここが本章の目的であり、Basic05 で Capacity Block を確保した目的でもあります。予約した複数ノードが実際に EFA/RDMA で通信できているかを測ります。
+
+:::message alert
+以降は 2 ノードで実行するので、Basic05 で購入した予約のインスタンス数が 2 台以上であることを先に確認してください（`00-check-cb-offerings.sh` の出力の `Cnt` 列で選んだ値です）。1 台しか確保していない場合、この手順は実行できません。2 台目が確保できていないと、次に投入する Pod の片方が永久に `Pending` になります。
+:::
+
+Basic05 の apply で作られたのは NodePool と EC2NodeClass の定義だけで、この時点ではまだノードは 1 台も立っていません。Karpenter は Pod の要求を見て初めてノードを起動します。
+
+ここで 1 つ順序の制約があります。次に投入する `ncclSshd` は EFA の RDMA 登録のために hugepages を要求しますが、Karpenter は hugepages を「どのインスタンスタイプなら足りるか」の判断に使いません。そのため hugepages を要求する Pod でノードの新規起動を誘発しようとすると、`no instance type has enough resources` と判定されて NodeClaim が作られず、Pod は永久に `Pending` になります。したがって先に hugepages を要求しない GPU Pod で 2 台のノードを起こし、そのうえで測定ワークロードを載せます。
+
+まず 2 台分のノードを起こします。GPU だけを要求する使い捨ての Pod を 2 つ投入します。各 Pod がそのインスタンスの GPU を全数要求するので同一ノードには同居できず、`podAntiAffinity` も併せて別ノードへの配置を明示しています（GPU 数を減らして流用すると 2 つが 1 ノードに載り、2 台目が起動しません）。`sleep` を待ち時間より長く取っているのは、片方のノード起動が遅れている間に先の Pod が `Succeeded` に落ちて `kubectl wait` が満たされなくなるのを避けるためです。
+
+```bash
+export NAMESPACE=distai
+kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+
+POOL=gpu-p4d
+ITYPE=p4d.24xlarge   # 対象プールの instance_types に合わせる
+GPU=$(aws ec2 describe-instance-types --instance-types "$ITYPE" \
+  --query 'InstanceTypes[0].GpuInfo.Gpus[0].Count' --output text)
+
+for i in 0 1; do
+  cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: warmup-$i
+  namespace: $NAMESPACE
+  labels: { app: warmup }
+spec:
+  restartPolicy: Never
+  nodeSelector: { node-role: $POOL }
+  tolerations:
+    - { key: nvidia.com/gpu, operator: Exists, effect: NoSchedule }
+    - { key: capacity-reservation, operator: Exists, effect: NoSchedule }
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector: { matchLabels: { app: warmup } }
+          topologyKey: kubernetes.io/hostname
+  containers:
+    - name: smi
+      image: nvidia/cuda:12.4.1-base-ubuntu22.04
+      command: ["sleep", "3600"]
+      resources: { limits: { nvidia.com/gpu: "$GPU" } }
+EOF
+done
+
+# 2 台とも Ready になるまで待つ（初回は起動とイメージ pull で 5-10 分）
+kubectl wait --for=condition=ready pod -l app=warmup -n "$NAMESPACE" --timeout=20m
+kubectl get nodes -l node-role=$POOL
+```
+
+`capacity-reservation` taint は予約ごとに値が変わるため `operator: Exists` で値を問わずに tolerate します（Basic05 の「注意 2」を参照してください）。2 台のノードが `Ready` になったら、次の測定ワークロードを投入する前にこの warmup Pod を削除します。GPU を占有したままだと測定側の Pod がスケジュールされません。
+
+```bash
+kubectl delete pod -l app=warmup -n "$NAMESPACE" --wait=true
+```
+
+続く手順 4 と 5 は、ここで起動したノードを見ます。ノードは Basic05 で `consolidateAfter: Never` の disruption preset が効いているため（予約プールは自動で `protect` に解決されます）、warmup Pod を消してもノードは回収されずに残ります。
+
+ノードが立ったので、測定ワークロードを載せます。EFA の枚数はインスタンスタイプごとに違うため、コマンドに直接書かず手順 1 の `terraform output` から取ります（`GPU` は上で取得済みです）。
+
+```bash
+EFA=$(cd infra/eks && terraform output -json accelerator_pool_efa_schedulable | jq -r ".\"$POOL\"")
+echo "gpu=$GPU efa=$EFA"   # p4d.24xlarge では gpu=8 efa=3
+
+helm template exp charts/experiments -n "$NAMESPACE" \
+  --set namespace="$NAMESPACE" \
+  --set ncclSshd.enabled=true \
+  --set ncclSshd.nodeRole=$POOL \
+  --set ncclSshd.gpuCount=$GPU \
+  --set ncclSshd.efaCount=$EFA \
+  --set ncclSshd.image=public.ecr.aws/hpc-cloud/nccl-tests:cuda12.8.1-efa1.42.0-ofiv1.16.0-ncclv2.27.5-1-testsv2.16.4 \
+  | kubectl apply -f -
+```
+
+`ncclSshd` は 2 つの Pod を別ノードに立て、それぞれに sshd を常駐させて、片方から `mpirun` で相手を叩く構成です。`nccl-tests` は MPI ベースなので rendezvous は `mpirun` が担います。
+
+指定の要点は 3 つあります。
+
+第一に、`ncclSshd.nodeRole` にはプール名を渡します。ノードの GPU SKU を表す `nvidia.com/gpu.product` で選びたくなりますが、このラベルは GPU Operator が起動済みのノードに後から付与するものなので、Karpenter が「どのインスタンスタイプを起動するか」を判断する材料になりません。これを nodeSelector に使うと Karpenter は次のように要求を拒否し、2 台目のノードが永久に起動しません。
+
+```text
+Failed to schedule pod, incompatible requirements,
+label "nvidia.com/gpu.product" does not have known values
+```
+
+Karpenter が起動時に付ける `node-role=<プール名>` を使えば、ノードがまだ存在しない状態からプロビジョニングを誘発できます。
+
+第二に、`gpuCount` と `efaCount` は上のように AWS 側から読んだ値を渡します。EFA の schedulable 数はファミリごとに違うため、固定値を書くと別のファミリでは必ず Pod が Pending になります。
+
+第三に、SSH 鍵の配布は不要です。チャートがレンダリング時に鍵ペアを生成して Secret として両 Pod に配るため、Pod が `Running` になった時点で `mpirun` がそのまま通ります。
+
+:::message
+`helm template` は実行ごとに新しい鍵を生成します。上の例のようにパイプで一度に `kubectl apply` するか、いったんファイルに書き出してから適用してください。2 回に分けてレンダリングすると server と client が別々の鍵を持つことになり、SSH が通りません。
+:::
+
+2 つの Pod には hostname 単位の `podAntiAffinity` が入っているため、必ず別ノードに分かれます。これが 2 台目のノードの起動を誘発します。
+
+:::message
+hugepages とノード起動の制約は Neuron 側のプローブでも同じです。EFA を使うワークロードは RDMA 登録のために hugepages を要求するので、新しいプールで検証を始めるときは常にこの「hugepages なしの Pod でノードを起こしてから載せる」順序になります。
+:::
+
+## 4. ノード上の EFA リソースを確認する
+
+手順 3 でノードが起動したら、手順 1 の値が実際にノードへ反映されているかを確認します。両 Pod が `Running` になるまで待ってから実行してください（初回は Karpenter のノード起動とイメージ pull で数分かかります）。
 
 ```bash
 POOL=gpu-p4d   # 対象プール名に置き換える
@@ -374,7 +498,7 @@ kubectl describe node <node-name> | grep "vpc.amazonaws.com/efa"
   vpc.amazonaws.com/efa:  3
 ```
 
-## 3. EFA device plugin の稼働を確認する
+## 5. EFA device plugin の稼働を確認する
 
 ```bash
 kubectl get pods -n kube-system -l name=aws-efa-k8s-device-plugin
@@ -396,35 +520,86 @@ kubectl get ds -n kube-system aws-efa-k8s-device-plugin
 
 EFA 対応ノード（p4d x2）それぞれに 1 Pod ずつ Running していれば問題ありません。
 
-## 4. マルチノード帯域の実測は Basic06 で行う
+## 6. マルチノードで NCCL/EFA の帯域を測る
 
-マルチノードでの NCCL/EFA 帯域測定は、EFA を複数枚持つ GPU インスタンスが 2 台以上必要です。この規模のインスタンスは On-Demand ではまず確保できず、Capacity Block を購入することになるため、手順としては Basic06「Capacity Block を取得して組み込む」の中に置いています。予約を確保した直後にそのまま帯域を測るのが自然な流れであり、本章とあちらを行き来する必要もありません。
+両 Pod が `Running` になったら、server 側から `mpirun` でベンチマークを起動します。
 
-本章の手順 1〜3 で確認したのは、EFA のカード枚数が EC2 API から正しく導出され、card 0 を除いた数が device plugin から広告され、その plugin が動いているところまでです。この 3 つは Basic04 で作った小型 GPU プールの単一ノードでも確認できるので、Capacity Block を買う前に済ませておけます。
+```bash
+SIP=$(kubectl -n "$NAMESPACE" get pod nccl-server -o jsonpath='{.status.podIP}')
+CIP=$(kubectl -n "$NAMESPACE" get pod nccl-client -o jsonpath='{.status.podIP}')
 
-実際の帯域値（本書の実測では 2 ノード 16 GPU で busbw 57.9 GB/s、対照の単一ノード NVLink が 227.1 GB/s）と、NCCL が EFA を選んだことを示すログの読み方は Basic06 の「マルチノードで NCCL/EFA を検証する」で扱います。
-
-## 5. NCCL_SOCKET_IFNAME を確認する
-
-ワークロードの環境変数に以下が設定されていることを確認します。
-
-```yaml
-env:
-  - name: NCCL_SOCKET_IFNAME
-    value: "^lo,docker,veth"
-  - name: FI_PROVIDER
-    value: "efa"
+kubectl -n "$NAMESPACE" exec nccl-server -- bash -lc "
+/opt/amazon/openmpi/bin/mpirun --allow-run-as-root -np $((2 * GPU)) \
+  -H $SIP:$GPU,$CIP:$GPU --mca plm_rsh_args '-p 2222' \
+  -x FI_PROVIDER=efa -x FI_EFA_USE_DEVICE_RDMA=1 -x FI_EFA_FORK_SAFE=1 \
+  -x NCCL_SOCKET_IFNAME='^lo,docker,veth' \
+  -x NCCL_DEBUG=INFO -x NCCL_DEBUG_SUBSYS=INIT,NET \
+  -x LD_LIBRARY_PATH -x PATH \
+  /opt/nccl-tests/build/all_reduce_perf -b 512M -e 1G -f 2 -g 1"
 ```
 
-`NCCL_SOCKET_IFNAME` は `^` で始まる**除外パターン**で書きます。`efa0,efa1,...` のような許可リスト方式で efa-only インターフェースを名指しすると、そのインターフェースは IP を持たないため NCCL が bootstrap 用のソケットを bind できず失敗します。除外パターンなら IP を持つインターフェース（ENA）だけが自動的に選ばれるため安全です。
+`NCCL_DEBUG` は `INFO` にします。次に確認する `NET/OFI Selected provider is efa` の行は `INFO` レベルでしか出力されず、`WARN` では EFA が使われた証拠が得られません。`NCCL_DEBUG_SUBSYS=INIT,NET` で対象サブシステムを絞り、ログが溢れるのを防いでいます。両 Pod は `hostNetwork` なので Pod IP はノード IP と一致します。
+
+
+確認ポイントは次の 2 つです。
+
+- ログに `NET/OFI Selected provider is efa` が出ることを確認します（TCP fallback していない証拠になります）
+- `busbw` が高い値を示すことを確認します
+
+実機確認結果（2 ノード p4d.24xlarge、A100 x16、EFA 3 NIC/ノード、`all_reduce_perf` 16 ランク）:
+
+```text
+ip-10-0-115-100:318:365 [2] NCCL INFO NET/OFI Using transport protocol SENDRECV (platform set)
+ip-10-0-115-100:318:365 [2] NCCL INFO NET/OFI Selected provider is efa, fabric is efa (found 3 nics)
+ip-10-0-124-216:273:320 [0] NCCL INFO NET/OFI Selected provider is efa, fabric is efa (found 3 nics)
+```
+
+両ノードで `efa` プロバイダが選択され、3 NIC が認識されています。この `found 3 nics` が、手順 1 で見た `terraform output accelerator_pool_efa_schedulable` の `gpu-p4d = 3`（= 4 − 1）と一致していることが重要です。カード枚数から 1 引いた値が、そのまま NCCL が掴む NIC 数になります。
+
+busbw 実測値:
+
+| メッセージサイズ | algbw | busbw |
+|---|---|---|
+| 512 MB | 30.0 GB/s | 56.2 GB/s |
+| 1024 MB | 30.9 GB/s | 57.9 GB/s |
+
+上のコマンドは `-b 512M -e 1G -f 2` なので測定点は 512 MB と 1024 MB の 2 つで、この 2 点の平均 busbw は 57.0 GB/s でした。`-b` を小さくすればより小さいメッセージサイズも測れますが、EFA が効いているかの判定には大きいサイズの方が向きます（小さいメッセージでは通信の立ち上がりコストが支配的で、帯域が出るところまで到達しません）。EFA が効いていることを確かめるには絶対値だけでなく比較対象が必要なので、同じコマンドを単一ノード 8 GPU（ノードをまたがないので NVLink のみ）で実行した値を並べます。
+
+| 構成 | 通信経路 | busbw（1 GB） |
+|---|---|---|
+| 1 ノード 8 GPU | NVLink のみ | 227.1 GB/s |
+| 2 ノード 16 GPU | ノード間は EFA | 57.9 GB/s |
+
+ノードをまたぐと NVLink の約 4 分の 1 に落ちますが、これは想定どおりです。p4d.24xlarge の EFA は 4 カード構成で、そのうち通信に使えるのは 3 枚なので、NVLink の帯域には及びません。重要なのは 57.9 GB/s という値が TCP 経由（一般に数 GB/s 台）では到達できない水準にあることで、これが EFA/RDMA が実際に使われている証拠になります。EFA カードが 16 枚ある p5en や 32 枚ある p5 では、この数字はさらに大きくなります。
+
+この 2 つの値は同じ構成で日を変えて複数回測っても 57-58 GB/s と 227 GB/s に収まりました。読者の環境で桁が違う値（たとえばノード間が数 GB/s 台）になった場合は、EFA ではなく TCP にフォールバックしている可能性が高いので、先に `Selected provider is efa` の行が出ているかを確認してください。
+
+:::message
+`fabric` の表示は `efa` と `efa-direct` の 2 種類があります。上の実測では `efa` が選択されており、同時に `Using transport protocol SENDRECV (platform set)` が出ています。どちらが選ばれるかはインスタンス世代・libfabric・aws-ofi-nccl のバージョンの組み合わせで決まるため、`efa-direct` でなくても異常ではありません。判定の要点は `Selected provider is efa` であること、つまり TCP へ落ちていないことです。
+:::
+
+:::message
+NCCL テストを実行するには、テスト対象の GPU が他の Pod（Ray ワーカーなど）に占有されていないことが前提です。既存のワークロードを停止してからテストを実行してください。
+:::
+
+## 7. teardown する
+
+検証が終わったら、Capacity Block の期限が来る前にワークロードを退避します。Basic05 の helper script がそのまま使えます。
+
+```bash
+cd infra/eks/scripts
+./04-teardown.sh --namespace "$NAMESPACE" --nodepool gpu-p4d
+```
+
+Deployment/StatefulSet/Job/MPIJob を削除し、GPU Pod が完全に終了したのを確認したうえで Karpenter の NodePool を削除します。CB のノード自体は予約期間の終了時に AWS 側で強制回収されるため、このスクリプトは「ワークロードを安全に退避させる」ところまでを担当します。クラスタ全体を壊す `terraform destroy` は `--destroy` を明示した場合のみ実行されます。
 
 # まとめ
 
-本章では、Karpenter が起動する EFA 対応ノードで EFA が正しく構成されるまでを押さえました。カード枚数とレイアウトは EC2 の `DescribeInstanceTypes` から plan 時に導出されるため、インスタンスタイプを書けば `networkInterfaces` は自動生成されます。Pod が要求できる EFA 数はカード枚数より 1 つ少なく、これは card 0 がノードの IP を担うためです。この値は `terraform output accelerator_pool_efa_schedulable` とノードの allocatable の両方で確認でき、両者が一致することを実機で見ました。
+本章では、Karpenter が起動する EFA 対応ノードで EFA が正しく構成され、実際にノード間で帯域が出ていることを確認しました。カード枚数とレイアウトは EC2 の `DescribeInstanceTypes` から plan 時に導出されるため、インスタンスタイプを書けば `networkInterfaces` は自動生成されます。Pod が要求できる EFA 数はカード枚数より 1 つ少なく、これは card 0 がノードの IP を担うためです。この値は `terraform output accelerator_pool_efa_schedulable` とノードの allocatable の両方で確認でき、両者が一致することを実機で見ました。
 
 加えて、実装を読まないと気づきにくい 2 点を押さえました。EFA のセキュリティグループには ingress と egress の**両方**に self-referencing ルールが必要で、egress を CIDR で書いても SRD トラフィックは通りません。`NCCL_SOCKET_IFNAME` は許可リストではなく `^` 始まりの除外パターンで書きます。どちらも設定を誤ると「EFA を選んだはずなのにデータが流れない」という診断困難な症状になります。
 
-ここまでが「EFA が使える状態になっているか」の確認です。実際にノード間で帯域が出ているかの測定は、EFA を複数枚持つインスタンスが 2 台以上必要になるため Basic06 で扱います。
+帯域は Basic05 で確保した p4d.24xlarge 2 台で busbw 57.9 GB/s（対照の単一ノード NVLink は 227.1 GB/s）でした。NCCL のログが `Selected provider is efa (found 3 nics)` を示し、この `3` が手順 1 で見た schedulable EFA 数と一致することが、EFA が意図どおり配線されている証拠になります。
 
 # 参考資料
 
