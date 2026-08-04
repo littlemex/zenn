@@ -203,9 +203,11 @@ flowchart TB
 ```mermaid
 flowchart LR
     A["ジョブ起動"] --> B["Rayドライバが引数をパース<br/>（CPUのみ）"]
-    B --> C["引数検証がCUDAデバイスを先読み<br/>（MoE grouped-GEMM / TP-CP / FSDPの3箇所）"]
+    B --> C["引数検証がCUDAデバイスを先読み<br/>（3つの実装箇所で発生）"]
     C --> D["学習開始前にクラッシュ"]
 ```
+
+このプローブは3つの実装箇所に存在します。MoEのgrouped-GEMM（複数の専門家ネットワークへの行列積をまとめて実行する演算）、TPとCPを組み合わせた並列構成、そしてFSDP（Fully Sharded Data Parallel、モデルの重みをGPU間で完全に分割する並列化手法）です。
 
 なぜmilesフォーク（slimeのフォークで、Blackwell/CUDA 13対応版）ではこの問題が起きないのでしょうか。milesではRayドライバをGPUワーカーにピン留めする修正（Issue #1163）が入っているため、引数検証のプローブが実際にデバイスを見つけられるからです。上流での正しい修正は、`torch.cuda.is_available()`でこのプローブをガードすることだと考えられます。
 
@@ -516,7 +518,7 @@ seedごとの、no correction側のmis_klのピーク値と、両アームの最
 | 123 | 13.7 | （崩壊） | 0.150 | 0.094 | （維持） |
 
 ![mis_kl・grad_norm・rewardの時系列（6 run）](/images/4c8e1a2b6f-killer.png)
-*3 seed、no correctionとTISの計6 runを30ステップ追跡。mis_klが先に分離し、rewardが遅れて追随します。*
+*3 seed、no correctionとTISの計6 runを30ステップ追跡。mis_klが先に分離し、rewardが遅れて追随します。図は集約された赤 vs 緑の分岐パターンを示すもので、各線をseedごとに識別できるようにはなっていません。個別seedの数値は上の表を参照してください。*
 
 ここから2つの、方向性の揃った結論が得られます。
 
