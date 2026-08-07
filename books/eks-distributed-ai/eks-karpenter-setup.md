@@ -3,13 +3,13 @@ title: "Basic03 - Karpenter を導入する"
 free: true
 ---
 
-本章では、Pod のリソース要求に応じて GPU/Neuron ノードを動的に起動する Karpenter を導入します。CRD 管理・認証方式（Pod Identity）・Spot 中断通知（SQS）まで含めて、安定して運用できる形で入れます。この章の時点ではまだアクセラレータノードは 1 台も立ちませんが、次章以降でノードを自動起動する「エンジン」をここで用意します。
+本章では、Pod のリソース要求に応じてアクセラレーターノードを動的に起動する Karpenter を扱います。Karpenter 本体は Basic01 の `terraform apply` で導入済みなので、本章はその構成（CRD 管理・認証方式の Pod Identity・Spot 中断通知の SQS）を読み解き、動作を確認します。アクセラレーター用の NodePool は次章以降で定義します。
 
 # 解説
 
 ## 全体構成
 
-この book 全体の構成のうち、本章で扱うのは Amazon EKS コントロールプレーンと System ノードの上で動く **Karpenter コントローラ** と、その CRD・SQS interruption queue です。Karpenter は次章以降で定義する NodePool を読み取り、要求に応じて GPU/Neuron ノードを起動します。
+この book 全体の構成のうち、本章で扱うのは Amazon EKS コントロールプレーンと System ノードの上で動く **Karpenter コントローラ** と、その CRD・SQS interruption queue です。Karpenter は NodePool を読み取り、要求に応じてノードを起動します（CPU 用の NodePool は Basic01 で作成済みで、アクセラレーター用は次章以降で定義します）。
 
 ![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 
@@ -17,7 +17,7 @@ free: true
 
 Karpenter は、スケジュールできずに `Pending` のままになっている Pod のリソース要求を監視し、それを満たす Amazon EC2 インスタンスを自動的に起動・終了させる Kubernetes コントローラです。ノードを事前にまとめて用意しておく Amazon EKS Managed Node Group とは発想が逆で、Pod が要求してから初めてノードが立つ「demand-driven」なプロビジョニングを行います。
 
-この構成で Managed Node Group ではなく Karpenter を選ぶ理由は 2 つあります。1 つは、この基盤で使うアクセラレータの型が `g6e` 系 GPU、`p5en` 系 GPU、`trn2` 系 Neuron など多様で、ワークロードごとに必要な型が変わることです。Managed Node Group はインスタンスタイプの組み合わせごとにグループを作る必要があり、型の種類が増えるほど管理コストが跳ね上がります。もう 1 つは、GPU/Neuron インスタンスは時間単価が高く、常時起動しておくコストが大きいことです。Karpenter は Pod が要求したときだけノードを起動し、不要になれば consolidation で終了させるため、使った分だけ課金する運用に向いています。
+この構成で Managed Node Group ではなく Karpenter を選ぶ理由は 2 つあります。1 つは、この基盤で使うアクセラレータの型が `g6e` 系 GPU、`p5en` 系 GPU、`trn2` 系 Neuron など多様で、ワークロードごとに必要な型が変わることです。Managed Node Group でも 1 つのグループに複数のインスタンスタイプを指定できますが、GPU 数やアーキテクチャの異なる型を混ぜるとスケジューリングやスケール判断が破綻するため、実務では型ファミリーごとにグループを分けるのが定石で、型の種類が増えるほど管理コストが跳ね上がります。もう 1 つは、アクセラレーターインスタンスは時間単価が高く、常時起動しておくコストが大きいことです。Karpenter は Pod が要求したときだけノードを起動し、不要になれば consolidation で終了させるため、使った分だけ課金する運用に向いています。
 
 :::message
 実際に柔軟にリソース確保ができるかどうかはさておき、Spot/On Demand/Capacity Block などの購入オプション、様々なインスタンスサイズやタイプ、を柔軟に扱えることは重要な要件としています。
@@ -29,7 +29,7 @@ Karpenter は、スケジュールできずに `Pending` のままになって�
 
 2 つ目は認証方式です。Karpenter コントローラが Amazon EC2 の起動・終了などの AWS API を呼ぶために必要な権限は、Amazon EKS Pod Identity を使って付与します。Pod Identity は IAM ロールとの結び付けを ServiceAccount のアノテーションではなく EKS 側のリソース（Pod Identity Association）で完結させられるため、設定がシンプルになります。これが機能するには `eks-pod-identity-agent` アドオンが必要ですがこれは導入済みです。
 
-3 つ目は Spot 中断への対応です。Karpenter は SQS の interruption queue を経由して、Spot インスタンスの中断通知や AWS のヘルスイベントなどを受け、対象ノード上の Pod を強制終了ではなく graceful に drain してから終了させます。この queue と、通知を queue に流す Amazon EventBridge ルールの作成も、Karpenter 導入の一部として行います。
+3 つ目は Spot 中断への対応です。Karpenter は SQS の interruption queue を経由して、Spot インスタンスの中断通知や AWS のヘルスイベント（スケジュールされた変更）などを受け、対象ノード上の Pod を強制終了ではなく graceful に drain してから終了させます。なお rebalance recommendation もこの queue に届きますが、Karpenter はこれを能動的なノード置換のトリガーにはしません（drain の対象は Spot 中断警告・スケジュール変更ヘルスイベント・インスタンス停止/終了です）。この queue と、通知を queue に流す Amazon EventBridge ルールの作成も、Karpenter 導入の一部として行います。
 
 以降で実際の Terraform コードを引用しながら、なぜその値・その書き方にしているのかを見ていきます。対象ファイルは [`karpenter.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/karpenter.tf) と [`iam.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/iam.tf) です。
 
@@ -59,8 +59,9 @@ resource "helm_release" "karpenter_crd" {
   repository_username = data.aws_ecrpublic_authorization_token.karpenter.user_name
   repository_password = data.aws_ecrpublic_authorization_token.karpenter.password
 
-  # The karpenter-crd chart can optionally run a conversion webhook; it is not needed here
-  # (the controller chart runs its own), so disable it to avoid a second webhook Deployment.
+  # The karpenter-crd chart exposes webhook.enabled to wire a CRD conversion webhook. Karpenter
+  # removed the v1beta1->v1 conversion webhooks in v1.1, so on the version pinned here it is not
+  # needed; disable it explicitly to keep the CRD schema plain.
   set {
     name  = "webhook.enabled"
     value = "false"
@@ -121,7 +122,7 @@ resource "helm_release" "karpenter" {
 }
 ```
 
-**`skip_crds = true` を付ける。** `karpenter-crd` chart で CRD を管理している以上、コントローラ chart 側が同梱する CRD はインストールさせてはいけません。これを付けないと、初回インストール時にコントローラ chart も同じ CRD を作ろうとして所有権が衝突します。しかも Helm は chart の `crds/` ディレクトリを初回 install 時にしか処理せず `helm upgrade` では触らないため、コントローラ chart 側が一度作った CRD はその後 `karpenter-crd` 側で更新しても追従されません。CRD の管理を `karpenter-crd` chart に一本化するために、コントローラ chart 側では明示的にスキップします。
+**`skip_crds = true` を付ける。** `karpenter-crd` chart で CRD を管理している以上、コントローラ chart 側からは CRD をインストールさせません。Helm 3 は `crds/` ディレクトリの CRD が既に存在すればスキップするだけなので衝突エラーにはなりませんが、`crds/` 経由で入れた CRD にはリリースの所有権情報が付かず、しかも Helm は `crds/` を初回 install 時にしか処理せず `helm upgrade` では触りません。そのため、どちらの chart が同梱 CRD で入れたかによって以降のスキーマ更新の追従可否が変わってしまいます。CRD の管理主体を `karpenter-crd` chart 一本に限定するために、コントローラ chart 側では明示的にスキップします。
 
 **`nodeSelector` で `karpenter.sh/controller: "true"` を要求する。** Basic01 で System ノードグループに付けたラベルと同じキーです。Karpenter は自分が管理するノードにこのラベルを付けないため、このラベルを持つノードは常に Karpenter 管理外の System ノードだけになり、コントローラが自己参照で詰まることがありません。
 
@@ -165,9 +166,9 @@ module "karpenter" {
 
 **`enable_spot_termination = true` が SQS queue と Amazon EventBridge ルールを両方作る。** この 1 行が、Spot 中断通知を受け取る interruption queue と、その queue に Spot 中断イベント・AWS ヘルスイベント・リバランス推奨を流す Amazon EventBridge ルールをまとめて作成します。上の Helm values で参照した `module.karpenter.queue_name` は、この行がなければ存在しません。
 
-**`node_iam_role_use_name_prefix = false` でノードロール名を固定する。** ノード用 IAM ロール名を `${var.cluster_name}-karpenter-node`（`locals.tf` の `karpenter_node_role_name`）に固定しています。デフォルトではモジュールがランダムな suffix を付けた名前を生成するため、インスタンスプロファイル名が Terraform apply ごとに変わってしまいます。ロール名を固定するとプロファイル名も確定的になり、以降の章で紹介する `EC2NodeClass` から決め打ちの名前で参照できます。
+**`node_iam_role_use_name_prefix = false` でノードロール名を固定する。** ノード用 IAM ロール名を `${var.cluster_name}-karpenter-node`（`locals.tf` の `karpenter_node_role_name`）に固定しています。デフォルトではモジュールがランダムな suffix を付けた名前を生成します（この suffix はリソース作成時に一度だけ決まり、以後の apply では変わりませんが、名前が予測不能になります）。ロール名を固定するとインスタンスプロファイル名も確定的になり、以降の章で紹介する `EC2NodeClass` から決め打ちの名前で参照できます。
 
-**`node_iam_role_additional_policies` で 2 つのポリシーを足す。** Session Manager 経由でノードにログインする、アカウント ID を名前に含む Amazon S3 バケット（実験データ用の命名規則）への読み書きをノードに許可します。
+**`node_iam_role_additional_policies` で 2 つのポリシーを足す。** Session Manager 経由でノードにログインする、アカウント ID で始まる名前の Amazon S3 バケット（実験データ用の命名規則）への読み書きをノードに許可します。
 
 ```hcl
 # iam.tf（抜粋、S3 ポリシーの definition）
@@ -230,34 +231,34 @@ resource "null_resource" "wait_for_node_drain" {
 
 ## Dynamic Resource Allocation（DRA）とは何か
 
-ここまで扱ってきた `nvidia.com/gpu` や `vpc.amazonaws.com/efa` のような拡張リソースは、GPU/Neuron や EFA インターフェースをノード上の device plugin が数量として Kubernetes API サーバーに登録し、Pod 側は `resources.limits` に個数を書いて要求する、という枠組みです。device plugin はノードごとに動く DaemonSet で、デバイスを単純な整数カウントとして表現するため、Pod 側は「何個欲しいか」しか指定できず、GPU の世代やメモリ容量、トポロジといった属性を選んで要求することはできません。
+ここまで扱ってきた `nvidia.com/gpu` や `vpc.amazonaws.com/efa` のような拡張リソースは、GPU/Neuron や EFA インターフェースをノード上の device plugin が数量として Kubernetes API サーバーに登録し、Pod 側は `resources.limits` に個数を書いて要求する、という枠組みです。device plugin はノードごとに動く DaemonSet で、デバイスを単純な整数カウントとして表現するため、Pod 側はリソース要求の枠組みの中では「何個欲しいか」しか指定できず、GPU の世代やメモリ容量、トポロジといった属性はリソース要求そのものでは選べません（実務ではノードラベルに対する `nodeSelector`/`nodeAffinity` で機種を選び分けます）。
 
-Dynamic Resource Allocation（DRA）は、この device plugin 方式に代わる新しいデバイス割り当ての仕組みです。DRA では `DeviceClass` / `ResourceClaim` / `ResourceClaimTemplate` という新しい API リソースを使い、Pod は「このクラスのデバイスを 1 つ要求する」という `ResourceClaim` を経由してデバイスにアクセスします。デバイスドライバはノード上のデバイスを `ResourceSlice` として公開し、そこにはモデル名やメモリ容量、トポロジといった豊富な属性が載るため、スケジューラは CEL（Common Expression Language）式でその属性を条件にデバイスを選べます。複数コンテナが同じ `ResourceClaim` を共有してデバイスを使い分けたり、マルチノード GPU 通信を `ComputeDomain` という単位で管理したりできる点も、単純なカウント方式の device plugin には無い特徴です。永続ボリュームを動的にプロビジョニングする仕組みに近い体験を、GPU/Neuron のようなアクセラレータにも持ち込むことが DRA の狙いです。DRA のコア API は Kubernetes 1.34 で GA（Stable）となり、1.35 以降はデフォルトで有効になっています。
+Dynamic Resource Allocation（DRA）は、この device plugin 方式に代わる新しいデバイス割り当ての仕組みです。DRA では `DeviceClass` / `ResourceClaim` / `ResourceClaimTemplate` という新しい API リソースを使い、Pod は「このクラスのデバイスを 1 つ要求する」という `ResourceClaim` を経由してデバイスにアクセスします。デバイスドライバはノード上のデバイスを `ResourceSlice` として公開し、そこにはモデル名やメモリ容量、トポロジといった豊富な属性が載るため、スケジューラは CEL（Common Expression Language）式でその属性を条件にデバイスを選べます。複数コンテナが同じ `ResourceClaim` を共有してデバイスを使い分けられる点も、単純なカウント方式の device plugin には無い特徴です（マルチノード GPU 通信を `ComputeDomain` という単位で管理する仕組みは DRA コア API ではなく NVIDIA の DRA ドライバ固有の機能です）。永続ボリュームを動的にプロビジョニングする仕組みに近い体験を、アクセラレーターにも持ち込むことが DRA の狙いです。DRA のコア API は Kubernetes 1.34 で GA（Stable）となり、同じ 1.34 の時点でデフォルトで有効です（機能ゲートは GA 昇格と同時に既定有効かつロックされます）。
 
 ## Karpenter は DRA にまだ対応していない
 
 DRA が GA になったからといって、この book の構成にそのまま持ち込めるわけではありません。[Amazon EKS の GPU デバイス管理に関する AWS 公式ドキュメント](https://docs.aws.amazon.com/eks/latest/userguide/device-management-nvidia.html) は、Kubernetes 1.34 以降で EKS マネージド型ノードグループやセルフマネージド型ノードグループを使う新規デプロイに NVIDIA DRA driver を推奨しつつも、次の制約を明示しています: NVIDIA DRA driver は Karpenter および EKS Auto Mode では現状サポートされておらず、Karpenter と EKS Auto Mode では引き続き NVIDIA device plugin を使う必要があるという制約です。同ドキュメントはこの制約の追跡先として upstream の [KEP-5004](https://github.com/kubernetes/enhancements/issues/5004) を挙げています。
 
-KEP-5004 は正式には「DRA: Handle extended resource requests via DRA Driver」という提案で、DRA ドライバが公開するデバイスを、device plugin を介さずに `nvidia.com/gpu` のような従来の拡張リソース API 経由でも要求できるようにすることを目指しています。この仕組みが実現すると、同じクラスタの一部のノードが device plugin を使い、別の一部のノードが DRA ドライバを使うという混在運用や、既存の Pod マニフェストを書き換えずに DRA へ段階的に移行することが可能になる、という位置づけです。Karpenter や cluster-autoscaler のようなノードオートスケーラーが DRA の `ResourceClaim` を認識してスケールアウトの判断に反映できるようにする議論も、この KEP の作業範囲に含まれています。KEP のマイルストーンは次のとおりです: Alpha が Kubernetes 1.34、Beta が 1.35 から 1.36 に後ろ倒しされ、Stable（GA）の目標は 1.37 とされています。ただしこれは KEP が置いている目標であり、他の多くの KEP と同様に確定したスケジュールではないため、実際のリリースタイミングは前後する可能性がある点は留保しておきます。
+KEP-5004 は正式には「DRA: Handle extended resource requests via DRA Driver」という提案で、DRA ドライバが公開するデバイスを、device plugin を介さずに `nvidia.com/gpu` のような従来の拡張リソース API 経由でも要求できるようにすることを目指しています。この仕組みが実現すると、同じクラスタの一部のノードが device plugin を使い、別の一部のノードが DRA ドライバを使うという混在運用や、既存の Pod マニフェストを書き換えずに DRA へ段階的に移行することが可能になる、という位置づけです。この仕組みに伴い、cluster-autoscaler 側が新設される `NodeInfo` の `DynamicResources` フィールドなどを認識してスケール判断に反映できるようにするための連携も、KEP 本文で考慮事項として触れられています（ただし Karpenter については言及がなく、この KEP 自体がオートスケーラーに実装を加えるものでもありません）。KEP のマイルストーンは次のとおりです: Alpha が Kubernetes 1.34、Beta が 1.35 から 1.36 に後ろ倒しされ、Stable（GA）の目標は 1.37 とされています。ただしこれは KEP が置いている目標であり、他の多くの KEP と同様に確定したスケジュールではないため、実際のリリースタイミングは前後する可能性がある点は留保しておきます。
 
 したがって、Karpenter でノードプロビジョニングを行うこの構成では、DRA ドライバは現時点で選択肢になりません。device plugin 方式（NVIDIA GPU Operator、aws-efa-k8s-device-plugin、Neuron device plugin）を使うことが、legacy な妥協ではなく現状で唯一実用的な選択です。Karpenter からも DRA の `ResourceClaim` が扱えるようになれば、この判断は再検討の対象になります。
 
 # ワークショップ実施
 
-Karpenter は Basic01 の `terraform apply` に含めて導入済みの構成です。ここでは導入結果を確認します。
+Karpenter は Basic01 の `terraform apply` に含めて導入済みの構成です。ここでは導入結果を確認します。以降のコマンドは Basic01 で current-context をこのクラスタに切り替え、`alias k=kubectl` を設定済みの前提です（開き直した場合は Basic01 step 3 の `use-context` / `set-context` / `alias` を実行し直してください）。
 
 ## 1. Karpenter コントローラの起動を確認する
 
 ```bash
-kubectl -n karpenter get pods
+k -n karpenter get pods
 ```
 
-`karpenter` namespace で controller Pod が `Running` になっていることを確認します。Basic01 で作った System ノード（`nodeSelector: karpenter.sh/controller: "true"`）の上にスケジュールされているはずです。
+`karpenter` namespace で controller Pod が `Running` になっていることを確認します。Basic01 で作った System ノード（ラベル `karpenter.sh/controller=true` を持つノード）の上にスケジュールされているはずです。
 
 ## 2. CRD が入っていることを確認する
 
 ```bash
-kubectl get crd | grep karpenter
+k get crd -o custom-columns=NAME:.metadata.name | grep karpenter
 ```
 
 実機出力（Karpenter 1.13.0）:
@@ -282,15 +283,15 @@ helm list -n karpenter
 ## 4. NodePool と、まだノードが増えていないことを確認する
 
 ```bash
-kubectl get nodepool
-kubectl get nodes
+k get nodepool
+k get nodes
 ```
 
-`kubectl get nodepool` には `cpu` が 1 つ表示されます。これは `cpu_nodepool_enabled`（既定 `true`）によって Basic01 の apply で作られたもので、Basic02 の CPU DDP がこのプールにノードを起こしていました。アクセラレータ用の NodePool は `accelerator_pools` が空のままなのでまだ存在せず、次章で定義します。
+`k get nodepool` には `cpu` が 1 つ表示されます。これは `cpu_nodepool_enabled`（既定 `true`）によって Basic01 の apply で作られたもので、Basic02 の CPU DDP がこのプールにノードを起こしていました。アクセラレータ用の NodePool は `accelerator_pools` が空のままなのでまだ存在せず、次章で定義します。
 
 ```text
 NAME   NODECLASS   NODES   READY   AGE
-cpu    cpu         0       True    5m
+cpu    cpu         0       True    2d
 ```
 
 一方 `kubectl get nodes` に見えるのは Basic01 の System ノードだけです（Basic02 で起きた cpu ノードは、ワークロードが終わったあと `consolidateAfter` で回収されています）。NodePool が存在しても、それを要求する Pod がなければノードは立ちません。これが demand-driven なプロビジョニングの動作確認になります。
