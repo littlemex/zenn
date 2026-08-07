@@ -17,7 +17,7 @@ free: true
 
 Karpenter は、スケジュールできずに `Pending` のままになっている Pod のリソース要求を監視し、それを満たす Amazon EC2 インスタンスを自動的に起動・終了させる Kubernetes コントローラです。ノードを事前にまとめて用意しておく Amazon EKS Managed Node Group とは発想が逆で、Pod が要求してから初めてノードが立つ「demand-driven」なプロビジョニングを行います。
 
-この構成で Managed Node Group ではなく Karpenter を選ぶ理由は 2 つあります。1 つは、この基盤で使うアクセラレータの型が `g6e` 系 GPU、`p5en` 系 GPU、`trn2` 系 Neuron など多様で、ワークロードごとに必要な型が変わることです。Managed Node Group でも 1 つのグループに複数のインスタンスタイプを指定できますが、GPU 数やアーキテクチャの異なる型を混ぜるとスケジューリングやスケール判断が破綻するため、実務では型ファミリーごとにグループを分けるのが定石で、型の種類が増えるほど管理コストが跳ね上がります。もう 1 つは、アクセラレーターインスタンスは時間単価が高く、常時起動しておくコストが大きいことです。Karpenter は Pod が要求したときだけノードを起動し、不要になれば consolidation で終了させるため、使った分だけ課金する運用に向いています。
+この構成で Managed Node Group ではなく Karpenter を選ぶ理由は 2 つあります。1 つは、この基盤で使うアクセラレータの型が `g6e` 系 GPU、`p5en` 系 GPU、`trn2` 系 Neuron など多様で、ワークロードごとに必要な型が変わることです。Managed Node Group でも 1 つのグループに複数のインスタンスタイプを指定できますが、GPU 数やアーキテクチャの異なる型を混ぜるとスケジューリングやスケール判断が破綻するため、実務では型ファミリーごとにグループを分けるのが定石で、型の種類が増えるほど管理コストが跳ね上がります。もう 1 つは、アクセラレーターインスタンスは時間単価が高く、常時起動しておくコストが大きいことです。Karpenter は Pod が要求したときだけノードを起動し、不要になれば consolidation で終了させられるので、オンデマンドや Spot のノードを使った分だけの課金に近づけられます。特にバッチ的な学習・推論ジョブでは、ジョブのある間だけノードが立ち、終われば自動で回収される運用に向いています。ただしこれは購入オプションによって変わります。Capacity Block for ML は予約した時間ぶんを固定で確保する（=その間は起動していなくても課金される）ため、consolidation で「使った分だけ」には縮みません。Karpenter はこうした Capacity Block・オンデマンド・Spot を同じ NodePool で併記でき、予約枠を優先しつつ足りない分を Spot やオンデマンドで補うといったリソース増強の使い分けもできます。
 
 :::message
 実際に柔軟にリソース確保ができるかどうかはさておき、Spot/On Demand/Capacity Block などの購入オプション、様々なインスタンスサイズやタイプ、を柔軟に扱えることは重要な要件としています。
@@ -30,6 +30,8 @@ Karpenter は、スケジュールできずに `Pending` のままになって�
 2 つ目は認証方式です。Karpenter コントローラが Amazon EC2 の起動・終了などの AWS API を呼ぶために必要な権限は、Amazon EKS Pod Identity を使って付与します。Pod Identity は IAM ロールとの結び付けを ServiceAccount のアノテーションではなく EKS 側のリソース（Pod Identity Association）で完結させられるため、設定がシンプルになります。これが機能するには `eks-pod-identity-agent` アドオンが必要ですがこれは導入済みです。
 
 3 つ目は Spot 中断への対応です。Karpenter は SQS の interruption queue を経由して、Spot インスタンスの中断通知や AWS のヘルスイベント（スケジュールされた変更）などを受け、対象ノード上の Pod を強制終了ではなく graceful に drain してから終了させます。なお rebalance recommendation もこの queue に届きますが、Karpenter はこれを能動的なノード置換のトリガーにはしません（drain の対象は Spot 中断警告・スケジュール変更ヘルスイベント・インスタンス停止/終了です）。この queue と、通知を queue に流す Amazon EventBridge ルールの作成も、Karpenter 導入の一部として行います。
+
+drain で退去した Pod は削除され、それを管理する上位コントローラ（Deployment や Job／TrainJob など）が代替の Pod を作成します。その代替 Pod が `Pending` になり、これを Karpenter のプロビジョニングが検知して、要求を満たす新しいノードを自動で起動します（上位コントローラを持たない素の Pod は再作成されず、Job 系も restart 設定しだいでは代替が作られない点に注意します）。中断ハンドリング（消す側）とプロビジョニング（立てる側）は別々に動くため、明示的な再取得の指示は要りません。次にどの購入オプションで取り直すかは NodePool の `karpenter.sh/capacity-type` に許可した値しだいで、`spot` だけなら在庫があれば再び Spot を、`spot` と `on-demand` を併記していれば Spot が取れないときは on-demand にフォールバックして台数を満たします。ただし立ち上がるのは元と同じインスタンスではなく別ノードなので、途中結果は共有ストレージ上のスナップショットから resume する前提で組みます（Basic02 の resume がこれにあたります）。中断そのものを避けたい長時間ジョブには、Spot のような突発的中断が起きない Capacity Block を選ぶ、という使い分けになります（Capacity Block も予約終了の 30 分前からインスタンスの回収が始まるため、終了処理やチェックポイントはそれを見込んで設計します）。
 
 以降で実際の Terraform コードを引用しながら、なぜその値・その書き方にしているのかを見ていきます。対象ファイルは [`karpenter.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/karpenter.tf) と [`iam.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/iam.tf) です。
 
