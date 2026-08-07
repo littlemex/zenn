@@ -2,7 +2,7 @@
 title: "Basic05 - Capacity Block を利用する"
 free: true
 ---
-本章では、Basic04 で `accelerator_pools` に用意しておいた `capacity_type = "reserved"` という選択肢を実際に使い、Capacity Block(CB) で確保したリソースを Amazon EKS クラスタに組み込みます。予約の検索・購入から `terraform.tfvars` への反映、ノードが起動するところまでの確認、期限管理までを扱います。確保したノードで実際にマルチノード通信が出ているかの検証は、次章の Basic06 で行います。
+本章では、Basic04 で `accelerator_pools` に用意しておいた `capacity_type = "reserved"` という選択肢を実際に使い、Capacity Block(CB) で確保したリソースを Amazon EKS クラスタに組み込みます。予約の検索・購入から `accelerator-pools.auto.tfvars` への反映、ノードが起動するところまでの確認、期限管理までを扱います。確保したノードで実際にマルチノード通信が出ているかの検証は、次章の Basic06 で行います。
 
 本章がこの位置にあるのは、次章で EFA のマルチノード通信を検証するために、EFA を複数枚持つインスタンスが 2 台以上必要になるためです。この規模のインスタンスは On-Demand ではなかなか確保できず、しかも EFA/RDMA は AZ をまたげないので同一 AZ かつ、同一プレイスメントグループに揃える必要もあります。Capacity Block はこれらを満たす現実的な手段です。
 
@@ -37,10 +37,10 @@ CB を使う最低限の運用フローは次のようになります。
 
 CB は前払いで、購入した時点でその予約期間分の費用が確定します。途中で不要になっても取り消しや返金はできません。`infra/eks/scripts` の中にある `00-check-cb-offerings.sh` で CB 予約のオファリングを検索できます。
 
-`01-purchase-cb.sh` で CB を購入すると、標準出力に `cr-...` という Capacity Reservation ID が表示されます。これを `terraform.tfvars` の `accelerator_pools` 内、該当プールの `cb_reservation_id` に貼り付けるだけで、Terraform 側の配線は完了します。
+`01-purchase-cb.sh` で CB を購入すると、標準出力に `cr-...` という Capacity Reservation ID が表示されます。これを `accelerator-pools.auto.tfvars`(Basic04 で作ったプール定義ファイル)の `accelerator_pools` 内、該当プールの `cb_reservation_id` に貼り付けるだけで、Terraform 側の配線は完了します。
 
 ```hcl
-# terraform.tfvars（例、cr-... はプレースホルダ）
+# accelerator-pools.auto.tfvars（例、cr-... はプレースホルダ）
 accelerator_pools = {
   gpu-p5en = {
     instance_types    = ["p5en.48xlarge"]
@@ -53,7 +53,7 @@ accelerator_pools = {
 
 ここで最も事故につながりやすいのは、予約を指定したのに `capacity_type` を `"reserved"` にし忘れる、あるいはその逆というミスです。[`variables.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/variables.tf) の `accelerator_pools` には、この 2 方向のミスをそれぞれ弾く `validation` ブロックが用意されています。
 
-`cr-...` を正しく渡せば、あとは手で入力する項目はほとんど残りません。後述の [`capacity-block.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/capacity-block.tf) の `data "external" "capacity_reservations"` が `cb_reservation_id` だけから予約の `end_date`・`availability_zone`・`state` を自動的に読み取り、期限アラートや AZ 整合性チェックに使います。したがって `terraform.tfvars` に手で書く CB 関連の値は、原則 `cb_reservation_id` と `capacity_type = "reserved"` の 2 つだけで済みます。
+`cr-...` を正しく渡せば、あとは手で入力する項目はほとんど残りません。後述の [`capacity-block.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/capacity-block.tf) の `data "external" "capacity_reservations"` が `cb_reservation_id` だけから予約の `end_date`・`availability_zone`・`state` を自動的に読み取り、期限アラートや AZ 整合性チェックに使います。したがって `accelerator-pools.auto.tfvars` に手で書く CB 関連の値は、原則 `cb_reservation_id` と `capacity_type = "reserved"` の 2 つだけで済みます。
 
 ## check ブロックはなぜ apply を止めないか
 
@@ -209,40 +209,38 @@ cd infra/eks/scripts
 CB の購入は前払いで、キャンセルや返金はできません。`00-check-cb-offerings.sh` で候補を確認し、必要台数・期間を十分に見積もってから購入してください。
 :::
 
-## 3. terraform.tfvars に反映するブロックを生成する
+## 3. accelerator-pools.auto.tfvars に反映するブロックを生成する
 
 ```bash
 ./02-post-purchase.sh \
-  --cr-id cr-0123456789abcdef0 \
-  --end-date 2026-08-03T11:30:00Z \
-  --instance-type p4d.24xlarge \
-  --pool gpu-p4d
+  --cr-id cr-023f18e20d3829f4e \
+  --pool gpu-p5en
 ```
 
-このスクリプトは AWS に対して何も呼びません。前のステップで得た `cr-...` と終了時刻を、`accelerator_pools` に貼り付けられる HCL ブロックとして標準出力に整形するだけです。
+必須の引数は `--cr-id` だけです。インスタンスタイプ・AZ・終了時刻は、スクリプトが `describe-capacity-reservations` で予約 ID から自動で解決するため、手で渡す必要はありません（`--pool` は貼り付け先のプール名で、省略すると `gpu-cb` になります）。
 
 ```hcl
-gpu-p4d = {
-  instance_types    = ["p4d.24xlarge"]
+gpu-p5en = {
+  instance_types    = ["p5en.48xlarge"]
   device_plugin     = "nvidia"
   capacity_type     = "reserved"
-  cb_reservation_id = "cr-0123456789abcdef0"   # zone はこの予約から導出
-  cb_end_date       = "2026-08-03T11:30:00Z"   # 省略可、予約から自動導出される値の緊急上書き用
+  cb_reservation_id = "cr-023f18e20d3829f4e"          # zone と終了時刻はこの予約から導出
+  cb_end_date       = "2026-08-09T11:30:00+00:00"   # 省略可、予約から自動導出される値の緊急上書き用
   volume_size       = "500Gi"
 }
 ```
 
 `device_plugin` はインスタンスタイプのファミリから決まります。`trn` または `inf` で始まれば `neuron`、それ以外は `nvidia` が入るので、Trainium/Inferentia の CB を買った場合も同じスクリプトがそのまま使えます（Neuron の場合は Neuron 用 AMI を指す `ami_ssm_parameter` の行も併せて出力されます）。
 
-`zone` は含まれません。前述のとおり `reserved` プールの AZ は予約から導出されるため、スクリプトも既定では `zone` 行を出しません。特定の AZ に固定したい場合だけ `--zone <az>` を渡すと、その明示指定を含んだブロックが出力されます。`cb_end_date` も同様に、予約が返す実際の終了時刻を `capacity-block.tf` が自動導出するため、貼り付けなくても期限アラートは機能します。書いた場合はその値が予約側の `EndDate` より優先される緊急上書きとして働くので、予約を更新しても `cb_end_date` を書き換え忘れるとアラートが古い時刻のまま固定される点に注意してください。出力されたブロックを `terraform.tfvars` の `accelerator_pools` に貼り付けます。
+`zone` は含まれません。前述のとおり `reserved` プールの AZ は予約から導出されるため、スクリプトは `zone` 行を出しません。特定の AZ に固定したい場合だけ、貼り付け後に自分で `zone = "<az>"` を足します。`cb_end_date` は予約が返す実際の終了時刻を自動で埋めていますが、`capacity-block.tf` は tfvars に `cb_end_date` が無くても予約 ID から終了時刻を導出するため、この行を消してもアラートは機能します。書いておくとその値が予約側の `EndDate` より優先される緊急上書きとして働くので、予約を更新したら `cb_end_date` も併せて更新してください（更新し忘れるとアラートが古い時刻のまま固定されます）。出力されたブロックを `accelerator-pools.auto.tfvars` の `accelerator_pools` に貼り付けます(Basic04 で作った同じファイルを、CB ID を含む完全形で `cat >` 上書きするのが冪等で確実です)。
 
 ## 4. apply して NodePool を確認する
 
 ```bash
 cd infra/eks
 terraform apply
-kubectl get nodepool gpu-p4d
-kubectl get ec2nodeclass gpu-p4d
+k get nodepool gpu-p4d
+k get ec2nodeclass gpu-p4d
 ```
 
 apply が作るのは NodePool と EC2NodeClass の定義であって、この時点ではまだノードは立ちません。Karpenter は GPU を要求する Pod（Pending）が現れて初めてノードを起動します（Karpenter 自体のインストールと NodePool 生成の仕組みは Basic04 で構築済みという前提です）。実際にノードが立つのは、次章 Basic06 で CB プールをターゲットにした検証ワークロードを投入したときなので、ここで確認するのは定義が正しく作られたことまでです。
@@ -250,8 +248,8 @@ apply が作るのは NodePool と EC2NodeClass の定義であって、この�
 ノードが立ったあと、それが予約から起動したことを確かめるコマンドを先に示しておきます。実行するのは Basic06 の手順 3 でワークロードを投入したあとです。
 
 ```bash
-kubectl get nodeclaims -l karpenter.sh/nodepool=gpu-p4d
-kubectl get nodes -l karpenter.sh/capacity-type=reserved
+k get nodeclaims -l karpenter.sh/nodepool=gpu-p4d
+k get nodes -l karpenter.sh/capacity-type=reserved
 ```
 
 実機出力（p4d の Capacity Block は us-west-2d に確保したもの。2 台のうち 1 台分を抜粋）:
@@ -261,7 +259,7 @@ NAME            TYPE           CAPACITY   ZONE         NODE                     
 gpu-p4d-5zlm9   p4d.24xlarge   reserved   us-west-2d   ip-10-0-115-100.us-west-2.compute.internal   True
 ```
 
-`CAPACITY = reserved` の NodeClaim が表示され、`ZONE` が予約の AZ に一致していれば、CB からのノード起動は成功です。ここで `zone` を `terraform.tfvars` に一切書いていないことを思い出してください。`us-west-2d` は予約から自動導出された値です。
+`CAPACITY = reserved` の NodeClaim が表示され、`ZONE` が予約の AZ に一致していれば、CB からのノード起動は成功です。ここで `zone` を `accelerator-pools.auto.tfvars` に一切書いていないことを思い出してください。`us-west-2d` は予約から自動導出された値です。
 
 ## 5. 期限アラートを確認する
 
@@ -289,7 +287,7 @@ cb_alert_email_addresses = ["you@example.com"]
 
 # まとめ
 
-本章では、Basic04 で用意した `capacity_type = "reserved"` を使い、Capacity Block の検索・購入から `terraform.tfvars` への反映、NodePool の確認、期限アラートまでを構築しました。
+本章では、Basic04 で用意した `capacity_type = "reserved"` を使い、Capacity Block の検索・購入から `accelerator-pools.auto.tfvars` への反映、NodePool の確認、期限アラートまでを構築しました。
 
 手で書いたのは予約 ID と `capacity_type = "reserved"` の 2 つだけです。AZ は予約から自動導出され、期限アラートも予約の終了時刻から組み立てられます。ここまでで確保できたのは容量であって、その容量が期待どおりの帯域を出すかはまだ分かっていません。確保したノードで EFA が正しく配線され、ノード間で実際に帯域が出ているかの検証と、終わったあとの teardown は次章の Basic06 で扱います。
 

@@ -31,7 +31,7 @@ free: true
 
 ## accelerator_pools の設定
 
-### tfvars に 1 エントリ追加するだけ
+### accelerator_pools に 1 エントリ書くだけ
 
 ```hcl
 accelerator_pools = {
@@ -45,7 +45,7 @@ accelerator_pools = {
 }
 ```
 
-この 1 エントリから、Karpenter の NodePool と EC2NodeClass が自動生成されます。
+この 1 エントリから、Karpenter の NodePool と EC2NodeClass が自動生成されます（この定義を実際にどのファイルに書くかは、後述のワークショップ手順で扱います）。
 
 ### 設定の意味
 
@@ -82,13 +82,19 @@ accelerator_pools = {
 
 NVIDIA GPU Operator は Basic03 の時点では入っていません。`accelerator_pools` に `device_plugin = "nvidia"` のプールが 1 つ以上あることを条件(`local.has_gpu_pool`)に導入されるため、本章で `gpu-ddp` プールを足して `terraform apply` した時点で初めてインストールされます。
 
-解説で示した `gpu-ddp` の `accelerator_pools` エントリを `terraform.tfvars` に追記します。`terraform.tfvars` にまだ `accelerator_pools` を書いていない前提で、`infra/eks` ディレクトリで次の heredoc を実行すると末尾に追記できます（すでに `accelerator_pools = { ... }` がある場合は重複定義になるので、その中に `gpu-ddp` エントリだけをエディタで足してください）。
+プール定義は `terraform.tfvars` に直接書かず、専用ファイル `accelerator-pools.auto.tfvars` に置きます。`accelerator_pools` は単一の map 変数なので、`terraform.tfvars` にも書くと重複代入エラーになります。定義箇所をこの 1 ファイルに集約し、`terraform.tfvars` 側には `accelerator_pools` を書かないのがポイントです（変数の `default = {}` があるので、ファイルが無い章でも apply は通ります）。`*.auto.tfvars` は Terraform が自動で読み込むため、`-var-file` の指定も要りません。
+
+リポジトリにはコメント付きの雛形 `accelerator-pools.tfvars.example` があります。初回はこれをコピーして自分用のファイルを作ります。コピー直後は全プール例がコメントアウトされた空の map（`accelerator_pools = {}`）なので、そのままでも apply は通ります。
 
 ```bash
 cd infra/eks
+cp accelerator-pools.tfvars.example accelerator-pools.auto.tfvars
+```
 
-cat >> terraform.tfvars <<'EOF'
+本章ではこのファイルの中身を次の内容にします（雛形のコメント例を消し、`gpu-ddp` を有効化）。冪等に置き換えたいときは、追記（`>>`）ではなく上書き（`cat >`）で以下をそのまま貼ります。何度実行しても同じ状態になります。
 
+```bash
+cat > accelerator-pools.auto.tfvars <<'EOF'
 accelerator_pools = {
   gpu-ddp = {
     instance_types  = ["g6.2xlarge", "g5.2xlarge", "g6.xlarge", "g5.xlarge"]
@@ -101,7 +107,11 @@ accelerator_pools = {
 EOF
 ```
 
-追記できたら apply します。
+:::message
+`terraform.tfvars` 側に `accelerator_pools` の行が残っていると、このファイルと重複してエラーになります。残っていないことを確認してください（`grep accelerator_pools terraform.tfvars` が何も返さなければ OK）。
+:::
+
+書き込めたら apply します。
 
 ```bash
 # infra/eks ディレクトリで
@@ -231,9 +241,22 @@ PASS: 11  FAIL: 0  SKIP: 0  TOTAL: 11
 
 どちらも `capacity_types` リストで表現しますが、Intent F は「1 プールでフォールバックして台数を満たす」、Intent M は「capacity-type ごとに用途を固定する」点が異なります。Intent M と reserved の詳細は Basic05(Capacity Block)で扱います。
 
+# 今の仕組みの限界
+
+ここまでの `accelerator_pools`（Terraform の map 変数を専用 tfvars ファイルで管理する方式）は、一人ないし信頼できる少人数が同じ Terraform state を触る前提では十分に機能します。一方で、複数チームがひとつのクラスタを共有するマルチテナント運用に持ち込もうとすると、次の限界が見えてきます。
+
+::::details マルチテナントで tfvars 方式が破綻する理由
+- **ファイル単位の分離ができない**: `accelerator_pools` は単一の map 変数なので、チーム A とチーム B が別ファイルに `accelerator_pools = {...}` を書くと、本章冒頭で見たのと同じ重複代入エラーになります。結局ひとつのファイルを全員で編集することになり、プルリクエストが恒常的にコンフリクトします。
+- **RBAC で権限を絞れない**: Terraform state と AWS の認証情報を持つ人は、他チームのプール定義も含めて何でも書き換えられます。「チーム A は自分のプールだけ作れる」「Capacity Block の ID はプラットフォーム管理者が許可したものだけ使える」といった、Kubernetes の RBAC 相当の権限分離を tfvars では表現できません。
+- **ノードの分離境界を宣言できない**: あるチームのプールで立てたノードに、他チームの Pod が載らないようにする taint／label の対応関係を、テナント自身が勝手に書き換えられないよう固定する仕組みがありません。tfvars は「誰が書いたか」を区別しないため、境界フィールド（テナント taint や `capacity-type: reserved` のピン留め）を守れません。
+- **セルフサービスにならない**: 新しいプールが欲しいたびにプラットフォームチームへ tfvars の編集を依頼する運用になり、Kubernetes のマニフェストを `kubectl apply` する感覚での自助にはなりません。
+::::
+
+これらは Terraform の使い方の問題ではなく、「アクセラレータプールの確保」をマルチテナントのセルフサービスとして扱うには、Namespace 単位で分離され RBAC で保護される Kubernetes ネイティブな API（CRD）が要る、という構造的な要請です。この課題意識から、Namespace スコープの `AcceleratorPool` CR をテナント分離された Karpenter NodePool に変換する OSS コントローラを別途設計しています（本 book のスコープ外）。本章の tfvars 方式は、まずは単一チームで確実に動かすための土台と位置づけてください。
+
 # まとめ
 
-`accelerator_pools` に 1 エントリ書くだけで、ヘテロジニアスな GPU DDP 環境が立ち上がりました。
+`accelerator_pools` に 1 エントリ書くだけで、ヘテロジニアスな GPU DDP 環境が立ち上がりました。tfvars 方式は単一チームの検証には十分ですが、マルチテナント運用では RBAC やファイル分離の限界があり、そこは Kubernetes ネイティブな CRD で解く領域だと整理しました。
 
 # 参考資料
 
