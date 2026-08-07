@@ -114,10 +114,10 @@ cd infra/eks
 ECR_URL=$(terraform output -raw ddp_sample_ecr_url)
 IMAGE=${ECR_URL}:v1
 
-# 同名のビルド Job が残っていると apply が "unchanged" でスキップされる（Job の spec は変更不可）。
+# 同名のビルド Job が残っていると apply が "unchanged" でスキップされる（Job の spec は作成後に変更できない）。
 # 同じタグで作り直すときは先に削除する。初回は存在しなくても --ignore-not-found で安全。
 # （別解: タグを v2 に上げると Job 名も変わるので削除不要。latest 固定のキャッシュ事故も避けられる。）
-kubectl delete job build-ddp-sample-v1 -n image-builder --ignore-not-found
+k delete job build-ddp-sample-v1 -n image-builder --ignore-not-found
 
 # クラスタ内で BuildKit ビルド Job を起動
 helm template exp charts/experiments -n "$NAMESPACE" \
@@ -125,10 +125,10 @@ helm template exp charts/experiments -n "$NAMESPACE" \
     --set imageBuild.repository="$ECR_URL" \
     --set imageBuild.tag=v1 \
     -s templates/image-build-ddp-sample.yaml \
-    | kubectl apply -f -
+    | k apply -f -
 
 # ビルド完了を待つ（初回は CPU ノード起動とベースイメージ pull で 10 分ほどかかります）
-kubectl -n image-builder wait --for=condition=complete \
+k -n image-builder wait --for=condition=complete \
     job/build-ddp-sample-v1 --timeout=30m
 ```
 
@@ -137,8 +137,8 @@ kubectl -n image-builder wait --for=condition=complete \
 進捗やエラーはビルド Job のログで確認できます。既定では BuildKit 本体（ビルドと push）のログが出ます。ECR 認証を用意する initContainer が失敗した場合は `-c ecr-login` でそちらのログを見ます。
 
 ```bash
-kubectl -n image-builder logs -f job/build-ddp-sample-v1              # BuildKit 本体
-kubectl -n image-builder logs job/build-ddp-sample-v1 -c ecr-login    # 認証 init が失敗したとき
+k -n image-builder logs -f job/build-ddp-sample-v1              # BuildKit 本体
+k -n image-builder logs job/build-ddp-sample-v1 -c ecr-login    # 認証 init が失敗したとき
 ```
 ::::details 補足
 :::message
@@ -153,8 +153,8 @@ rootless BuildKit は非特権（`CAP_SYS_ADMIN` 不要、uid 1000）で動き�
 続いて、このあと使う Kubeflow Trainer v2 が入っていることを確認します。Basic01 の `terraform apply`（`trainer_enabled` が既定で有効）で導入済みのはずなので、TrainJob の CRD が見えることと、コントロールプレーン（`kubeflow-system` の manager と JobSet）が動いていることを確かめておきます。
 
 ```bash
-kubectl get crd trainjobs.trainer.kubeflow.org
-kubectl get pods -n kubeflow-system
+k get crd trainjobs.trainer.kubeflow.org
+k get pods -n kubeflow-system
 ```
 
 ## 3. 共有 PVC を用意する
@@ -275,7 +275,7 @@ k delete trainjob ddp-trainjob
 
 ```bash
 k delete pvc shared-claim
-kubectl get pv openzfs-shared
+k get pv openzfs-shared
 ```
 
 `STATUS` が `Released` になっているはずです。`Available`（誰にも bound されていない、次の PVC を待てる状態）ではなく `Released`（前の持ち主の後始末を待っている状態）である点に注目してください。この状態で、もう一度 `shared-claim` を作り直してみます。
@@ -295,7 +295,7 @@ PV は PVC を「名前」ではなく、bind が成立した瞬間に書き込�
 復旧するには、PV の `claimRef` のうち `uid` と `resourceVersion` だけを取り除きます。`claimRef` 全体を消すのではないことに注意してください。`name`/`namespace` を残すことで、PV は「その名前の PVC が来たら bind する」という pre-bind 状態に戻り、無関係な別の PVC に横取りされるレースを防げます。
 
 ```bash
-kubectl patch pv openzfs-shared --type json \
+k patch pv openzfs-shared --type json \
   -p '[{"op":"remove","path":"/spec/claimRef/uid"},{"op":"remove","path":"/spec/claimRef/resourceVersion"}]'
 k get pvc shared-claim
 ```
