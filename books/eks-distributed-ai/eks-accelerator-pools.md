@@ -13,14 +13,14 @@ free: true
 
 本章で扱うのは、この図のうち **Karpenter が起動するアクセラレータノードのプール定義**です。Basic03 で入れた Karpenter が実際に GPU ノードを立てられるようにするのがゴールです。
 
-## このシナリオが解決する課題
+## この章で試すこと
 
-分散学習の実機検証では「とにかく GPU ノードを 2 台確保して DDP を回したい」という要求が頻繁に発生します。しかし単一のインスタンスタイプに絞ると、そのサイズがキャパシティ不足のときキャパシティエラーで詰まります。
+この章で試すのは Karpenter の混在確保、すなわち複数のインスタンスタイプと購入オプション（spot／on-demand）を 1 つの NodePool に許可して、確保できるものからノードを立てる挙動です。単一のインスタンスタイプ・単一の購入オプションに絞ると、そのサイズや spot 在庫が足りないときにキャパシティエラーで詰まりますが、混在させておくと空いている組み合わせで埋められます。これは単発の実験ジョブや、中断に強い推論・データ前処理でノードを確保したい場面で効きます（前述のとおり、大規模な分散学習を spot 混在で回すのは中断のたびに巻き戻るため不向きです）。ここではその挙動を、すでに動かした DDP を GPU に載せて確かめます。
 
 本章のアプローチは次の通りです。
 
 - g5(A10G)と g6(L4)を**ヘテロジニアスに混ぜます**: 片方が取れなくても他方でノードが立ちます
-- spot を第一優先、on-demand をフォールバックにします: コストを抑えつつ確実に 2 台確保します
+- spot を第一優先、on-demand をフォールバックにします: コストを抑えつつ 2 台確保します
 - 単一 AZ に固定します: EFA なしの GPU DDP は NCCL がノード間を TCP ソケットで通信するため、cross-AZ レイテンシの影響を避けます
 
 単一 AZ への固定は、本章の目的である「確実に 2 台確保する」こととは緊張関係にあります。AZ を 1 つに絞るとその AZ の spot 在庫が尽きていれば取得できず、複数 AZ に広げれば可能性は上がります。ここでは 4 インスタンスタイプ × 2 capacity-type の組み合わせで確保しやすさを確保しつつ、AZ は 1 つに固定するトレードオフを選んでいます。これは EFA や FSx など AZ をまたげないコンポーネントとの将来的な整合を優先したためです。
@@ -82,7 +82,26 @@ accelerator_pools = {
 
 NVIDIA GPU Operator は Basic03 の時点では入っていません。`accelerator_pools` に `device_plugin = "nvidia"` のプールが 1 つ以上あることを条件(`local.has_gpu_pool`)に導入されるため、本章で `gpu-ddp` プールを足して `terraform apply` した時点で初めてインストールされます。
 
-解説で示した `gpu-ddp` の `accelerator_pools` エントリを `terraform.tfvars` に追記したうえで、`infra/eks` ディレクトリで apply します。
+解説で示した `gpu-ddp` の `accelerator_pools` エントリを `terraform.tfvars` に追記します。`terraform.tfvars` にまだ `accelerator_pools` を書いていない前提で、`infra/eks` ディレクトリで次の heredoc を実行すると末尾に追記できます（すでに `accelerator_pools = { ... }` がある場合は重複定義になるので、その中に `gpu-ddp` エントリだけをエディタで足してください）。
+
+```bash
+cd infra/eks
+
+cat >> terraform.tfvars <<'EOF'
+
+accelerator_pools = {
+  gpu-ddp = {
+    instance_types  = ["g6.2xlarge", "g5.2xlarge", "g6.xlarge", "g5.xlarge"]
+    device_plugin   = "nvidia"
+    capacity_types  = ["spot", "on-demand"]
+    efa_interface_count = 0
+    labels          = { workload = "ddp-basic04" }
+  }
+}
+EOF
+```
+
+追記できたら apply します。
 
 ```bash
 # infra/eks ディレクトリで
