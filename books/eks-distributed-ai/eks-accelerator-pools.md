@@ -3,7 +3,7 @@ title: "Basic04 - GPU で分散学習を体験する"
 free: true
 ---
 
-本章では、Basic02 で CPU だけだった分散学習(DDP)を GPU に載せ替えます。ここでは Karpenter の混在確保の実験も兼ねて、g5 と g6 を混ぜた spot+on-demand フォールバック構成で 2 ノード GPU DDP を実行してみます。なお spot を混ぜた DDP は本来、中断に強い推論やデータ前処理に向くもので、大規模な分散学習では中断のたびに全 rank が巻き戻るため実用的ではありません。本章はあくまで「すでに動かした DDP を GPU に載せ、Karpenter の混在確保を確かめる」実験としての位置づけです。
+本章では、Basic02 で CPU だけだった分散学習(DDP)を GPU に載せ替えます。ここでは Karpenter の混在確保の実験も兼ねて、g5 と g6 を混ぜた spot+on-demand フォールバック構成で 2 ノード GPU DDP を実行してみます。なお spot を混ぜた DDP は本来、バッチ推論やデータ前処理に向くもので、大規模な分散学習では中断のたびに全 rank が巻き戻るため実用的ではありません。本章はあくまで「すでに動かした DDP を GPU に載せ、Karpenter の混在確保を確かめる」実験としての位置づけです。
 
 # 解説
 
@@ -15,18 +15,16 @@ free: true
 
 ## この章で試すこと
 
-この章で試すのは Karpenter の混在確保、すなわち複数のインスタンスタイプと購入オプション（spot／on-demand）を 1 つの NodePool に許可して、確保できるものからノードを立てる挙動です。単一のインスタンスタイプ・単一の購入オプションに絞ると、そのサイズや spot 在庫が足りないときにキャパシティエラーで詰まりますが、混在させておくと空いている組み合わせで埋められます。これは単発の実験ジョブや、中断に強い推論・データ前処理でノードを確保したい場面で効きます（前述のとおり、大規模な分散学習を spot 混在で回すのは中断のたびに巻き戻るため不向きです）。ここではその挙動を、すでに動かした DDP を GPU に載せて確かめます。
+この章で試すのは Karpenter の混在確保、すなわち複数のインスタンスタイプと購入オプション（spot／on-demand）を 1 つの NodePool に許可して、確保できるものからノードを立てる挙動です。単一のインスタンスタイプ・単一の購入オプションに絞ると、そのサイズや spot 在庫が足りないときにキャパシティエラーで詰まりますが、混在させておくと空いている組み合わせで埋められます。これは単発の実験ジョブなどでノードを確保したい場面で効きます。ここではその挙動を、すでに動かした DDP を GPU に載せて確かめます。
 
 本章のアプローチは次の通りです。
 
 - g5(A10G)と g6(L4)を**ヘテロジニアスに混ぜます**: 片方が取れなくても他方でノードが立ちます
 - spot を第一優先、on-demand をフォールバックにします: コストを抑えつつ 2 台確保します
-- 単一 AZ に固定します: EFA なしの GPU DDP は NCCL がノード間を TCP ソケットで通信するため、cross-AZ レイテンシの影響を避けます
-
-単一 AZ への固定は、本章の目的である「確実に 2 台確保する」こととは緊張関係にあります。AZ を 1 つに絞るとその AZ の spot 在庫が尽きていれば取得できず、複数 AZ に広げれば可能性は上がります。ここでは 4 インスタンスタイプ × 2 capacity-type の組み合わせで確保しやすさを確保しつつ、AZ は 1 つに固定するトレードオフを選んでいます。これは EFA や FSx など AZ をまたげないコンポーネントとの将来的な整合を優先したためです。
+- 単一 AZ に固定します: cross-AZ レイテンシの影響を避けます(マルチ AZ 構成も作り的には可能です)
 
 :::message
-本章の accelerator_pools capacity-mix 実装は、基本的なユースケースをカバーする初期バージョンです。今後、実運用に基づき EFA 対応の大規模訓練シナリオや Capacity Block との連携パターンを追加していきます。
+本章の accelerator_pools capacity-mix 実装は、基本的なユースケースをカバーする初期バージョンです。今後、実運用に基づき EFA 対応の大規模訓練シナリオや Capacity Block との連携パターンを追加していきます。そもそも Terraform の領域で実装を頑張るものでもないので根本的な改善も検討中です。
 :::
 
 ## accelerator_pools の設定
@@ -80,7 +78,7 @@ accelerator_pools = {
 - Karpenter が導入済み
 - Basic02 で作った `ddp-sample` イメージ(ECR に push 済み)
 
-NVIDIA GPU Operator は Basic03 の時点では入っていません。`accelerator_pools` に `device_plugin = "nvidia"` のプールが 1 つ以上あることを条件(`local.has_gpu_pool`)に導入されるため、本章で `gpu-ddp` プールを足して `terraform apply` した時点で初めてインストールされます。
+NVIDIA GPU Operator は Basic03 の時点では入っていません。`accelerator_pools` に `device_plugin = "nvidia"` のプールが 1 つ以上あることを条件(`local.has_gpu_pool`)に導入されるため、本章で初めてインストールされます。
 
 プール定義は `terraform.tfvars` に直接書かず、専用ファイル `accelerator-pools.auto.tfvars` に置きます。`accelerator_pools` は単一の map 変数なので、`terraform.tfvars` にも書くと重複代入エラーになります。定義箇所をこの 1 ファイルに集約し、`terraform.tfvars` 側には `accelerator_pools` を書かないのがポイントです（変数の `default = {}` があるので、ファイルが無い章でも apply は通ります）。`*.auto.tfvars` は Terraform が自動で読み込むため、`-var-file` の指定も要りません。
 
@@ -88,10 +86,11 @@ NVIDIA GPU Operator は Basic03 の時点では入っていません。`accelera
 
 ```bash
 cd infra/eks
-cp accelerator-pools.tfvars.example accelerator-pools.auto.tfvars
+# 以下のテンプレートを手動で書き換えても構いません
+# cp accelerator-pools.tfvars.example accelerator-pools.auto.tfvars
 ```
 
-本章ではこのファイルの中身を次の内容にします（雛形のコメント例を消し、`gpu-ddp` を有効化）。冪等に置き換えたいときは、追記（`>>`）ではなく上書き（`cat >`）で以下をそのまま貼ります。何度実行しても同じ状態になります。
+本章ではこのファイルの中身を次の内容にします。
 
 ```bash
 cat > accelerator-pools.auto.tfvars <<'EOF'
@@ -106,10 +105,6 @@ accelerator_pools = {
 }
 EOF
 ```
-
-:::message
-`terraform.tfvars` 側に `accelerator_pools` の行が残っていると、このファイルと重複してエラーになります。残っていないことを確認してください（`grep accelerator_pools terraform.tfvars` が何も返さなければ OK）。
-:::
 
 書き込めたら apply します。
 
@@ -252,7 +247,7 @@ PASS: 11  FAIL: 0  SKIP: 0  TOTAL: 11
 - **セルフサービスにならない**: 新しいプールが欲しいたびにプラットフォームチームへ tfvars の編集を依頼する運用になり、Kubernetes のマニフェストを `kubectl apply` する感覚での自助にはなりません。
 ::::
 
-これらは Terraform の使い方の問題ではなく、「アクセラレータプールの確保」をマルチテナントのセルフサービスとして扱うには、Namespace 単位で分離され RBAC で保護される Kubernetes ネイティブな API（CRD）が要る、という構造的な要請です。この課題意識から、Namespace スコープの `AcceleratorPool` CR をテナント分離された Karpenter NodePool に変換する OSS コントローラを別途設計しています（本 book のスコープ外）。本章の tfvars 方式は、まずは単一チームで確実に動かすための土台と位置づけてください。
+これらは Terraform の使い方の問題ではなく、「アクセラレータプールの確保」をマルチテナントのセルフサービスとして扱うには、Namespace 単位で分離され RBAC で保護される Kubernetes ネイティブな API（CRD）が要る、という構造的な要請です。本章の tfvars 方式は、まずは単一チームで確実に動かすための土台と位置づけてください。今後改善を予定しています。
 
 # まとめ
 
