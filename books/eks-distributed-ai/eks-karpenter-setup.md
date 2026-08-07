@@ -233,7 +233,7 @@ resource "null_resource" "wait_for_node_drain" {
 
 ## Dynamic Resource Allocation（DRA）とは何か
 
-ここまで扱ってきた `nvidia.com/gpu` や `vpc.amazonaws.com/efa` のような拡張リソースは、GPU/Neuron や EFA インターフェースをノード上の device plugin が数量として Kubernetes API サーバーに登録し、Pod 側は `resources.limits` に個数を書いて要求する、という枠組みです。device plugin はノードごとに動く DaemonSet で、デバイスを単純な整数カウントとして表現するため、Pod 側はリソース要求の枠組みの中では「何個欲しいか」しか指定できず、GPU の世代やメモリ容量、トポロジといった属性はリソース要求そのものでは選べません（実務ではノードラベルに対する `nodeSelector`/`nodeAffinity` で機種を選び分けます）。
+ここまで扱ってきた `nvidia.com/gpu` や `vpc.amazonaws.com/efa` のような拡張リソースは、GPU/Neuron や EFA インターフェースをノード上の device plugin が数量として Kubernetes API サーバーに登録し、Pod 側は `resources.limits` に個数を書いて要求する、という枠組みです。device plugin はノードごとに動く DaemonSet で、デバイスを単純な整数カウントとして表現するため、Pod 側はリソース要求の枠組みの中では「何個欲しいか」しか指定できず、GPU の世代やメモリ容量、トポロジといった属性はリソース要求そのものでは選べないため、ノードラベルに対する `nodeSelector` や `nodeAffinity` で機種を選び分けます。
 
 Dynamic Resource Allocation（DRA）は、この device plugin 方式に代わる新しいデバイス割り当ての仕組みです。DRA では `DeviceClass` / `ResourceClaim` / `ResourceClaimTemplate` という新しい API リソースを使い、Pod は「このクラスのデバイスを 1 つ要求する」という `ResourceClaim` を経由してデバイスにアクセスします。デバイスドライバはノード上のデバイスを `ResourceSlice` として公開し、そこにはモデル名やメモリ容量、トポロジといった豊富な属性が載るため、スケジューラは CEL（Common Expression Language）式でその属性を条件にデバイスを選べます。複数コンテナが同じ `ResourceClaim` を共有してデバイスを使い分けられる点も、単純なカウント方式の device plugin には無い特徴です（マルチノード GPU 通信を `ComputeDomain` という単位で管理する仕組みは DRA コア API ではなく NVIDIA の DRA ドライバ固有の機能です）。永続ボリュームを動的にプロビジョニングする仕組みに近い体験を、アクセラレーターにも持ち込むことが DRA の狙いです。DRA のコア API は Kubernetes 1.34 で GA（Stable）となり、同じ 1.34 の時点でデフォルトで有効です（機能ゲートは GA 昇格と同時に既定有効かつロックされます）。
 
