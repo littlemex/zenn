@@ -15,11 +15,11 @@ Terraform で Amazon VPC・Amazon EKS コントロールプレーン・Karpenter
 
 ## 全体構成
 
-この book 全体で構築する分散 AI 基盤の全体像です。Amazon VPC は複数の AZ にまたがって張り、Amazon EKS コントロールプレーンの下で Karpenter が GPU/Neuron の各 NodePool を要求に応じて起動します。共有ストレージ（既定は単一 AZ の Amazon FSx for OpenZFS と FSx for Lustre）や Capacity Block の期限監視（Amazon EventBridge → Amazon SNS）といった周辺サービスも含めた構成です。各コンポーネントは以降の章で 1 つずつ扱います。
+この book 全体で構築する分散 AI 基盤の全体像です。Amazon VPC は複数の AZ にまたがって張り、Amazon EKS コントロールプレーンの下で Karpenter が GPU/Neuron の各 NodePool を要求に応じて起動します。共有ストレージ（既定は単一 AZ の Amazon FSx for OpenZFS と FSx for Lustre）や Capacity Block の期限監視といった周辺サービスも含めた構成です。各コンポーネントは以降の章で 1 つずつ扱います。
 
 ![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 
-本章の `terraform apply` は、この基盤のクラスタスコープの土台を一度に立ち上げます。図のうち中核となる **Amazon VPC・Amazon EKS コントロールプレーン・System ノードグループ** に加え、その上で動く Karpenter コントローラ・各 CSI ドライバ・Kubeflow Trainer・共有ストレージ（既定の FSx）まで、後続の章で使う基盤コンポーネントが同じ apply で揃います。本章で詳しく解説するのは中核の 3 つで、残りは各コンポーネントの章で 1 つずつ扱います。
+本章の `terraform apply` は、この基盤のクラスタスコープの土台を一度に立ち上げます。図のうち中核となる **Amazon VPC・Amazon EKS コントロールプレーン・System ノードグループ** に加え、その上で動く Karpenter コントローラ・各 CSI ドライバ・Kubeflow Trainer・共有ストレージまで、後続の章で使う基盤コンポーネントが同じ apply で揃います。本章で詳しく解説するのは中核の 3 つで、残りは各コンポーネントの章で 1 つずつ扱います。
 
 ## Amazon VPC の設計
 
@@ -61,17 +61,59 @@ module "vpc" {
 
 ここで `azs` / `private_subnets` / `public_subnets` に渡している 3 つの `local.*` が、この構成の設計上の肝です。いずれも [`az.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/az.tf) で `var.region` と `var.vpc_cidr` から自動導出しており、通常のデプロイでは AZ もサブネット CIDR も一切手書きしません。tfvars に書くのは `region` とプールのインスタンスタイプだけで済みます。
 
-**AZ とサブネット CIDR の自動導出**: `local.azs` は `var.azs` が `null`（既定）ならそのリージョンの標準 AZ を `sort` して全件返します。`us-east-2` なら 3 つ、`us-west-2` なら 4 つの AZ すべてに VPC がまたがります（AZ 数はリージョンによって違うので、`aws ec2 describe-availability-zones --region <region> --filters Name=opt-in-status,Values=opt-in-not-required` で確認できます）。サブネット CIDR も `var.private_subnet_cidrs` / `var.public_subnet_cidrs` が `null`（既定）なら `var.vpc_cidr` から AZ ごとに 1 つずつ切り出します。デフォルトではうまく AZ を適切な CIDR で切ってくれていると思っていただければ大丈夫です。
+**AZ とサブネット CIDR の自動導出**: `local.azs` は `var.azs` が `null`（既定）ならそのリージョンの標準 AZ を `sort` して全件返します。サブネット CIDR も `var.private_subnet_cidrs` / `var.public_subnet_cidrs` が `null`（既定）なら `var.vpc_cidr` から AZ ごとに 1 つずつ切り出します。デフォルトではうまく AZ を適切な CIDR で切ってくれていると思っていただければ大丈夫です。
 
 **`one_nat_gateway_per_az = true` の意味**: NAT ゲートウェイを AZ ごとに 1 つ置き、各 AZ のプライベートルートテーブルはその AZ 自身の NAT を向きます。VPC は `local.azs` の全 AZ にまたがるので、2 AZ なら NAT も 2 つ、3 AZ なら 3 つ作られます。
 
-当初この基盤は `single_nat_gateway = true` で単一 NAT にしていました。計算が単一 AZ に寄る（EFA の集団通信も FSx for Lustre も Capacity Block も単一 AZ 前提）ので AZ ごとに NAT を作る利点は薄い、という判断です。これを AZ ごとに変えたのは、単一 NAT がその AZ 単位の単一障害点になり、影響範囲が「その AZ のワークロード」ではなく**クラスタ全体のイメージ pull** に及ぶためです。プライベートサブネットのノードは外向き通信を NAT に依存しており、NAT を置いた AZ が劣化すると、他の AZ のノードもレジストリに到達できなくなります。NAT の時間課金は 1 つあたり `$0.045/h`（us-east-2）で、例えば同リージョンの `p4d.24xlarge` オンデマンド `$21.96/h` に対して桁が 3 つ違います。AZ 障害の切り離しを買う対価としては無視できる差です。
+当初この基盤は `single_nat_gateway = true` で単一 NAT にしていましたが、Capacity Block for ML がどの AZ でも使いうることを考えると単一 AZ ではなく全ての AZ に置いておく方が別 AZ の転送料金がかかることと耐障害性の観点から良いと判断しました。ただしこれはどちらでも良いと思います。
 
-もう一つの理由は、単一 NAT だと**別 AZ のノードの外向き通信が AZ をまたぐ**点です。NAT がある AZ 以外で起動したノードのトラフィックは AZ 間転送を経由するため、レイテンシと AZ 間転送料金が乗ります。Capacity Block はどの AZ に落ちるか事前に決められず、この基盤の VPC がリージョンの全 AZ にまたがるのはまさにそのためなので、「計算がどの AZ に来ても、その AZ に NAT がある」状態を既定にしておく方が構成として素直です。
-
-なお、外向き通信は NAT だけに依存しているわけではありません。ECR・Amazon EC2・STS・SSM・CloudWatch Logs・EKS Auth は [`vpc-endpoints.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/vpc-endpoints.tf) の VPC endpoint 経由で NAT を通らずに到達します。NAT が担うのは `nvcr.io` や `quay.io`、`registry.k8s.io` といった ECR 以外のレジストリと、Interface endpoint を持たない IAM です。endpoint で NAT 依存を切る設計は Basic11、イメージ pull の経路そのものは Advanced01 で扱います。
+なお、外向き通信は NAT だけに依存しているわけではありません。ECR・Amazon EC2・STS・SSM・CloudWatch Logs・EKS Auth は [`vpc-endpoints.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/vpc-endpoints.tf) の VPC endpoint 経由で NAT を通らずに到達します。NAT が主に担うのは `nvcr.io` や `quay.io`、`registry.k8s.io` といった ECR 以外のレジストリと、Interface endpoint を持たない IAM です。
 
 **`private_subnet_tags` の `karpenter.sh/discovery`**: このタグが後の章で効いてきます。Karpenter は「ノードを起動してよいサブネット」をこのタグで検出します。ここで**プライベートサブネットにだけ**タグを付け、`public_subnet_tags` には付けていない点が重要です。もし共通の `tags` に含めてしまうと全サブネットに伝搬してパブリックサブネットにも付き、Karpenter がそこにノードを立ててしまいます。この構成はパブリックサブネットにパブリック IP を自動付与しない設定なので、そこに立ったノードは外向きの到達経路を持たず、`nodeadm` によるクラスタ参加に失敗します。
+
+::::details nodeadm とは
+
+`nodeadm` は、EKS のノードとなる EC2 インスタンスを Kubernetes クラスタへ参加させるためのブートストラップ CLI です。Amazon Linux 2023 ベースの EKS 最適化 AMI に標準で同梱されており、ブート時に kubelet と containerd を構成してコントロールプレーンへ join させる役割を担います。
+
+## 旧方式からの変化
+
+Amazon Linux 2 の時代は `/etc/eks/bootstrap.sh` というシェルスクリプトを user data から呼び出し、クラスタ名やフラグを引数として渡していました。AL2023 ではこれが `nodeadm` に置き換わり、YAML による宣言的な設定へと移行しています。設定オブジェクトは `NodeConfig` と呼びます。
+
+## NodeConfig の書き方
+
+nodeadm は user data から `NodeConfig` を読み取ります。素の YAML ドキュメント単体で渡すこともできますし、cloud-init と併用する場合は MIME マルチパートの 1 パート（`Content-Type: application/node.eks.aws`）として渡します。
+
+```yaml
+---
+apiVersion: node.eks.aws/v1alpha1
+kind: NodeConfig
+spec:
+  cluster:
+    name: distai-eks
+    apiServerEndpoint: https://XXXXXXXX.gr7.us-east-2.eks.amazonaws.com
+    certificateAuthority: <base64-encoded-ca>
+    # Service CIDR（VPC の CIDR ではない点に注意）
+    cidr: 172.20.0.0/16
+  kubelet:
+    config:
+      maxPods: 110
+    flags:
+      - "--node-labels=role=gpu"
+```
+
+`spec.cluster` にクラスタ接続情報を、`spec.kubelet` に kubelet の設定やフラグを記述します。ただし `spec.cluster` をフルに書くのは、セルフマネージドノードやカスタム AMI を使う場合です。標準 AMI のマネージドノードグループでは、EKS 側がクラスタ接続情報を含む `NodeConfig` を自動的に注入するため、利用者が書くのはカスタマイズしたい差分（kubelet 設定など）だけで済みます。
+
+## 主なサブコマンド
+
+- `nodeadm init` はノードを初期化してクラスタへ join します。user data 内のスクリプトとして動くのではなく、AMI に組み込まれた systemd ユニット（`nodeadm-config.service` / `nodeadm-run.service`）としてブート時に起動し、IMDS 経由で user data の `NodeConfig` を読み取って実行します。
+- `nodeadm config check` は `NodeConfig` の内容を検証します。
+- `nodeadm debug` は join に失敗した際の診断を行います。
+
+## Karpenter との関係
+
+Karpenter で AL2023 AMI を使う場合も、ノードの user data は nodeadm の `NodeConfig` 形式になります。`EC2NodeClass` の `spec.userData` に書いた内容は、Karpenter が生成する `NodeConfig` パートの前段に置かれ、起動時に nodeadm が複数の `NodeConfig` を結合します。結合は後勝ちのため、クラスタ接続情報や Karpenter が付与するラベル（`karpenter.sh/nodepool` など）は利用者側では上書きできません。「userData に書けば何でも効く」わけではない点に注意してください。そのため、ノードラベルは userData ではなく NodePool の `spec.template.metadata.labels` で付与します。
+
+::::
 
 ## Amazon EKS クラスタと System ノードグループ
 
