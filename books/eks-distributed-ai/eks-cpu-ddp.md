@@ -3,7 +3,7 @@ title: "Basic02 - 分散学習を体験する"
 free: true
 ---
 
-本章では、GPU を一切使わずに、Amazon EKS の CPU ノード上で PyTorch の分散学習（DDP）を動かします。まず 1 ノードの中で複数プロセスを協調させる `torchrun` から始め、続いて複数ノードにまたがる分散学習を Kubeflow Trainer v2 の TrainJob で動かします。高額な GPU/Capacity Block に進む前に、「複数プロセスが協調して 1 つのモデルを学習する」という分散学習の最小の成功体験を、GPU に比べればごくわずかなコストで得ることが目的です。
+本章では、GPU を一切使わずに、Amazon EKS の CPU ノード上で PyTorch の分散学習（DDP）を、Kubeflow Trainer v2 の TrainJob で複数ノードにまたがって動かします。高額な GPU/Capacity Block に進む前に、「複数プロセスが協調して 1 つのモデルを学習する」という分散学習の最小の成功体験を、GPU に比べればごくわずかなコストで得ることが目的です。
 
 :::message
 本章は GPU も追加のインフラ手順も不要です。
@@ -26,17 +26,13 @@ free: true
 
 本章では gloo backend を使い、CPU ノードの上で DDP を動かします。学習対象は、分散学習の教材として広く使われる MNIST を分類する小さな MLP です。モデルもデータも小さいので、GPU なしの CPU でも 1 周が数分で終わり、学習内容そのものより「複数プロセスが勾配を共有して 1 つのモデルを学習する」という DDP の挙動に集中できます。
 
-本章は 2 段構えで進めます。同じ学習スクリプト [`ddp.py`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/manifests/ddp-sample/ddp.py) を使い回し、起動方法だけを差し替えます。
+本章では、学習スクリプト [`ddp.py`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/manifests/ddp-sample/ddp.py) を Kubeflow Trainer v2 の TrainJob で複数ノードにまたがって動かします。
 
-### 前半: 単一ノード（torchrun、オペレータ不要）
+DDP の各プロセスは `torchrun` が起動します。`torchrun --standalone --nproc_per_node=2` のように使うと、1 ノード内に複数のプロセス（rank 0, rank 1, ...）を立て、それぞれに `RANK` / `WORLD_SIZE` / `LOCAL_RANK` などの環境変数を自動で設定してくれます。単一ノードで完結するならこれを素の `batch/v1` Job で実行するだけで済みますが、分散学習を複数ノードに広げると「どのノードの誰が rank 0 で、情報連携の集合点（rendezvous）はどこか」を各ノードに教える仕組みが要ります。
 
-`torchrun --standalone --nproc_per_node=2` とすると、1 ノード内に 2 つのプロセス（rank 0, rank 1）を立て、それぞれに `RANK` / `WORLD_SIZE` / `LOCAL_RANK` などの環境変数を自動で設定してくれます。追加のコンポーネントは何も要らず、Kubernetes の素の `batch/v1` Job として実行できます。
+Kubernetes 上でこれを宣言的に扱う標準が、Kubeflow Trainer v2 が提供する TrainJob（`trainer.kubeflow.org/v1alpha1`）です。ノード数を宣言すれば、Trainer が内部で JobSet を展開して各ノードの Pod を並べ、`torchrun` に渡す集合点の情報を各 Pod に注入してくれます（`numNodes=1` にすれば単一ノードでも動くため、単一ノードから複数ノードまで同じ仕組みで扱えます）。
 
-### 後半: 複数ノード（TrainJob）
-
-分散学習を複数ノードに広げると、「どのノードの誰が rank 0 で、情報連携の集合点（rendezvous）はどこか」を各ノードに教える仕組みが要ります。Kubernetes 上でこれを宣言的に扱う標準が、Kubeflow Trainer v2 が提供する TrainJob（`trainer.kubeflow.org/v1alpha1`）です。ノード数を宣言すれば、Trainer が内部で JobSet を展開して各ノードの Pod を並べ、集合点の情報を各 Pod に注入してくれます。
-
-使うワークロードは Helm チャート [`charts/experiments`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/charts/experiments) です。前半が単一ノードの `torchrunTrain`、後半が複数ノードの `trainjobTrain` で、どちらも CPU と GPU の両対応です。適用は `helm template ... | kubectl apply -f -` で行い、`helm install` は使いません（このチャートは release 管理をせず、レンダリングして手で適用する実験カタログという位置づけです）。
+使うワークロードは Helm チャート [`charts/experiments`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/charts/experiments) の `trainjobTrain` です。適用は `helm template ... | kubectl apply -f -` で行い、`helm install` は使いません（このチャートは release 管理をせず、レンダリングして手で適用する実験カタログという位置づけです）。
 
 ## Kubeflow Trainer v2
 
@@ -67,11 +63,11 @@ TrainJob 側は台数（`numNodes`）とノードあたりのプロセス数（`
 
 ## 学習結果の保存先と共有ストレージ
 
-本章の 2 つのワークロードは、MNIST のデータと学習スナップショットを共有ストレージに保存します。既定の保存先は単一 AZ の **Amazon FSx for OpenZFS** です。ストレージの詳細は後続の章で扱いますが、`openzfs_enabled` が既定で有効なため、`terraform apply` の時点でファイルシステムと静的 PersistentVolume（`openzfs-shared`）はすでに作られています。
+本章のワークロード（`trainjobTrain`）は、MNIST のデータと学習スナップショットを共有ストレージに保存します。既定の保存先は単一 AZ の **Amazon FSx for OpenZFS** です。ストレージの詳細は後続の章で扱いますが、`openzfs_enabled` が既定で有効なため、`terraform apply` の時点でファイルシステムと静的 PersistentVolume（`openzfs-shared`）はすでに作られています。
 
 この PV を掴む PersistentVolumeClaim（`shared-claim`）は、Helm チャートは作りません。読者が `kubectl apply` で 1 回だけ作り、その名前を `--set sharedStorage.existingClaimName=shared-claim` で各ワークロードに渡します。なぜチャートに作らせないのかは、この後の「共有 PVC を用意する」ステップと、章末の「共有 PVC を消してみる」ステップで実際に手を動かしながら説明します。要点だけ先に言うと、静的 PV は同時に 1 つの PVC としか結びつきません。PVC の生成をワークロードのレンダリングに乗せると、PVC の寿命がその都度の `apply`/`delete` に引きずられてしまい、PV 側の寿命（Terraform が管理する、基盤が続く限り存在するもの）とズレてしまいます。PVC の作成を「基盤を用意する」タイミングに切り離し、以降は何度ワークロードを消して作り直しても同じ PVC を使い続けられるようにするのが、ここで一度だけ手動で作る理由です。
 
-後半の複数ノード TrainJob でも、スナップショットの保存は rank 0 が担当します。そのため、どのノードから書かれても同じ場所に成果物が集まる共有ストレージ（ReadWriteMany）が要ります。単一ノードの torchrun でも同じ共有ストレージを使い、入口から同じ `/shared` 規約に揃えておくと 2 段目への流れが素直になります。共有ファイルシステム上での同時書き込みによる破損を避けるため、`ddp.py` はスナップショットの書き込みを rank 0 だけが行います。MNIST のダウンロードは全 rank が実行します（既にファイルが揃っていれば torchvision 側が再取得をスキップします）。
+複数ノードの TrainJob では、スナップショットの保存は rank 0 が担当します。そのため、どのノードから書かれても同じ場所に成果物が集まる共有ストレージ（ReadWriteMany）が要ります。共有ファイルシステム上での同時書き込みによる破損を避けるため、`ddp.py` はスナップショットの書き込みを rank 0 だけが行います。MNIST のダウンロードは全 rank が実行します（既にファイルが揃っていれば torchvision 側が再取得をスキップします）。
 
 保存先は Helm の `sharedStorage.backend` で切り替えられます。既定の `openzfs` のほかに、`fsx`（FSx for Lustre）、リージョン規模のマルチ AZ 共有が要るときは `efs` を選べます。3 つのバックエンドはいずれも Terraform 側で静的 PV が用意される設計で、選んだバックエンドの `var.<x>_enabled` が有効になっている必要があります。既定で `openzfs` と `fsx` は有効、`efs` は無効（ドライバのみ常設）です。
 
@@ -101,21 +97,15 @@ TrainJob 側は台数（`numNodes`）とノードあたりのプロセス数（`
 
 以降のコマンドは Basic01 で clone したリポジトリのルート（`infra/eks` の親）で実行する前提です。`kubectl` が Basic01 のクラスタを指していること、MNIST データセットを取得するためのアウトバウンド通信やノードの ECR pull 権限は、いずれも Basic01 の構築で用意済みです。
 
-まず、Basic01 で作った作業用 namespace を使います。ターミナルを開き直した場合に備えて、ここで冪等に用意し直しておきます（すでに存在していてもエラーになりません）。
+Basic01 で current-context をこのクラスタに切り替え、既定 namespace を `distai` に設定済みの前提です（ターミナルを開き直した場合は Basic01 step 3 の `use-context` / `set-context` / `alias k=kubectl` を実行し直してください）。作業用 namespace を冪等に用意しておきます（すでに存在していてもエラーになりません）。
 
 ```bash
-export CONTEXT=distai
-export NAMESPACE=distai
-alias k='kubectl --context "$CONTEXT" --namespace "$NAMESPACE"'
-
-# create namespace はクラスタスコープなので素の kubectl を使います
-kubectl --context "$CONTEXT" create namespace "$NAMESPACE" \
-  --dry-run=client -o yaml | kubectl --context "$CONTEXT" apply -f -
+k create namespace distai --dry-run=client -o yaml | k apply -f -
 ```
 
 ## 2. 学習用イメージを用意する
 
-2 つのワークロードは、MNIST MLP を DDP で学習する `ddp.py` を焼き込んだ専用イメージ `ddp-sample` を共用します。`ddp.py` は [awslabs/awsome-distributed-ai の DDP サンプル](https://github.com/awslabs/awsome-distributed-ai/tree/main/3.test_cases/pytorch/ddp) をベースに、保存先を共有 PVC へ寄せて adapt したものです。Dockerfile はリポジトリの [`infra/eks/manifests/ddp-sample/`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/manifests/ddp-sample) に置いてあります。
+本章のワークロード（`trainjobTrain`）は、MNIST MLP を DDP で学習する `ddp.py` を焼き込んだ専用イメージ `ddp-sample` を使います。`ddp.py` は [awslabs/awsome-distributed-ai の DDP サンプル](https://github.com/awslabs/awsome-distributed-ai/tree/main/3.test_cases/pytorch/ddp) をベースに、保存先を共有 PVC へ寄せて adapt したものです。Dockerfile はリポジトリの [`infra/eks/manifests/ddp-sample/`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/manifests/ddp-sample) に置いてあります。
 
 このイメージのビルドは、上述した BuildKit で実施します。ビルド先の ECR URL は Terraform の出力から取得できます。イメージタグはワークショップ用に `v1` を使います（再ビルドするときは `v2` のようにタグを進めると、`latest` のキャッシュ問題を避けられます）。
 
@@ -160,7 +150,7 @@ rootless BuildKit は非特権（`CAP_SYS_ADMIN` 不要、uid 1000）で動き�
 :::
 ::::
 
-続いて、後半で使う Kubeflow Trainer v2 が入っていることを確認します。Basic01 の `terraform apply`（`trainer_enabled` が既定で有効）で導入済みのはずなので、TrainJob の CRD が見えることと、コントロールプレーン（`kubeflow-system` の manager と JobSet）が動いていることを確かめておきます。
+続いて、このあと使う Kubeflow Trainer v2 が入っていることを確認します。Basic01 の `terraform apply`（`trainer_enabled` が既定で有効）で導入済みのはずなので、TrainJob の CRD が見えることと、コントロールプレーン（`kubeflow-system` の manager と JobSet）が動いていることを確かめておきます。
 
 ```bash
 kubectl get crd trainjobs.trainer.kubeflow.org
@@ -169,7 +159,7 @@ kubectl get pods -n kubeflow-system
 
 ## 3. 共有 PVC を用意する
 
-本章の 2 つのワークロード（`torchrunTrain`/`trainjobTrain`）は共有ストレージへの書き込みが要りますが、そのための PVC はチャートが作りません。ここで 1 回だけ、自分で `kubectl apply` して作ります。
+本章のワークロード（`trainjobTrain`）は共有ストレージへの書き込みが要りますが、そのための PVC はチャートが作りません。ここで 1 回だけ、自分で `kubectl apply` して作ります。
 
 ```bash
 # infra/eks にいる前提です
@@ -186,7 +176,7 @@ k get pvc shared-claim
 
 ## 4. 複数ノードで TrainJob を動かす
 
-同じ `ddp.py` を、今度は 2 ノードにまたがる TrainJob で動かします。解説で触れたとおり、単一ノードの `torchrun`（1 Pod 内で複数プロセスを起動する形）と違い、TrainJob では **rank ごとに別々の Pod、別々のノード**に分かれます。rank 0 と rank 1 は同じコンテナのプロセスではなく、ネットワーク越しに通信する別々の Pod です。
+`ddp.py` を 2 ノードにまたがる TrainJob で動かします。`torchrun` を素の `batch/v1` Job で単一ノードに動かす場合は 1 Pod 内で複数プロセスが立ちますが、TrainJob で複数ノードに広げると **rank ごとに別々の Pod、別々のノード**に分かれます。rank 0 と rank 1 は同じコンテナのプロセスではなく、ネットワーク越しに通信する別々の Pod です。
 
 `numNodes=2` がノード数、`nprocPerNode=1` が各ノード内のプロセス数です（Helm の `nprocPerNode` は TrainJob の `numProcPerNode` に対応します）。本 book がクラスタに用意した Runtime（[`torch-distributed-eks`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/clustertrainingruntime-eks.yaml)）に `topologyKey: kubernetes.io/hostname` の podAntiAffinity が入っているので、2 つの Pod は必ず別ノードに分かれて配置されます。PVC は step 3 で作った `shared-claim` を使います。
 
@@ -194,7 +184,7 @@ k get pvc shared-claim
 # step 2 から続けて infra/eks にいる前提です。ターミナルを変えた場合は cd infra/eks した上で
 # 変数を再取得します: ECR_URL=$(terraform output -raw ddp_sample_ecr_url); IMAGE=${ECR_URL}:v1
 
-# 同名の TrainJob が残っていると apply がスキップされる(TrainJob の spec も変更不可)。
+# 同名の TrainJob が残っていると、変更箇所によっては apply が拒否される。作り直しは削除が確実。
 # 作り直すときは先に削除する（初回は存在しなくても --ignore-not-found で安全）。
 k delete trainjob ddp-trainjob --ignore-not-found
 
@@ -316,7 +306,7 @@ k get pvc shared-claim
 
 # まとめ
 
-本章では、GPU を使わずに Amazon EKS の CPU ノード上で MNIST MLP の DDP 学習を、Kubeflow Trainer v2 の TrainJob で 2 ノードにまたがって走らせました（解説では、オペレータ不要の `torchrun` を素の `batch/v1` Job で動かす単一ノードの形も、TrainJob との対比として押さえました）。gloo backend で動かし、loss が減少すること、そして rank 0 のみがスナップショットを共有ストレージに保存するという DDP の基本動作を確認しました。さらに、共有ストレージの PVC を意図的に削除して `Released` 状態を再現し、`claimRef` の `uid`/`resourceVersion` だけを取り除く復旧手順まで体験しました。静的プロビジョニングされた PV は PVC を名前ではなく実体（UID）で覚えるという、この基盤の共有ストレージ全体を貫く重要な性質です。
+本章では、GPU を使わずに Amazon EKS の CPU ノード上で MNIST MLP の DDP 学習を、Kubeflow Trainer v2 の TrainJob で 2 ノードにまたがって走らせました。gloo backend で動かし、loss が減少すること、そして rank 0 のみがスナップショットを共有ストレージに保存するという DDP の基本動作を確認しました。さらに、共有ストレージの PVC を意図的に削除して `Released` 状態を再現し、`claimRef` の `uid`/`resourceVersion` だけを取り除く復旧手順まで体験しました。静的プロビジョニングされた PV は PVC を名前ではなく実体（UID）で覚えるという、この基盤の共有ストレージ全体を貫く重要な性質です。
 
 # 参考資料
 
@@ -325,5 +315,5 @@ k get pvc shared-claim
 - [Kubeflow Trainer v2 (TrainJob)](https://trainer.kubeflow.org/en/latest/)
 - [Kubeflow Training Operator v1 (PyTorchJob、レガシー)](https://trainer.kubeflow.org/en/latest/legacy-v1/user-guides/pytorch.html)
 - [awslabs/awsome-distributed-ai の DDP テストケース (Kubernetes)](https://github.com/awslabs/awsome-distributed-ai/tree/main/3.test_cases/pytorch/ddp/kubernetes)
-- [対象ワークロード torchrunTrain（charts/experiments）](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/torchrun-train.yaml)
+- [(参考) 単一ノード版ワークロード torchrunTrain（charts/experiments）](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/torchrun-train.yaml)
 - [対象ワークロード trainjobTrain（charts/experiments）](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/trainjob-train.yaml)
