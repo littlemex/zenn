@@ -63,11 +63,11 @@ module "vpc" {
 
 **AZ とサブネット CIDR の自動導出**: `local.azs` は `var.azs` が `null`（既定）ならそのリージョンの標準 AZ を `sort` して全件返します。サブネット CIDR も `var.private_subnet_cidrs` / `var.public_subnet_cidrs` が `null`（既定）なら `var.vpc_cidr` から AZ ごとに 1 つずつ切り出します。デフォルトではうまく AZ を適切な CIDR で切ってくれていると思っていただければ大丈夫です。
 
-**`one_nat_gateway_per_az = true` の意味**: NAT ゲートウェイを AZ ごとに 1 つ置き、各 AZ のプライベートルートテーブルはその AZ 自身の NAT を向きます。VPC は `local.azs` の全 AZ にまたがるので、2 AZ なら NAT も 2 つ、3 AZ なら 3 つ作られます。
+**`one_nat_gateway_per_az = true` の意味**: NAT ゲートウェイを AZ ごとに 1 つ置き、各 AZ のプライベートルートテーブルはその AZ 自身の NAT を向きます。VPC は `local.azs` の全 AZ にまたがるので、2 AZ なら NAT も 2 つ、3 AZ なら 3 つ作られます。既定では `local.azs` がリージョンの全標準 AZ を返すため、AZ 数が多いリージョン（us-east-1 は標準 AZ が 6 つ）では NAT ゲートウェイと Elastic IP がその数だけ作られます。Elastic IP のデフォルトのクォータはリージョンあたり 5 つなので、AZ 数の多いリージョンに読み替える場合は、クォータの引き上げか `var.azs` での AZ 数の絞り込みが必要になることがあります。
 
-当初この基盤は `single_nat_gateway = true` で単一 NAT にしていましたが、Capacity Block for ML がどの AZ でも使いうることを考えると単一 AZ ではなく全ての AZ に置いておく方が別 AZ の転送料金がかかることと耐障害性の観点から良いと判断しました。ただしこれはどちらでも良いと思います。
+当初この基盤は `single_nat_gateway = true` で単一 NAT にしていましたが、Capacity Block for ML がどの AZ でも使いうることを考えると、全ての AZ に NAT を置く方が良いと判断しました。単一 NAT だと他 AZ のノードからの外向き通信がすべて AZ をまたいでその NAT に集まり、クロス AZ のデータ転送料金がかかります。AZ ごとに NAT を置けばこの転送料金を避けられ、かつ 1 つの AZ の NAT が落ちても他 AZ の外向き通信が生き残る耐障害性の利点もあります。ただしこれはどちらでも良いと思います。
 
-なお、外向き通信は NAT だけに依存しているわけではありません。ECR・Amazon EC2・STS・SSM・CloudWatch Logs・EKS Auth は [`vpc-endpoints.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/vpc-endpoints.tf) の VPC endpoint 経由で NAT を通らずに到達します。NAT が主に担うのは `nvcr.io` や `quay.io`、`registry.k8s.io` といった ECR 以外のレジストリと、Interface endpoint を持たない IAM です。
+なお、外向き通信は NAT だけに依存しているわけではありません。ECR・Amazon EC2・STS・SSM・CloudWatch Logs・EKS Auth は [`vpc-endpoints.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/vpc-endpoints.tf) の Interface endpoint 経由で、Amazon S3 は Gateway endpoint 経由で、いずれも NAT を通らずに到達します。ECR のイメージ pull はレイヤの実体を S3 から取得するため、この S3 Gateway endpoint も合わせて必要です。NAT が主に担うのは `nvcr.io` や `quay.io`、`registry.k8s.io` といった ECR 以外のレジストリと、Interface endpoint を持たない IAM です。
 
 **`private_subnet_tags` の `karpenter.sh/discovery`**: このタグが後の章で効いてきます。Karpenter は「ノードを起動してよいサブネット」をこのタグで検出します。ここで**プライベートサブネットにだけ**タグを付け、`public_subnet_tags` には付けていない点が重要です。もし共通の `tags` に含めてしまうと全サブネットに伝搬してパブリックサブネットにも付き、Karpenter がそこにノードを立ててしまいます。この構成はパブリックサブネットにパブリック IP を自動付与しない設定なので、そこに立ったノードは外向きの到達経路を持たず、`nodeadm` によるクラスタ参加に失敗します。
 
@@ -165,7 +165,7 @@ module "eks" {
 
 **`before_compute = true` の 2 つのアドオン**: `vpc-cni` と `eks-pod-identity-agent` にこのフラグを付け、ワーカーノードが起動する前にアドオンを導入します。特に Pod Identity Agent は、Pod Identity で AWS 権限を得るコントローラ（Karpenter など）より先に存在していないと、それらが起動時に認証情報を取得できずクラッシュします。そのため順序を保証するためのフラグです。
 
-**System ノードグループの `karpenter.sh/controller` ラベル**: 規定では m5 系インスタンスを 2 台を固定起動します。このノードグループは Karpenter が管理するのではなく、Amazon EKS Managed Node Group として常時稼働させます。`karpenter.sh/controller: "true"` というラベルを付けているのは、本章の apply で導入される Karpenter コントローラ自身をこのノードに載せるためです。Karpenter コントローラを Karpenter 管理下のノードに載せるのは前述のとおり非推奨なので、Karpenter を動かす最初の足場として、Karpenter の管理外のノードグループが必要になります。もう 1 つの `node-role: system` は、後続の章で Karpenter の各プールが付ける `node-role=<プール名>` と同じキーです。ワークロードが「GPU でないノード」という消極的な条件で誤って system ノードに載るのを防ぎ、載せたい層を積極的に名指しできるようにしています。
+**System ノードグループの `karpenter.sh/controller` ラベル**: 規定では m5 系インスタンスを 2 台を固定起動します。このノードグループは Karpenter が管理するのではなく、Amazon EKS Managed Node Group として常時稼働させます。`karpenter.sh/controller: "true"` というラベルを付けているのは、本章の apply で導入される Karpenter コントローラ自身をこのノードに載せるためです。Karpenter コントローラを Karpenter 管理下のノードに載せると、コントローラが自分の載るノードを消してしまう自己依存に陥りかねず推奨されません。そのため Karpenter を動かす最初の足場として、Karpenter の管理外のノードグループが必要になります。もう 1 つの `node-role: system` は、後続の章で Karpenter の各プールが付ける `node-role=<プール名>` と同じキーです。ワークロードが「GPU でないノード」という消極的な条件で誤って system ノードに載るのを防ぎ、載せたい層を積極的に名指しできるようにしています。
 
 ## Pod Identity による認証
 
@@ -195,7 +195,7 @@ module "karpenter" {
 }
 ```
 
-IRSA は ServiceAccount にアノテーションで IAM ロールを結び付け、OIDC プロバイダ経由で認証する方式です。これに対し Pod Identity は、IAM 側の Pod Identity Association だけで ServiceAccount とロールを結び付けられ、Kubernetes マニフェスト側にアノテーションを書かずに済みます。設定が IAM 側で完結するぶんシンプルで、この構成では Karpenter・EBS/Amazon FSx（OpenZFS・Lustre）/Amazon EFS の各 CSI ドライバすべてを Pod Identity で統一しています。本章の `eks-pod-identity-agent` アドオンは、この Pod Identity を各 Pod で機能させるためのエージェントです。
+IRSA は ServiceAccount にアノテーションで IAM ロールを結び付け、OIDC プロバイダ経由で認証する方式です。これに対し Pod Identity は、EKS の API リソースである Pod Identity Association だけで ServiceAccount とロールを結び付けられ、Kubernetes マニフェスト側にアノテーションを書かずに済みます（IAM 側で要るのはロールの信頼ポリシーで `pods.eks.amazonaws.com` を許可することだけです）。設定が AWS 側で完結するぶんシンプルで、この構成では Karpenter・EBS/Amazon FSx（OpenZFS・Lustre）/Amazon EFS の各 CSI ドライバすべてを Pod Identity で統一しています。本章の `eks-pod-identity-agent` アドオンは、この Pod Identity を各 Pod で機能させるためのエージェントです。
 
 `enable_inline_policy = true` にも実務上の理由があります。Karpenter v1 のコントローラポリシーは、AWS のマネージドポリシーのサイズ上限（空白を除いて 6,144 文字、変更不可）をわずかに超え、`LimitExceeded: PolicySize: 6144` で失敗します。ロールに直接付けるインラインポリシー（上限 10,240 文字）にすれば同じ権限のまま上限に収まるため、この構成ではインラインを選んでいます。
 
@@ -219,7 +219,7 @@ git clone https://github.com/littlemex/distributed-ai.git
 cd distributed-ai/infra/eks
 ```
 
-続いて `terraform.tfvars.example` を `terraform.tfvars` にコピーし、`region` と `cluster_name` を自分の環境に合わせて設定します。AZ もサブネット CIDR も `region` から自動導出されるので、この段階で書くのはこの 2 つだけです。`accelerator_pools` も空のままで構いません。名前付き profile（AWS SSO や assume-role）で認証している場合は、`aws_profile` にその profile 名も設定します。この値を設定しておくと、Terraform が aws/helm/kubectl の各 provider と CLI ヘルパーすべてに同じ profile を渡すため、以降の操作が同一プリンシパルで実行されます。あわせて `expected_account_id` にデプロイ先の 12 桁のアカウント ID を設定しておくことを強く推奨します。この値を設定すると、認証情報が別のアカウントを指したまま apply しようとしたときに plan の段階で停止するため、profile の取り違えでクラスタを別アカウントに作ってしまう事故を未然に防げます。自分のアカウント ID は `aws sts get-caller-identity --query Account --output text` で確認できます。
+続いて `terraform.tfvars.example` を `terraform.tfvars` にコピーし、`region` と `cluster_name` を自分の環境に合わせて設定します。AZ もサブネット CIDR も `region` から自動導出されるので、この段階で書くのはこの 2 つだけです。`accelerator_pools` も空のままで構いません。名前付き profile（AWS SSO や assume-role）で認証している場合は、****`aws_profile` にその profile 名も設定**します。この値を設定しておくと、Terraform が aws/helm/kubectl の各 provider と CLI ヘルパーすべてに同じ profile を渡すため、以降の操作が同一プリンシパルで実行されます。あわせて `expected_account_id` にデプロイ先の 12 桁のアカウント ID を設定しておくことを強く推奨します。この値を設定すると、認証情報が別のアカウントを指したまま apply しようとしたときに plan の段階で停止するため、profile の取り違えでクラスタを別アカウントに作ってしまう事故を未然に防げます。自分のアカウント ID は `aws sts get-caller-identity --query Account --output text` で確認できます。
 
 ```bash
 cp terraform.tfvars.example terraform.tfvars
@@ -243,13 +243,13 @@ terraform apply
 ```
 
 :::message alert
-`terraform apply` は state に記録されたリソースだけを管理し、state に無いリソースが AWS 側に存在するかどうかは確認しません。このため profile の取り違え方によって 2 種類の事故が起きます。1 つ目は、state が空（またはそのリソースを未追跡）のまま、既にリソースが存在するアカウントに profile が向くケースです。IAM ロール・KMS エイリアス・CloudWatch ロググループのように名前に一意制約があるリソースは `EntityAlreadyExists` で失敗し、FSx ファイルシステムのように名前の一意制約が無いリソースはエラーにならず二重作成されて課金が始まります（apply が途中で失敗しても、並行して作成が始まった FSx はそのまま完成まで走り切ります）。2 つ目は、state にリソースが記録済みのまま別アカウントに profile が向くケースで、この場合は Terraform が「管理下のリソースがすべて消えた」と判断し、エラーも出さずに丸ごと作り直します。後者はエラーで止まらないぶん気づきにくく、より危険です。重複作成された FSx はコンソールで `fs-` から始まる ID を確認して手動で削除しない限り課金が続くため、apply の前に必ず `aws sts get-caller-identity` で Account と ARN を確認してください。step 1 で `expected_account_id` を設定しておけば、認証情報が別アカウントを指したまま apply しようとしても plan の段階で停止するので、この事故そのものを起こさせない歯止めになります。
+`terraform apply` は state に記録されたリソースだけを管理し、state に無いリソースが AWS 側に存在するかどうかは確認しません。このため profile の取り違え方によって 2 種類の事故が起きます。1 つ目は、state が空（またはそのリソースを未追跡）のまま、既にリソースが存在するアカウントに profile が向くケースです。IAM ロール・KMS エイリアス・CloudWatch ロググループのように名前に一意制約があるリソースは作成時のエラー（IAM なら `EntityAlreadyExists`、KMS エイリアスなら `AlreadyExistsException`、CloudWatch Logs なら `ResourceAlreadyExistsException`）で失敗し、FSx ファイルシステムのように名前の一意制約が無いリソースはエラーにならず二重作成されて課金が始まります（apply が途中で失敗しても、並行して作成が始まった FSx はそのまま完成まで走り切ります）。2 つ目は、state にリソースが記録済みのまま別アカウントに profile が向くケースで、この場合は Terraform が「管理下のリソースがすべて消えた」と判断し、エラーも出さずに丸ごと作り直します。後者はエラーで止まらないぶん気づきにくく、より危険です。重複作成された FSx はコンソールで `fs-` から始まる ID を確認して手動で削除しない限り課金が続くため、apply の前に必ず `aws sts get-caller-identity` で Account と ARN を確認してください。step 1 で `expected_account_id` を設定しておけば、認証情報が別アカウントを指したまま apply しようとしても plan の段階で停止するので、この事故そのものを起こさせない歯止めになります。
 :::
 
-`terraform apply` は、Amazon VPC・AZ ごとの NAT ゲートウェイ・Amazon EKS コントロールプレーン・System ノードグループに加えて、その上で動く Karpenter コントローラ・各 CSI ドライバ・Kubeflow Trainer・共有ストレージ（既定の FSx）まで、クラスタスコープの基盤を一度に作ります。`accelerator_pools` が空なので GPU/Neuron ノードだけは立ちません。所要時間が大きいのはコントロールプレーンの起動と FSx ファイルシステム（特に FSx for Lustre）の作成で、いずれも単独で 10〜15 分級です。両者は VPC さえできれば並行して作られるため単純な足し算にはなりませんが、それでも全体では 20〜30 分程度を見ておくと安全です。
+`terraform apply` は、Amazon VPC・AZ ごとの NAT ゲートウェイ・Amazon EKS コントロールプレーン・System ノードグループに加えて、その上で動く Karpenter コントローラ・各 CSI ドライバ・Kubeflow Trainer・共有ストレージ（既定の FSx）まで、クラスタスコープの基盤を一度に作ります。アクセラレーターノードだけはまだ立ちません。所要時間が大きいのはコントロールプレーンの起動と FSx ファイルシステム（特に FSx for Lustre）の作成で、いずれも単独で 10〜15 分級です。両者は VPC さえできれば並行して作られるため単純な足し算にはなりませんが、それでも全体では 20〜30 分程度を見ておくと安全です。
 
 :::message
-`terraform apply` は 20〜30 分ほどかかります（コントロールプレーンと FSx の作成が支配的です）。コントロールプレーンが `ACTIVE` になり、FSx ファイルシステムが `AVAILABLE` になるまで待ちましょう。
+`terraform apply` は 20〜30 分ほどかかります。コントロールプレーンが `ACTIVE` になり、FSx ファイルシステムが `AVAILABLE` になるまで待ちましょう。
 :::
 
 ## 3. kubeconfig を設定してノードを確認する
@@ -258,37 +258,41 @@ terraform apply
 # 自分の環境に合わせて設定してください
 export REGION=xxx
 export PROFILE=xxx
+export NAMESPACE=distai
+
+# ご自身が設定したクラスター名など
+export CONTEXT=distai-eks-ws
 
 # terraform.tfvars に aws_profile を設定した場合は、同じ profile をここでも渡します
 # （または事前に export AWS_PROFILE=<name>）。素の [default] で認証している場合は
 # --profile を省略します。
+# --alias で kubeconfig の context 名を短い固定名（ここでは distai）にします。
+# これを付けないと context 名がクラスタ ARN 全体になり、毎回打つのが長くなります。
 aws eks update-kubeconfig --name "$(terraform output -raw cluster_name)" \
-  --region $REGION --profile $PROFILE
-kubectl get nodes
-
-# インスタンスタイプまで見たい場合
-kubectl get nodes -o custom-columns='NAME:.metadata.name,TYPE:.metadata.labels.node\.kubernetes\.io/instance-type,ROLE:.metadata.labels.node-role,CAP:.metadata.labels.karpenter\.sh/capacity-type'
+  --region $REGION --profile $PROFILE --alias $CONTEXT
 ```
 
-`kubectl get nodes` で m5 系のノードが 2 台 `Ready` 状態で表示されれば、System ノードグループの起動は成功です。
-
-あわせて NAT が AZ ごとに分かれていることも確認しておきます。プライベートルートテーブルの `0.0.0.0/0` が、それぞれ別の NAT を向いているのが期待する状態です。
+続いて、以降のコマンドが常にこのクラスタと作業用 namespace に向くよう、context と namespace を環境変数に固定し、`k` エイリアスを定義します。`kubectl` 自体は context を環境変数から読まないので、エイリアス側で `--context "$CONTEXT"` を明示的に渡すのがポイントです。
 
 ```bash
-aws ec2 describe-route-tables --region $REGION \
-  --filters "Name=vpc-id,Values=$(terraform output -raw vpc_id)" "Name=tag:Name,Values=*private*" \
-  --query 'RouteTables[].[Tags[?Key==`Name`]|[0].Value,Routes[?DestinationCidrBlock==`0.0.0.0/0`]|[0].NatGatewayId]' \
-  --output text
+alias k='kubectl --context "$CONTEXT" --namespace "$NAMESPACE"'
 ```
 
-実機出力は次のようになります（2 AZ 構成の例で、AZ ごとにルートテーブルと NAT が 1 対 1 に対応しています）。
-
-```text
-<cluster>-private-<region>a	nat-0ea8dxxxxxxxxxxxx
-<cluster>-private-<region>b	nat-09c50xxxxxxxxxxxx
+```bash
+% which k
+k: aliased to kubectl --context "$CONTEXT" --namespace "$NAMESPACE"
 ```
 
-`<cluster>-private` という AZ 名の付かない行が 1 つだけ返り、NAT も 1 つしか出ない場合は単一 NAT の構成です。`single_nat_gateway` / `one_nat_gateway_per_az` の値を確認してください。
+これで `k get po` は「`$CONTEXT` クラスタの `$NAMESPACE` namespace の Pod」を対象にします。
+
+```bash
+k get nodes
+
+# インスタンスタイプまで見たい場合
+k get nodes -o custom-columns='NAME:.metadata.name,TYPE:.metadata.labels.node\.kubernetes\.io/instance-type,ROLE:.metadata.labels.node-role,CAP:.metadata.labels.karpenter\.sh/capacity-type'
+```
+
+`k get nodes` で m5 系のノードが 2 台 `Ready` 状態で表示されれば、System ノードグループの起動は成功です。（`k get nodes` は namespace に依存しないリソースなので `--namespace` は無視されます。）
 
 :::message alert
 `kubectl` が `Unauthorized`（`error: You must be logged in to the server`）で弾かれる場合、原因はほぼ 2 つです。1 つ目は、`terraform apply` を実行したプリンシパルと `kubectl` を実行するプリンシパルが食い違っているケースです。`enable_cluster_creator_admin_permissions = true` はクラスタを作成したプリンシパルにだけ管理者権限を与えるため、`apply` を名前付き profile（AWS SSO や assume-role）で実行したのに `update-kubeconfig` を素の `[default]` で叩くと、両者が別プリンシパルになり弾かれます。`aws sts get-caller-identity` で両者のプリンシパルを確認します。assume-role の場合はセッション名部分が違っていても問題なく、`assumed-role/<ロール名>` までが一致していれば認証は通ります（アクセスエントリは基底の IAM ロール ARN 単位でマッチするためです）。一致していなければ `update-kubeconfig` に `apply` と同じ `--profile` を渡す（または `export AWS_PROFILE`）と解消します。自分のロールが登録済みかは `aws eks list-access-entries --cluster-name <name>` でも確認できます。2 つ目は、`apply` 直後にアクセスエントリがまだ認証レイヤに伝播していないケースで、この場合は 1〜2 分待って再実行すれば通ります。
@@ -296,24 +300,33 @@ aws ec2 describe-route-tables --region $REGION \
 
 ## 4. 作業用の namespace を作る
 
-この book のワークショップ（Basic02 以降）では、学習 Job や推論サーバーなどのワークロードを `default` ではなく専用の namespace に作ります。あとで「この namespace ごと消せば実験の後片付けが済む」ようにするためです。本 book では作業用 namespace を `distai` に統一して進めます。
+この book のワークショップでは、学習 Job や推論サーバーなどのワークロードを `default` ではなく専用の namespace に作ります。あとで「この namespace ごと消せば実験の後片付けが済む」ようにするためです。本 book では作業用 namespace を `distai` に統一して進めます。
 
-以降の各章のコマンドはこの `NAMESPACE` 変数を前提にしているので、ターミナルを開き直したら都度この 2 行を実行してください。`kubectl create namespace` を `--dry-run` 経由の `apply` にしているのは、すでに存在していてもエラーにならないようにするため（冪等）です。
+namespace の作成は `--dry-run` 経由の `apply` にしています。すでに存在していてもエラーにならないようにするためです。`NAMESPACE` は step 3 で export 済みの前提です。`
 
 ```bash
-export NAMESPACE=distai
-kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+kubectl --context "$CONTEXT" create namespace "$NAMESPACE" \
+  --dry-run=client -o yaml | kubectl --context "$CONTEXT" apply -f -
 ```
 
 `namespace/distai created`（初回）または `namespace/distai unchanged`（2 回目以降）と表示されれば準備完了です。本 book では最後まで同じ `distai` を使います。
 
 ## 5. context を確認する習慣をつける
 
+`k` エイリアスは `--context "$CONTEXT"` を明示するので、kubeconfig の current-context が別クラスタを向いていても `k` は常に distai を対象にします。それでも、素の `kubectl` を使う場面や `$CONTEXT` の設定漏れに備えて、操作前に対象を確認する習慣をつけておきます。
+
 ```bash
+# エイリアスが向いている先（環境変数）
+echo "CONTEXT=$CONTEXT NAMESPACE=$NAMESPACE"
+
+# kubeconfig の current-context
 kubectl config current-context
+
+# 実際に k がどのクラスタの API を叩くか
+k config view --minify -o 'jsonpath={.clusters[0].cluster.server}{"\n"}'
 ```
 
-今の時点では地味に見えますが、操作対象のクラスタやリソースが増える後続の章で事故を防ぐための習慣として、ここで身につけておきます。マルチクラスタ環境では、別クラスタ用に context を切り替えたまま元のつもりで操作してしまう事故が起きやすいため、破壊的な操作の前には必ずこのコマンドで対象クラスタを確認します。
+操作対象のクラスタやリソースが増える後続の章では、context を切り替えたまま元のつもりで操作してしまう事故が起きやすいため、破壊的な操作の前には必ず対象クラスタを確認します。
 
 ## 6. (任意) スモークテストで動作確認する
 
@@ -349,35 +362,7 @@ PASS: 7  FAIL: 0  SKIP: 0  TOTAL: 7
 
 全 PASS であれば、Karpenter・CSI ドライバ・Kubeflow Trainer・共有ストレージが正常に機能しており、Basic02 以降のワークショップに進む準備ができています。`device-plugins` は GPU/EFA/Neuron の device plugin の DaemonSet を見る項目で、該当プールが無い段階では対象が存在しないため「該当なし」として PASS します。
 
-GPU テストは Basic04 でアクセラレータプールを定義した後に実行できます。
-
-```bash
-# Karpenter が GPU ノードを起動するため 5-10 分かかります
-./run-tests.sh --with-gpu --profile $PROFILE --gpu-count 1
-```
-
-```text
-==============================
- Test Summary
-==============================
-STATUS   TEST                                DETAIL
---------------------------------------------------------------
-PASS     control-plane                       3s
-PASS     system-nodes                        4s
-PASS     karpenter                           7s
-PASS     trainer                             4s
-PASS     csi-drivers                         28s
-PASS     device-plugins                      11s
-PASS     storage-mount                       43s
-PASS     gpu-node-launch+nvidia-smi          86s
-PASS     nvidia-smi-check                    2s
-PASS     cuda-vector-add                     17s
-PASS     gpu-fsx-mount                       12s
---------------------------------------------------------------
-PASS: 11  FAIL: 0  SKIP: 0  TOTAL: 11
-```
-
-対象の NodePool は cpu 以外の NodePool から自動選択されます（`--gpu-nodepool` で明示指定も可能）。`--gpu-count` には検証したい GPU 枚数を渡します（g6.2xlarge なら 1、g6e.12xlarge なら 4、p4d.24xlarge なら 8）。GPU テストで ICE（InsufficientInstanceCapacity）により起動できない場合は AWS 側のキャパシティ問題であり、インフラの不具合ではありません。
+GPU ノードを起動して行う GPU スモークテストは、アクセラレータプールを定義する Basic04 で扱います。
 
 # まとめ
 
