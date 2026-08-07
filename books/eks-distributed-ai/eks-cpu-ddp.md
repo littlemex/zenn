@@ -192,7 +192,7 @@ helm template exp charts/experiments -n distai \
     --set trainjobTrain.nodeRole=cpu \
     --set trainjobTrain.numNodes=2 \
     --set trainjobTrain.nprocPerNode=1 \
-    --set trainjobTrain.totalEpochs=20 \
+    --set trainjobTrain.totalEpochs=10 \
     --set sharedStorage.existingClaimName=shared-claim \
     | k apply -f -
 ```
@@ -228,14 +228,14 @@ k logs -f --tail=-1 -l "$SEL"
 [rank 0/2] downloading MNIST to /shared/mnist-data
 [rank 0/2] starting training: 20 epochs, batch_size 32
 [rank 0/2] epoch 0 | steps 938 | loss 0.5312
-[rank 0/2] epoch 0 | snapshot saved to /shared/output/trainjob/snapshot.pt
+[rank 0/2] epoch 0 | snapshot saved to /shared/output/trainjob-cpu/snapshot.pt
 [rank 0/2] epoch 1 | steps 938 | loss 0.2287
-[rank 0/2] epoch 1 | snapshot saved to /shared/output/trainjob/snapshot.pt
+[rank 0/2] epoch 1 | snapshot saved to /shared/output/trainjob-cpu/snapshot.pt
 ...
 [rank 0/2] epoch 18 | steps 938 | loss 0.0361
-[rank 0/2] epoch 18 | snapshot saved to /shared/output/trainjob/snapshot.pt
+[rank 0/2] epoch 18 | snapshot saved to /shared/output/trainjob-cpu/snapshot.pt
 [rank 0/2] epoch 19 | steps 938 | loss 0.0332
-[rank 0/2] epoch 19 | snapshot saved to /shared/output/trainjob/snapshot.pt
+[rank 0/2] epoch 19 | snapshot saved to /shared/output/trainjob-cpu/snapshot.pt
 [rank 0/2] done
 ```
 
@@ -259,14 +259,14 @@ k logs --tail=-1 -l "jobset.sigs.k8s.io/jobset-name=ddp-trainjob,batch.kubernete
 [rank 1/2] done
 ```
 
-`WORLD_SIZE=2` の 2 プロセスが別々のノードで起動し、両 rank の loss がエポックを追って単調に下がっていることから、2 つのノードが勾配を all-reduce しながら 1 つのモデルを学習できていることが分かります（各 rank はデータセットの異なる分割を担当するので、loss は完全に同一ではなく近い値で推移します）。最後に TrainJob が `Complete` になり、rank 0 がスナップショットを共有ストレージ上の `/shared/output/trainjob/snapshot.pt` に保存します。
+`WORLD_SIZE=2` の 2 プロセスが別々のノードで起動し、両 rank の loss がエポックを追って単調に下がっていることから、2 つのノードが勾配を all-reduce しながら 1 つのモデルを学習できていることが分かります（各 rank はデータセットの異なる分割を担当するので、loss は完全に同一ではなく近い値で推移します）。最後に TrainJob が `Complete` になり、rank 0 がスナップショットを共有ストレージ上の `/shared/output/trainjob-cpu/snapshot.pt` に保存します。
 
 ログを追い損ねても、TrainJob が `Complete` になったことと、共有ストレージ上のスナップショットで完了を確認できます。`kubectl wait` の `--for=condition=Complete` が完了を待つ確実な方法です。
 
 ```bash
 k wait --for=condition=Complete trainjob/ddp-trainjob --timeout=30m
 k run peek --rm -it --restart=Never --image=busybox:1.36 \
-  --overrides='{"apiVersion":"v1","spec":{"containers":[{"name":"peek","image":"busybox:1.36","command":["ls","-lh","/shared/output/trainjob"],"volumeMounts":[{"name":"s","mountPath":"/shared"}]}],"volumes":[{"name":"s","persistentVolumeClaim":{"claimName":"shared-claim"}}]}}'
+  --overrides='{"apiVersion":"v1","spec":{"containers":[{"name":"peek","image":"busybox:1.36","command":["ls","-lh","/shared/output/trainjob-cpu"],"volumeMounts":[{"name":"s","mountPath":"/shared"}]}],"volumes":[{"name":"s","persistentVolumeClaim":{"claimName":"shared-claim"}}]}}'
 ```
 
 `wait` が返り、`snapshot.pt` があれば、2 ノードの分散学習は完走しています。確認できたら削除します。
