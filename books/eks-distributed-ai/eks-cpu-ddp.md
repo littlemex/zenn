@@ -26,9 +26,7 @@ free: true
 
 本章では gloo backend を使い、CPU ノードの上で DDP を動かします。学習対象は、分散学習の教材として広く使われる MNIST を分類する小さな MLP です。モデルもデータも小さいので、GPU なしの CPU でも 1 周が数分で終わり、学習内容そのものより「複数プロセスが勾配を共有して 1 つのモデルを学習する」という DDP の挙動に集中できます。
 
-本章では、学習スクリプト [`ddp.py`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/manifests/ddp-sample/ddp.py) を Kubeflow Trainer v2 の TrainJob で複数ノードにまたがって動かします。
-
-DDP の各プロセスは `torchrun` が起動します。`torchrun --standalone --nproc_per_node=2` のように使うと、1 ノード内に複数のプロセス（rank 0, rank 1, ...）を立て、それぞれに `RANK` / `WORLD_SIZE` / `LOCAL_RANK` などの環境変数を自動で設定してくれます。単一ノードで完結するならこれを素の `batch/v1` Job で実行するだけで済みますが、分散学習を複数ノードに広げると「どのノードの誰が rank 0 で、情報連携の集合点（rendezvous）はどこか」を各ノードに教える仕組みが要ります。
+学習スクリプトは [`ddp.py`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/manifests/ddp-sample/ddp.py) の 1 本で、DDP の各プロセスは `torchrun` が起動します。`torchrun --standalone --nproc_per_node=2` のように使うと、1 ノード内に複数のプロセス（rank 0, rank 1, ...）を立て、それぞれに `RANK` / `WORLD_SIZE` / `LOCAL_RANK` などの環境変数を自動で設定してくれます。単一ノードで完結するならこれを素の `batch/v1` Job で実行するだけで済みますが、分散学習を複数ノードに広げると「どのノードの誰が rank 0 で、情報連携の集合点（rendezvous）はどこか」を各ノードに教える仕組みが要ります。
 
 Kubernetes 上でこれを宣言的に扱う標準が、Kubeflow Trainer v2 が提供する TrainJob（`trainer.kubeflow.org/v1alpha1`）です。ノード数を宣言すれば、Trainer が内部で JobSet を展開して各ノードの Pod を並べ、`torchrun` に渡す集合点の情報を各 Pod に注入してくれます（`numNodes=1` にすれば単一ノードでも動くため、単一ノードから複数ノードまで同じ仕組みで扱えます）。
 
@@ -67,7 +65,7 @@ TrainJob 側は台数（`numNodes`）とノードあたりのプロセス数（`
 
 この PV を掴む PersistentVolumeClaim（`shared-claim`）は、Helm チャートは作りません。読者が `kubectl apply` で 1 回だけ作り、その名前を `--set sharedStorage.existingClaimName=shared-claim` で各ワークロードに渡します。なぜチャートに作らせないのかは、この後の「共有 PVC を用意する」ステップと、章末の「共有 PVC を消してみる」ステップで実際に手を動かしながら説明します。要点だけ先に言うと、静的 PV は同時に 1 つの PVC としか結びつきません。PVC の生成をワークロードのレンダリングに乗せると、PVC の寿命がその都度の `apply`/`delete` に引きずられてしまい、PV 側の寿命（Terraform が管理する、基盤が続く限り存在するもの）とズレてしまいます。PVC の作成を「基盤を用意する」タイミングに切り離し、以降は何度ワークロードを消して作り直しても同じ PVC を使い続けられるようにするのが、ここで一度だけ手動で作る理由です。
 
-複数ノードの TrainJob では、スナップショットの保存は rank 0 が担当します。そのため、どのノードから書かれても同じ場所に成果物が集まる共有ストレージ（ReadWriteMany）が要ります。共有ファイルシステム上での同時書き込みによる破損を避けるため、`ddp.py` はスナップショットの書き込みを rank 0 だけが行います。MNIST のダウンロードは全 rank が実行します（既にファイルが揃っていれば torchvision 側が再取得をスキップします）。
+複数ノードの TrainJob では、各 rank が別ノードの別 Pod で動き、同じデータセット置き場を読み、rank 0 が成果物を書きます。rank 0 がどのノードに配置されても同じ場所に成果物が集まるよう、全ノードから同一パスを読み書きできる共有ストレージ（ReadWriteMany）が要ります。共有ファイルシステム上での同時書き込みによる破損を避けるため、スナップショットの書き込みは rank 0 だけが行います。MNIST のダウンロードは全 rank が実行します（`download=True` は冪等で、既にファイルが揃っていれば torchvision 側が再取得をスキップします）。
 
 保存先は Helm の `sharedStorage.backend` で切り替えられます。既定の `openzfs` のほかに、`fsx`（FSx for Lustre）、リージョン規模のマルチ AZ 共有が要るときは `efs` を選べます。3 つのバックエンドはいずれも Terraform 側で静的 PV が用意される設計で、選んだバックエンドの `var.<x>_enabled` が有効になっている必要があります。既定で `openzfs` と `fsx` は有効、`efs` は無効（ドライバのみ常設）です。
 
@@ -120,7 +118,7 @@ IMAGE=${ECR_URL}:v1
 k delete job build-ddp-sample-v1 -n image-builder --ignore-not-found
 
 # クラスタ内で BuildKit ビルド Job を起動
-helm template exp charts/experiments -n "$NAMESPACE" \
+helm template exp charts/experiments -n distai \
     --set imageBuild.enabled=true \
     --set imageBuild.repository="$ECR_URL" \
     --set imageBuild.tag=v1 \
@@ -171,7 +169,7 @@ k get pvc shared-claim
 `STATUS` が `Bound` になれば準備完了です。このマニフェスト（`manifests/shared-pvc.yaml`）は名前空間ごとに 1 回だけ適用するもので、以降の各ステップで `--set sharedStorage.existingClaimName=shared-claim` としてこの PVC の名前を渡します。
 
 :::message
-なぜチャートが PVC を自動生成しないのか、実際に手を動かして確かめてみましょう。ワークロードの Job/TrainJob を作り直すたびに PVC も一緒に作り直す設計だったらどうなるか、というのを本章の最後の「共有 PVC を消してみる」ステップで体験します。先に結論だけ言うと、PV は PVC を「名前」ではなく「オブジェクトの実体（UID）」で覚えるため、同じ名前で PVC を作り直しても新しい実体とみなされ、二度と bind できなくなります（`Released` という状態で止まります）。PVC の生成をワークロードの `apply`/`delete` から切り離し、基盤を用意するこのステップで 1 回だけ作ることで、この事故を避けています。
+なぜチャートが PVC を自動生成しないのか、実際に手を動かして確かめてみましょう。ワークロードの Job/TrainJob を作り直すたびに PVC も一緒に作り直す設計だったらどうなるか、というのを本章の最後の「共有 PVC を消してみる」ステップで体験します。先に結論だけ言うと、PV は PVC を「名前」ではなく「オブジェクトの実体（UID）」で覚えるため、同じ名前で PVC を作り直しても新しい実体とみなされ、そのままでは bind されません（`Released` という状態で止まります。復旧手順は章末で扱います）。PVC の生成をワークロードの `apply`/`delete` から切り離し、基盤を用意するこのステップで 1 回だけ作ることで、この事故を避けています。
 :::
 
 ## 4. 複数ノードで TrainJob を動かす
@@ -188,12 +186,13 @@ k get pvc shared-claim
 # 作り直すときは先に削除する（初回は存在しなくても --ignore-not-found で安全）。
 k delete trainjob ddp-trainjob --ignore-not-found
 
-helm template exp charts/experiments -n "$NAMESPACE" \
+helm template exp charts/experiments -n distai \
     --set trainjobTrain.enabled=true \
     --set trainjobTrain.image="$IMAGE" \
     --set trainjobTrain.nodeRole=cpu \
     --set trainjobTrain.numNodes=2 \
     --set trainjobTrain.nprocPerNode=1 \
+    --set trainjobTrain.totalEpochs=20 \
     --set sharedStorage.existingClaimName=shared-claim \
     | k apply -f -
 ```
@@ -210,35 +209,40 @@ k get pods -o wide -l jobset.sigs.k8s.io/jobset-name=ddp-trainjob
 k get trainjob ddp-trainjob -w
 ```
 
-rank 0 が載る Pod のログを追います。Pod 名は末尾のランダム文字が変わるので、決め打ちせずラベルで選びます。rank 0 は JobSet の completion index 0 なので、`batch.kubernetes.io/job-completion-index=0` と jobset 名の 2 つのラベルで一意に選べます（この Pod ラベルは Kubernetes 1.28 以降で既定有効です）。ログは Pod が `Running` の間に追います。`logs -f job/<名前>` の形式は完了後に走行中 Pod を解決できず `timed out waiting for the condition` になり、ラベルセレクタ形式でも `kubectl delete` 後は Pod が消えてログを取れなくなるためです（完了 Pod は Job/TrainJob を消すまで残ります。この学習ジョブには `ttlSecondsAfterFinished` を設定していません）。
+rank 0 が載る Pod のログを追います。Pod 名は末尾のランダム文字が変わるので、決め打ちせずラベルで選びます。rank 0 は JobSet の completion index 0 なので、`batch.kubernetes.io/job-completion-index=0` と jobset 名の 2 つのラベルで一意に選べます（この Pod ラベルは Kubernetes 1.28 以降で既定有効です）。そもそも TrainJob が展開する子 Job の名前は `ddp-trainjob-node` で、`ddp-trainjob` という名前の Job は無いため `logs job/ddp-trainjob` は該当なしになります。複数ある Pod のどれを見るかを確実に選ぶにはラベルセレクタが向いています。ログは Pod が存在する間に取ります（完了 Pod は Job/TrainJob を消すまで残るので完了後でも取れますが、`k delete` で消した後は取れません。この学習ジョブには `ttlSecondsAfterFinished` を設定していないので、消すまで自動回収はされません）。
 
 ```bash
 SEL="jobset.sigs.k8s.io/jobset-name=ddp-trainjob,batch.kubernetes.io/job-completion-index=0"
 k wait --for=condition=ready pod -l "$SEL" --timeout=15m
-k logs -f -l "$SEL"
+k logs -f --tail=-1 -l "$SEL"
 ```
+
+`k wait` は対象の Pod がまだ 1 つも作られていないと待たずに `no matching resources found` で即失敗します。上の `k get pods` / `k get trainjob -w` で Pod が作られたのを見てから実行してください（学習がごく短時間で完走済みだと Ready を待てず timeout することもあります。その場合は次の完了確認に進みます）。
 
 単一ノードの `torchrun`（1 Pod 内で複数プロセス）ならログは 1 つのストリームに合流しますが、TrainJob では `node-0-0` と `node-0-1` が別々の Pod・別々のノードで動く独立したプロセスなので、`kubectl logs` も Pod ごとに別々に取ります。`node-0-0` では rank 0 が gloo backend で起動します。スナップショットの保存は rank 0 が担当するため、その行は `node-0-0` 側にのみ現れます。
 
-`downloading MNIST to /shared/mnist-data` の行は rank 0 と rank 1 の両方に出ます。`ddp.py` が全 rank から無条件に `download=True` を渡す実装になっているためです。初回はここで実際に共有ストレージ上の `/shared/mnist-data` に落ち、2 回目以降は torchvision 側が既にファイルが揃っていれば再取得をスキップするので、この行は「確認しただけ」を意味します。
+`downloading MNIST to /shared/mnist-data` の行は rank 0 と rank 1 の両方に出ます。`ddp.py` が全 rank から無条件に `download=True` を渡す実装になっているためです（rank 0 だけがダウンロードして他 rank を `dist.barrier()` で待たせる定石もありますが、ダウンロードが分散初期化のタイムアウトを超えるとデッドロックするため、`ddp.py` は全 rank ダウンロードを選んでいます）。初回はここで実際に共有ストレージ上の `/shared/mnist-data` に落ち、2 回目以降は torchvision 側が既にファイルが揃っていれば再取得をスキップするので、この行は「確認しただけ」を意味します。共有パスへ複数 rank がほぼ同時に初回ダウンロードするため、ごくまれにタイミング依存でダウンロードが失敗することがあります。その場合は TrainJob を作り直せば、多くはデータが揃った状態から先へ進みます。
 
 ```
 [rank 0/2] backend=gloo cuda_available=False device_count=0
 [rank 0/2] downloading MNIST to /shared/mnist-data
-[rank 0/2] starting training: 3 epochs, batch_size 32
+[rank 0/2] starting training: 20 epochs, batch_size 32
 [rank 0/2] epoch 0 | steps 938 | loss 0.5312
 [rank 0/2] epoch 0 | snapshot saved to /shared/output/trainjob/snapshot.pt
 [rank 0/2] epoch 1 | steps 938 | loss 0.2287
 [rank 0/2] epoch 1 | snapshot saved to /shared/output/trainjob/snapshot.pt
-[rank 0/2] epoch 2 | steps 938 | loss 0.1614
-[rank 0/2] epoch 2 | snapshot saved to /shared/output/trainjob/snapshot.pt
+...
+[rank 0/2] epoch 18 | steps 938 | loss 0.0361
+[rank 0/2] epoch 18 | snapshot saved to /shared/output/trainjob/snapshot.pt
+[rank 0/2] epoch 19 | steps 938 | loss 0.0332
+[rank 0/2] epoch 19 | snapshot saved to /shared/output/trainjob/snapshot.pt
 [rank 0/2] done
 ```
 
 もう一方の rank 1（completion index 1）のログも見てみます。
 
 ```bash
-k logs -l "jobset.sigs.k8s.io/jobset-name=ddp-trainjob,batch.kubernetes.io/job-completion-index=1"
+k logs --tail=-1 -l "jobset.sigs.k8s.io/jobset-name=ddp-trainjob,batch.kubernetes.io/job-completion-index=1"
 ```
 
 `node-0-1` では rank 1 が同じく gloo backend で起動し、各エポックの loss を出して最後に `done` で終わります。ダウンロードの行は rank 1 側にも出ますが、スナップショット保存の行は rank 0 側にしか出ません。
@@ -246,10 +250,12 @@ k logs -l "jobset.sigs.k8s.io/jobset-name=ddp-trainjob,batch.kubernetes.io/job-c
 ```
 [rank 1/2] backend=gloo cuda_available=False device_count=0
 [rank 1/2] downloading MNIST to /shared/mnist-data
-[rank 1/2] starting training: 3 epochs, batch_size 32
+[rank 1/2] starting training: 20 epochs, batch_size 32
 [rank 1/2] epoch 0 | steps 938 | loss 0.5289
 [rank 1/2] epoch 1 | steps 938 | loss 0.2301
-[rank 1/2] epoch 2 | steps 938 | loss 0.1627
+...
+[rank 1/2] epoch 18 | steps 938 | loss 0.0357
+[rank 1/2] epoch 19 | steps 938 | loss 0.0339
 [rank 1/2] done
 ```
 
