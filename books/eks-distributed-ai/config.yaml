@@ -1,4 +1,4 @@
-title: "Amazon EKS で始める分散 AI 基盤"
+title: "Amazon EKS Distributed AI ワークショップ"
 summary: "Terraform + Karpenter で GPU/Neuron アクセラレータを動的にプロビジョニングする Amazon EKS クラスタの構築・運用ガイド"
 topics: ["EKS", "Terraform", "Karpenter", "GPU", "DistributedAI"]
 published: false
