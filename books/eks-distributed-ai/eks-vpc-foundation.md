@@ -258,32 +258,25 @@ terraform apply
 # 自分の環境に合わせて設定してください
 export REGION=xxx
 export PROFILE=xxx
-export NAMESPACE=distai
 
-# ご自身が設定したクラスター名など
-export CONTEXT=distai-eks-ws
-
+# --alias で kubeconfig の context 名を短い固定名（ここでは ws）にします。
+# これを付けないと context 名がクラスタ ARN 全体になり、毎回打つのが長くなります。
 # terraform.tfvars に aws_profile を設定した場合は、同じ profile をここでも渡します
 # （または事前に export AWS_PROFILE=<name>）。素の [default] で認証している場合は
 # --profile を省略します。
-# --alias で kubeconfig の context 名を短い固定名（ここでは distai）にします。
-# これを付けないと context 名がクラスタ ARN 全体になり、毎回打つのが長くなります。
 aws eks update-kubeconfig --name "$(terraform output -raw cluster_name)" \
-  --region $REGION --profile $PROFILE --alias $CONTEXT
+  --region $REGION --profile $PROFILE --alias ws
 ```
 
-続いて、以降のコマンドが常にこのクラスタと作業用 namespace に向くよう、context と namespace を環境変数に固定し、`k` エイリアスを定義します。`kubectl` 自体は context を環境変数から読まないので、エイリアス側で `--context "$CONTEXT"` を明示的に渡すのがポイントです。
+続いて、以降のコマンドが常にこのクラスタと作業用 namespace に向くよう、current-context をこのクラスタに切り替え、その context の既定 namespace を `distai` にします。こうしておくと、`--context` も `-n` も付けずに、常にこのクラスタの `distai` namespace を対象にできます。あわせて、以降は打鍵を減らすため `kubectl` を `k` と打てるようにエイリアスを張っておきます（context も namespace も kubeconfig 側に設定済みなので、エイリアスには何も埋め込みません）。
 
 ```bash
-alias k='kubectl --context "$CONTEXT" --namespace "$NAMESPACE"'
+kubectl config use-context ws
+kubectl config set-context --current --namespace=distai
+alias k=kubectl
 ```
 
-```bash
-% which k
-k: aliased to kubectl --context "$CONTEXT" --namespace "$NAMESPACE"
-```
-
-これで `k get po` は「`$CONTEXT` クラスタの `$NAMESPACE` namespace の Pod」を対象にします。
+これで `k get po` は「ws クラスタの distai namespace の Pod」を対象にします（別の namespace を見たいときだけ `-n <name>` を明示します）。
 
 ```bash
 k get nodes
@@ -292,7 +285,7 @@ k get nodes
 k get nodes -o custom-columns='NAME:.metadata.name,TYPE:.metadata.labels.node\.kubernetes\.io/instance-type,ROLE:.metadata.labels.node-role,CAP:.metadata.labels.karpenter\.sh/capacity-type'
 ```
 
-`k get nodes` で m5 系のノードが 2 台 `Ready` 状態で表示されれば、System ノードグループの起動は成功です。（`k get nodes` は namespace に依存しないリソースなので `--namespace` は無視されます。）
+`k get nodes` で m5 系のノードが 2 台 `Ready` 状態で表示されれば、System ノードグループの起動は成功です。
 
 :::message alert
 `kubectl` が `Unauthorized`（`error: You must be logged in to the server`）で弾かれる場合、原因はほぼ 2 つです。1 つ目は、`terraform apply` を実行したプリンシパルと `kubectl` を実行するプリンシパルが食い違っているケースです。`enable_cluster_creator_admin_permissions = true` はクラスタを作成したプリンシパルにだけ管理者権限を与えるため、`apply` を名前付き profile（AWS SSO や assume-role）で実行したのに `update-kubeconfig` を素の `[default]` で叩くと、両者が別プリンシパルになり弾かれます。`aws sts get-caller-identity` で両者のプリンシパルを確認します。assume-role の場合はセッション名部分が違っていても問題なく、`assumed-role/<ロール名>` までが一致していれば認証は通ります（アクセスエントリは基底の IAM ロール ARN 単位でマッチするためです）。一致していなければ `update-kubeconfig` に `apply` と同じ `--profile` を渡す（または `export AWS_PROFILE`）と解消します。自分のロールが登録済みかは `aws eks list-access-entries --cluster-name <name>` でも確認できます。2 つ目は、`apply` 直後にアクセスエントリがまだ認証レイヤに伝播していないケースで、この場合は 1〜2 分待って再実行すれば通ります。
@@ -302,31 +295,27 @@ k get nodes -o custom-columns='NAME:.metadata.name,TYPE:.metadata.labels.node\.k
 
 この book のワークショップでは、学習 Job や推論サーバーなどのワークロードを `default` ではなく専用の namespace に作ります。あとで「この namespace ごと消せば実験の後片付けが済む」ようにするためです。本 book では作業用 namespace を `distai` に統一して進めます。
 
-namespace の作成は `--dry-run` 経由の `apply` にしています。すでに存在していてもエラーにならないようにするためです。`NAMESPACE` は step 3 で export 済みの前提です。`
+namespace の作成は `--dry-run` 経由の `apply` にしています。すでに存在していてもエラーにならないようにするためです。step 3 で既定 namespace を `distai` にしたので、ここで作る namespace 名も `distai` で揃えます。
 
 ```bash
-kubectl --context "$CONTEXT" create namespace "$NAMESPACE" \
-  --dry-run=client -o yaml | kubectl --context "$CONTEXT" apply -f -
+k create namespace distai --dry-run=client -o yaml | k apply -f -
 ```
 
 `namespace/distai created`（初回）または `namespace/distai unchanged`（2 回目以降）と表示されれば準備完了です。本 book では最後まで同じ `distai` を使います。
 
 ## 5. context を確認する習慣をつける
 
-`k` エイリアスは `--context "$CONTEXT"` を明示するので、kubeconfig の current-context が別クラスタを向いていても `k` は常に distai を対象にします。それでも、素の `kubectl` を使う場面や `$CONTEXT` の設定漏れに備えて、操作前に対象を確認する習慣をつけておきます。
+step 3 で current-context を切り替えたので、以降の `k`（`kubectl`）はすべてこのクラスタの `distai` namespace を対象にします。操作対象のクラスタやリソースが増える後続の章では、current-context を切り替えたまま元のつもりで操作してしまう事故が起きやすいため、破壊的な操作の前には現在の向き先を確認する習慣をつけておきます。
 
 ```bash
-# エイリアスが向いている先（環境変数）
-echo "CONTEXT=$CONTEXT NAMESPACE=$NAMESPACE"
+# 現在の current-context（=どのクラスタを向いているか）
+k config current-context
 
-# kubeconfig の current-context
-kubectl config current-context
-
-# 実際に k がどのクラスタの API を叩くか
-k config view --minify -o 'jsonpath={.clusters[0].cluster.server}{"\n"}'
+# その context の既定 namespace と、叩きに行く API サーバー
+k config view --minify -o 'jsonpath={.contexts[0].context.namespace} @ {.clusters[0].cluster.server}{"\n"}'
 ```
 
-操作対象のクラスタやリソースが増える後続の章では、context を切り替えたまま元のつもりで操作してしまう事故が起きやすいため、破壊的な操作の前には必ず対象クラスタを確認します。
+別のクラスタに切り替えたくなったら `k config use-context <名前>` で戻せます。
 
 ## 6. (任意) スモークテストで動作確認する
 
