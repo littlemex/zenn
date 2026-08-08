@@ -121,14 +121,15 @@ ITYPE=p5.48xlarge    # そのプールの instance_types に合わせる
 
 ## 2. GDRCopy が無い状態を確認する
 
-まず現状で `/dev/gdrdrv` が無いことを確認する。この時点ではまだノードが 1 台も起動していないので、手順 3 で GPU Pod を起こしてから中を覗く。ここでは代わりに、Terraform 側の設定が既定の `off`（GDRCopy を入れない）であることを確認しておく。
+まず現状で GDRCopy が入っていないことを確認する。この時点ではまだノードが 1 台も起動していないので、`/dev/gdrdrv` はノードに出て行って確認する段階ではない。代わりに、GDRCopy の導入方式を決める `gdrcopy_mode` が既定の `off` であること（`gdrdrv-loader` の DaemonSet が存在しないこと）を確認する。`gdrcopy_mode` は入力変数なので `terraform output` には出ない。現在値は `terraform console` で引くか、`accelerator-pools.auto.tfvars` に書いていないこと（＝既定の `off`）で確認する。
 
 ```bash
-cd infra/eks
-terraform output -raw gdrcopy_mode 2>/dev/null || echo "gdrcopy_mode is unset (= off)"
+cd "$(git rev-parse --show-toplevel)"/infra/eks
+echo 'var.gdrcopy_mode' | terraform console   # "off" と表示されれば既定のまま
+k get ds -n kube-system gdrdrv-loader 2>/dev/null || echo "no gdrdrv-loader (= off)"
 ```
 
-`off` または未設定であれば、ノードには `gdrdrv` が載らず、NCCL は Basic06 で見た `Failed to open gdr handle` を出す状態である。
+`off` で `gdrdrv-loader` が無ければ、ノードには `gdrdrv` が載らず、NCCL は Basic06 で見た `Failed to open gdr handle` を出す状態である。
 
 ## 3. gdrcopy_mode を有効にしてノードを起こす
 
@@ -174,6 +175,7 @@ k get nodes -l node-role=$POOL
 2 台が `Ready` になったら、`gdrcopy_mode` を有効にして `gdrdrv` を載せる。本番運用の推奨は `userdata` だが、それはノードの再作成でしか反映されない。ここでは起動済みの 2 ノードにその場で載せるため `daemonset` を `-var` の一時上書きで指定する。
 
 ```bash
+cd "$(git rev-parse --show-toplevel)"/infra/eks
 terraform apply -var gdrcopy_mode=daemonset
 ```
 
@@ -223,7 +225,7 @@ k wait --for=condition=ready pod/gdrcopy-probe -n "$NAMESPACE" --timeout=10m
 k exec gdrcopy-probe -n "$NAMESPACE" -- copylat
 ```
 
-`image` は Basic06 の NCCL 測定で使った DLC に読み替える（レジストリのアカウント ID は同じで、リージョンとタグのバージョンサフィックスは自分の環境に合わせる。ここでは `copylat` を実行できればよいので、`pytorch-training` 系であればタグの細部は問わない）。GDRCopy をマウントするため `privileged: true` を与えている点に注意する。実機出力は次のとおり。
+`image` は Basic06 の NCCL 測定で使った DLC に読み替える（レジストリのアカウント ID は同じで、リージョンとタグのバージョンサフィックスは自分の環境に合わせる。ここでは `copylat` を実行できればよいので、`pytorch-training` 系であればタグの細部は問わない）。`hostPath` でマウントしたキャラクタデバイス `/dev/gdrdrv` にコンテナ内からアクセスするため `privileged: true` を与えている点に注意する。実機出力は次のとおり。
 
 ```text
 Test                    Size(B)   Avg.Time(us)
@@ -239,7 +241,15 @@ gdr_copy_to_mapping        8192       0.7943
 
 ## 5. マルチノード通信でレイテンシを測る
 
-GDRCopy が効くとすれば、小さいメッセージの受信コピーである。そこで小メッセージ中心の 2 ノード間 point-to-point レイテンシと all-reduce レイテンシを、`gdrdrv` をロードした状態（GDRCopy 有効）とアンロードした状態（無効）で測って並べる。各サイズについて 50 回の往復を 1 試行とし、20 試行の中央値をとり、往復時間の半分を片道レイテンシとした。測定は各条件で Pod を作り直して行う。無効状態は `gdrdrv` をアンロードして作るが、その手順と注意点（Pod の削除、DaemonSet の停止、特権の要件）は手順 7 にまとめてある。
+GDRCopy が効くとすれば、小さいメッセージの受信コピーである。そこで小メッセージ中心の 2 ノード間 point-to-point レイテンシと all-reduce レイテンシを、`gdrdrv` をロードした状態（GDRCopy 有効）とアンロードした状態（無効）で測って並べる。
+
+測定に入る前に、手順 3 で立てた warmup Pod を消して GPU を空ける。占有したままだと測定 Pod がスケジュールされない。
+
+```bash
+k delete pod -l app=warmup -n "$NAMESPACE"
+```
+
+測定は 2 ノード 16 GPU の NCCL 通信で行う。torchrun で `torch.distributed` の point-to-point（`isend`/`irecv` の ping-pong）と `all_reduce` を回し、各サイズについて 50 回の往復を 1 試行として 20 試行の中央値をとり、往復時間の半分を片道レイテンシとした。GDRCopy 有効の状態でひととおり測ったあと、`gdrdrv` をアンロードして無効の状態を作り、同じ測定を繰り返す。アンロードの手順と注意点（Pod の削除、DaemonSet の停止、特権の要件）は手順 7 にまとめてある。無効状態では `/dev/gdrdrv` が消えるので、測定 Pod は `/dev/gdrdrv` をマウントしない版を各条件で作り直す。
 
 point-to-point（ノード間 EFA、rank 0 と別ノードの rank 8 の間）の結果を次に示す。
 
@@ -284,14 +294,36 @@ NET/Libfabric : GPU Direct RDMA Enabled for HCA 0 'rdmap85s0'
 NET/Libfabric : GPU Direct RDMA Enabled for HCA 1 'rdmap87s0'
 ```
 
-このクラスタの GPU ノードでは、`nvidia-peermem` という別モジュールを使わずに、NVIDIA のオープンソースカーネルモジュール（`nvidia.ko`）自身が公開する GPU peer-to-peer DMA の関数を EFA ドライバが直接使って GPUDirect RDMA を確立している。これは `gdrcopy-probe` Pod（`privileged` かつ host マウント可）から `nsenter` でホストの `dmesg` を覗くと確認できる。`nvidia-peermem` はロードされていないのに EFA ドライバが peer memory を獲得している。
+このクラスタの GPU ノードでは、`nvidia-peermem` という別モジュールを使わずに、NVIDIA のオープンソースカーネルモジュール（`nvidia.ko`）自身が公開する GPU peer-to-peer DMA の関数を EFA ドライバが直接使って GPUDirect RDMA を確立している。ホスト側を覗くと、`nvidia-peermem` はロードされていないのに EFA ドライバが peer memory を獲得している。ホストのカーネルモジュール一覧とカーネルログはノード上でしか見えないので、`hostPID` と host ルートマウントを持つ使い捨ての特権 Pod を 1 つ立てて `chroot` で確認する（`NODE` は対象ノード名に読み替える）。
 
 ```bash
-k exec gdrcopy-probe -n "$NAMESPACE" -- \
-  bash -c 'nsenter -t 1 -m -- sh -c "lsmod | grep -E \"nvidia_peermem|gdrdrv\"; dmesg | grep -i \"efa.*peer memory\" | tail -1"'
+NODE=$(k get nodes -l node-role=$POOL -o jsonpath='{.items[0].metadata.name}')
+cat <<EOF | k apply -f -
+apiVersion: v1
+kind: Pod
+metadata: { name: p2p-check, namespace: $NAMESPACE }
+spec:
+  restartPolicy: Never
+  hostPID: true
+  nodeSelector: { kubernetes.io/hostname: $NODE }
+  tolerations:
+    - { key: nvidia.com/gpu, operator: Exists, effect: NoSchedule }
+    - { key: capacity-reservation, operator: Exists, effect: NoSchedule }
+  containers:
+    - name: c
+      image: public.ecr.aws/amazonlinux/amazonlinux:2023
+      securityContext: { privileged: true }
+      command: ["/bin/bash","-c","chroot /host bash -c 'lsmod | grep -E \"nvidia_peermem|gdrdrv\" || echo no-peermem; dmesg | grep -i \"efa.*peer memory\" | tail -1'; sleep 60"]
+      volumeMounts: [{ name: host, mountPath: /host }]
+  volumes: [{ name: host, hostPath: { path: / } }]
+EOF
+k wait --for=condition=ready pod/p2p-check -n "$NAMESPACE" --timeout=3m
+k logs p2p-check -n "$NAMESPACE"
 ```
 
 ```text
+gdrdrv                 32768  2
+nvidia              14422016  270 nvidia_uvm,gdrdrv,nvidia_modeset
 efa: Acquired peer memory using P2P
 ```
 
@@ -303,13 +335,13 @@ efa: Acquired peer memory using P2P
 
 ```bash
 k delete pod -l app=warmup -n "$NAMESPACE" --ignore-not-found
-k delete pod gdrcopy-probe -n "$NAMESPACE" --ignore-not-found
+k delete pod gdrcopy-probe p2p-check -n "$NAMESPACE" --ignore-not-found
 ```
 
 `gdrcopy_mode` を `off` に戻すと、Terraform が管理する `gdrdrv-loader` DaemonSet は消える。
 
 ```bash
-cd infra/eks
+cd "$(git rev-parse --show-toplevel)"/infra/eks
 terraform apply -var gdrcopy_mode=off
 ```
 
