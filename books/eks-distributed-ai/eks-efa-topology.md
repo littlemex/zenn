@@ -204,9 +204,9 @@ env:
 
 要点は `NCCL_SOCKET_IFNAME` を `^` で始まる除外パターンで書くことです。`efa0,efa1,...` のような許可リスト方式で名指しすると bootstrap に失敗します。NCCL は起動時の rank 間ランデブーを TCP ソケットで行いますが、`efa-only` インターフェースは IP を持たないため、これらを名指しすると bootstrap 用の到達可能なインターフェースが見つからず接続できません。除外パターンで `lo` やコンテナ仮想 NIC（`docker`／`veth`）を外し、ノードの IP を持つインターフェースを NCCL に選ばせるのが正しい書き方です。
 
-https://github.com/awslabs/awsome-distributed-ai/blob/main/1.architectures/efa-cheatsheet.md
+この値は本書のチャートでは 1 か所（`charts/experiments` の `values.yaml`）にデフォルトとして持たせ、そこから各測定ワークロードの Pod に環境変数として差し込んでいます。デフォルト値は [`values.yaml` の `socketIfname`](https://github.com/littlemex/distributed-ai/blob/9d3f5031ed217c4a90666e5cd39e18dab1f15357/infra/eks/charts/experiments/values.yaml#L274) で定義し、本章で使う TrainJob では [`nccl-trainjob.yaml`](https://github.com/littlemex/distributed-ai/blob/9d3f5031ed217c4a90666e5cd39e18dab1f15357/infra/eks/charts/experiments/templates/nccl-trainjob.yaml#L208) が `NCCL_SOCKET_IFNAME` としてコンテナに渡します。単ノードの sanity 用 [`nccl-probe.yaml`](https://github.com/littlemex/distributed-ai/blob/9d3f5031ed217c4a90666e5cd39e18dab1f15357/infra/eks/charts/experiments/templates/nccl-probe.yaml#L50) と `mpirun` 方式の [`nccl-sshd.yaml`](https://github.com/littlemex/distributed-ai/blob/9d3f5031ed217c4a90666e5cd39e18dab1f15357/infra/eks/charts/experiments/templates/nccl-sshd.yaml#L100) も同じ値を渡しています。自分でワークロードを書く場合も、Pod の `env` にこの 1 行を同じ形で入れます。
 
-awsome-distributed-ai リポジトリに EFA Cheatsheet があるので参考にすると良いでしょう。
+なお、AWS の [awsome-distributed-ai リポジトリの EFA Cheatsheet](https://github.com/awslabs/awsome-distributed-ai/blob/main/1.architectures/efa-cheatsheet.md) に、`NCCL_SOCKET_IFNAME` を含む EFA/NCCL 環境変数の推奨値がまとまっています。バージョンごとの推奨が変わるので、あわせて参照すると良いでしょう。
 
 ## 4. 測定ワークロードを投入してノードを起動する
 
