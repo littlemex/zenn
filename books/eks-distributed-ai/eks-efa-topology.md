@@ -214,11 +214,7 @@ aws ec2 describe-instance-types --instance-types g6.2xlarge g5.2xlarge g6e.12xla
 
 Basic05 の apply で作られたのは NodePool と EC2NodeClass の定義だけで、この時点ではまだノードは 1 台も立っていません。Karpenter は Pod の要求を見て初めてノードを起動します。
 
-:::details hugepages について
-ここで 1 つ順序の制約があります。関係するのが hugepages です。hugepages は Linux が通常の 4 KB より大きい単位（2 MB など）で確保するメモリページで、ページ数が少ない分だけアドレス変換の効率がよく、RDMA のようにメモリ領域を固定して DMA する用途で使われます。EFA や NCCL のワークロードはこの hugepages を Pod のリソース（`hugepages-2Mi`）として要求することがあり、その分をノード側が起動時にあらかじめ予約しておく必要があります。Karpenter は hugepages を「どのインスタンスタイプなら足りるか」の判断に使いません。そのため hugepages を要求する Pod でノードの新規起動を誘発しようとすると、`no instance type has enough resources` と判定されて NodeClaim が作られず、Pod は永久に `Pending` になります。本章で使う `ncclTrainjob` は hugepages を要求しないので原理的にはこの罠を踏みませんが、`mpirun` 方式の `ncclSshd` や Neuron 側のプローブは hugepages を要求するため該当します。どの方式でも通る順序として、先に hugepages を要求しない GPU Pod で 2 台のノードを起こし、そのうえで測定ワークロードを載せる形にします。ノードの起動（Karpenter のプロビジョニング）を測定と切り離せるので、測定側の Pod が長時間 `Pending` に見えて原因を切り分けにくくなるのを避けられます。なお warmup Pod が pull するのは小さな CUDA ベースイメージで、測定側が使う DLC イメージ（十数 GB 級）とは別物です。そのため測定 Pod の初回 pull には別途 10 分前後かかることがあり、warmup 後も一時的に `ContainerCreating` に留まります。これはノード起動失敗ではないので、`k get pod` の理由が `ContainerCreating` のうちは pull の完了を待ちます。
-
-まず 2 台分のノードを起こします。GPU だけを要求する使い捨ての Pod を 2 つ投入します。各 Pod がそのインスタンスの GPU を全数要求するので同一ノードには同居できず、`podAntiAffinity` も併せて別ノードへの配置を明示しています（GPU 数を減らして流用すると 2 つが 1 ノードに載り、2 台目が起動しません）。`sleep` を待ち時間より長く取っているのは、片方のノード起動が遅れている間に先の Pod が `Succeeded` に落ちて `k wait` が満たされなくなるのを避けるためです。
-::::
+そこで測定ワークロード（`ncclTrainjob`）をそのまま投入します。Karpenter がこの Pod の要求を見て 2 台を起動し、TrainJob がそのノードで `all_reduce` を回します。ノードを別途 warmup Pod で起こす必要はありません。EFA の枚数はインスタンスタイプごとに違うため、コマンドに直接書かず手順 2 の `terraform output` から取ります。GPU 数も同様に AWS から読みます。以下のブロックはリポジトリのルートで実行します。
 
 ```bash
 export NAMESPACE=distai
@@ -229,51 +225,7 @@ ITYPE=p4d.24xlarge   # 対象プールの instance_types に合わせる
 GPU=$(aws ec2 describe-instance-types --instance-types "$ITYPE" \
   --query 'InstanceTypes[0].GpuInfo.Gpus[0].Count' --output text --region $REGION)
 
-for i in 0 1; do
-  cat <<EOF | k apply -f -
-apiVersion: v1
-kind: Pod
-metadata:
-  name: warmup-$i
-  namespace: $NAMESPACE
-  labels: { app: warmup }
-spec:
-  restartPolicy: Never
-  nodeSelector: { node-role: $POOL }
-  tolerations:
-    - { key: nvidia.com/gpu, operator: Exists, effect: NoSchedule }
-    - { key: capacity-reservation, operator: Exists, effect: NoSchedule }
-  affinity:
-    podAntiAffinity:
-      requiredDuringSchedulingIgnoredDuringExecution:
-        - labelSelector: { matchLabels: { app: warmup } }
-          topologyKey: kubernetes.io/hostname
-  containers:
-    - name: smi
-      image: nvidia/cuda:12.4.1-base-ubuntu22.04
-      command: ["sleep", "3600"]
-      resources: { limits: { nvidia.com/gpu: "$GPU" } }
-EOF
-done
-
-# 2 台とも Ready になるまで待つ（初回は起動とイメージ pull で 5-10 分）
-k wait --for=condition=ready pod -l app=warmup -n "$NAMESPACE" --timeout=20m
-k get nodes -l node-role=$POOL
-```
-
-`capacity-reservation` taint は予約ごとに値が変わるため `operator: Exists` で値を問わずに tolerate します（Basic05 の「注意 2」を参照してください）。2 台のノードが `Ready` になったら、次の測定ワークロードを投入する前にこの warmup Pod を削除します。GPU を占有したままだと測定側の Pod がスケジュールされません。
-
-```bash
-k delete pod -l app=warmup -n "$NAMESPACE" --wait=true
-```
-
-続く手順 5 と 6 は、ここで起動したノードを見ます。ノードは Basic05 で `consolidateAfter: Never` の disruption preset が効いているため（予約プールは自動で `protect` に解決されます）、warmup Pod を消してもノードは回収されずに残ります。
-
-ノードが立ったので、測定ワークロードを載せます。EFA の枚数はインスタンスタイプごとに違うため、コマンドに直接書かず手順 2 の `terraform output` から取ります（`GPU` は上で取得済みです）。以下のブロックはリポジトリのルート（`charts/experiments` が見えるディレクトリ）で実行します。`EFA` の取得だけはサブシェルで `infra/eks` に入って `terraform output` を読むため、あらかじめ `cd` しておく必要はありません。
-
-```bash
 cd "$(git rev-parse --show-toplevel)"   # リポジトリルートへ（helm の charts/experiments 相対パスの基点）
-
 EFA=$(cd infra/eks && terraform output -json accelerator_pool_efa_schedulable | jq -r ".\"$POOL\"")
 echo "gpu=$GPU efa=$EFA"   # p4d.24xlarge では gpu=8 efa=3
 
@@ -286,6 +238,16 @@ helm template exp charts/experiments -n "$NAMESPACE" \
   --set ncclTrainjob.image=763104351884.dkr.ecr.us-west-2.amazonaws.com/pytorch-training:2.10.0-gpu-py313-cu130-ubuntu22.04-ec2-v1.11 \
   | k apply -f -
 ```
+
+投入後は Karpenter が 2 台を起動し、DLC イメージ（十数 GB 級）の pull に初回 10 分前後かかるため、しばらく Pod は `ContainerCreating` に留まります。これはノード起動失敗ではないので、`k get pod` の理由が `ContainerCreating` のうちは pull の完了を待ちます。起動したノードは Basic05 の `consolidateAfter: Never`（予約プールは自動で `protect` に解決）で保たれるため、TrainJob が終わっても手順 5・6 で参照できます。
+
+:::details hugepages を要求する方式（`ncclSshd` / Neuron）を使う場合の注意
+`ncclTrainjob`（torchrun）は hugepages を要求しないので、上のようにそのまま投入すればノードが起動します。しかし `mpirun` 方式の `ncclSshd` や Neuron 側のプローブは hugepages を要求し、これは事情が異なります。
+
+hugepages は Linux が通常の 4 KB より大きい単位（2 MB など）で確保するメモリページで、RDMA のようにメモリ領域を固定して DMA する用途で使われます。Pod は `hugepages-2Mi` リソースとして要求し、ノード側が起動時に予約しておく必要があります。ところが Karpenter は hugepages を「どのインスタンスタイプなら足りるか」の判断に使わないため、hugepages を要求する Pod で新規ノードの起動を誘発しようとすると、`no instance type has enough resources` と判定されて NodeClaim が作られず、Pod は永久に `Pending` になります。
+
+これらの方式を使うときは、先に hugepages を要求しない GPU Pod（`sleep` するだけの使い捨て Pod で GPU を全数要求）で 2 台のノードを起こし、`Ready` を確認してからその Pod を削除し、そのうえで hugepages を要求する測定ワークロードを載せます。ノードは上記の `protect` preset で残るので、踏み台 Pod を消してもノードは回収されません。`ncclTrainjob` だけを使う本章の手順では、この段取りは不要です。
+:::
 
 `ncclTrainjob` は Basic02 と同じ Kubeflow Trainer v2 の TrainJob で、`torch.distributed` の `all_reduce` を 2 ノードにまたがって回します。ノードをまたぐ起動の段取り、つまり「どのプロセスが rank いくつで、どこに集合するか」は TrainJob が担います。Trainer が `PET_NNODES` / `PET_NPROC_PER_NODE` / `PET_NODE_RANK` / `PET_MASTER_ADDR` を各 Pod に注入し、`torchrun` がそれを既定値として読むという仕組みです。
 
@@ -329,7 +291,7 @@ aws ecr describe-images --registry-id 763104351884 --repository-name pytorch-tra
 
 ## 5. ノード上の EFA リソースを確認する
 
-手順 4 でノードが起動したら、手順 2 の値が実際にノードへ反映されているかを確認します。ノードは warmup で既に起動済みなので、このノードの allocatable 確認は測定 Pod の `Running` を待たずに実行できます（測定 Pod は DLC イメージの pull で `ContainerCreating` に留まっていることがありますが、ノードの EFA allocatable はその前から確認できます）。
+手順 4 でノードが起動したら、手順 2 の値が実際にノードへ反映されているかを確認します。ノードが `Ready` になっていれば、測定 Pod の `Running` を待たずにこの allocatable 確認を実行できます（測定 Pod は DLC イメージの pull で `ContainerCreating` に留まっていることがありますが、ノードの EFA allocatable はその前から確認できます）。
 
 ```bash
 POOL=gpu-p4d   # 対象プール名に置き換える

@@ -133,48 +133,11 @@ k get ds -n kube-system gdrdrv-loader 2>/dev/null || echo "no gdrdrv-loader (= o
 
 ## 3. gdrcopy_mode を有効にしてノードを起こす
 
-まず 2 台の GPU ノードを起こす。Basic06 と同じく、GPU を全数要求する使い捨ての warmup Pod を 2 つ投入して Karpenter にノードを起動させる。`ncclSshd` などの hugepages を要求する Pod で直接起こそうとすると、Karpenter が `no instance type has enough resources` と判定して NodeClaim を作らないため、hugepages を要求しない warmup Pod で先に起こすのが確実である（この罠は Basic06 で詳説した）。
+まず `gdrcopy_mode` を有効にして `gdrdrv` を載せる仕組みを入れる。本番運用の推奨は `userdata` だが、それはノードの再作成でしか反映されない。ここではこの後の手順で起動する GPU ノードにその場で載せるため、`daemonset` を `-var` の一時上書きで指定する。
 
 ```bash
 k create namespace "$NAMESPACE" --dry-run=client -o yaml | k apply -f -
 
-GPU=$(aws ec2 describe-instance-types --instance-types "$ITYPE" \
-  --query 'InstanceTypes[0].GpuInfo.Gpus[0].Count' --output text)
-
-for i in 0 1; do
-  cat <<EOF | k apply -f -
-apiVersion: v1
-kind: Pod
-metadata:
-  name: warmup-$i
-  namespace: $NAMESPACE
-  labels: { app: warmup }
-spec:
-  restartPolicy: Never
-  nodeSelector: { node-role: $POOL }
-  tolerations:
-    - { key: nvidia.com/gpu, operator: Exists, effect: NoSchedule }
-    - { key: capacity-reservation, operator: Exists, effect: NoSchedule }
-  affinity:
-    podAntiAffinity:
-      requiredDuringSchedulingIgnoredDuringExecution:
-        - labelSelector: { matchLabels: { app: warmup } }
-          topologyKey: kubernetes.io/hostname
-  containers:
-    - name: smi
-      image: nvidia/cuda:12.4.1-base-ubuntu22.04
-      command: ["sleep", "3600"]
-      resources: { limits: { nvidia.com/gpu: "$GPU" } }
-EOF
-done
-
-k wait --for=condition=ready pod -l app=warmup -n "$NAMESPACE" --timeout=20m
-k get nodes -l node-role=$POOL
-```
-
-2 台が `Ready` になったら、`gdrcopy_mode` を有効にして `gdrdrv` を載せる。本番運用の推奨は `userdata` だが、それはノードの再作成でしか反映されない。ここでは起動済みの 2 ノードにその場で載せるため `daemonset` を `-var` の一時上書きで指定する。
-
-```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
 terraform apply -var gdrcopy_mode=daemonset
 ```
@@ -183,14 +146,18 @@ terraform apply -var gdrcopy_mode=daemonset
 `terraform.tfvars` に `gdrcopy_mode = "userdata"` を書き込むのは、恒久的にこの方式へ切り替えると決めたときだけにする。tfvars に書くと EC2NodeClass の userData が変わり、次回以降の `terraform apply` で Karpenter の drift 検知が既存ノードの置き換えを走らせる。Capacity Block 上で意図しないノード再作成が起きると、再取得に失敗して GPU を失うおそれがある。本章の検証は `-var` の一時上書きだけで行う。
 :::
 
-`gdrdrv-loader` の DaemonSet が GPU ノードに配布され、initContainer が `gdrcopy-kmod` をインストールして `gdrdrv` をロードする。ロードの完了はこの DaemonSet のログで確認できる。
+これで `gdrdrv-loader` の DaemonSet が入る。この時点ではまだ GPU ノードが 1 台も無いので配布先が無く待機状態になるが、次の手順以降で GPU Pod を投入すると Karpenter がノードを起こし、そのノードへ DaemonSet が自動配布されて initContainer が `gdrcopy-kmod` をインストールし `gdrdrv` をロードする。ロードの完了は、ノードが起動したあとに次で確認できる（2 ノードそろうのは手順 5 の測定 Pod を投入したあとになる）。
 
 ```bash
 k -n kube-system logs -l app=gdrdrv-loader -c load-gdrdrv --tail=-1 \
   | grep -E "verified|already loaded"
 ```
 
-`verified: gdrdrv loaded, /dev/gdrdrv present`（または `already loaded`）が 2 ノード分出れば成功である。
+各ノードで `verified: gdrdrv loaded, /dev/gdrdrv present`（または `already loaded`）が出れば成功である。
+
+:::message
+Basic06 では hugepages を要求しない warmup Pod で先にノードを起こしていたが、本章で使う GPU Pod（手順 4 の `copylat` プローブと手順 5 の torchrun 測定）はどちらも hugepages を要求しないので、warmup を挟まずそのままノードを起こせる。hugepages を要求する `ncclSshd` などを使う場合に warmup が要る理由と段取りは、Basic06 の details にまとめてある。
+:::
 
 ## 4. GDRCopy が単体で機能することを確認する（ポジティブコントロール）
 
@@ -243,13 +210,7 @@ gdr_copy_to_mapping        8192       0.7943
 
 GDRCopy が効くとすれば、小さいメッセージの受信コピーである。そこで小メッセージ中心の 2 ノード間 point-to-point レイテンシと all-reduce レイテンシを、`gdrdrv` をロードした状態（GDRCopy 有効）とアンロードした状態（無効）で測って並べる。
 
-測定に入る前に、手順 3 で立てた warmup Pod を消して GPU を空ける。占有したままだと測定 Pod がスケジュールされない。
-
-```bash
-k delete pod -l app=warmup -n "$NAMESPACE"
-```
-
-測定は 2 ノード 16 GPU の NCCL 通信で行う。torchrun で `torch.distributed` の point-to-point（`isend`/`irecv` の ping-pong）と `all_reduce` を回し、各サイズについて 50 回の往復を 1 試行として 20 試行の中央値をとり、往復時間の半分を片道レイテンシとした。GDRCopy 有効の状態でひととおり測ったあと、`gdrdrv` をアンロードして無効の状態を作り、同じ測定を繰り返す。アンロードの手順と注意点（Pod の削除、DaemonSet の停止、特権の要件）は手順 7 にまとめてある。無効状態では `/dev/gdrdrv` が消えるので、測定 Pod は `/dev/gdrdrv` をマウントしない版を各条件で作り直す。
+測定は 2 ノード 16 GPU の NCCL 通信で行う。手順 4 のプローブが 1 台目を起こしているので、torchrun の 2 ノード測定 Pod を投入するともう 1 台が起動し、DaemonSet が両ノードに `gdrdrv` を載せる。torchrun で `torch.distributed` の point-to-point（`isend`/`irecv` の ping-pong）と `all_reduce` を回し、各サイズについて 50 回の往復を 1 試行として 20 試行の中央値をとり、往復時間の半分を片道レイテンシとした。GDRCopy 有効の状態でひととおり測ったあと、`gdrdrv` をアンロードして無効の状態を作り、同じ測定を繰り返す。アンロードの手順と注意点（Pod の削除、DaemonSet の停止、特権の要件）は手順 7 にまとめてある。無効状態では `/dev/gdrdrv` が消えるので、測定 Pod は `/dev/gdrdrv` をマウントしない版を各条件で作り直す。
 
 point-to-point（ノード間 EFA、rank 0 と別ノードの rank 8 の間）の結果を次に示す。
 
@@ -334,7 +295,6 @@ efa: Acquired peer memory using P2P
 まず本章で立てた Pod を消す。GPU を占有したままだと後続のワークロードがスケジュールされない。
 
 ```bash
-k delete pod -l app=warmup -n "$NAMESPACE" --ignore-not-found
 k delete pod gdrcopy-probe p2p-check -n "$NAMESPACE" --ignore-not-found
 ```
 
