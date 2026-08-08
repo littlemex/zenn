@@ -16,11 +16,11 @@ Capacity Block は開始時刻と終了時刻が固定で、期間が過ぎれ�
 
 ![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 
-本章で扱うのは、この図のうち **Capacity Block による予約** と、その期限を監視する **Amazon EventBridge → Amazon SNS のアラート経路** です。アクセラレータプールの構造自体は Basic04 までに作った型をそのまま使います。
+本章で扱うのは、この図のうち **Capacity Block による予約** です。アクセラレータプールの構造自体は Basic04 までに作った型をそのまま使います。
 
 ## これは何をするものか
 
-Capacity Block（CB）は、H100/H200/AWS Trainium のような一部の対応アクセラレータを、固定の開始時刻・終了時刻・インスタンス数で前払い予約する購入オプションです。Spot インスタンスと違い、予約期間中に中断されることはありません。しかし Spot とは逆の意味で扱いが難しい面があります。期間が終わればどれだけジョブが残っていても強制的に容量が回収される、という一方向の期限が必ず来るためです。
+Capacity Block（CB）は、H100/H200/AWS Trainium のような一部の対応アクセラレータを、固定の開始時刻・終了時刻・インスタンス数で前払い予約する購入オプションです。Spot インスタンスと違い、予約期間中に中断されることはありません。しかし期間が終わればどれだけジョブが残っていても強制的に容量が回収される、という一方向の期限が必ず来ます。
 
 CB を使う最低限の運用フローは次のようになります。
 
@@ -78,7 +78,7 @@ check "capacity_block_ready" {
 }
 ```
 
-1 つ目の assert は CB がまだ `scheduled`（開始前）や `expired`（終了後）のまま apply されようとしていないかを見ます。2 つ目は、プールに**明示指定した** `zone` と、予約が実際に確保している AZ が食い違っていないかを見ます。条件式の先頭が `p.zone == ""` で短絡している点が肝で、`zone` を書かない既定のプールでは `local.pool_zone` が予約の AZ をそのまま読み取るため食い違いようがなく、この assert は素通りします。警告が意味を持つのは、導出される AZ をあえて明示指定で上書きしようとして、その値が予約の AZ と矛盾した場合だけです（このとき Karpenter はゾーン要件と `capacityReservationSelectorTerms` が衝突してノードを起動できません）。
+1 つ目の assert は CB がまだ `scheduled`（開始前）や `expired`（終了後）のまま apply されようとしていないかを見ます。2 つ目は、プールに**明示指定した** `zone` と、予約が実際に確保している AZ が食い違っていないかを見ます。条件式の先頭が `p.zone == ""` で短絡している点が肝で、`zone` を書かない既定のプールでは `local.pool_zone` が予約の AZ をそのまま読み取るため食い違いようがなく、この assert は素通りします。警告が意味を持つのは、導出される AZ をあえて明示指定で上書きしようとして、その値が予約の AZ と矛盾した場合だけです。
 
 ここで重要なのは、**`check` ブロックは条件を満たさなくても plan/apply を WARNING で通す**という Terraform の仕様です。「アサーションだから当然 apply を止める」と考えると誤りで、この構成でもあえて「止めない」設計を選んでいます。理由はコメントにある通りで、もし CB の `state` を NodePool の `for_each` の条件に使ってハードゲート化すると、CB が後から `expired` に変わった瞬間に `for_each` の対象から外れて **NodePool ごと DESTROY される**という、警告よりもずっと悪い結果を招きます。したがって `check` ブロックはあくまで「気づくための仕掛け」であり、apply を止める防波堤ではありません。
 
@@ -87,78 +87,6 @@ check "capacity_block_ready" {
 ## 期限アラート（eventbridge-cb-alarm.tf）
 
 [`eventbridge-cb-alarm.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/eventbridge-cb-alarm.tf) は、`capacity-block.tf` が導出した `local.pool_cb_end_date` から、プールごとに 1 つの one-shot な Amazon EventBridge Scheduler スケジュールを組み立てます。
-
-```hcl
-# eventbridge-cb-alarm.tf（抜粋）
-locals {
-  cb_pools_with_end_date = {
-    for k, p in local.cb_reserved_pools : k => p
-    if lookup(local.pool_cb_end_date, k, "") != ""
-  }
-
-  # cb_end_date - 1h がすでに過去のプールは対象から除外する
-  cb_alert_pools = {
-    for k, p in local.cb_pools_with_end_date : k => p
-    if timecmp(timeadd(local.pool_cb_end_date[k], "-1h"), plantimestamp()) > 0
-  }
-
-  has_cb_alert = length(local.cb_alert_pools) > 0
-
-  cb_alert_schedule_expr = {
-    for k, p in local.cb_alert_pools :
-    k => "at(${formatdate("YYYY-MM-DD'T'hh:mm:ss", timeadd(local.pool_cb_end_date[k], "-1h"))})"
-  }
-}
-
-resource "aws_scheduler_schedule" "cb_expiry_alert" {
-  for_each = local.cb_alert_pools
-
-  schedule_expression          = local.cb_alert_schedule_expr[each.key]
-  schedule_expression_timezone = "UTC"
-  action_after_completion      = "DELETE"
-
-  flexible_time_window {
-    mode = "OFF"
-  }
-
-  target {
-    arn      = aws_sns_topic.cb_expiry_alert[0].arn
-    role_arn = aws_iam_role.cb_expiry_scheduler[0].arn
-    input = jsonencode({
-      cb_end_date = local.pool_cb_end_date[each.key]
-      message     = "... expires at ${local.pool_cb_end_date[each.key]}. Begin graceful drain now (1 hour remaining)."
-    })
-  }
-}
-```
-
-読みどころは次の 4 点です。
-
-**`formatdate` のトークンは `hh` であり `HH` ではありません。** Terraform の `formatdate` は `hh` が 24 時間制、`HH` が 12 時間制という、他言語の日時フォーマット関数とは逆の対応になっています。ここで `HH` と書いてしまうと、午後の時刻を含むアラートが軒並みずれる実害が出ます。実装のコメントにも「hh = 24-hour hour (HH would be 12-hour)」と明記されており、このトークンは写経時に取り違えやすい罠です。
-
-**2 段階のフィルタで `timeadd("")` のエラーを避けています。** `cb_pools_with_end_date` と `cb_alert_pools` が 1 つの `&&` 条件ではなく 2 段に分かれているのは、HCL が `&&` の右辺を必ず短絡評価するとは限らないためです。`local.pool_cb_end_date[k]` が空文字のまま `timeadd()` に渡ると即座にエラーになるので、空文字を弾く段と `timeadd()` を呼ぶ段を明確に分離しています。
-
-**`action_after_completion = "DELETE"` による自己削除に、`for_each` の除外ロジックが追従します。** スケジュールは発火すると AWS 側から自動的に消えます。そのため `cb_alert_pools` は、`cb_end_date - 1h`（アラート時刻）がすでに過去になったプールを `for_each` の対象からあらかじめ除外しています。これがないと、発火済みで消えたスケジュールに対して次の plan が「過去の時刻で作り直そう」としてしまい、Scheduler API の `at()` はいつも未来でなければならないため reject され続けます。なお、コード上のコメントにもある通り、plan 生成の直後にアラート時刻を過ぎ、その後 apply が走るという境界条件では、この仕組みでも構造的には救えず apply が失敗します。この場合は plan/apply をやり直せば解消します。
-
-**通知本文が参照するのは `local.pool_cb_end_date` であり、`each.value.cb_end_date` ではありません。** `each.value.cb_end_date` は tfvars の生の値で、`capacity-block.tf` の自動導出が効いている今は多くの場合空文字です。スケジュール時刻の計算にも通知メッセージの組み立てにも `local.pool_cb_end_date`（導出済みの終了時刻）を使うことで、両者が食い違って「expires at 」のように日付が抜けたメッセージが届く事故を防いでいます。
-
-## 全体の中での位置付け
-
-Basic04 までに作った `accelerator_pools` という型に、本章では「予約 ID をどう埋めるか」という運用手順を積み重ねます。プール定義そのものの構造は変わりません。CB は容量調達の一手段であり、NodePool/NodeClass の設計自体には手を入れないという点が、この章を Basic04 の続きとして位置づける根拠になります。本章で確保したノードを実際に使うのは次章の Basic06 で、そこで EFA のマルチノード通信を検証します。
-
-## 注意
-
-分散 AI 特有の落とし穴が 4 つあります。いずれも一度ハマると原因特定に時間がかかるため、最初に押さえておきます。
-
-**注意 1: CB ノードが起動しない「filtered out all instance types」。** apply 後に Karpenter がノードを起動できない場合、直前に同じ予約を使っていた別インスタンスがまだ終了処理中で、予約スロットが実際には空いていないことが多くあります。少し待って Karpenter のリトライに任せれば解決するケースがほとんどです。
-
-**注意 2: `capacity-reservation` taint も別に存在する。** CB ノードには、プールの `device_plugin` に応じた `nvidia.com/gpu` または `aws.amazon.com/neuron` の taint に加えて、予約ごとに値が変わる `capacity-reservation` taint も付きます。値が予約ごとに変わるため、ワークロード側は `operator: Exists` で値を問わずに tolerate する必要があります。`operator: Equal` で固定値を書いてしまうと、次に別の CB を買い直した瞬間にジョブがスケジュールされなくなります。
-
-**注意 3: `cb_end_date` は UTC 必須（末尾 `Z`）。** `formatdate` は `cb_end_date` の年月日時分秒をそのまま文字列に整形するだけで、タイムゾーンオフセットの情報を持ち越しません。その結果できた `at()` 式にはタイムゾーン情報が一切含まれず、Amazon EventBridge Scheduler 側は `schedule_expression_timezone = "UTC"` で解釈します。したがって `cb_end_date` にタイムゾーンオフセット付き（例: `+09:00`）の値を書くと、その数字はオフセットを剥がされたうえで UTC の時刻として再解釈されます。結果としてアラートが実際の期限から最大で日付をまたぐほどずれます。この構成では変数の `validation` で `cb_end_date` が空でない限り末尾が `Z` であることを強制し、plan 時点で弾いています。
-
-**注意 4: `cb_reservation_id` を設定しても `capacity_type` を `"reserved"` にし忘れると予約が無視される。** `cb_reservation_id` だけ書いて `capacity_type` を `"on-demand"` のままにすると、EC2NodeClass は `capacityReservationSelectorTerms` を持たずに生成され、予約はまるごと無視されて On-Demand で起動します。前払いした予約分の費用に加えて On-Demand の費用も別にかかる、という二重コストに直結するため、この構成では変数の `validation` でこの組み合わせを明示的に弾いています。
-
-なお、Amazon EventBridge スケジュールは発火後に自己削除される点にも注意が必要です。`action_after_completion = "DELETE"` を設定しているため、アラートが一度発火するとその `aws_scheduler_schedule` リソースは AWS 側から消えます。Terraform 側もこれに追従できるよう、アラート時刻（`cb_end_date - 1h`）が過去になったプールは `for_each` の対象から自動的に除外される仕組みになっています。これがないと、発火済みで消えたスケジュールを次の plan が「過去の時刻で作り直そう」として Amazon EventBridge API に reject され続けることになります。
 
 # ワークショップ実施
 
@@ -211,17 +139,29 @@ CB の購入は前払いで、キャンセルや返金はできません。`00-c
 
 ## 3. accelerator-pools.auto.tfvars に反映するブロックを生成する
 
+購入した CB の CR ID を確認するコマンドです。
+
 ```bash
+aws ec2 describe-capacity-reservations \
+  --region $REGION \
+  --query 'CapacityReservations[].{ID:CapacityReservationId,Type:InstanceType,AZ:AvailabilityZone,Total:TotalInstanceCount,Avail:AvailableInstanceCount,Ends:EndDate,State:State}' \
+  --output table
+```
+
+CR ID を指定して tfvars に貼り付ける設定を出力します。
+
+```bash
+export POOL=gpu-p4dn
 ./02-post-purchase.sh \
   --cr-id cr-023f18e20d3829f4e \
-  --pool gpu-p5en
+  --pool $POOL
 ```
 
 必須の引数は `--cr-id` だけです。インスタンスタイプ・AZ・終了時刻は、スクリプトが `describe-capacity-reservations` で予約 ID から自動で解決するため、手で渡す必要はありません（`--pool` は貼り付け先のプール名で、省略すると `gpu-cb` になります）。
 
 ```hcl
 gpu-p5en = {
-  instance_types    = ["p5en.48xlarge"]
+  instance_types    = ["p4dn.24xlarge"]
   device_plugin     = "nvidia"
   capacity_type     = "reserved"
   cb_reservation_id = "cr-023f18e20d3829f4e"          # zone と終了時刻はこの予約から導出
@@ -239,8 +179,8 @@ gpu-p5en = {
 ```bash
 cd infra/eks
 terraform apply
-k get nodepool gpu-p4d
-k get ec2nodeclass gpu-p4d
+k get nodepool $POOL
+k get ec2nodeclass $POOL
 ```
 
 apply が作るのは NodePool と EC2NodeClass の定義であって、この時点ではまだノードは立ちません。Karpenter は GPU を要求する Pod（Pending）が現れて初めてノードを起動します（Karpenter 自体のインストールと NodePool 生成の仕組みは Basic04 で構築済みという前提です）。実際にノードが立つのは、次章 Basic06 で CB プールをターゲットにした検証ワークロードを投入したときなので、ここで確認するのは定義が正しく作られたことまでです。
@@ -248,7 +188,7 @@ apply が作るのは NodePool と EC2NodeClass の定義であって、この�
 ノードが立ったあと、それが予約から起動したことを確かめるコマンドを先に示しておきます。実行するのは Basic06 の手順 3 でワークロードを投入したあとです。
 
 ```bash
-k get nodeclaims -l karpenter.sh/nodepool=gpu-p4d
+k get nodeclaims -l karpenter.sh/nodepool=$POOL
 k get nodes -l karpenter.sh/capacity-type=reserved
 ```
 
