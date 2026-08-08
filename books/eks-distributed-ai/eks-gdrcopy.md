@@ -102,21 +102,21 @@ EOSH
 
 # ワークショップ実施
 
-ここからは実機で GDRCopy を有効にし、その効果を測る。以降のコマンドは、これまでの章と同じく `k`（`alias k=kubectl`）で記述し、current-context と既定 namespace は Basic01 で設定済みの前提である（開き直した場合は Basic01 step 3 の `use-context` / `set-context` / `alias` を実行し直す）。実測値はすべて p5.48xlarge 2 ノード、H100 × 16 での結果である。
+ここからは実機で GDRCopy を有効にし、その効果を測る。以降のコマンドは、これまでの章と同じく `k`（`alias k=kubectl`）で記述し、current-context と既定 namespace は Basic01 で設定済みの前提である（開き直した場合は Basic01 step 3 の `use-context` / `set-context` / `alias` を実行し直す）。手順は Basic05 で確保した GPU プールをそのまま使い、プール名やインスタンスタイプは環境変数に置いて読者の環境に読み替える。本章に載せる実測値は p5.48xlarge 2 ノード（H100 × 16）で取得したものだが、p5en など他の EFA 対応 GPU でも手順は変わらない。
 
 ## 1. 前提を確認する
 
-- Basic05 で Capacity Block を確保済み（同一 AZ・2 台、EFA を複数枚持つ p5.48xlarge）。手順 5 の 2 ノード測定で必要
-- Basic04/05 で GPU プール `gpu-p5` を `accelerator-pools.auto.tfvars` に定義し `terraform apply` 済み
+- Basic05 で Capacity Block を確保済み（同一 AZ・2 台、EFA を複数枚持つ GPU インスタンス）。手順 5 の 2 ノード測定で必要
+- Basic04/05 で GPU プール（Basic05 の例では `gpu-p5en`）を `accelerator-pools.auto.tfvars` に定義し `terraform apply` 済み
 - Basic06 で 2 ノードの EFA 通信が動くことを確認済み。本章はその通信の一部を最適化する GDRCopy を足す章で、EFA を有効にする操作ではない
 - `k` エイリアスと current-context は Basic01 で設定済み（本章のコマンドは `k` で記述する）
 
-以降は対象プールと namespace を環境変数に置いておく。読者のプール名・インスタンスタイプに読み替える。
+以降は対象プールと namespace を環境変数に置いておく。`POOL` と `ITYPE` は Basic05 で定義した自分のプール名・インスタンスタイプに読み替える（例では p5.48xlarge を使うが、p5en など他の EFA 対応 GPU でも同じ手順が通る）。
 
 ```bash
 export NAMESPACE=distai
-POOL=gpu-p5
-ITYPE=p5.48xlarge
+POOL=gpu-p5          # Basic05 で定義したプール名に読み替える
+ITYPE=p5.48xlarge    # そのプールの instance_types に合わせる
 ```
 
 ## 2. GDRCopy が無い状態を確認する
@@ -223,7 +223,7 @@ k wait --for=condition=ready pod/gdrcopy-probe -n "$NAMESPACE" --timeout=10m
 k exec gdrcopy-probe -n "$NAMESPACE" -- copylat
 ```
 
-`image` は自分のリージョンの DLC に読み替える（DLC のアカウント ID とタグは Basic07 で使うものと同じである）。GDRCopy をマウントするため `privileged: true` を与えている点に注意する。実機出力は次のとおり。
+`image` は Basic06 の NCCL 測定で使った DLC に読み替える（レジストリのアカウント ID は同じで、リージョンとタグのバージョンサフィックスは自分の環境に合わせる。ここでは `copylat` を実行できればよいので、`pytorch-training` 系であればタグの細部は問わない）。GDRCopy をマウントするため `privileged: true` を与えている点に注意する。実機出力は次のとおり。
 
 ```text
 Test                    Size(B)   Avg.Time(us)
