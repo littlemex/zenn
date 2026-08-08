@@ -138,6 +138,26 @@ egress self-ref が無い場合の症状として、NCCL は bootstrap（TCP）�
 
 EFA を Pod にリソースとして見せるのは `aws-efa-k8s-device-plugin` の DaemonSet です。この chart は `supportedInstanceLabels` に列挙されたインスタンスタイプにしか nodeAffinity でスケジュールされず、chart デフォルトの一覧には g6e.12xlarge のような一部の EFA 対応タイプが含まれていません。デフォルトのままだとそのタイプのノードにはプラグインが乗らず、`vpc.amazonaws.com/efa` が永久に広告されないという問題が起こり得ます。[`gpu-addons.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/gpu-addons.tf) はこれをクラスタが実際に使う pool から動的に導出することで防いでいます。
 
+## EFA 関連の環境変数
+
+その前に、この変数が何をするものかを押さえておきます。NCCL はマルチノード実行で 2 種類の通信を使い分けます。1 つはデータ本体の集合通信で、これは EFA/RDMA（`FI_PROVIDER=efa` で選ばれる経路）を通ります。もう 1 つは実行開始時に rank どうしが顔合わせをする bootstrap（ランデブー）で、こちらは通常の TCP/IP ソケットを使います。`NCCL_SOCKET_IFNAME` は後者の bootstrap にどのネットワークインターフェースを使うかを NCCL に指示する変数です。EFA を使う構成でも、この TCP 側のインターフェース選択を誤ると rank どうしが顔合わせできず、データ通信を始める前に止まってしまいます。だから「EFA を使うのに、なぜ TCP インターフェースの指定が要るのか」という話になります。
+
+次の手順で投入する測定ワークロードは、環境変数に以下を渡します。自分でワークロードを書く場合も同じ形にします。
+
+```yaml
+env:
+  - name: NCCL_SOCKET_IFNAME
+    value: "^lo,docker,veth"
+  - name: FI_PROVIDER
+    value: "efa"
+```
+
+要点は `NCCL_SOCKET_IFNAME` を `^` で始まる除外パターンで書くことです。`efa0,efa1,...` のような許可リスト方式で名指しすると bootstrap に失敗します。NCCL は起動時の rank 間ランデブーを TCP ソケットで行いますが、`efa-only` インターフェースは IP を持たないため、これらを名指しすると bootstrap 用の到達可能なインターフェースが見つからず接続できません。除外パターンで `lo` やコンテナ仮想 NIC（`docker`／`veth`）を外し、ノードの IP を持つインターフェースを NCCL に選ばせるのが正しい書き方です。
+
+この値は本書のチャートでは 1 か所（`charts/experiments/values.yaml`）にデフォルトとして持たせ、そこから各測定ワークロードの Pod に環境変数として差し込んでいます。デフォルトは `values.yaml` の [`socketIfname`](https://github.com/littlemex/distributed-ai/blob/9d3f5031ed217c4a90666e5cd39e18dab1f15357/infra/eks/charts/experiments/values.yaml#L274) で定義し、本章で使う TrainJob では [`nccl-trainjob.yaml`](https://github.com/littlemex/distributed-ai/blob/9d3f5031ed217c4a90666e5cd39e18dab1f15357/infra/eks/charts/experiments/templates/nccl-trainjob.yaml#L208) が `NCCL_SOCKET_IFNAME` としてコンテナに渡します。単ノードの sanity 用 [`nccl-probe.yaml`](https://github.com/littlemex/distributed-ai/blob/9d3f5031ed217c4a90666e5cd39e18dab1f15357/infra/eks/charts/experiments/templates/nccl-probe.yaml#L50) と `mpirun` 方式の [`nccl-sshd.yaml`](https://github.com/littlemex/distributed-ai/blob/9d3f5031ed217c4a90666e5cd39e18dab1f15357/infra/eks/charts/experiments/templates/nccl-sshd.yaml#L100) も同じ値を渡しています。自分でワークロードを書く場合も、Pod の `env` にこの 1 行を同じ形で入れます。
+
+なお、AWS の [awsome-distributed-ai リポジトリの EFA Cheatsheet](https://github.com/awslabs/awsome-distributed-ai/blob/main/1.architectures/efa-cheatsheet.md) に、`NCCL_SOCKET_IFNAME` を含む EFA/NCCL 環境変数の推奨値がまとまっています。バージョンごとの推奨が変わるので、あわせて参照すると良いでしょう。
+
 # ワークショップ実施
 
 本章の実機検証は p4d.24xlarge（NVIDIA A100 40GB x8、EFA x4）2 台の Capacity Block で実施しました。以降の出力はこの構成の実測値です。EFA の枚数はインスタンスファミリごとに違うので、読者の環境では数値が変わります。だからこそ枚数を決め打ちせず、次の手順のように必ず AWS 側の値を参照してください。
@@ -188,39 +208,17 @@ aws ec2 describe-instance-types --instance-types g6.2xlarge g5.2xlarge g6e.12xla
 +--------+----------+------------------+
 ```
 
-## 3. EFA 関連の環境変数
+## 3. 測定ワークロードを投入してノードを起動する
 
-その前に、この変数が何をするものかを押さえておきます。NCCL はマルチノード実行で 2 種類の通信を使い分けます。1 つはデータ本体の集合通信で、これは EFA/RDMA（`FI_PROVIDER=efa` で選ばれる経路）を通ります。もう 1 つは実行開始時に rank どうしが顔合わせをする bootstrap（ランデブー）で、こちらは通常の TCP/IP ソケットを使います。`NCCL_SOCKET_IFNAME` は後者の bootstrap にどのネットワークインターフェースを使うかを NCCL に指示する変数です。EFA を使う構成でも、この TCP 側のインターフェース選択を誤ると rank どうしが顔合わせできず、データ通信を始める前に止まってしまいます。だから「EFA を使うのに、なぜ TCP インターフェースの指定が要るのか」という話になります。
-
-次の手順で投入する測定ワークロードは、環境変数に以下を渡します。自分でワークロードを書く場合も同じ形にします。
-
-```yaml
-env:
-  - name: NCCL_SOCKET_IFNAME
-    value: "^lo,docker,veth"
-  - name: FI_PROVIDER
-    value: "efa"
-```
-
-要点は `NCCL_SOCKET_IFNAME` を `^` で始まる除外パターンで書くことです。`efa0,efa1,...` のような許可リスト方式で名指しすると bootstrap に失敗します。NCCL は起動時の rank 間ランデブーを TCP ソケットで行いますが、`efa-only` インターフェースは IP を持たないため、これらを名指しすると bootstrap 用の到達可能なインターフェースが見つからず接続できません。除外パターンで `lo` やコンテナ仮想 NIC（`docker`／`veth`）を外し、ノードの IP を持つインターフェースを NCCL に選ばせるのが正しい書き方です。
-
-この値は本書のチャートでは 1 か所（`charts/experiments/values.yaml`）にデフォルトとして持たせ、そこから各測定ワークロードの Pod に環境変数として差し込んでいます。デフォルトは `values.yaml` の [`socketIfname`](https://github.com/littlemex/distributed-ai/blob/9d3f5031ed217c4a90666e5cd39e18dab1f15357/infra/eks/charts/experiments/values.yaml#L274) で定義し、本章で使う TrainJob では [`nccl-trainjob.yaml`](https://github.com/littlemex/distributed-ai/blob/9d3f5031ed217c4a90666e5cd39e18dab1f15357/infra/eks/charts/experiments/templates/nccl-trainjob.yaml#L208) が `NCCL_SOCKET_IFNAME` としてコンテナに渡します。単ノードの sanity 用 [`nccl-probe.yaml`](https://github.com/littlemex/distributed-ai/blob/9d3f5031ed217c4a90666e5cd39e18dab1f15357/infra/eks/charts/experiments/templates/nccl-probe.yaml#L50) と `mpirun` 方式の [`nccl-sshd.yaml`](https://github.com/littlemex/distributed-ai/blob/9d3f5031ed217c4a90666e5cd39e18dab1f15357/infra/eks/charts/experiments/templates/nccl-sshd.yaml#L100) も同じ値を渡しています。自分でワークロードを書く場合も、Pod の `env` にこの 1 行を同じ形で入れます。
-
-なお、AWS の [awsome-distributed-ai リポジトリの EFA Cheatsheet](https://github.com/awslabs/awsome-distributed-ai/blob/main/1.architectures/efa-cheatsheet.md) に、`NCCL_SOCKET_IFNAME` を含む EFA/NCCL 環境変数の推奨値がまとまっています。バージョンごとの推奨が変わるので、あわせて参照すると良いでしょう。
-
-## 4. 測定ワークロードを投入してノードを起動する
-
-ここが本章の目的であり、Basic05 で Capacity Block を確保した目的でもあります。予約した複数ノードが実際に EFA/RDMA で通信できているかを測ります。
-
-:::message alert
-以降は 2 ノードで実行するので、Basic05 で購入した予約のインスタンス数が 2 台以上であることを先に確認してください（`00-check-cb-offerings.sh` の出力の `Cnt` 列で選んだ値です）。1 台しか確保していない場合、この手順は実行できません。2 台目が確保できていないと、次に投入する Pod の片方が永久に `Pending` になります。
-:::
+予約した複数ノードが実際に EFA/RDMA で通信できているかを測ります。
 
 Basic05 の apply で作られたのは NodePool と EC2NodeClass の定義だけで、この時点ではまだノードは 1 台も立っていません。Karpenter は Pod の要求を見て初めてノードを起動します。
 
+:::details hugepages について
 ここで 1 つ順序の制約があります。関係するのが hugepages です。hugepages は Linux が通常の 4 KB より大きい単位（2 MB など）で確保するメモリページで、ページ数が少ない分だけアドレス変換の効率がよく、RDMA のようにメモリ領域を固定して DMA する用途で使われます。EFA や NCCL のワークロードはこの hugepages を Pod のリソース（`hugepages-2Mi`）として要求することがあり、その分をノード側が起動時にあらかじめ予約しておく必要があります。Karpenter は hugepages を「どのインスタンスタイプなら足りるか」の判断に使いません。そのため hugepages を要求する Pod でノードの新規起動を誘発しようとすると、`no instance type has enough resources` と判定されて NodeClaim が作られず、Pod は永久に `Pending` になります。本章で使う `ncclTrainjob` は hugepages を要求しないので原理的にはこの罠を踏みませんが、`mpirun` 方式の `ncclSshd` や Neuron 側のプローブは hugepages を要求するため該当します。どの方式でも通る順序として、先に hugepages を要求しない GPU Pod で 2 台のノードを起こし、そのうえで測定ワークロードを載せる形にします。ノードの起動（Karpenter のプロビジョニング）を測定と切り離せるので、測定側の Pod が長時間 `Pending` に見えて原因を切り分けにくくなるのを避けられます。なお warmup Pod が pull するのは小さな CUDA ベースイメージで、測定側が使う DLC イメージ（十数 GB 級）とは別物です。そのため測定 Pod の初回 pull には別途 10 分前後かかることがあり、warmup 後も一時的に `ContainerCreating` に留まります。これはノード起動失敗ではないので、`k get pod` の理由が `ContainerCreating` のうちは pull の完了を待ちます。
 
 まず 2 台分のノードを起こします。GPU だけを要求する使い捨ての Pod を 2 つ投入します。各 Pod がそのインスタンスの GPU を全数要求するので同一ノードには同居できず、`podAntiAffinity` も併せて別ノードへの配置を明示しています（GPU 数を減らして流用すると 2 つが 1 ノードに載り、2 台目が起動しません）。`sleep` を待ち時間より長く取っているのは、片方のノード起動が遅れている間に先の Pod が `Succeeded` に落ちて `k wait` が満たされなくなるのを避けるためです。
+::::
 
 ```bash
 export NAMESPACE=distai
@@ -229,7 +227,7 @@ k create namespace "$NAMESPACE" --dry-run=client -o yaml | k apply -f -
 POOL=gpu-p4d
 ITYPE=p4d.24xlarge   # 対象プールの instance_types に合わせる
 GPU=$(aws ec2 describe-instance-types --instance-types "$ITYPE" \
-  --query 'InstanceTypes[0].GpuInfo.Gpus[0].Count' --output text)
+  --query 'InstanceTypes[0].GpuInfo.Gpus[0].Count' --output text --region $REGION)
 
 for i in 0 1; do
   cat <<EOF | k apply -f -
