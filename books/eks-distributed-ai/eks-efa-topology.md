@@ -202,7 +202,11 @@ env:
     value: "efa"
 ```
 
-要点は `NCCL_SOCKET_IFNAME` を `^` で始まる除外パターンで書くことです。`efa0,efa1,...` のような許可リスト方式で名指しすると bootstrap に失敗します。NCCL は起動時の rank 間ランデブー（bootstrap）を TCP ソケットで行いますが、`efa-only` インターフェースは IP を持たないため、これらを名指しすると bootstrap 用の到達可能なインターフェースが見つからず接続できません。除外パターンで `lo` やコンテナ仮想 NIC（`docker`／`veth`）を外し、ノードの IP を持つインターフェースを NCCL に選ばせるのが正しい書き方です。
+要点は `NCCL_SOCKET_IFNAME` を `^` で始まる除外パターンで書くことです。`efa0,efa1,...` のような許可リスト方式で名指しすると bootstrap に失敗します。NCCL は起動時の rank 間ランデブーを TCP ソケットで行いますが、`efa-only` インターフェースは IP を持たないため、これらを名指しすると bootstrap 用の到達可能なインターフェースが見つからず接続できません。除外パターンで `lo` やコンテナ仮想 NIC（`docker`／`veth`）を外し、ノードの IP を持つインターフェースを NCCL に選ばせるのが正しい書き方です。
+
+https://github.com/awslabs/awsome-distributed-ai/blob/main/1.architectures/efa-cheatsheet.md
+
+awsome-distributed-ai リポジトリに EFA Cheatsheet があるので参考にすると良いでしょう。
 
 ## 4. 測定ワークロードを投入してノードを起動する
 
