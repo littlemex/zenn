@@ -102,27 +102,78 @@ EOSH
 
 # ワークショップ実施
 
-ここからは実機で GDRCopy を有効にし、その効果を測る。[Basic05](eks-capacity-block) で Capacity Block を確保し、[Basic06](eks-efa-topology) で 2 ノードの EFA 通信が動く状態を前提とする。本章のノードセレクタ `karpenter.sh/capacity-type=reserved` は Basic05 で確保した予約ノードを指す。以下の実測値はすべて p5.48xlarge 2 ノード、H100 × 16、torchrun での結果である。
+ここからは実機で GDRCopy を有効にし、その効果を測る。以降のコマンドは、これまでの章と同じく `k`（`alias k=kubectl`）で記述し、current-context と既定 namespace は Basic01 で設定済みの前提である（開き直した場合は Basic01 step 3 の `use-context` / `set-context` / `alias` を実行し直す）。実測値はすべて p5.48xlarge 2 ノード、H100 × 16 での結果である。
 
-## 1. GDRCopy が無い状態を確認する
+## 1. 前提を確認する
 
-まず現状で `/dev/gdrdrv` が無いこと、NCCL が GDRCopy の初期化に失敗することを確認する。GPU ノードの一つで、`/dev/gdrdrv` が無いことを見る。
+- Basic05 で Capacity Block を確保済み（同一 AZ・2 台、EFA を複数枚持つ p5.48xlarge）。手順 5 の 2 ノード測定で必要
+- Basic04/05 で GPU プール `gpu-p5` を `accelerator-pools.auto.tfvars` に定義し `terraform apply` 済み
+- Basic06 で 2 ノードの EFA 通信が動くことを確認済み。本章はその通信の一部を最適化する GDRCopy を足す章で、EFA を有効にする操作ではない
+- `k` エイリアスと current-context は Basic01 で設定済み（本章のコマンドは `k` で記述する）
+
+以降は対象プールと namespace を環境変数に置いておく。読者のプール名・インスタンスタイプに読み替える。
 
 ```bash
-NODE=$(kubectl get nodes -l karpenter.sh/capacity-type=reserved \
-  -o jsonpath='{.items[0].metadata.name}')
-kubectl debug node/$NODE -it --image=public.ecr.aws/amazonlinux/amazonlinux:2023 \
-  -- chroot /host bash -c 'ls -l /dev/gdrdrv 2>&1; lsmod | grep gdrdrv || echo "gdrdrv not loaded"'
+export NAMESPACE=distai
+POOL=gpu-p5
+ITYPE=p5.48xlarge
 ```
 
-`gdrdrv not loaded` と `/dev/gdrdrv: No such file or directory` が出れば、GDRCopy が無い状態である。`kubectl debug node` は `node-debugger-` で始まる名前の Pod を残すので、確認が終わったら `kubectl get pod | grep node-debugger` で名前を調べて削除しておく。
+## 2. GDRCopy が無い状態を確認する
 
-## 2. gdrcopy_mode を有効にして適用する
-
-本番運用の推奨は `userdata` だが、既存ノードを入れ替えずにその場で検証するため、ここでは `daemonset` を `-var` の一時上書きで指定して apply する。
+まず現状で `/dev/gdrdrv` が無いことを確認する。この時点ではまだノードが 1 台も起動していないので、手順 3 で GPU Pod を起こしてから中を覗く。ここでは代わりに、Terraform 側の設定が既定の `off`（GDRCopy を入れない）であることを確認しておく。
 
 ```bash
-cd "$(git rev-parse --show-toplevel)"/infra/eks
+cd infra/eks
+terraform output -raw gdrcopy_mode 2>/dev/null || echo "gdrcopy_mode is unset (= off)"
+```
+
+`off` または未設定であれば、ノードには `gdrdrv` が載らず、NCCL は Basic06 で見た `Failed to open gdr handle` を出す状態である。
+
+## 3. gdrcopy_mode を有効にしてノードを起こす
+
+まず 2 台の GPU ノードを起こす。Basic06 と同じく、GPU を全数要求する使い捨ての warmup Pod を 2 つ投入して Karpenter にノードを起動させる。`ncclSshd` などの hugepages を要求する Pod で直接起こそうとすると、Karpenter が `no instance type has enough resources` と判定して NodeClaim を作らないため、hugepages を要求しない warmup Pod で先に起こすのが確実である（この罠は Basic06 で詳説した）。
+
+```bash
+k create namespace "$NAMESPACE" --dry-run=client -o yaml | k apply -f -
+
+GPU=$(aws ec2 describe-instance-types --instance-types "$ITYPE" \
+  --query 'InstanceTypes[0].GpuInfo.Gpus[0].Count' --output text)
+
+for i in 0 1; do
+  cat <<EOF | k apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: warmup-$i
+  namespace: $NAMESPACE
+  labels: { app: warmup }
+spec:
+  restartPolicy: Never
+  nodeSelector: { node-role: $POOL }
+  tolerations:
+    - { key: nvidia.com/gpu, operator: Exists, effect: NoSchedule }
+    - { key: capacity-reservation, operator: Exists, effect: NoSchedule }
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector: { matchLabels: { app: warmup } }
+          topologyKey: kubernetes.io/hostname
+  containers:
+    - name: smi
+      image: nvidia/cuda:12.4.1-base-ubuntu22.04
+      command: ["sleep", "3600"]
+      resources: { limits: { nvidia.com/gpu: "$GPU" } }
+EOF
+done
+
+k wait --for=condition=ready pod -l app=warmup -n "$NAMESPACE" --timeout=20m
+k get nodes -l node-role=$POOL
+```
+
+2 台が `Ready` になったら、`gdrcopy_mode` を有効にして `gdrdrv` を載せる。本番運用の推奨は `userdata` だが、それはノードの再作成でしか反映されない。ここでは起動済みの 2 ノードにその場で載せるため `daemonset` を `-var` の一時上書きで指定する。
+
+```bash
 terraform apply -var gdrcopy_mode=daemonset
 ```
 
@@ -130,24 +181,49 @@ terraform apply -var gdrcopy_mode=daemonset
 `terraform.tfvars` に `gdrcopy_mode = "userdata"` を書き込むのは、恒久的にこの方式へ切り替えると決めたときだけにする。tfvars に書くと EC2NodeClass の userData が変わり、次回以降の `terraform apply` で Karpenter の drift 検知が既存ノードの置き換えを走らせる。Capacity Block 上で意図しないノード再作成が起きると、再取得に失敗して GPU を失うおそれがある。本章の検証は `-var` の一時上書きだけで行う。
 :::
 
-`gdrdrv-loader` の DaemonSet が GPU ノードに配布され、initContainer が `gdrcopy-kmod` をインストールして `gdrdrv` をロードする。ロードの完了を確認する。
+`gdrdrv-loader` の DaemonSet が GPU ノードに配布され、initContainer が `gdrcopy-kmod` をインストールして `gdrdrv` をロードする。ロードの完了はこの DaemonSet のログで確認できる。
 
 ```bash
-kubectl -n kube-system logs -l app=gdrdrv-loader -c load-gdrdrv --tail=-1 \
+k -n kube-system logs -l app=gdrdrv-loader -c load-gdrdrv --tail=-1 \
   | grep -E "verified|already loaded"
-kubectl debug node/$NODE -it --image=public.ecr.aws/amazonlinux/amazonlinux:2023 \
-  -- chroot /host bash -c 'lsmod | grep gdrdrv; ls -l /dev/gdrdrv'
 ```
 
-`gdrdrv` がロードされ、`/dev/gdrdrv`（キャラクタデバイス、`c` で始まる）が現れれば成功である。
+`verified: gdrdrv loaded, /dev/gdrdrv present`（または `already loaded`）が 2 ノード分出れば成功である。
 
-## 3. GDRCopy が単体で機能することを確認する（ポジティブコントロール）
+## 4. GDRCopy が単体で機能することを確認する（ポジティブコントロール）
 
-効果を測る前に、GDRCopy そのものが正しく動いていることを確かめておく。これをやらないと、後の比較で差が出なかったときに「効かない」のか「そもそも GDRCopy が動いていない」のかを区別できない。GDRCopy に付属する `copylat` は、CPU が BAR1 マッピング経由で GPU メモリへ書き込むレイテンシを測る。GPU の DLC イメージには `copylat` が含まれているので、`/dev/gdrdrv` をマウントした GPU Pod のなかで実行する。
+効果を測る前に、GDRCopy そのものが正しく動いていることを確かめておく。これをやらないと、後の比較で差が出なかったときに「効かない」のか「そもそも GDRCopy が動いていない」のかを区別できない。GDRCopy に付属する `copylat` は、CPU が BAR1 マッピング経由で GPU メモリへ書き込むレイテンシを測る。GPU 向けの DLC イメージにはこのツールが含まれるので、`/dev/gdrdrv` をマウントした GPU Pod を 1 つ立てて実行する。
 
 ```bash
-kubectl exec <gpu-pod> -- copylat
+cat <<EOF | k apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gdrcopy-probe
+  namespace: $NAMESPACE
+spec:
+  restartPolicy: Never
+  nodeSelector: { node-role: $POOL }
+  tolerations:
+    - { key: nvidia.com/gpu, operator: Exists, effect: NoSchedule }
+    - { key: capacity-reservation, operator: Exists, effect: NoSchedule }
+  containers:
+    - name: probe
+      image: 763104351884.dkr.ecr.us-east-2.amazonaws.com/pytorch-training:2.10.0-gpu-py313-cu130-ubuntu22.04-ec2
+      command: ["sleep", "3600"]
+      securityContext: { privileged: true }
+      resources: { limits: { nvidia.com/gpu: "1" } }
+      volumeMounts:
+        - { name: gdrdrv, mountPath: /dev/gdrdrv }
+  volumes:
+    - { name: gdrdrv, hostPath: { path: /dev/gdrdrv, type: CharDevice } }
+EOF
+
+k wait --for=condition=ready pod/gdrcopy-probe -n "$NAMESPACE" --timeout=10m
+k exec gdrcopy-probe -n "$NAMESPACE" -- copylat
 ```
+
+`image` は自分のリージョンの DLC に読み替える（DLC のアカウント ID とタグは Basic07 で使うものと同じである）。GDRCopy をマウントするため `privileged: true` を与えている点に注意する。実機出力は次のとおり。
 
 ```text
 Test                    Size(B)   Avg.Time(us)
@@ -159,11 +235,11 @@ gdr_copy_to_mapping        4096       0.4793
 gdr_copy_to_mapping        8192       0.7943
 ```
 
-1 バイトで 0.30 us、8 KB でも 0.79 us と、CPU から GPU メモリへの直接コピーが非常に低いレイテンシで動いている。GDRCopy が BAR1 マッピングを確立し、コピー経路として機能していることの直接の証拠である。この 0.3 us オーダーという値を覚えておく。次のマルチノード測定で、この最適化がなぜ表に出てこないのかの鍵になる。
+1 バイトで 0.30 us、8 KB でも 0.79 us と、CPU から GPU メモリへの直接コピーが非常に低いレイテンシで動いている。GDRCopy が BAR1 マッピングを確立し、コピー経路として機能していることの直接の証拠である。この 0.3 us オーダーという値を覚えておく。次のマルチノード測定で、この最適化がなぜ表に出てこないのかの鍵になる。確認が終わったら `k delete pod gdrcopy-probe -n "$NAMESPACE"` で消しておく。
 
-## 4. マルチノード通信でレイテンシを測る
+## 5. マルチノード通信でレイテンシを測る
 
-GDRCopy が効くとすれば、小さいメッセージの受信コピーである。そこで小メッセージ中心の 2 ノード間 point-to-point レイテンシと all-reduce レイテンシを、`gdrdrv` をロードした状態（GDRCopy 有効）とアンロードした状態（無効）で測って並べる。各サイズについて 50 回の往復を 1 試行とし、20 試行の中央値をとり、往復時間の半分を片道レイテンシとした。測定は各条件で Pod を作り直して行う。無効状態は `gdrdrv` をアンロードして作るが、その手順と注意点（Pod の削除、DaemonSet の停止、特権の要件）は手順 6 にまとめてある。
+GDRCopy が効くとすれば、小さいメッセージの受信コピーである。そこで小メッセージ中心の 2 ノード間 point-to-point レイテンシと all-reduce レイテンシを、`gdrdrv` をロードした状態（GDRCopy 有効）とアンロードした状態（無効）で測って並べる。各サイズについて 50 回の往復を 1 試行とし、20 試行の中央値をとり、往復時間の半分を片道レイテンシとした。測定は各条件で Pod を作り直して行う。無効状態は `gdrdrv` をアンロードして作るが、その手順と注意点（Pod の削除、DaemonSet の停止、特権の要件）は手順 7 にまとめてある。
 
 point-to-point（ノード間 EFA、rank 0 と別ノードの rank 8 の間）の結果を次に示す。
 
@@ -186,20 +262,21 @@ all-reduce（16 GPU）の結果を次に示す。
 
 どちらも GDRCopy の有無で差が出ていない。試行間のばらつきが数 us あるため、32 KB で無効側がわずかに速いといった逆転も現れるが、これはばらつきの範囲であって有効・無効の系統差ではない。バルク側でも、8 GB の all-reduce の busbw は有効・無効ともに 481 GB/s で一致した。
 
-手順 3 で GDRCopy 単体は 0.3 us で動くことを確認したうえで、なぜマルチノード通信では差が消えるのか。理由は二つある。一つは、EFA のノード間 point-to-point レイテンシが 40 us 前後で、これは EFA/SRD のネットワーク往復が支配的な値だという点である。GDRCopy が入れ替えるのは受信側のコピー経路の一部で、その経路自体が 0.3 us オーダーで動く。GDRCopy 有効化で変わりうるのは、この経路をフォールバック（ループバック read でバウンスバッファ経由）から差し替えたときの差分だが、いずれの経路もマイクロ秒オーダーであり、40 us のネットワーク往復の中に埋もれてしまう。もう一つは、NCCL の集合通信は小さいメッセージでも独自の低レイテンシプロトコル（LL/LL128）や GPUDirect RDMA の直接書き込みを使い、libfabric の eager 受信コピー経路（GDRCopy が置き換わる箇所）がクリティカルパスに乗りにくいという点である。
+手順 4 で GDRCopy 単体は 0.3 us で動くことを確認したうえで、なぜマルチノード通信では差が消えるのか。理由は二つある。一つは、EFA のノード間 point-to-point レイテンシが 40 us 前後で、これは EFA/SRD のネットワーク往復が支配的な値だという点である。GDRCopy が入れ替えるのは受信側のコピー経路の一部で、その経路自体が 0.3 us オーダーで動く。GDRCopy 有効化で変わりうるのは、この経路をフォールバック（ループバック read でバウンスバッファ経由）から差し替えたときの差分だが、いずれの経路もマイクロ秒オーダーであり、40 us のネットワーク往復の中に埋もれてしまう。もう一つは、NCCL の集合通信は小さいメッセージでも独自の低レイテンシプロトコル（LL/LL128）や GPUDirect RDMA の直接書き込みを使い、libfabric の eager 受信コピー経路（GDRCopy が置き換わる箇所）がクリティカルパスに乗りにくいという点である。
 
 つまり GDRCopy は「入れておくと NCCL の初期化警告が消え、libfabric の小メッセージ受信コピーが速くなる」ものであって、all-reduce や NCCL の point-to-point のレイテンシを目に見えて改善する機構ではない。GDRCopy の効果が表に出るのは、EFA のネットワークレイテンシに対してコピーコストの比率が大きくなる場面である。具体的には、libfabric を直接叩く小メッセージ主体の通信や、MoE の all-to-all のように数十 KB 級のメッセージを大量にやり取りする通信、CPU 主導で GPU メモリの小規模な読み書きを繰り返す制御パスなどが該当する。標準的な分散学習の集合通信を回すうえでは、GDRCopy を入れる前に、まず GPUDirect RDMA が効いていること（次の手順）を確認するほうが効果が大きい。
 
 :::message
-本測定は本章の構成（p5.48xlarge 2 ノード、H100 × 16、この libfabric・aws-ofi-nccl のバージョン）での結果である。GDRCopy の効果はネットワークレイテンシとメッセージサイズの比で決まるため、レイテンシのより低いファブリックや、より小さいメッセージ主体のワークロードでは差が出る可能性がある。読者の環境で効果を確かめるには、手順 3 の `copylat` で GDRCopy 単体の動作を確認したうえで、自分の通信パターンで有効・無効を測るとよい。
+本測定は本章の構成（p5.48xlarge 2 ノード、H100 × 16、この libfabric・aws-ofi-nccl のバージョン）での結果である。GDRCopy の効果はネットワークレイテンシとメッセージサイズの比で決まるため、レイテンシのより低いファブリックや、より小さいメッセージ主体のワークロードでは差が出る可能性がある。読者の環境で効果を確かめるには、手順 4 の `copylat` で GDRCopy 単体の動作を確認したうえで、自分の通信パターンで有効・無効を測るとよい。
 :::
 
-## 5. GPUDirect RDMA が効いていることを確認する
+## 6. GPUDirect RDMA が効いていることを確認する
 
-GDRCopy の有無に関わらず、EFA のバルク転送を支える GPUDirect RDMA が効いていることは NCCL のログで確認できる。この確認は NCCL ジョブを一度実行したあとに行う。`GPU Direct RDMA Enabled` は NCCL が GPU メモリを NIC に登録したときに出るログなので、ジョブを走らせる前や登録前のノードでは出ない。
+GDRCopy の有無に関わらず、EFA のバルク転送を支える GPUDirect RDMA が効いていることは NCCL のログで確認できる。この確認は NCCL ジョブを一度実行したあとに行う。`GPU Direct RDMA Enabled` は NCCL が GPU メモリを NIC に登録したときに出るログなので、ジョブを走らせる前や登録前のノードでは出ない。Basic06 の NCCL 測定ジョブ（`ncclTrainjob`）を流したあとに、その Pod のログを見る。
 
 ```bash
-kubectl logs <nccl-pod> | grep "GPU Direct RDMA Enabled"
+k -n "$NAMESPACE" logs -l jobset.sigs.k8s.io/jobset-name=nccl-trainjob --tail=-1 \
+  | grep "GPU Direct RDMA Enabled"
 ```
 
 ```text
@@ -207,11 +284,11 @@ NET/Libfabric : GPU Direct RDMA Enabled for HCA 0 'rdmap85s0'
 NET/Libfabric : GPU Direct RDMA Enabled for HCA 1 'rdmap87s0'
 ```
 
-このクラスタの GPU ノードでは、`nvidia-peermem` という別モジュールを使わずに、NVIDIA のオープンソースカーネルモジュール（`nvidia.ko`）自身が公開する GPU peer-to-peer DMA の関数を EFA ドライバが直接使って GPUDirect RDMA を確立している。ホストで確認すると、`nvidia-peermem` はロードされていないのに EFA ドライバのログに peer memory の獲得が記録されている。この確認も NCCL ジョブの実行後に行う。
+このクラスタの GPU ノードでは、`nvidia-peermem` という別モジュールを使わずに、NVIDIA のオープンソースカーネルモジュール（`nvidia.ko`）自身が公開する GPU peer-to-peer DMA の関数を EFA ドライバが直接使って GPUDirect RDMA を確立している。これは `gdrcopy-probe` Pod（`privileged` かつ host マウント可）から `nsenter` でホストの `dmesg` を覗くと確認できる。`nvidia-peermem` はロードされていないのに EFA ドライバが peer memory を獲得している。
 
 ```bash
-kubectl debug node/$NODE -it --image=public.ecr.aws/amazonlinux/amazonlinux:2023 \
-  -- chroot /host bash -c 'lsmod | grep -E "nvidia_peermem|gdrdrv"; dmesg | grep -i "efa.*peer memory"'
+k exec gdrcopy-probe -n "$NAMESPACE" -- \
+  bash -c 'nsenter -t 1 -m -- sh -c "lsmod | grep -E \"nvidia_peermem|gdrdrv\"; dmesg | grep -i \"efa.*peer memory\" | tail -1"'
 ```
 
 ```text
@@ -220,15 +297,25 @@ efa: Acquired peer memory using P2P
 
 `nvidia-peermem` の行が出ず、それでも `Acquired peer memory using P2P` が出ていれば、`nvidia.ko` 直結の経路で GPUDirect RDMA が効いている。GDRCopy とは独立にバルク転送が成立していることの裏付けになる。
 
-## 6. 元に戻す
+## 7. 後始末をする
 
-検証のために `daemonset` で載せた場合、`gdrcopy_mode` を `off` に戻すと Terraform が管理する DaemonSet は消える。
+まず本章で立てた Pod を消す。GPU を占有したままだと後続のワークロードがスケジュールされない。
 
 ```bash
+k delete pod -l app=warmup -n "$NAMESPACE" --ignore-not-found
+k delete pod gdrcopy-probe -n "$NAMESPACE" --ignore-not-found
+```
+
+`gdrcopy_mode` を `off` に戻すと、Terraform が管理する `gdrdrv-loader` DaemonSet は消える。
+
+```bash
+cd infra/eks
 terraform apply -var gdrcopy_mode=off
 ```
 
-ただしこれは Terraform 管理リソースの撤去であって、ホストの原状回復ではない。ノードには `gdrcopy-kmod` パッケージと有効化された `gdrcopy.service` が残り、ロード済みの `gdrdrv` も残る。`gdrcopy.service` が有効なままなので、ノードを再起動しても `/dev/gdrdrv` は復活する。これらは無害だが、完全に消したい場合はノードを入れ替えるか、ノード上で `dnf remove gdrcopy-kmod` する。GDRCopy の有無を比較するために手作業で `rmmod gdrdrv` する場合は、`/dev/gdrdrv` を開いている Pod を先にすべて消し（開いていると `Module is in use` で外せない）、`gdrdrv-loader` DaemonSet も止めてから（動いていると再ロードされる）、`CAP_SYS_MODULE` を持つ特権コンテキストで実行する。アンロード後は `/dev/gdrdrv` が消えるため、`hostPath` に `type: CharDevice` を指定した Pod は起動できなくなる点にも注意する。
+ただしこれは Terraform 管理リソースの撤去であって、ホストの原状回復ではない。ノードには `gdrcopy-kmod` パッケージと有効化された `gdrcopy.service` が残り、ロード済みの `gdrdrv` も残る。`gdrcopy.service` が有効なままなので、ノードを再起動しても `/dev/gdrdrv` は復活する。これらは無害なので、通常は Basic06 と同じ `04-teardown.sh` でノードプールごと退避すれば十分である。Capacity Block のノードは予約期間の終了時に AWS 側で回収されるため、モジュールがホストに残ることを気にする必要はない。
+
+手順 5 のように GDRCopy の有無を手作業で切り替えて測る場合にだけ、`gdrdrv` のアンロードが必要になる。その際は `/dev/gdrdrv` を開いている Pod を先にすべて消し（開いていると `Module is in use` で外せない）、`gdrdrv-loader` DaemonSet も止めてから（動いていると再ロードされる）、`CAP_SYS_MODULE` を持つ特権コンテキストで `rmmod gdrdrv` する。アンロード後は `/dev/gdrdrv` が消えるため、`hostPath` に `type: CharDevice` を指定した Pod は起動できなくなる点にも注意する。
 
 # まとめ
 
