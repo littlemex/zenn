@@ -16,3 +16,4 @@ chapters:
   - eks-shared-storage
   - eks-teardown-and-options
   - eks-image-cache
+  - eks-gdrcopy
