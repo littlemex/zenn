@@ -523,6 +523,18 @@ EFA が効いていることを確かめるには絶対値だけでなく比較�
 NCCL テストを実行するには、テスト対象の GPU が他の Pod（Ray ワーカーなど）に占有されていないことが前提です。既存のワークロードを停止してからテストを実行してください。
 :::
 
+## NCCL ログに出る GDRCopy 警告の正体
+
+EFA でノード間通信を回すと、NCCL のログに次の一行が出ることがある。
+
+```text
+NET/OFI Failed to initialize GDRCopy: Failed to open gdr handle
+```
+
+これはエラーではなく、GDRCopy という補助機構が使えなかったという通知である。EFA がノード間で GPU メモリのデータをやり取りするとき、NIC が GPU メモリへ直接データを読み書きする経路が二段構えになっている。大きなメッセージのバルク転送は GPUDirect RDMA が NIC から GPU メモリへ直接 DMA するので、この経路は GDRCopy とは無関係に動く。一方で受信側の小さなメッセージのコピーには GDRCopy を使う道があり、これが無い場合は libfabric の EFA プロバイダが EFA デバイス経由のループバック read という代替経路でホストのバウンスバッファ越しにコピーする。つまり GDRCopy はマルチノード通信の小さなメッセージのレイテンシを詰めるための補助であって、EFA/NCCL がノード間で帯域を出すこと自体には必須ではない。上の警告が出ていても、`Selected provider is efa` と高い `busbw` が出ていれば EFA は正しく効いている。
+
+GDRCopy を実際に有効にするには、ノードのカーネルに `gdrdrv` というモジュールをロードして `/dev/gdrdrv` を用意する必要がある。Capacity Block の GPU AMI ではこれが標準で載っていないため、載せる仕組みを別途用意することになる。その仕組みと、GDRCopy を有効にしたときにマルチノード通信のレイテンシが実際にどうなるのか（結論を先に言えば、この構成では有意な差は出ない）の実測は、[Advanced02 - GDRCopy を有効にする](eks-gdrcopy) で扱う。
+
 ## 8. teardown する
 
 検証が終わったら、Capacity Block の期限が来る前にワークロードを退避します。まず本章で投入した TrainJob を消します。`04-teardown.sh` が削除するのは Deployment/StatefulSet/Job/MPIJob で、TrainJob（と配下の JobSet）はこの一覧に含まれないため、先に明示的に削除しないと Pod が残って NodePool の drain が引っかかります。
