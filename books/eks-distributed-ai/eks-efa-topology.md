@@ -188,7 +188,7 @@ aws ec2 describe-instance-types --instance-types g6.2xlarge g5.2xlarge g6e.12xla
 +--------+----------+------------------+
 ```
 
-## 3. NCCL_SOCKET_IFNAME の書き方を押さえる
+## 3. EFA 関連の環境変数
 
 その前に、この変数が何をするものかを押さえておきます。NCCL はマルチノード実行で 2 種類の通信を使い分けます。1 つはデータ本体の集合通信で、これは EFA/RDMA（`FI_PROVIDER=efa` で選ばれる経路）を通ります。もう 1 つは実行開始時に rank どうしが顔合わせをする bootstrap（ランデブー）で、こちらは通常の TCP/IP ソケットを使います。`NCCL_SOCKET_IFNAME` は後者の bootstrap にどのネットワークインターフェースを使うかを NCCL に指示する変数です。EFA を使う構成でも、この TCP 側のインターフェース選択を誤ると rank どうしが顔合わせできず、データ通信を始める前に止まってしまいます。だから「EFA を使うのに、なぜ TCP インターフェースの指定が要るのか」という話になります。
 
