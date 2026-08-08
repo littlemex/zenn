@@ -297,7 +297,7 @@ kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -
 POOL=gpu-p4d
 ITYPE=p4d.24xlarge   # 対象プールの instance_types に合わせる
 GPU=$(aws ec2 describe-instance-types --instance-types "$ITYPE" \
-  --query 'InstanceTypes[0].GpuInfo.Gpus[0].Count' --output text)
+  --query 'InstanceTypes[0].GpuInfo.Gpus[0].Count' --output text --region $REGION)
 
 for i in 0 1; do
   cat <<EOF | kubectl apply -f -
