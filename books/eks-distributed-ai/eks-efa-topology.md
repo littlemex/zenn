@@ -279,15 +279,6 @@ Karpenter が起動時に付ける `node-role=<プール名>` を使えば、ノ
 aws ecr describe-images --registry-id 763104351884 --repository-name pytorch-training \
   --query 'sort_by(imageDetails,&imagePushedAt)[-20:].imageTags[]' --output text | tr '\t' '\n'
 ```
-:::
-
-2 つの Pod には runtime が hostname 単位の `podAntiAffinity` を入れているため、必ず別ノードに分かれます。同一ノードに載ると NCCL は NVLink だけで通信を完結させてしまい、EFA について何も検証できないテストになります。
-
-:::message
-この検証には ssh も sshd も SSH 鍵も `privileged` も必要ありません。`mpirun` を ssh 越しに使う方式（このチャートには `ncclSshd` として残してあります）だと、Pod に sshd を常駐させ、鍵ペアを両 Pod に配り、EFA デバイスのために `privileged: true` を与える必要がありました。それに加えて、起動の失敗が `mpirun` の内部で起きるため Kubernetes 側からは Pod もイベントもログも正常に見えたまま無反応になる、という厄介な故障の仕方をします。TrainJob なら失敗は Pod の状態として観測できます。
-
-一方で `ncclSshd` にも残す価値があります。`nccl-tests` の `all_reduce_perf` が出す busbw は広く公開されている数値と直接比較できるため、他の環境の測定値と突き合わせたいときはそちらを使ってください。
-:::
 
 ## 5. ノード上の EFA リソースを確認する
 
@@ -407,25 +398,25 @@ NCCL テストを実行するには、テスト対象の GPU が他の Pod（Ray
 
 ## NCCL ログに出る GDRCopy 警告の正体
 
-EFA でノード間通信を回すと、NCCL のログに次の一行が出ることがある。
+EFA でノード間通信を回すと、NCCL のログに次の一行が出ることがあります。
 
 ```text
 NET/OFI Failed to initialize GDRCopy: Failed to open gdr handle
 ```
 
-これはエラーではなく、GDRCopy という補助機構が使えなかったという通知である。EFA がノード間で GPU メモリのデータをやり取りするとき、NIC が GPU メモリへ直接データを読み書きする経路が二段構えになっている。大きなメッセージのバルク転送は GPUDirect RDMA が NIC から GPU メモリへ直接 DMA するので、この経路は GDRCopy とは無関係に動く。一方で受信側の小さなメッセージのコピーには GDRCopy を使う道があり、これが無い場合は libfabric の EFA プロバイダが EFA デバイス経由のループバック read という代替経路でホストのバウンスバッファ越しにコピーする。つまり GDRCopy はマルチノード通信の小さなメッセージのレイテンシを詰めるための補助であって、EFA/NCCL がノード間で帯域を出すこと自体には必須ではない。上の警告が出ていても、`Selected provider is efa` と高い `busbw` が出ていれば EFA は正しく効いている。
+これはエラーではなく、GDRCopy という補助機構が使えなかったという通知です。EFA がノード間で GPU メモリのデータをやり取りするとき、NIC が GPU メモリへ直接データを読み書きする経路が二段構えになっています。大きなメッセージのバルク転送は GPUDirect RDMA が NIC から GPU メモリへ直接 DMA するので、この経路は GDRCopy とは無関係に動きます。一方で受信側の小さなメッセージのコピーには GDRCopy を使う道があり、これが無い場合は libfabric の EFA プロバイダが EFA デバイス経由のループバック read という代替経路でホストのバウンスバッファ越しにコピーします。つまり GDRCopy はマルチノード通信の小さなメッセージのレイテンシを詰めるための補助であって、EFA/NCCL がノード間で帯域を出すこと自体には必須ではありません。上の警告が出ていても、`Selected provider is efa` と高い `busbw` が出ていれば EFA は正しく効いています。
 
-GDRCopy を実際に有効にするには、ノードのカーネルに `gdrdrv` というモジュールをロードして `/dev/gdrdrv` を用意する必要がある。Capacity Block の GPU AMI ではこれが標準で載っていないため、載せる仕組みを別途用意することになる。その仕組みと、GDRCopy を有効にしたときにマルチノード通信のレイテンシが実際にどうなるのか（結論を先に言えば、この構成では有意な差は出ない）の実測は、[Advanced02 - GDRCopy を有効にする](eks-gdrcopy) で扱う。
+GDRCopy を実際に有効にするには、ノードのカーネルに `gdrdrv` というモジュールをロードして `/dev/gdrdrv` を用意する必要があります。AMI にこれが標準で載っていない場合、載せる仕組みを別途用意することになります。その仕組みと、GDRCopy を有効にしたときにマルチノード通信のレイテンシが実際にどうなるのかの実測は、[Advanced02 - GDRCopy を有効にする](eks-gdrcopy) で扱います。
 
 ## 8. teardown する
 
-検証が終わったら、Capacity Block の期限が来る前にワークロードを退避します。`04-teardown.sh` は Deployment/StatefulSet/Job/TrainJob/MPIJob を削除対象に含むため、本章で投入した `ncclTrainjob` もこのスクリプトで消えます。TrainJob は配下に JobSet が管理する Pod を持ちますが、スクリプトは TrainJob の削除がタイムアウトした場合に finalizer を外して確実に消すフォールバックまで備えているので、Pod が残って NodePool の drain が引っかかることはありません。単独で先に消しておきたい場合は次のコマンドを使いますが、必須ではありません。
+検証が終わったら、ワークロードを退避します。`04-teardown.sh` は Deployment/StatefulSet/Job/TrainJob/MPIJob を削除対象に含むため、本章で投入した `ncclTrainjob` もこのスクリプトで消えます。TrainJob は配下に JobSet が管理する Pod を持ちますが、スクリプトは TrainJob の削除がタイムアウトした場合に finalizer を外して確実に消すフォールバックまで備えているので、Pod が残って NodePool の drain が引っかかることはありません。単独で先に消しておきたい場合は次のコマンドを使いますが、必須ではありません。
 
 ```bash
 k delete trainjob nccl-trainjob -n "$NAMESPACE" --ignore-not-found
 ```
 
-Basic05 の helper script でノードプールを退避します。スクリプトはリポジトリ内の `infra/eks/scripts` にあります。
+helper script でノードプールを退避する場合、 `infra/eks/scripts` にスクリプトがあります。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks/scripts
@@ -436,11 +427,11 @@ cd "$(git rev-parse --show-toplevel)"/infra/eks/scripts
 
 # まとめ
 
-本章では、Karpenter が起動する EFA 対応ノードで EFA が正しく構成され、実際にノード間で帯域が出ていることを確認しました。カード枚数とレイアウトは EC2 の `DescribeInstanceTypes` から plan 時に導出されるため、インスタンスタイプを書けば `networkInterfaces` は自動生成されます。Pod が要求できる EFA 数はカード枚数より 1 つ少なく、これは card 0 がノードの IP を担うためです。この値は `terraform output accelerator_pool_efa_schedulable` とノードの allocatable の両方で確認でき、両者が一致することを実機で見ました。
+本章では、Karpenter が起動する EFA 対応ノードで EFA が正しく構成され、実際にノード間で帯域が出ていることを確認しました。カード枚数とレイアウトは EC2 の `DescribeInstanceTypes` から plan 時に導出されるため、インスタンスタイプを書けば `networkInterfaces` は自動生成されます。
 
 加えて、実装を読まないと気づきにくい 2 点を押さえました。EFA のセキュリティグループには ingress と egress の**両方**に self-referencing ルールが必要で、egress を CIDR で書いても SRD トラフィックは通りません。`NCCL_SOCKET_IFNAME` は許可リストではなく `^` 始まりの除外パターンで書きます。どちらも設定を誤ると「EFA を選んだはずなのにデータが流れない」という診断困難な症状になります。
 
-帯域は Basic05 で確保した p4d.24xlarge 2 台で busbw 57.8 GB/s（対照の単一ノード NVLink は 227.1 GB/s）でした。NCCL のログが `Selected provider is efa (found 3 nics)` を示し、この `3` が手順 2 で見た schedulable EFA 数と一致することが、EFA が意図どおり配線されている証拠になります。
+帯域は p4d.24xlarge 2 台で busbw 57.8 GB/s（対照の単一ノード NVLink は 227.1 GB/s）でした。NCCL のログが `Selected provider is efa (found 3 nics)` を示し、この `3` が手順 2 で見た schedulable EFA 数と一致することが、EFA が意図どおり配線されている証拠になります。
 
 # 参考資料
 
