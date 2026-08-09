@@ -280,6 +280,8 @@ aws ecr describe-images --registry-id 763104351884 --repository-name pytorch-tra
   --query 'sort_by(imageDetails,&imagePushedAt)[-20:].imageTags[]' --output text | tr '\t' '\n'
 ```
 
+:::
+
 ## 5. ノード上の EFA リソースを確認する
 
 手順 4 でノードが起動したら、手順 2 の値が実際にノードへ反映されているかを確認します。ノードが `Ready` になっていれば、測定 Pod の `Running` を待たずにこの allocatable 確認を実行できます（測定 Pod は DLC イメージの pull で `ContainerCreating` に留まっていることがありますが、ノードの EFA allocatable はその前から確認できます）。
