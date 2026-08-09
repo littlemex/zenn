@@ -3,10 +3,10 @@ title: "Basic08 - Observability (Prometheus + Grafana で GPU を可視化する
 free: true
 ---
 
-本章では、Basic07 で動かした GPU ワークロードを「見える化」します。kube-prometheus-stack（Prometheus + Grafana）を導入し、NVIDIA GPU Operator に同梱される DCGM exporter が公開する GPU メトリクス（使用率・温度・メモリなど）を Grafana の UI で確認するところまでを扱います。
+本章では、Basic07 で動かした GPU ワークロードを対象に、kube-prometheus-stack（Prometheus + Grafana）を導入し、NVIDIA GPU Operator に同梱される DCGM exporter が公開する GPU メトリクス（使用率・温度・メモリなど）を Grafana の UI で確認するところまでを扱います。
 
 :::message
-この observability スタックは Terraform モジュール（`infra/eks`）には含まれていません。ワークショップの中で Helm で追加導入するコンポーネントです。クラスタの基盤（Basic01-07）とは独立して、後から足したり外したりできます。
+この observability スタックは Terraform モジュール（`infra/eks`）には含まれていません。ワークショップの中で Helm で追加導入するコンポーネントです。クラスタの基盤とは独立して、後から足したり外したりできます。
 :::
 
 # 解説
@@ -17,7 +17,7 @@ free: true
 
 ![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 
-図のアクセラレータノード（GPU）で動く DCGM exporter を起点に、`monitoring` namespace の Prometheus/Grafana へメトリクスが流れます。この observability レイヤー自体は Terraform 管理外のため図には描かれていません（後述の「注意」を参照してください）。
+図のアクセラレータノード（GPU）で動く DCGM exporter を起点に、`monitoring` namespace の Prometheus/Grafana へメトリクスが流れます。この observability レイヤー自体は Terraform 管理外のため図には描かれていません。
 
 ## これは何をするものか
 
@@ -25,42 +25,22 @@ GPU を使った分散学習・推論では、「GPU が本当に使われてい
 
 構成要素は 3 つです。
 
-- **DCGM exporter**: NVIDIA の Data Center GPU Manager が公開する GPU メトリクス（使用率 `DCGM_FI_DEV_GPU_UTIL`、温度、メモリ使用量、電力など）を Prometheus 形式で公開する exporter です。この book では **Basic04 で導入した NVIDIA GPU Operator に同梱**されており、GPU ノードが立つと自動的に各ノードで動きます。追加導入は不要です
-- **Prometheus**: 各 exporter からメトリクスを定期的に収集（scrape）し、時系列データとして保持します
+- **DCGM exporter**: NVIDIA の Data Center GPU Manager が公開する GPU メトリクスを Prometheus 形式で公開する exporter です。この book では **Basic04 で導入した NVIDIA GPU Operator に同梱**されており、GPU ノードが立つと自動的に各ノードで動きます。
+- **Prometheus**: 各 exporter からメトリクスを定期的収集して保持します
 - **Grafana**: Prometheus のデータをダッシュボードとして可視化します
 
 Prometheus と Grafana は [kube-prometheus-stack](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack) という Helm チャートでまとめて導入します。このチャートは Prometheus Operator・Grafana・node-exporter・kube-state-metrics・各種 Kubernetes ダッシュボードを一括で入れてくれるため、EKS の observability の定番です。
 
 DCGM exporter のメトリクスを Prometheus に拾わせるには、2 つが噛み合う必要があります。1 つは exporter 側で ServiceMonitor が作られていること。GPU Operator の DCGM exporter は既定では ServiceMonitor を作らないため、この基盤では Basic04 の GPU Operator 導入時に、[`gpu-addons.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/gpu-addons.tf) の Helm values で `dcgmExporter.serviceMonitor.enabled = true` を設定して ServiceMonitor を出すようにしてあります。もう 1 つは Prometheus 側がそれを検出できること。kube-prometheus-stack のデフォルトは、自身の Helm リリースが付けたラベル（`release: kps`）を持つ ServiceMonitor しかラベルセレクタで拾いません。`prometheusSpec.serviceMonitorSelectorNilUsesHelmValues: false` にすると、このラベルセレクタが無効になり、ラベルに関係なくすべての ServiceMonitor を拾うようになります。namespace セレクタ（`serviceMonitorNamespaceSelector`）はデフォルトで全 namespace が対象なので、結果として GPU Operator が別 namespace に作った DCGM の ServiceMonitor も拾われます。この 2 つが揃って初めて GPU メトリクスが収集されます。
 
-## 全体の中での位置付け
-
-本章は Basic07（GPU ワークロード）の直後に置いています。Basic07 では on-demand の GPU 1 枚で vLLM の推論を動かしましたが、より大規模な学習・推論では Basic05 の Capacity Block で p5en x2 のような複数ノード・複数 GPU を確保します。いずれの場合も、その GPU が実際にどう使われているかは、そのままでは見えません。本章の observability を入れると、GPU の使用率がリアルタイムで Grafana に表示されます。「動かす（Basic07）→ 見える化する（Basic08）」という一続きの流れです。observability は基盤の構築・破棄とは独立しているため、必要なときだけ入れる運用でも構いません。
-
-## 注意
-
-**observability スタックは Terraform 管理外です。** この book の `infra/eks` モジュールは observability を含みません。Helm で別途入れるため、`terraform destroy`（Basic11）では消えません。クラスタごと消す場合は問題ありませんが、クラスタを残したまま observability だけ外すには次のように `helm uninstall` します。kube-prometheus-stack は uninstall 後も CRD（`prometheuses` / `servicemonitors` など）が残るので、完全に消したい場合は CRD も手で削除します。
-
-```bash
-helm uninstall kps -n monitoring
-# CRD は uninstall では消えないので、必要なら明示削除する
-k get crd | grep -E 'monitoring.coreos.com' | awk '{print $1}' | xargs -r k delete crd
-```
-
-**CRD の削除は、その CRD を使っているカスタムリソースをクラスタ全体からカスケード削除します。** 上記のコマンドで `servicemonitors.monitoring.coreos.com` を削除すると、GPU Operator が作った DCGM 用の ServiceMonitor もこのタイミングで一緒に消えます。observability をこの book のワークショップで一時的に外すだけなら実害はありませんが、GPU Operator の Helm values で `dcgmExporter.serviceMonitor.enabled` を有効にしたままこの CRD だけを消すと、次に kube-prometheus-stack を入れ直すまで ServiceMonitor が存在しない状態になります。observability を再導入しない方針であれば、この CRD 削除と合わせて Basic04 の GPU Operator 側の `dcgmExporter.serviceMonitor.enabled` も無効化しておくと構成の食い違いを避けられます。
-
-**Prometheus の retention とリソースに注意します。** GPU メトリクスは系列数が多く（GPU 1 枚ごと × メトリクス種別）、保持期間を長くするとストレージを消費します。実験用途では retention を数日程度に抑え、Prometheus の memory limit を設定しておくのが無難です。
-
-**Grafana の admin パスワードは Secret で管理します。** Helm values に平文で書くと Git に残るため、本番では External Secrets などで注入します。本章では検証用に values で指定する例を示しますが、`<your-password>` のプレースホルダのまま実行すると、その文字列自体が既知の弱いパスワードとしてそのまま設定されてしまうので、必ず各自の値に置き換えてください。`/tmp/kps-values.yaml` にも平文で残る点に注意してください。
-
 # ワークショップ実施
 
 ## 1. 前提を確認する
 
 - Basic04 で NVIDIA GPU Operator が導入済みであること。本章はこの GPU Operator が同梱する DCGM exporter の ServiceMonitor（`dcgmExporter.serviceMonitor.enabled=true`）を前提にしています。
-- `k` エイリアスと `KUBECONFIG` / `--context` は Basic01 で設定済みであること。
+- `k` エイリアスと `KUBECONFIG` / `--context` は設定済みであること。
 - GPU ノードが 1 台以上動いていることが望ましい（必須ではありませんが、本章の手順 4・5 でメトリクスの値を確認するには GPU ワークロードが実際に GPU を使っている状態が分かりやすいです）。Basic05 の Capacity Block や Basic07 の vLLM のいずれかを稼働させたまま本章に進むと、手順 4 で 0 以外の系列数を確認できます。
-- 手順 4 で Prometheus の targets API の応答を整形するのに `jq` を使います。手元に無い場合は `python3 -m json.tool` でも代替できます。
+- 手順 4 で Prometheus の targets API の応答を整形するのに `jq` を使います
 
 ## 2. kube-prometheus-stack を導入する
 
