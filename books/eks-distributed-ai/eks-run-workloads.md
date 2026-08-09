@@ -77,7 +77,31 @@ k create secret generic hf-token -n "$NAMESPACE" --from-literal=token=<HuggingFa
 
 この章では vLLM の公式イメージ `vllm/vllm-openai` をそのまま使うため、自前でのイメージビルドは不要です（`charts/experiments` の `gpuServingVllm.image` の既定値が公式イメージを指しています）。チャートをレンダリングして適用します。`nodeRole` には GPU プール名を渡します。プール名は `terraform.tfvars` の `accelerator_pools` の map キーで、Karpenter がそれを `node-role=<プール名>` としてノードに付けるため、この値でプールを指定できます。以下は Basic04 で定義した `gpu-ddp` をそのまま使う例です。プール名を変えている場合は以降も読み替えてください。
 
-CPU リクエストの既定値は `2` なので g6.2xlarge / g5.2xlarge（8 vCPU）のような小さい GPU ノードのプールでもそのまま載りますが、メモリのリクエスト既定値は `48Gi` で、`gpu-ddp` が選びうるどのタイプ（g6.2xlarge / g5.2xlarge / g6.xlarge / g5.xlarge、いずれも 32 GiB 以下）にも収まりません。そのため最初から、最小タイプの g6.xlarge / g5.xlarge（16 GiB）にも収まることを確認済みの値を指定します。
+投入コマンドの前に、この Deployment が指定する `memory` と `shmSize` が「何のメモリなのか」を押さえておきます。
+
+### vLLM が使う 2 種類のメモリ
+
+LLM のサービングでは、性質の異なる 2 つのメモリが登場します。読者が混同しやすい最大のポイントなので、先に切り分けます。
+
+1 つ目は **GPU の VRAM** です。vLLM はモデルの重みと KV キャッシュを GPU の VRAM に置きます。これは後述のマニフェストが要求する `nvidia.com/gpu: 1` で GPU を 1 枚丸ごと確保した時点で決まる話で、**Kubernetes の `memory` リクエストの管理外**です。vLLM は起動時に、指定された割合（`gpuMemoryUtilization`、本チャートでは `0.85`。vLLM 自体の既定は `0.9`）まで VRAM を確保しにいきますが、本章のモデル `Qwen2.5-0.5B-Instruct` は重みが fp16 で 1 GiB 程度と小さく、L4（24 GB VRAM）などの小型 GPU にも余裕で収まります。つまり **本章で VRAM は問題になりません**。
+
+2 つ目は **ノード（ホスト）の RAM** です。vLLM のプロセス自体は GPU とは別に、CPU 側の RAM も使います。Python と PyTorch のランタイム、HuggingFace からダウンロードしたモデルをロードするときの一時バッファ、トークナイザ、そして後述の `/dev/shm` などです。Pod の `memory` リクエスト／リミットが管理するのは**こちらの RAM だけ**です。**本節で問題になるのは、すべてこの RAM 側の話**です。
+
+### /dev/shm と shmSize とは何か
+
+`shmSize` は `/dev/shm`（共有メモリ）のサイズを指定するパラメータです。`/dev/shm` は Linux のプロセス間共有メモリで、実体はノードの RAM 上に作られる tmpfs です。ファイルのように見えますが、中身は RAM を消費します。vLLM（の下で動く PyTorch）は、ワーカープロセス間でテンソルを受け渡す経路や NCCL の共有メモリトランスポートに `/dev/shm` を使います。複数 GPU にまたがるテンソル並列で特に大量に必要になり、単一 GPU の本章では使用量はわずかです。
+
+ここで問題になるのが、コンテナランタイムが用意する `/dev/shm` の既定サイズは **64 MiB しかない**という点です。vLLM にはこれでは不足することがありますが、Kubernetes には `docker run --shm-size` に相当するフィールドがありません。そこで **`emptyDir: {medium: Memory}` を `/dev/shm` にマウントして広げる**のが定石で、本チャートの `shmSize` はその `emptyDir` の `sizeLimit` を設定するパラメータです。`medium: Memory` の `emptyDir` は tmpfs なので、その使用量もノードの RAM を実際に消費します。
+
+### チャートの既定値と、このプールに載らない理由
+
+これらのリクエスト値は本 book の Helm チャート `charts/experiments` の `values.yaml` にあり、`gpuServingVllm.memory` の既定は `48Gi`、`gpuServingVllm.shmSize` の既定は `8Gi` です。これは大きめの GPU ノードでの利用も想定した保守的な既定値で、本章の小型プール `gpu-ddp` には大きすぎます。
+
+Pod の `memory` リクエストがどこから確保されるかを押さえます。スケジューラや Karpenter が Pod の要求と突き合わせるのは、ノードの物理 RAM そのものではなく **allocatable** です。allocatable は、ノードの物理 RAM から kubelet が OS・kubelet 自身・退避（eviction）閾値のために予約する分を引いた「Pod に割り当ててよい上限」で、物理 16 GiB のノードでも約 12.3 GiB しかありません。さらにそこへ GPU Operator の各種 Pod や CNI などの DaemonSet が先に一部を占有します。
+
+CPU リクエストの既定値は `2` なので g6.2xlarge / g5.2xlarge（8 vCPU）のような小さい GPU ノードのプールでもそのまま載りますが、`memory=48Gi` は、`gpu-ddp` が選びうる最大タイプ（g6.2xlarge / g5.2xlarge、物理 32 GiB でも allocatable は 30 GiB 前後にとどまります）にすら届きません。プール内のどのタイプでも「載るノードがない」と判定されるため、Karpenter はノード（NodeClaim）を 1 つも作らず、Pod は解消されないまま `Pending` で止まります。エラーで落ちるのではなく、`k describe pod` の Event や Karpenter のログに `no instance type has enough resources` が出たまま進まない、という失敗です。
+
+そこで最小タイプの g6.xlarge / g5.xlarge（物理 16 GiB）にも収まる値を明示します。
 
 ```bash
 cd infra/eks
@@ -91,16 +115,18 @@ helm template exp charts/experiments -n "$NAMESPACE" \
     | k apply -f -
 ```
 
+`memory=8Gi` は、Qwen2.5-0.5B の重み（約 1 GiB）とランタイムのロードに十分な余裕を持たせた値です。`shmSize=2Gi` は、単一 GPU で `/dev/shm` の使用量がわずかであることを踏まえた値です。両方を小さく保つことで、最小タイプの allocatable 約 12.3 GiB に、DaemonSet の先客を差し引いても確実に収めています。
+
+### shmSize はスケジューリングに計上されないという罠
+
+もう 1 つ、`memory` と `shmSize` の関係で踏みやすい罠があります。`shmSize` はノードの RAM を実際に消費するにもかかわらず、**帳簿上の要求（`memory`）と、実際の RAM 消費（`memory` + `/dev/shm` 使用量）が乖離します**。この乖離が事故の源です。
+
+実消費の側では、`/dev/shm` の使用量は同じコンテナの `memory` リミットに対して計上されます。本チャートは `limits.memory` を `requests.memory` と同じ値に設定するため、`/dev/shm` の使用量とプロセスの使用量の合計がこのリミットを超えると、コンテナは OOMKill されます。加えて `/dev/shm` 自体が `shmSize` を超えた場合は、クラスタの kubelet 設定に応じて `/dev/shm` への書き込みが失敗するか Pod が退避されます。実務上は、**帳簿ではなく実消費で考え、`memory` と `shmSize` の合計を最小タイプの allocatable 未満に収める**のが安全です。たとえば `memory=12Gi` を指定して `shmSize` を既定の `8Gi` に残した場合、帳簿上の要求 `12Gi` は物理 16 GiB のノードの allocatable（約 12.3 GiB）ぎりぎりで、GPU Operator や CNI の DaemonSet が先に確保する分を引くと収まらないため `Pending` になり、物理 32 GiB のタイプに載ったとしても、`/dev/shm` を含む実使用が `12Gi` のリミットを超えれば OOMKill されます。帳簿と実消費のどちらの側でも破綻し得るということです。
+
+さらに厄介なのが、この乖離が Karpenter の起動ループを誘発する点です。
+
 :::message alert
-**既定値のまま（`memory` / `shmSize` を省略）実行すると、最初の一手で失敗します。** `memory` の既定値 `48Gi` は `gpu-ddp` プール内のどのタイプにも収まりません。
-:::
-
-ここで `memory` と `shmSize`（`/dev/shm` の `emptyDir: {medium: Memory}` サイズ）の関係を正しく理解しておく必要があります。`emptyDir` の `sizeLimit` は Pod の `requests` には計上されず、スケジューリング判断には使われません。つまり Kubernetes のスケジューラや Karpenter が実際に見る「要求」は `memory`（この例では `8Gi`）だけで、`shmSize` はそこに加算されません。`shmSize` はランタイム側で同じコンテナの `memory` limit に対して使用量が課金され、超えると `/dev/shm` への書き込みが失敗する、という別の制約です。
-
-とはいえ `shmSize` の使用量は最終的に同じコンテナの `memory` limit を食い合うため、実務上は**`memory` と `shmSize` の合計をノードの allocatable 未満に収める**運用が安全です。16 GiB ノード（g6.xlarge / g5.xlarge）の allocatable は約 12.6 GiB で、システム Pod 分を引くと余裕はさらに小さくなります。`memory=12Gi` だけを指定して `shmSize` を既定の `8Gi` に残すと、スケジューラが見る要求は `memory=12Gi` 単体で 16 GiB ノードの allocatable の大半を占め、システム Pod 分を引くと載らないことがあります。`gpu-ddp` には g6.2xlarge / g5.2xlarge（32 GiB）も含まれるため、`memory=20Gi` のような大きめの値であればそちらには載りますが、最小タイプの g6.xlarge / g5.xlarge には載りません。
-
-:::message alert
-**メモリ不足の失敗パターンは、CPU 不足とは Karpenter の挙動が異なります。** CPU リクエストがプール内の全タイプで allocatable を超えている場合、Karpenter は候補ゼロと判断してノードを起動しません（Pod は `Pending` のまま増えません）。一方、メモリリクエストが一部タイプには収まるように見える場合、Karpenter は「ノードを足せば載る」と解釈してノードを起動しますが、実際にそのノードで Pod が安定しないと再度起動を試み、起動と失敗を繰り返す**起動ループ**になります。実際にこの種の設定で放置したところ **spot ノードが 11 台まで増えました**（本来必要なのは 1 台です）。spot でも課金は発生するため、Pending や再起動を繰り返す Pod を見つけたら NodeClaim の数を必ず確認してください。
+**メモリ不足の失敗の仕方は、CPU 不足とは異なります。** CPU リクエストがプール内の全タイプで allocatable を超えている場合、Karpenter は候補ゼロと判断してノードを起動しません。一方、メモリリクエストが境界的な値の場合、起動ループに陥ることがあります。Karpenter はノードを起こす前に、各インスタンスタイプの allocatable を推定してスケジューリングをシミュレーションします（この推定には `VM_MEMORY_OVERHEAD_PERCENT`、既定 7.5% などが使われます）。この推定 allocatable では「載る」と判定されても、実際に起動したノードの allocatable が推定より小さいと Pod は載らず、`Pending` が解消されないため「もう 1 台足せば載る」と解釈して起動を繰り返します。実際にこの種の設定で放置したところ **spot ノードが 11 台まで増えました**。spot でも課金は発生するため、`Pending` や再作成を繰り返す Pod を見つけたら NodeClaim の数を必ず確認してください。
 
 ```bash
 k get nodeclaims -l karpenter.sh/nodepool=gpu-ddp
@@ -114,7 +140,7 @@ k delete nodeclaims -l karpenter.sh/nodepool=gpu-ddp
 ```
 :::
 
-最小タイプの g6.xlarge / g5.xlarge に確実に載せるには、上記コマンドの `memory=8Gi` / `shmSize=2Gi` のように両方を小さく保ち、合計の実使用量が allocatable 未満に収まるようにします。ノードの実際の allocatable は次のコマンドで確認できます。プールが複数のインスタンスタイプを並べている場合は、**最も小さいタイプに収まる値**を選んでください。
+ノードの実際の allocatable は次のコマンドで確認できます。プールが複数のインスタンスタイプを並べている場合は、**最も小さいタイプに収まる値**を選んでください。
 
 ```bash
 k get nodes -l node-role=gpu-ddp \
@@ -135,7 +161,7 @@ ip-10-0-a-b.us-west-2.compute.internal        g6.xlarge    12925972Ki
 ## 4. GPU ノードの起動と Pod の Ready を待つ
 
 ```bash
-k get nodeclaims -w        # gpu プールの NodeClaim が起動 → Ready
+k get nodeclaims -w
 ```
 
 実機出力（起動中 → Ready への遷移）:
@@ -158,7 +184,7 @@ port-forward してモデル一覧と推論を確認します。
 
 ```bash
 k -n "$NAMESPACE" port-forward svc/gpu-vllm 8000:8000 &
-sleep 2   # フォワード確立を待つ（省くと connection refused になることがあります）
+sleep 2
 curl -s localhost:8000/v1/models | python3 -m json.tool
 ```
 
@@ -215,19 +241,19 @@ curl -s localhost:8000/v1/chat/completions \
 }
 ```
 
-応答本文と `usage`（`prompt_tokens` / `completion_tokens` / `total_tokens`）が返れば、`gpu-ddp` プールの 1 枚の GPU で vLLM の推論が動いていることが確認できます（実測で prompt 36 / completion 31 / total 67 トークンの応答を確認しました）。なお `/v1/models` に出る `max_model_len` は Qwen2.5-0.5B 本来の 32K ではなく、チャートが軽量検証向けに `--max-model-len` を控えめに指定した値です。
+応答本文と `usage`（`prompt_tokens` / `completion_tokens` / `total_tokens`）が返れば、`gpu-ddp` プールの 1 枚の GPU で vLLM の推論が動いていることが確認できます。
 
 port-forward はバックグラウンド（`&`）で起動したので、確認が終わったら止めます。他にバックグラウンドジョブが無いか `jobs` で確認したうえで、対応する番号を `kill %<n>`（1 個だけなら `kill %1`）に指定します。
 
 ## 6. 後片付け
 
-推論サーバーを止めれば、GPU ノードは `consolidateAfter`（本構成の NodePool では 5 分に設定）のアイドル後に Karpenter が自動回収します。`gpu-ddp` は spot 優先で確保するため、使った分だけの課金です（spot が取れず on-demand にフォールバックしていた場合も、止めればそこで課金は止まります）。Deployment・Service の名前は `--set` の値に関わらず変わらないため、`gpuServingVllm.enabled=true` と `nodeRole` だけを付けてレンダリングした結果を `k delete` に渡せば、投入時に指定した `model` や `memory` などの値を覚えておく必要なく、チャートが出力した全リソースを取りこぼしなく削除できます。
+推論サーバーを止めれば、GPU ノードは `consolidateAfter`（本構成の NodePool では 5 分に設定）のアイドル後に Karpenter が自動回収します。`gpu-ddp` は spot 優先で確保するため、使った分だけの課金です。Deployment・Service の名前は `--set` の値に関わらず変わらないため、`gpuServingVllm.enabled=true` と `nodeRole` だけを付けてレンダリングした結果を `k delete` に渡せば、投入時に指定した `model` や `memory` などの値を覚えておく必要なく、チャートが出力した全リソースを取りこぼしなく削除できます。
 
 ```bash
 helm template exp charts/experiments -n "$NAMESPACE" \
-    --set gpuServingVllm.enabled=true --set gpuServingVllm.nodeRole=gpu-ddp \
+    --set gpuServingVllm.enabled=true --set gpuServingVllm.nodeRole=$POOL \
     | k delete -f -
-k get nodeclaims -w        # GPU ノードが消えるのを確認
+k get nodeclaims -w
 ```
 
 # まとめ
