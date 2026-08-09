@@ -3,7 +3,7 @@ title: "Basic07 - 軽量 vLLM で推論を動かす"
 free: true
 ---
 
-本章では、Basic03-06 で用意した Karpenter・アクセラレータプールの上に、vLLM の OpenAI 互換サーバーをデプロイし、軽量な言語モデルで推論を動かします。高額な Capacity Block は使わず、g5 / g6 系の GPU を spot 優先（取れなければ on-demand にフォールバック）で使う、誰でも試せる構成です。Basic02 の CPU 分散学習に続く「GPU を使った推論の最小体験」として位置づけます。
+本章では、Basic04 で用意した Karpenter・アクセラレータプールの上に、vLLM の OpenAI 互換サーバーをデプロイし、軽量な言語モデルで推論を動かします。高額な Capacity Block は使わず、g5 / g6 系の GPU を spot 優先（取れなければ on-demand にフォールバック）で使う、比較的試しやすい構成です。
 
 :::message
 本章は Capacity Block 不要です。Basic04 で定義した `gpu-ddp` プール（g6.2xlarge / g5.2xlarge などの小型 GPU、spot + on-demand フォールバック）をそのまま使い、GPU 1 枚で小さなモデルを動かします。「まず 1 枚の GPU で推論サーバーが立つ」ことを確認するのが目的で、マルチノードや大規模モデルは扱いません。
@@ -27,37 +27,26 @@ free: true
 
 推論は 1 ノードで完結するため、EFA も Capacity Block も要りません。Basic04 で `accelerator_pools` に GPU プールを定義してあれば、そのプールに Pod を投げるだけで Karpenter が GPU ノードを 1 台起動し、その上で vLLM が立ち上がります。
 
-## 全体の中での位置付け
-
-本章は「GPU を使った最小の動作確認」です。Basic02 では CPU で分散学習（DDP）を動かしました。本章はその GPU 版・推論版にあたり、「Karpenter が GPU ノードを spot 優先で起動し、その上で GPU ワークロード（推論）が動く」ことを、Capacity Block の予約なしで確認できます。ここまでで「CPU 学習（Basic02）」「GPU 推論（本章）」の両方を最小コストで体験したことになり、Basic05 で扱った Capacity Block を使えば、これを大規模モデル・マルチノードに広げられる、という全体像が掴めます。
-
-## 注意
-
-:::message alert
-**GPU の容量が取れないことがあります。** GPU インスタンスは人気が高く、特定の AZ・特定のタイプで一時的に `InsufficientInstanceCapacity` になり、起動に失敗し続けることがあります。また `accelerator_pools` の `instance_types` / `zones` の指定が狭すぎると、Karpenter が候補ゼロと判断して NodeClaim を作らないこともあります。いずれの場合も対策は Basic04 と同じで、`gpu-ddp` プールで `zones` を変えて別の AZ を試すか、`instance_types` に候補を複数並べて Karpenter に選択肢を与えます。Basic04 の `gpu-ddp` が最初から 4 タイプを並べているのはこのためです。実際に単一 AZ・単一タイプに固定していて容量が取れなかったケースでも、複数 AZ・複数タイプを許可したら確保できました。
-:::
-
-:::message
-**GPU Operator の初期化を待ちます。** Karpenter が GPU ノードを起動しても、NVIDIA GPU Operator が展開する device plugin が `nvidia.com/gpu` を advertise するまで数分かかります。それまで Pod は `Pending` のままですが、これは異常ではありません。
-:::
-
-:::message
-**CPU リクエストはノードサイズに合わせて調整します。** `gpuServingVllm` の CPU リクエスト既定値は `2` で、Qwen2.5-0.5B のような小型モデルであれば g6.2xlarge / g5.2xlarge（8 vCPU）のような小さい GPU ノードのプールでもそのまま載ります。大きいモデルをサービングする場合や、より大きな GPU プールでより多くの CPU を割り当てたい場合は、`--set gpuServingVllm.cpu=<値>` で明示的に上げます。プールの割り当て可能 CPU を超える値を指定すると、Karpenter が `no instance type has enough resources` を出して Pod が永久に `Pending` になる点には注意します。
-:::
-
-:::message alert
-**GPU ノードは使い終わったら必ず回収させます。** `gpu-ddp` は g6.2xlarge / g5.2xlarge のような小型タイプを spot 優先で選ぶため、spot が確保できていれば 1 時間あたり 1 USD 前後で収まりますが、放置すれば積み上がります。spot が取れず on-demand にフォールバックした場合は数倍になります（例えば g5.2xlarge の on-demand は 1 時間あたり約 1.21 USD）。より大きな GPU プール（g6e.12xlarge のような GPU、on-demand で 1 時間あたり 10 USD 前後）を使う場合はなおさらです。動作確認が終わったら必ず後述の手順 6 で Deployment を削除し、GPU ノードを Karpenter に回収させてください。
-:::
-
 # ワークショップ実施
 
 ## 1. 前提を確認する
 
-- Basic04 で `gpu-ddp` プール（g6.2xlarge / g5.2xlarge / g6.xlarge / g5.xlarge、spot + on-demand フォールバック）を定義・apply 済みであること。
-- `k` エイリアスと `KUBECONFIG` / `--context` は Basic01 で設定済みであること。
-- NVIDIA GPU Operator は Basic04 の apply で導入済みであること（`device_plugin = "nvidia"` のプールが 1 つ以上あることが導入条件でした）。
+- Basic04 で `gpu-ddp` プールを定義・apply 済みであること
+- `k` エイリアスと `KUBECONFIG` / `--context` は Basic01 で設定済みであること
+- NVIDIA GPU Operator は Basic04 の apply で導入済みであること
 
 本章は既存のプールと GPU Operator の上に vLLM の Deployment を載せるだけなので、新しくインフラを足す操作はありません。
+
+```bash
+POOL=gpu-ddp
+
+# gpu-ddp の有無を確認
+k get nodes -l karpenter.sh/nodepool=$POOL
+# GPU Operator の有無を確認
+k get pods -n gpu-operator
+```
+
+存在しない場合、Basic04 に戻って `terraform apply` で `gpu-ddp` ノードプールを作成してください。
 
 ## 2. 作業用 namespace を用意する
 
@@ -96,7 +85,7 @@ MODEL=Qwen/Qwen2.5-0.5B-Instruct     # ゲートなし・小型
 helm template exp charts/experiments -n "$NAMESPACE" \
     --set gpuServingVllm.enabled=true \
     --set gpuServingVllm.model="$MODEL" \
-    --set gpuServingVllm.nodeRole=gpu-ddp \
+    --set gpuServingVllm.nodeRole=$POOL \
     --set gpuServingVllm.memory=8Gi \
     --set gpuServingVllm.shmSize=2Gi \
     | k apply -f -
@@ -196,6 +185,34 @@ curl -s localhost:8000/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model":"Qwen/Qwen2.5-0.5B-Instruct","messages":[{"role":"user","content":"Hello"}],"max_tokens":80}' \
   | python3 -m json.tool
+```
+
+```json
+{
+    "id": "chat-2e2101b3831f47cda65280b7c97ae3dd",
+    "object": "chat.completion",
+    "created": 1786284157,
+    "model": "Qwen/Qwen2.5-0.5B-Instruct",
+    "choices": [
+        {
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": "Hello! How can I assist you today? I'm Qwen, an artificial intelligence language model created by Alibaba Cloud. How can I help you?",
+                "tool_calls": []
+            },
+            "logprobs": null,
+            "finish_reason": "stop",
+            "stop_reason": null
+        }
+    ],
+    "usage": {
+        "prompt_tokens": 30,
+        "total_tokens": 61,
+        "completion_tokens": 31
+    },
+    "prompt_logprobs": null
+}
 ```
 
 応答本文と `usage`（`prompt_tokens` / `completion_tokens` / `total_tokens`）が返れば、`gpu-ddp` プールの 1 枚の GPU で vLLM の推論が動いていることが確認できます（実測で prompt 36 / completion 31 / total 67 トークンの応答を確認しました）。なお `/v1/models` に出る `max_model_len` は Qwen2.5-0.5B 本来の 32K ではなく、チャートが軽量検証向けに `--max-model-len` を控えめに指定した値です。
