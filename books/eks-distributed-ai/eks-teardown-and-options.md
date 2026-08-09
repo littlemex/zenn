@@ -11,7 +11,7 @@ free: true
 
 ![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 
-本章で扱うのは、この図で構築してきたリソース全体を安全に取り壊す仕組みと、図には含まれないオプションの外部公開経路（Amazon CloudFront・AWS Load Balancer Controller によるデモアプリ配信）です。基盤づくりの最終章として、構築の逆方向（破棄）と、任意で足す周辺機能の 2 つを押さえます。
+本章で扱うのは、この図で構築してきたリソース全体を安全に取り壊す仕組みと、図には含まれないオプションの外部公開経路（Amazon CloudFront・AWS Load Balancer Controller によるデモアプリ配信）です。本章は Basic01 から積み上げてきた Amazon VPC・Amazon EKS コントロールプレーン・Karpenter・各アクセラレータプール・共有ストレージを、課金を取り残さずに安全に取り壊す方法を扱う、基盤構築の最終章にあたります。構築の逆方向（破棄）と、任意で足す周辺機能の 2 つを押さえます。破棄とオプション機能は独立した話題ですが、いずれも「基盤を運用し続ける中で、いつか必要になる」という共通点で本章にまとめています。
 
 ## これは何をするものか
 
@@ -101,9 +101,9 @@ fi
 exit 0
 ```
 
-事前確認のうち、`aws eks describe-cluster` が失敗する（クラスタが既に存在しない）場合はポーリング自体が不要なので即 `exit 0` にし、クラスタは存在するのに `aws eks update-kubeconfig` が失敗する場合は状態を確認できないため安全側で `exit 1` にしています。TrainJob の削除は `--timeout=120s` を付けた best-effort で、失敗してもフォールバックで finalizer を強制的に外し、先に進みます。これは `04-teardown.sh` が行う namespace 限定の TrainJob 削除とは別に、`terraform destroy` を直接叩いた場合でもクラスタ全体から TrainJob を確実に片付けるための保険です。
+TrainJob の削除は `--timeout=120s` を付けた best-effort で、失敗してもフォールバックで finalizer を強制的に外し、先に進みます。これは `04-teardown.sh` が行う namespace 限定の TrainJob 削除とは別に、`terraform destroy` を直接叩いた場合でもクラスタ全体から TrainJob を確実に片付けるための保険です。
 
-1 段目の `NodeClaim` は 10 秒間隔で最大 180 回、つまり最大 30 分ポーリングし、タイムアウトすれば destroy を失敗させます（`exit 1`）。課金に直結するオブジェクトなので、ここは厳格に失敗させる設計です。2 段目の `EC2NodeClass` は同じ 10 秒間隔で最大 60 回、つまり最大 10 分ポーリングしますが、タイムアウトしても `exit 0` で destroy 全体は止めません。この非対称な扱いの理由は次のセクションで説明します。ドレイン時間はノード数やインスタンスタイプで変動するため（単一ノードの実測で概ね 9 分）、固定 sleep ではなく実状態を見る設計にしています。
+`NodeClaim`/`EC2NodeClass` はいずれも 10 秒間隔でポーリングしますが、最大回数（180 回=30 分／60 回=10 分）とタイムアウト時の扱い（`exit 1`／`exit 0`）が異なります。この非対称な扱いの理由は次のセクションで説明します。ドレイン時間はノード数やインスタンスタイプで変動するため（単一ノードの実測で概ね 9 分）、固定 sleep ではなく実状態を見る設計にしています。
 
 この `null_resource` は次のリソース群すべてに `depends_on` しています。
 
@@ -131,14 +131,12 @@ Terraform の destroy は `depends_on` の**逆順**に進みます（A が B �
 
 ## Amazon VPC endpoints で NAT 依存を切る
 
-もう一つ見つかった障害が NAT ゲートウェイの早期消失です。NAT と Karpenter の間に明示的な依存関係がないため、`module.vpc` の NAT ゲートウェイがポーリング中に先に消えることがあります。Karpenter コントローラは private subnet で動き、Amazon EC2/IAM/STS/SSM への API 呼び出しを NAT 経由のアクセスに依存しているため、NAT 消失と同時に API がすべてタイムアウトし、`NodeClaim` の finalizer が外れず 30 分のタイムアウトに達してしまいます。`wait_for_node_drain` を `module.vpc` に直接 `depends_on` させる案は、実際には循環依存にはなりません（`wait_for_node_drain → module.vpc` は既存の `wait_for_node_drain → module.eks → module.vpc` と同方向で、循環になるとしたらその逆方向の `module.vpc → wait_for_node_drain` のはずです）。ここで採用したのは module 全体への `depends_on` という粗い単位ではなく、ネットワーク層そのものを NAT 非依存にする対処です。
-
-そこで `vpc-endpoints.tf` でネットワーク層側から対処します。
+もう一つ見つかった障害が NAT ゲートウェイの早期消失です。NAT と Karpenter の間に明示的な依存関係がないため、`module.vpc` の NAT ゲートウェイがポーリング中に先に消えることがあります。Karpenter コントローラは private subnet で動き、Amazon EC2/IAM/STS/SSM への API 呼び出しを NAT 経由のアクセスに依存しているため、NAT 消失と同時に API がすべてタイムアウトし、`NodeClaim` の finalizer が外れず 30 分のタイムアウトに達してしまいます。`wait_for_node_drain` を `module.vpc` に直接 `depends_on` させる案でも destroy の順序自体は守れます（`wait_for_node_drain → module.vpc` は既存の `wait_for_node_drain → module.eks → module.vpc` と同方向で、循環になるとしたらその逆方向の `module.vpc → wait_for_node_drain` のはずです）。しかしこれは module 全体を粗い単位で待たせるだけで、初回 apply 時の安定性（後述の `eks-auth` の問題）は別に解決する必要があります。そこで、destroy 時の順序と初回 apply 時の安定性を同時に解決できる、ネットワーク層そのものを NAT 非依存にする `vpc-endpoints.tf` の VPC endpoint 案を採用しました。
 
 ```hcl
 # vpc-endpoints.tf（抜粋）
 locals {
-  vpc_endpoint_services = ["ec2", "sts", "ssm"]
+  vpc_endpoint_services = ["ec2", "sts", "ssm", "ecr.api", "ecr.dkr", "logs", "eks-auth"]
 }
 
 resource "aws_vpc_endpoint" "interface" {
@@ -161,9 +159,13 @@ resource "aws_vpc_endpoint" "s3" {
 }
 ```
 
-Amazon EC2・STS・SSM の Interface VPC endpoint と Amazon S3 の Gateway endpoint を作成し、NAT の有無に関わらず Karpenter が AWS API を呼べるようにします。`wait_for_node_drain` はこれらの endpoint にも `depends_on` しているため（前節のリスト参照）、ポーリング中は消えません。Gateway endpoint（Amazon S3）は時間課金なし・ENI も持ちませんが、Interface VPC endpoint（Amazon EC2・STS・SSM）は AZ ごとに ENI を持ち常時の時間課金が発生します。破棄時の安全性を、恒久的な少額コストと引き換えに買っている設計です。
+Amazon EC2・STS・SSM に加え、`ecr.api`・`ecr.dkr`・`logs`・`eks-auth` の Interface VPC endpoint と Amazon S3 の Gateway endpoint を作成し、NAT の有無に関わらずクラスタ内の AWS API 呼び出しが動くようにします。`ecr.api`/`ecr.dkr` は private subnet のノードが EKS 管理下のイメージ（VPC CNI・kube-proxy・EFA/GPU device plugin など）を NAT に頼らず pull できるようにするためで、`ecr.dkr` が取得するレイヤー自体は後述の Amazon S3 Gateway endpoint 経由になります。`logs` は Amazon CloudWatch Logs へのノード/Pod ログ送信用です。
 
-ただし IAM はここに含まれていません。IAM はグローバルサービスで、リージョン単位の Interface endpoint を持たないためです。実際に `aws ec2 describe-vpc-endpoint-services` で確認すると `ec2`/`ec2-fips`/`ssm*`/`sts`/`sts-fips` は列挙されますが `iam` は存在せず、`com.amazonaws.<region>.iam` への `aws_vpc_endpoint` 作成は `InvalidServiceName` で失敗します。そのため Karpenter の `EC2NodeClass` 終了処理が呼ぶ `ListInstanceProfiles`（IAM API）は、NAT 消失後もタイムアウトし得ます。これが前節で `EC2NodeClass` のポーリングだけをベストエフォート（最大 10 分・タイムアウトしても `exit 0`）にしている理由です。課金停止に直結する `NodeClaim` の消失を待つのは必須としつつ、IAM という他手段のない経路に阻まれる可能性がある `EC2NodeClass` finalizer の解除まで destroy 全体を止めるのは実用的でないと判断しています。Amazon EC2 インスタンス自体は 1 段目の時点で終了済みであり、課金に影響しないオブジェクトのために destroy を止めるより先に進む方が合理的です。
+`eks-auth` は Pod Identity の認証そのものに不可欠です。EKS Pod Identity は IRSA と異なり、STS の `AssumeRoleWithWebIdentity` ではなく、Pod Identity Agent が EKS Auth API（`AssumeRoleForPodIdentity`、STS とも EKS 本体とも別のサービスプリンシパル）を呼んで認証情報を取得します。`eks-auth` の endpoint が無いと、private subnet の Pod Identity 利用者は NAT 経由でしかこの API に到達できません。しかも NAT ゲートウェイは他リソースと並行して作られるため、初回 apply では NAT が 1 つも無い時点で `aws-ebs-csi-driver` などの addon が起動を試みることがあります。実際に一から構築した際、この状態で addon が 17 分間 `CREATING` に留まり、コントローラ Pod が「認証情報の更新に失敗した」というエラーで `CrashLoopBackOff` した事例がありました。IAM ロール・信頼ポリシー・Pod Identity association・agent はすべて正しく設定されていたにもかかわらず起きた障害で、`eks-auth` endpoint を追加することで解消しています。
+
+`wait_for_node_drain` はこれらの endpoint にも `depends_on` しているため（前節のリスト参照）、ポーリング中は消えません。Gateway endpoint（Amazon S3）は時間課金なし・ENI も持ちませんが、Interface VPC endpoint（Amazon EC2・STS・SSM・ECR API/DKR・CloudWatch Logs・EKS Auth）は AZ ごとに ENI を持ち常時の時間課金が発生します。破棄時の安全性と初回構築時の安定性を、恒久的な少額コストと引き換えに買っている設計です。
+
+ただし IAM はここに含まれていません。IAM はグローバルサービスで、`us-east-1` を除きリージョン単位の Interface endpoint を持たないためです。本書のワークショップが使う `us-west-2`/`us-east-2` では、`aws ec2 describe-vpc-endpoint-services` で確認すると `ec2`/`ec2-fips`/`ssm*`/`sts`/`sts-fips` は列挙されますが `iam` は存在せず、`com.amazonaws.<region>.iam` への `aws_vpc_endpoint` 作成は `InvalidServiceName` で失敗します。そのため Karpenter の `EC2NodeClass` 終了処理が呼ぶ `ListInstanceProfiles`（IAM API）は、NAT 消失後もタイムアウトし得ます。これが前節で `EC2NodeClass` のポーリングだけをベストエフォート（最大 10 分・タイムアウトしても `exit 0`）にしている理由です。課金停止に直結する `NodeClaim` の消失を待つのは必須としつつ、IAM という他手段のない経路に阻まれる可能性がある `EC2NodeClass` finalizer の解除まで destroy 全体を止めるのは実用的でないと判断しています。Amazon EC2 インスタンス自体は 1 段目の時点で終了済みであり、課金に影響しないオブジェクトのために destroy を止めるより先に進む方が合理的です。
 
 ## Amazon CloudFront デモ（オプション機能）の2段階 apply
 
@@ -248,49 +250,62 @@ resource "aws_security_group" "alb_cloudfront_only" {
 }
 ```
 
-AWS Load Balancer Controller の SG デタッチが非同期であることに由来する `DependencyViolation` を避けるため、`time_sleep` ではなく delete タイムアウトの延長で対処しています。`time_sleep` を使わない理由は、この SG の `id` を Ingress 側が参照しているため、そちらで依存関係を組むと循環依存になってしまうからです。同種の非同期完了待ちの問題は `time_sleep.demo_ingress_finalizer`（AWS Load Balancer Controller の finalizer 解除を 20 秒待つ）にも見られ、この章で繰り返し出てくる「Kubernetes API の受理と実際の完了は別物」というテーマの一例になっています。
+AWS Load Balancer Controller の SG デタッチが非同期であることに由来する `DependencyViolation` を避けるため、`time_sleep` ではなく delete タイムアウトの延長で対処しています。`time_sleep` を使わない理由は、この SG の `id` を Ingress 側が参照しているため、そちらで依存関係を組むと循環依存になってしまうからです。
 
-## 全体の中での位置付け
-
-本章は基盤構築の最終章にあたります。Basic01 から積み上げてきた Amazon VPC・Amazon EKS コントロールプレーン・Karpenter・各アクセラレータプール・共有ストレージを、課金を取り残さずに安全に取り壊す方法を扱います。また、これまでの章では触れなかった「外部からアクセスする経路」をオプション機能として最後に足すことで、基盤の上にアプリケーションを公開する際の考え方も示します。破棄とオプション機能は独立した話題ですが、いずれも「基盤を運用し続ける中で、いつか必要になる」という共通点で本章にまとめています。
-
-## 注意
-
-**destroy 実行環境の PATH に `bash`・`aws` CLI・`kubectl` が必要です。** いずれか欠けると provisioner はポーリングせずエラー終了します。確認できずに進んで課金を取り残すより destroy を止める意図的な安全側の設計であり、`aws ec2 describe-instances` で孤立インスタンスを確認してから再実行します。
-
-**30 分でタイムアウトした場合は本当にノードが詰まっています。** `kubectl get nodeclaims` と `aws ec2 describe-instances` で Finalizer の残存や Karpenter コントローラの異常終了を確認してから再実行します。
-
-**NAT 消失後に `EC2NodeClass` の finalizer が残ることがあります。** 対応する Amazon EC2 インスタンスは既に終了済みで課金への影響はありません。気になる場合は手動で外します。
+同種の非同期完了待ちの問題は `null_resource.demo_ingress_finalizer` にも見られます。`kubectl_manifest.demo_ingress` の削除は Kubernetes API がリクエストを受理した瞬間に Terraform 上で「完了」扱いになりますが、実際に ALB を消すのは AWS Load Balancer Controller の finalizer 処理で、これは非同期に続きます。この resource は `helm_release.alb_controller` に `depends_on` することで、destroy の順序を「Ingress 削除 → この resource（待つ） → ALB Controller 破棄」に固定します。
 
 ```bash
-kubectl patch ec2nodeclass <name> --type=merge -p '{"metadata":{"finalizers":[]}}'
+# cloudfront.tf（抜粋、null_resource.demo_ingress_finalizer の local-exec）
+for i in $(seq 1 60); do
+  if ! OUT=$(aws elbv2 describe-load-balancers --region "$REGION" \
+        --query "length(LoadBalancers[?VpcId=='$VPC_ID'])" --output text 2>/dev/null); then
+    echo "wait_for_alb_deletion: describe-load-balancers failed (transient?) — retrying"
+  elif [ "$OUT" = "0" ]; then
+    echo "wait_for_alb_deletion: no load balancers remain in $VPC_ID."
+    exit 0
+  else
+    echo "wait_for_alb_deletion: $OUT load balancer(s) still present (attempt $i/60)..."
+  fi
+  sleep 10
+done
 ```
 
-**Amazon CloudFront デモは本番運用を想定していません。** Application Load Balancer リスナーは HTTP/80 のまま、ACM 証明書も WAF も付けていません。本番要件では Application Load Balancer への ACM 証明書追加による HTTPS 化と、Amazon CloudFront VPC Origins・WAFv2 の追加が必要になります。
-
-**共有クラスタでは実行前に `kubectl config current-context` を必ず確認します。** この章の操作はクラスタ全体またはアクセラレータプール全体に影響する破壊的操作であり、意図しないコンテキストへの誤実行を避けます。
+これはもともと `time_sleep`（`destroy_duration = "20s"`）でした。しかし実機の teardown で ALB の削除自体が数分かかることが判明し、20 秒では全く足りませんでした。固定 20 秒が過ぎた時点でまだ ALB が存在するのに ALB Controller を先に破棄してしまうため、finalizer を外す担当がいなくなり、ALB は ENI を public subnet に付けたまま `active` で取り残されます。これが `module.vpc.aws_subnet.public` の削除を 18 分間ブロックし、`DependencyViolation` で destroy 全体を失敗させ、課金の残る ALB を残す結果になりました。現在は対象 VPC 内の ALB が `aws elbv2 describe-load-balancers` で 0 件になるまで 10 秒間隔・最大 60 回（最大 10 分）ポーリングするベストエフォート方式に置き換えており、この章で繰り返し出てくる「Kubernetes API の受理と実際の完了は別物」というテーマの一例になっています。
 
 # ワークショップ実施
 
-破棄はいちばん最後の操作なので、先にオプション機能のデモ（手順 1）を試してから、ドレインと全体破棄（手順 2 以降）に進みます。デモが不要であれば手順 2 から始めて構いません。
+破棄はいちばん最後の操作なので、先にオプション機能のデモ（手順 2）を試してから、ドレインと全体破棄（手順 3 以降）に進みます。デモが不要であれば手順 3 から始めて構いません。
 
-## 1. （オプション）Amazon CloudFront デモを試す
+## 1. 前提を確認する
 
-破棄する前に、外部公開エンドポイントのオプション機能を試します。`cd infra/eks` で移動してから 2 段階で apply します。
+- 共有クラスタでは実行前に `k config current-context` を必ず確認します。この章の操作はクラスタ全体またはアクセラレータプール全体に影響する破壊的操作であり、意図しないコンテキストへの誤実行を避けます。
+- 作業用 namespace は Basic01 以降のワークショップで使ってきた `distai` を使います。
+- 作業ディレクトリは本章のコマンドの基準になる `infra/eks` に固定します。
+- `enable_demo_app`/`enable_cloudfront` は既定でどちらも `false` です。手順 2 のデモを試さずに破棄だけ行う場合、この確認は不要です。
 
 ```bash
+k config current-context
 cd infra/eks
+export NAMESPACE=distai
+grep -E "enable_demo_app|enable_cloudfront" terraform.tfvars* 2>/dev/null \
+  || echo "(enable_demo_app/enable_cloudfront は未設定 = 既定の false)"
+```
 
+## 2. （オプション）Amazon CloudFront デモを試す
+
+破棄する前に、外部公開エンドポイントのオプション機能を試します。手順 1 で移動した `infra/eks` のまま 2 段階で apply します。
+
+```bash
 # Phase 1: ALB Controller + demo app
 # demo app の namespace は var.demo_namespace（既定 "demo"）で決まります。
 terraform apply -var enable_demo_app=true
-kubectl get ingress -n demo -w
+k get ingress -n demo -w
 ```
 
 `ingress` に `ADDRESS` が入っても、Application Load Balancer 自体のプロビジョニングとターゲット登録はまだ続いています。この間の `curl` はタイムアウトするので、ターゲットが `healthy` になるのを待ってから叩きます。
 
 ```bash
-ALB=$(kubectl get ingress -n demo echo -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+ALB=$(k get ingress -n demo echo -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
 
 # ターゲットが healthy になるまで待つ（初回は数分かかります）
 TG=$(aws elbv2 describe-target-groups \
@@ -302,8 +317,10 @@ curl -i "http://${ALB}/"
 ```
 
 :::message alert
-ターゲットが `unhealthy` のまま `Target.Timeout` で止まり、`curl` が 504 を返す場合はセキュリティグループを疑ってください。本書の実装で実際に踏んだ 2 つの原因があります（どちらも修正済みですが、自分で構成を変えたときに再発し得ます）。
+ターゲットが `unhealthy` のまま `Target.Timeout` で止まり、`curl` が 504 を返す場合はセキュリティグループを疑ってください。本書の実装で実際に踏んだ 2 つの原因があります（どちらも修正済みですが、自分で構成を変えたときに再発し得ます）。詳細は下記の details を参照してください。
+:::
 
+::::details ターゲットが unhealthy になる 2 つの既知原因
 1 つ目は、Karpenter が選ぶセキュリティグループに `kubernetes.io/cluster/<クラスタ名>` タグを持つものが 2 つ以上あるケースです。AWS Load Balancer Controller は Pod の ENI からセキュリティグループを 1 つに決められないと、バックエンド側の許可ルールを作るのを諦めて 15 秒ごとに再試行し続けます。コントローラのログにこう出ます。
 
 ```text
@@ -314,25 +331,25 @@ for eni eni-..., got: [sg-..., sg-...]
 Application Load Balancer は `active` になり、ノードも `Ready` なので、症状はここを指しません。次で確認できます。
 
 ```bash
-kubectl logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller --tail=20 \
+k logs -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller --tail=20 \
   | grep -i "exactly one securityGroup"
 ```
 
 本書の実装は、`karpenter.sh/discovery` タグをノード用のセキュリティグループだけに付けることでこれを避けています。EKS が作るクラスタ用セキュリティグループにこのタグを足すと、Karpenter が両方をノードに付けてこの状態になります。`terraform plan` が同じ検査を持っているので、自分でタグを増やした場合は plan の警告として出ます。
 
 2 つ目は、ノード用セキュリティグループの自己参照ルールがポート 80 を含まないケースです。`terraform-aws-eks` の既定は TCP 1025-65535 だけを許可するので、Pod が 80 番のような低いポートで listen していると、**別ノードの Pod からの通信だけが落ちます**。同じノードで動く kubelet の readiness probe は途中にセキュリティグループを挟まないので成功し続け、Pod は `Ready` に見えます。本書の実装はノード間で全ポートを許可して解消しています。
-:::
+::::
 
 ```bash
 # Phase 2: CloudFront + SG制限 + ヘッダー検証を追加
 terraform apply -var enable_demo_app=true -var enable_cloudfront=true
-curl -i "$(terraform output -raw cloudfront_domain_name)"
+curl -s -o /dev/null -w 'HTTP %{http_code}\n' "$(terraform output -raw cloudfront_domain_name)"
 
 # ALB への直接アクセスはタイムアウトする（SGが非CloudFront IPを遮断）
-curl -i --max-time 5 "$(terraform output -raw alb_dns_name)"
+curl -s -o /dev/null -w 'HTTP %{http_code}\n' --max-time 5 "$(terraform output -raw alb_dns_name)"
 ```
 
-Phase 2 の適用後、Application Load Balancer への直接アクセスがタイムアウトし、Amazon CloudFront 経由のアクセスのみ成功することを確認できれば、多層防御が機能しています。実機では次の結果になりました。
+Phase 2 の適用後、Application Load Balancer への直接アクセスがタイムアウトし、Amazon CloudFront 経由のアクセスのみ成功することを確認できれば、多層防御が機能しています。実機出力:
 
 ```text
 --- CloudFront 経由 ---
@@ -342,6 +359,10 @@ HTTP 000
 ```
 
 `000` は curl が応答を得られずタイムアウトしたことを示します。接続が拒否されるのではなく無応答になるのは、セキュリティグループが破棄したパケットに何も返さないためです。確認できたら、次の破棄手順に進みます（`enable_demo_app`/`enable_cloudfront` で作ったリソースも `--destroy` の `terraform destroy` でまとめて消えます）。
+
+:::message
+Amazon CloudFront デモは本番運用を想定していません。Application Load Balancer リスナーは HTTP/80 のまま、ACM 証明書も WAF も付けていません。本番要件では Application Load Balancer への ACM 証明書追加による HTTPS 化と、Amazon CloudFront VPC Origins・WAFv2 の追加が必要になります。
+:::
 
 :::message
 Phase 2 では Amazon CloudFront 用の ACM 証明書を扱うため、`us-east-1` 向けのプロバイダが追加で使われます。ここで `terraform plan` が次のように失敗する場合があります。
@@ -359,17 +380,19 @@ credential process timed out: signal: killed
 
 なお Phase 1 の状態は、ヘッダー検証も SG 制限もないまま Application Load Balancer が internet-facing で公開されます。echo サーバーとはいえ、確認が済んだら速やかに Phase 2 へ進むか、次の破棄手順で destroy することを勧めます。
 
-## 2. アクセラレータプールだけをドレインする
+## 3. アクセラレータプールだけをドレインする
 
 `04-teardown.sh` は既定で、指定した namespace の Deployment/StatefulSet/Job/TrainJob/MPIJob を削除し、GPU/Neuron Pod の終了を確認したうえで Karpenter の NodePool を削除します。本 book の主力ワークロードである Kubeflow Trainer v2 の TrainJob（Basic02/Basic09 の DDP）もここで確実に消えます。ここで指定するのは、Basic01 以降のワークショップで使ってきた作業用 namespace（本 book では `distai`）です。
 
 ```bash
-cd infra/eks/scripts
+cd "$(git rev-parse --show-toplevel)"/infra/eks/scripts
 export NAMESPACE=distai
 ./04-teardown.sh --namespace "$NAMESPACE"
 ```
 
-削除対象の NodePool はクラスタに問い合わせて決まります。`accelerator_pools` は読者が自分で定義するマップなので、スクリプトが決め打ちできる名前は存在しません。代わりに、Terraform モジュールがアクセラレータプールに付ける device taint（`nvidia.com/gpu` / `aws.amazon.com/neuron`）を持つ NodePool をすべて対象にします。実機では次のように出ます。
+対話実行なので `--yes` は付けていません。`04-teardown.sh` は各ステップの削除前に `y/N` の確認を挟むため、手元のターミナルで様子を見ながら進められます。`--yes` の正確な挙動と、CI などの非対話実行で必須になる理由は手順 5 で扱います。
+
+削除対象の NodePool はクラスタに問い合わせて決まります。`accelerator_pools` は読者が自分で定義するマップなので、スクリプトが決め打ちできる名前は存在しません。代わりに、Terraform モジュールがアクセラレータプールに付ける device taint（`nvidia.com/gpu` / `aws.amazon.com/neuron`）を持つ NodePool をすべて対象にします。実機出力です（プール名は `accelerator_pools` で自分が付けた名前がそのまま出るため、検証時期や読者の環境によってここは変わります。以下は本書の検証時点の一例です）。
 
 ```text
 Discovered accelerator NodePool(s): gpu-ddp gpu-p4d
@@ -379,7 +402,7 @@ Discovered accelerator NodePool(s): gpu-ddp gpu-p4d
   Destroy    : false
 ```
 
-taint を持たない cpu プールは対象外です。これは `terraform destroy` が自身の最後の処理を走らせる場所を残しておく必要があるためで、次の手順 4 でまとめて消えます。
+taint を持たない cpu プールは対象外です。drain 待ちの間、Karpenter コントローラ・CSI コントローラ・CoreDNS などクラスタ内で動くコントローラの実行先ノードを残しておく必要があるためで、次の手順 5 でまとめて消えます。
 
 削除のあと、device リソースを持つノードが残っていないかを必ず出します。ここに GPU や Neuron のノードが並んでいるのに「Teardown complete」と出た場合、削除が効いていないので放置しないでください。
 
@@ -389,16 +412,16 @@ Accelerator nodes still registered:
   (still billing — they drain asynchronously; watch: kubectl get nodeclaims -w)
 ```
 
-対象を明示したい場合は `--nodepool` を繰り返し指定できます（`--nodepool gpu-ddp --nodepool gpu-p4d`）。存在しない名前を渡した場合は警告を出して止まらずに進むので、`kubectl get nodepool` で実際の名前を確かめてください。
+対象を明示したい場合は `--nodepool` を繰り返し指定できます（`--nodepool gpu-ddp --nodepool gpu-p4d`）。存在しない名前を渡した場合は警告を出して止まらずに進むので、`k get nodepool` で実際の名前を確かめてください。
 
 :::message alert
 プールを 1 つ取り残すと、そのノードは課金され続けます。GPU や Neuron は時間単価が高いので、上の「Accelerator nodes still registered」が `none` になるまで確認してから次へ進んでください。
 :::
 
-## 3. ドレインの過程を観察する
+## 4. ドレインの過程を観察する
 
 ```bash
-kubectl get nodeclaims -w
+k get nodeclaims -w
 ```
 
 単一ノードの構成であれば概ね 9 分前後で 0 件になります。`NodePool` 削除の直後は NodeClaim がまだ `Terminating` で残り、Karpenter が Amazon EC2 インスタンスの終了をバックグラウンドで進めていることが分かります。
@@ -406,7 +429,7 @@ kubectl get nodeclaims -w
 この時間はインスタンスタイプで大きく変わります。EFA を複数枚持つノードは ENI の解放に時間がかかり、本書の検証では EFA 4 枚の p4d.24xlarge 1 台が `shutting-down` から `terminated` になるまで**約 20 分**を要しました。Pod の退避（ドレイン）自体は 1 分ほどで終わっており、残りはすべて EC2 側の非同期処理です。次のコマンドで、Kubernetes 側が終わったあとに EC2 側がまだ動いていることを確かめられます。
 
 ```bash
-kubectl get nodeclaim <name> \
+k get nodeclaim <name> \
   -o jsonpath='{range .status.conditions[?(@.type=="Drained")]}Drained={.status}{"\n"}{end}'
 aws ec2 describe-instances \
   --filters "Name=private-dns-name,Values=<node-name>" \
@@ -415,17 +438,33 @@ aws ec2 describe-instances \
 
 `Drained=True` が出たあとも `shutting-down` が続き、`efa-only` の ENI が一覧から順に消えていきます。`04-teardown.sh` の `NodeClaim` 待ちが最大 30 分なのは、この幅を吸収するためです。EFA を多く積んだノードを複数台まとめて畳む場合、9 分では終わらない前提で待ってください。
 
-## 4. クラスタ全体を破棄する
+## 5. クラスタ全体を破棄する
 
 ```bash
 ./04-teardown.sh --namespace "$NAMESPACE" --destroy
 ```
 
+対話実行なので `--yes` は付けていません。`--yes` を付けない場合、`04-teardown.sh` の各ステップの y/N 確認（`confirm` 関数）は手元のターミナルからの入力を待ちます。ここで注意が必要なのは、CI やバックグラウンド実行のように標準入力が繋がっていない非対話実行で `--yes` を付け忘れた場合の挙動です。`read` が即座に EOF を受け取り、`confirm` は「N」と解釈してすべてのステップを黙って `Skipped` にします。つまりワークロードの削除も `terraform destroy` の実行そのものも一切起きないまま `=== Teardown complete ===` が表示され、何も壊れていないのに完了したように見えてしまいます。
+
+逆に `--yes` を付けると、スクリプト自身の確認がすべて自動で通るだけでなく、`terraform destroy` にも `-auto-approve` が渡されます。これは `terraform destroy` 自身が持つ「本当に破棄しますか」という確認プロンプトを避けるためで、もし `-auto-approve` を渡さなければ、スクリプトの確認は自動で通って Kubernetes 側の削除だけが先に完了したあと、`terraform destroy` 自身の確認プロンプトが標準入力の EOF で失敗し、NodePool は消えたのにクラスタは残る中途半端な状態で止まってしまいます。CI やバックグラウンド実行のように非対話で流す場合は、この事故を避けるために `--yes` が必須です。
+
 `terraform destroy` の中で、前節で示した `wait_for_node_drain` のポーリングログが流れます。ログが `no NodeClaim(s) remain.` に達してから、Karpenter コントローラや GPU Operator などノードに紐づくコントローラの破棄に進みます。
 
 :::message
-30 分のポーリングが完了するまで、ターミナルを閉じずに待ちましょう。途中で中断すると、アクセラレータノードが取り残されたまま課金が続く可能性があります。
+destroy 実行環境の PATH に `bash`・`aws` CLI・`kubectl` が必要です。いずれか欠けると provisioner はポーリングせずエラー終了します。確認できずに進んで課金を取り残すより destroy を止める意図的な安全側の設計であり、`aws ec2 describe-instances` で孤立インスタンスを確認してから再実行します。
+
+Capacity Block の期限が近い状態で teardown する場合は、この 30 分ポーリング分の時間も見積もりに入れてください。期限を過ぎてから teardown を始めても意味がなく、容量は AWS 側で強制回収されます。
 :::
+
+:::message alert
+30 分のポーリングが完了するまで、ターミナルを閉じずに待ちましょう。途中で中断すると、アクセラレータノードが取り残されたまま課金が続く可能性があります。30 分でタイムアウトした場合は本当にノードが詰まっています。`k get nodeclaims` と `aws ec2 describe-instances` で Finalizer の残存や Karpenter コントローラの異常終了を確認してから再実行してください。
+:::
+
+NAT 消失後に `EC2NodeClass` の finalizer が残ることがあります。対応する Amazon EC2 インスタンスは既に終了済みで課金への影響はありません。気になる場合は手動で外します。
+
+```bash
+k patch ec2nodeclass <name> --type=merge -p '{"metadata":{"finalizers":[]}}'
+```
 
 # まとめ
 
@@ -437,4 +476,6 @@ aws ec2 describe-instances \
 - [Karpenter NodeClaim/NodePool](https://karpenter.sh/docs/concepts/)
 - [AWS Load Balancer Controller](https://kubernetes-sigs.github.io/aws-load-balancer-controller/)
 - [Amazon CloudFront のカスタムオリジンヘッダー](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/add-origin-custom-headers.html)
+- [Terraform: Resource dependencies (depends_on)](https://developer.hashicorp.com/terraform/language/resources/behavior#resource-dependencies)
+- [Terraform: Destroy-Time Provisioners](https://developer.hashicorp.com/terraform/language/resources/provisioners/syntax#destroy-time-provisioners)
 - [対象モジュール infra/eks](https://github.com/littlemex/distributed-ai/tree/main/infra/eks)
