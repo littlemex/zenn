@@ -3,7 +3,7 @@ title: "Basic10 - 共有ストレージ (Amazon EFS と Amazon FSx for Lustre)"
 free: true
 ---
 
-本章では、Karpenter がノードを入れ替えても失われないデータ層として、Amazon EFS（マルチ AZ の RWX キャッシュ）と Amazon FSx for Lustre（単一 AZ の高スループット・スクラッチ）を構成します。
+本章では、Basic01〜Basic04 で構築した Amazon VPC・Amazon EKS コントロールプレーン・アクセラレータノードの土台の上に、Karpenter がノードを入れ替えても失われないデータ層として、Amazon EFS（マルチ AZ の RWX キャッシュ、opt-in）と Amazon FSx for Lustre（単一 AZ の高スループット・スクラッチ、既定で有効）を構成します。Amazon EFS と Amazon FSx for Lustre はいずれも Terraform で 1 度作成すれば、その後の Karpenter によるノード入れ替えの影響を受けません。以降の章で GPU/Neuron ワークロードが HF キャッシュや NEFF、チェックポイントを読み書きする際の土台になります。
 
 # 解説
 
@@ -15,7 +15,7 @@ free: true
 
 ## これは何をするものか
 
-Karpenter は consolidate（アイドルノードの回収、Basic04 で見た `consolidateAfter` が該当）・drift（AMI 更新などの設定変更を検知した入れ替え）・expire（NodeClaim テンプレート側の `expireAfter` で TTL に達した入れ替え）でノードを次々に入れ替えます。この挙動自体はコスト最適化のために望ましいのですが、副作用として「Pod のローカルディスクに置いたデータはノードごと消える」という制約が生まれます。
+Karpenter は consolidate（アイドルノードの回収、Basic03 で見た `consolidateAfter` が該当）・drift（AMI 更新などの設定変更を検知した入れ替え）・expire（NodeClaim テンプレート側の `expireAfter` で TTL に達した入れ替え）でノードを次々に入れ替えます。この挙動自体はコスト最適化のために望ましいのですが、副作用として「Pod のローカルディスクに置いたデータはノードごと消える」という制約が生まれます。
 
 具体的に困るのは次の 2 種類のデータです。
 
@@ -95,7 +95,7 @@ resource "kubectl_manifest" "efs_neuron_workspace_pv" {
 }
 ```
 
-同じファイルシステムに対して動的プロビジョニング用の `efs-shared` StorageClass も定義していますが、この PV は空の `storageClassName` を持つため、PVC は名前（`volumeName`）で明示的にバインドしない限りこの PV には結びつきません。動的プロビジョナーがこの PV を横取りしてバインドし直す事故を防ぐための書き方です。
+同じファイルシステムに対して動的プロビジョニング用の `efs-shared` StorageClass も定義していますが、この PV は空の `storageClassName` を持つため、`efs-shared` を指定した PVC が動的プロビジョナー経由でこの PV を横取りする事故は起きません。ただし空の `storageClassName` は動的プロビジョナーの介入を防ぐだけで、PVC 側も `storageClassName: ""` かつ容量・アクセスモードが合致していれば、`volumeName` を指定しなくても静的バインダがこの PV に結びつけることがあります。この構成では意図を明確にするため、後述の手順で作る PVC はすべて `volumeName` を明示しています。
 
 ## Amazon FSx for Lustre と static provisioning 制約
 
@@ -150,7 +150,7 @@ resource "time_sleep" "fsx_sg_propagation" {
 }
 ```
 
-コメントには「初回 apply が失敗し、再 apply では成功する」という実際の再現内容が記録されています。`depends_on` だけではAPI呼び出しの順序しか保証されず、SG ルールが検証サービスに伝搬し終わるまでは待ってくれないため、この `time_sleep` が初回 apply を決定的にしています。
+コメントには「初回 apply が失敗し、再 apply では成功する」という実際の再現内容が記録されています。`depends_on` だけでは API 呼び出しの順序しか保証されず、SG ルールが検証サービスに伝搬し終わるまでは待ってくれないため、この `time_sleep` が初回 apply を決定的にしています。
 
 **静的 PV の `volumeAttributes` はキーが小文字でないと読まれません。** aws-fsx-csi-driver は `dnsname` と `mountname` という小文字キーしか読みません。
 
@@ -164,7 +164,7 @@ volumeAttributes = {
 
 キャメルケース（`dnsName`）で書いてしまうとドライバに黙って無視され、`NodeStageVolume` が "dnsname is not provided" で失敗し Pod が `ContainerCreating` のまま止まります。`volumeHandle` はあくまで Kubernetes 側の識別子で、マウント時に AWS API を呼んで解決されるわけではないため、`dnsname`/`mountname` を PV 側に自分で埋め込む必要がある、という構造上の理由です。
 
-**IAM は `fsx:DescribeFileSystems` のみで足ります。** static provisioning では `CreateFileSystem`/`DeleteFileSystem`/`UpdateFileSystem` の権限は不要です。これらは動的プロビジョニングの専用コードパスで、固定 `volumeHandle` の PV では一度も呼ばれません。Amazon FSx for Lustre は ARN スコープのリソース権限をサポートしないため `Resource = "*"` になりますが、許可するアクションそのものを 1 つに絞ることで影響範囲を抑えています。
+**IAM は `fsx:DescribeFileSystems` のみで足ります。** static provisioning では `CreateFileSystem`/`DeleteFileSystem`/`UpdateFileSystem` の権限は不要です。これらは動的プロビジョニングの専用コードパスで、固定 `volumeHandle` の PV では一度も呼ばれません。`fsx:DescribeFileSystems` はリソースレベル権限を持たないアクションのため `Resource = "*"` になりますが、許可するアクションそのものを 1 つに絞ることで影響範囲を抑えています。
 
 `variables.tf` のバリデーションも、この構成の落とし穴をいくつか plan 時に潰しています。
 
@@ -181,30 +181,158 @@ variable "fsx_storage_capacity_gib" {
 
 PERSISTENT_2 SSD の容量は 1,200 GiB か 2,400 GiB の倍数でしか指定できないという Amazon FSx for Lustre API の制約を、`terraform plan` の段階でエラーにします。これがないと、中途半端な値（例えば 3,000）を指定した場合の失敗が `CreateFileSystem` の API エラーとして apply の途中まで進んでから返ってきてしまいます。`fsx_subnet_index` にも負値を弾くバリデーションが `variables.tf` にあり、さらに `az.tf` の precondition で「解決済みの AZ 数より小さいか」という上限チェックが加わります。AZ 数はデータソースから解決されるため `variable` のバリデーションブロックでは表現できず、この上限チェックだけ `az.tf` 側に置かれています。
 
-## 全体の中での位置付け
-
-本章は、Basic01〜Basic04 で作った Amazon VPC・Amazon EKS コントロールプレーン・アクセラレータノードの土台の上に、ノードのライフサイクルから独立したデータ層を積む章です。Amazon EFS と Amazon FSx for Lustre はいずれも Terraform で 1 度作成すれば、その後の Karpenter によるノード入れ替えの影響を受けません。以降の章で GPU/Neuron ワークロードが HF キャッシュや NEFF、チェックポイントを読み書きする際の土台になります。
-
-## 注意
-
+:::message
 **`fsx_subnet_index` とアクセラレータプールの `zone` の不一致に注意します。** Amazon FSx for Lustre は単一 AZ にしか存在せず、別 AZ からのマウントは動作こそしますが、AZ 間データ転送コストとレイテンシが発生します。`fsx_subnet_index` は、実際に Amazon FSx for Lustre を使うアクセラレータプールの `zone`（Basic04 参照）と揃えておきます。
+:::
 
+:::message
 **`prevent_destroy` は意図的に未設定です。** この構成は再現性を優先した使い捨て環境として設計されており、`terraform destroy` を実行すると Amazon FSx for Lustre ファイルシステムとその中のデータがそのまま削除されます。NEFF や HF キャッシュのような再生成可能なデータであれば問題ありませんが、チェックポイントなど失うと困るデータを長期間保持するクラスタでは `prevent_destroy = true` を設定すべきです。
+:::
 
+:::message
 **Amazon FSx for Lustre のサイズは 1,200 GiB か、2,400 GiB の倍数でしか指定できません。** PERSISTENT_2 SSD のストレージ容量は API レベルでこの制約を持ちます。`fsx_storage_capacity_gib` に中途半端な値（例えば 3,000）を設定すると、Terraform の変数バリデーションで即座に弾かれます。
+:::
 
-**Amazon FSx for Lustre は有効な間、容量分の課金が常時発生します。** PERSISTENT_2 SSD は使用量ではなくプロビジョニングした容量に対して課金され続けるため、常時起動しておくコストは小さくありません。学習ジョブを実行する期間だけ `fsx_enabled = true` にして apply し、終わったら `false` に戻して destroy する運用が推奨されます。ただし `fsx_enabled = false` にすると、そのファイルシステム上のチェックポイントを含むすべてのデータが `terraform destroy`相当の処理で削除されます。**無効化の前に、必要なチェックポイントを Amazon S3 など別の場所へ退避してください。** また、ワークショップ手順で手動作成した `fsx-claim` などの PVC やそれを使う Pod が残っていると、Bound な PV の削除がファイナライザで止まり Terraform の apply が詰まることがあります。無効化の前に、手動で作成した PVC・Pod を先に削除してください。
+:::message alert
+**Amazon FSx for Lustre は有効な間、容量分の課金が常時発生します。** PERSISTENT_2 SSD は使用量ではなくプロビジョニングした容量に対して課金され続けるため、常時起動しておくコストは小さくありません。学習ジョブを実行する期間だけ `fsx_enabled = true` にして apply し、終わったら `false` に戻して `terraform apply` する運用が推奨されます（この apply の結果としてファイルシステムが破棄されます）。ただし `fsx_enabled = false` にすると、そのファイルシステム上のチェックポイントを含むすべてのデータが削除されます。無効化の前に、必要なチェックポイントを Amazon S3 など別の場所へ退避してください。また、ワークショップ手順で手動作成した `fsx-claim` などの PVC やそれを使う Pod が残っていると、Bound な PV の削除がファイナライザで止まり Terraform の apply が詰まることがあります。無効化の前に、手動で作成した PVC・Pod を先に削除してください。
+:::
 
-**Hugging Face からのダウンロードで 429（Too Many Requests）が出る場合があります。** 多数の Pod が同時に同じモデルを HF Hub から直接ダウンロードすると、レート制限に当たりやすくなります。対策として、事前に 1 つの Pod で Amazon EFS 上にモデルをステージングしておき、各推論 Pod はそのローカルキャッシュを読むようにします。また `HF_HUB_DISABLE_XET=1` を設定して Xet 経由の転送を無効化すると、この種のエラーが解消するケースがあります。
+:::message
+**Hugging Face からのダウンロードで 429（Too Many Requests）が出る場合があります。** 多数の Pod が同時に同じモデルを HF Hub から直接ダウンロードすると、レート制限に当たりやすくなります。対策として、事前に 1 つの Pod で共有ストレージ（Amazon EFS または Amazon FSx for Lustre）上にモデルをステージングしておき、各推論 Pod はそのローカルキャッシュを読むようにします。また `HF_HUB_DISABLE_XET=1` を設定して Xet 経由の転送を無効化すると、この種のエラーが解消するケースがあります。
+:::
 
 # ワークショップ実施
 
-## 1. Terraform の出力を確認する
+本章の実機検証は us-west-2 のクラスタで、`terraform.tfvars` の既定値（`fsx_enabled = true` / `openzfs_enabled = true` / `efs_enabled = false`）のまま実施しました。読者が別リージョンで進める場合も、実機出力の AZ 数やファイルシステム ID は変わりますが手順自体は同じです。
+
+## 1. 前提を確認する
+
+- Basic01〜Basic04 で Amazon VPC・Amazon EKS コントロールプレーン・アクセラレータプールの土台を構築済み。
+- `k` エイリアスと `KUBECONFIG`／`--context` は Basic01 で設定済み、作業用 namespace は `distai` に統一済み。
+- `terraform.tfvars` は既定値のまま（`fsx_enabled = true` / `openzfs_enabled = true` / `efs_enabled = false`）。Amazon FSx for Lustre と Amazon FSx for OpenZFS はこの時点ですでに Terraform が作成済みで、Amazon EFS だけ後述の手順 5 で有効化します。
+
+```bash
+export NAMESPACE=distai
+k create namespace "$NAMESPACE" --dry-run=client -o yaml | k apply -f -
+```
+
+## 2. Terraform の出力を確認する
 
 ```bash
 cd infra/eks
 terraform output shared_storage
 ```
+
+実機出力（既定の `fsx_enabled = true` / `openzfs_enabled = true` / `efs_enabled = false` の状態。Amazon EFS はまだ無効なので `id` が空です）:
+
+```text
+{
+  "efs" = {
+    "dns_name" = ""
+    "enabled" = false
+    "id" = ""
+    "persistent_volume" = "efs-neuron-workspace"
+  }
+  "fsx_lustre" = {
+    "dns_name" = "fs-0123456789abcdef1.fsx.us-west-2.amazonaws.com"
+    "enabled" = true
+    "id" = "fs-0123456789abcdef1"
+    "mount_name" = "abcd1234"
+    "persistent_volume" = "fsx-training"
+    "storage_capacity" = "4800"
+  }
+  "fsx_openzfs" = {
+    "dns_name" = "fs-0123456789abcdef2.fsx.us-west-2.amazonaws.com"
+    "enabled" = true
+    "id" = "fs-0123456789abcdef2"
+    "persistent_volume" = "openzfs-shared"
+    "storage_capacity" = "256"
+  }
+}
+```
+
+`enabled` がその層を使うかどうか、`persistent_volume` がその層を裏づける静的 PV の名前です。Amazon FSx for Lustre の `mount_name` は CSI ドライバが DNS 名と併せて必要とする値で、コンソールからは見つけにくいのでここに出しています。無効な層は `enabled = false` で id が空になるため、この 1 コマンドで「どの層が有効か」も分かります。Amazon EFS は既定で無効（`efs_enabled = false`、CSI ドライバだけは常設）なので、使う場合は後述の手順 5 で `terraform.tfvars` に `efs_enabled = true` を設定してから `terraform apply` します。本章では代表として Amazon EFS と Amazon FSx for Lustre を扱います。
+
+## 3. PersistentVolume と PVC を確認する
+
+```bash
+k get pv
+```
+
+既定（`fsx_enabled = true` / `openzfs_enabled = true` / `efs_enabled = false`）で apply した直後の実機出力です。Amazon FSx for Lustre（`fsx-training`）と Amazon FSx for OpenZFS（`openzfs-shared`）の static PV が作られており、まだどの PVC も作っていないので `Available` です。`k`（kubectl）v1.29 以降は `STORAGECLASS` の次に `VOLUMEATTRIBUTESCLASS` 列が並びます。この PV は `storageClassName = ""` なので `STORAGECLASS` は空欄、`VolumeAttributesClass` は未設定なので `<unset>` が入るのは `VOLUMEATTRIBUTESCLASS` 列です。
+
+```text
+NAME             CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS      CLAIM   STORAGECLASS   VOLUMEATTRIBUTESCLASS   REASON   AGE
+fsx-training     4800Gi     RWX            Retain           Available                          <unset>                         7h
+openzfs-shared   256Gi      RWX            Retain           Available                          <unset>                         7h
+```
+
+Amazon EFS は既定で無効のため、この時点では EFS の PV は出てきません（後述の手順 5 で有効化すると `efs-neuron-workspace` が追加されます）。いずれの PV も `storageClassName` が空の static PV です。動的プロビジョニング用の `efs-shared` StorageClass は `efs_enabled = true` のときにだけ作られるため、この時点（Amazon EFS 無効）ではまだ存在しません。後述の手順 5 で Amazon EFS を有効化すると `efs-shared` も作られますが、この静的 PV とは別物である点に注意します。Amazon FSx for Lustre が `RWX` なのは、複数ノードの Pod から同時にチェックポイント書き込みやデータ読み出しができるようにするためです。
+
+## 4. Amazon FSx for Lustre に書き込み、ノードを跨いでデータが残ることを確認する
+
+PV は Terraform で作られていますが、PVC（Pod がマウントに使う参照）は手動で作ります。まず既定で有効な Amazon FSx for Lustre で試します。static PV に名前でバインドするため `volumeName` に PV 名を、`storageClassName` に空文字を指定します。namespace は手順 1 で用意した `distai` を使います。
+
+```bash
+k apply -n "$NAMESPACE" -f - <<'EOF'
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fsx-claim
+spec:
+  accessModes: ["ReadWriteMany"]
+  storageClassName: ""
+  volumeName: fsx-training
+  resources:
+    requests:
+      storage: 4800Gi
+EOF
+k get pvc fsx-claim -n "$NAMESPACE"
+```
+
+`Bound` になったら、ファイルを書き込むテスト Pod を実行します。
+
+```bash
+k run fsx-test -n "$NAMESPACE" --restart=Never --image=busybox \
+    --overrides='{"spec":{"containers":[{"name":"fsx-test","image":"busybox","command":["sh","-c","echo hello-fsx > /mnt/fsx/test.txt && cat /mnt/fsx/test.txt"],"volumeMounts":[{"name":"fsx","mountPath":"/mnt/fsx"}]}],"volumes":[{"name":"fsx","persistentVolumeClaim":{"claimName":"fsx-claim"}}]}}'
+k logs fsx-test -n "$NAMESPACE"
+```
+
+Pod のログに `hello-fsx` が出れば、Amazon FSx for Lustre のマウントと書き込みが成功しています。続いて Pod を削除し、別名の Pod から同じファイルを読み出します。
+
+```bash
+k delete pod fsx-test -n "$NAMESPACE"
+k run fsx-test2 -n "$NAMESPACE" --restart=Never --image=busybox \
+    --overrides='{"spec":{"containers":[{"name":"fsx-test2","image":"busybox","command":["cat","/mnt/fsx/test.txt"],"volumeMounts":[{"name":"fsx","mountPath":"/mnt/fsx"}]}],"volumes":[{"name":"fsx","persistentVolumeClaim":{"claimName":"fsx-claim"}}]}}'
+k logs fsx-test2 -n "$NAMESPACE"
+```
+
+別名の Pod でも `hello-fsx` が読み出せます。Pod（ひいてはノード）が入れ替わっても、共有ストレージ上のデータが残り続けることが確認できます。なお、この静的 PV には topology 制約が付いていないため、busybox Pod は任意の AZ にスケジュールされ得ます。Amazon FSx for Lustre と別 AZ に載った場合はクロス AZ 転送が発生しますが、この規模の確認作業では実害はほぼありません。
+
+## 5. Amazon EFS を有効化する
+
+Amazon EFS は既定で無効なので、マルチ AZ の RWX キャッシュを試すにはまず有効化します。`terraform.tfvars` の `efs_enabled` を `true` に**書き換えて** apply すると、Amazon EFS ファイルシステム・private subnet ごとのマウントターゲット（`length(module.vpc.private_subnets)` 個。VPC のプライベートサブネット数＝Basic01 で構成した AZ 数と一致します。既定は `az.tf` がリージョンの全標準 AZ から導出するため、`us-east-2` なら 3、`us-west-2` なら 4 になりますが、`var.azs` を明示している場合はその個数に従います）・アクセスポイント・StorageClass・static PV（`efs-neuron-workspace`）が作られます。
+
+`terraform.tfvars.example` には `efs_enabled = false` が最初から書かれているため、Basic01 でそれをコピーした場合は必ずこのエントリが存在します。`echo 'efs_enabled = true' >> terraform.tfvars` のように追記すると、同じキーが 2 回現れて plan が次のエラーで止まります。
+
+```text
+Error: Attribute redefined
+The argument "efs_enabled" was already set at terraform.tfvars:169,1-12.
+```
+
+エディタで書き換えるか、次のように既存行を置換してください。
+
+```bash
+# 既存の efs_enabled 行を true に置換する（行が無い場合だけ追記される）
+grep -q '^efs_enabled' terraform.tfvars \
+  && sed -i.bak 's/^efs_enabled.*/efs_enabled = true/' terraform.tfvars \
+  || echo 'efs_enabled = true' >> terraform.tfvars
+
+grep '^efs_enabled' terraform.tfvars   # efs_enabled = true が 1 行だけ出ることを確認
+terraform apply
+```
+
+apply 完了後、マウントターゲットがすべて `available` になるまで数分かかります。`terraform output shared_storage` を再実行すると、3 層すべてが `enabled = true` になったことを確認できます。
 
 実機出力（3 層すべてを有効にした状態）:
 
@@ -234,103 +362,19 @@ terraform output shared_storage
 }
 ```
 
-`enabled` がその層を使うかどうか、`persistent_volume` がその層を裏づける静的 PV の名前です。FSx for Lustre の `mount_name` は CSI ドライバが DNS 名と併せて必要とする値で、コンソールからは見つけにくいのでここに出しています。無効な層は `enabled = false` で id が空になるため、この 1 コマンドで「どの層が有効か」も分かります。
-
-初回 apply の時点で、既定で有効な Amazon FSx for Lustre（`fsx_enabled = true`）と Amazon FSx for OpenZFS（`openzfs_enabled = true`）のファイルシステムはすでに作られています。Amazon EFS は既定で無効（`efs_enabled = false`、CSI ドライバだけは常設）なので、使う場合は `terraform.tfvars` に `efs_enabled = true` を設定してから `terraform apply` します。本章では代表として Amazon EFS と Amazon FSx for Lustre を扱います。
-
-## 2. PersistentVolume と PVC を確認する
+PV が追加されたことも確認します。
 
 ```bash
-kubectl get pv
-```
-
-既定（`fsx_enabled = true` / `openzfs_enabled = true` / `efs_enabled = false`）で apply した直後の実機出力です。Amazon FSx for Lustre（`fsx-training`）と Amazon FSx for OpenZFS（`openzfs-shared`）の static PV が作られており、まだどの PVC も作っていないので `Available` です。
-
-```text
-NAME             CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS      CLAIM   STORAGECLASS   AGE
-fsx-training     4800Gi     RWX            Retain           Available            <unset>        7h
-openzfs-shared   256Gi      RWX            Retain           Available            <unset>        7h
-```
-
-Amazon EFS は既定で無効のため、この時点では EFS の PV は出てきません（後述の手順 4 で有効化すると `efs-neuron-workspace` が追加されます）。いずれの PV も `storageClassName` が空の static PV です。動的プロビジョニング用の `efs-shared` StorageClass は `efs_enabled = true` のときにだけ作られるため、この時点（Amazon EFS 無効）ではまだ存在しません。後述の手順 4 で Amazon EFS を有効化すると `efs-shared` も作られますが、この静的 PV とは別物である点に注意します。Amazon FSx for Lustre が `RWX` なのは、複数ノードの Pod から同時にチェックポイント書き込みやデータ読み出しができるようにするためです。
-
-## 3. Amazon FSx for Lustre に書き込み、ノードを跨いでデータが残ることを確認する
-
-PV は Terraform で作られていますが、PVC（Pod がマウントに使う参照）は手動で作ります。まず既定で有効な Amazon FSx for Lustre で試します。static PV に名前でバインドするため `volumeName` に PV 名を、`storageClassName` に空文字を指定します。
-
-```bash
-kubectl apply -f - <<'EOF'
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: fsx-claim
-  namespace: default
-spec:
-  accessModes: ["ReadWriteMany"]
-  storageClassName: ""
-  volumeName: fsx-training
-  resources:
-    requests:
-      storage: 4800Gi
-EOF
-kubectl get pvc fsx-claim
-```
-
-`Bound` になったら、ファイルを書き込むテスト Pod を実行します。
-
-```bash
-kubectl run fsx-test --restart=Never --image=busybox \
-    --overrides='{"spec":{"containers":[{"name":"fsx-test","image":"busybox","command":["sh","-c","echo hello-fsx > /mnt/fsx/test.txt && cat /mnt/fsx/test.txt"],"volumeMounts":[{"name":"fsx","mountPath":"/mnt/fsx"}]}],"volumes":[{"name":"fsx","persistentVolumeClaim":{"claimName":"fsx-claim"}}]}}'
-kubectl logs fsx-test
-```
-
-Pod のログに `hello-fsx` が出れば、Amazon FSx for Lustre のマウントと書き込みが成功しています。続いて Pod を削除し、別名の Pod から同じファイルを読み出します。
-
-```bash
-kubectl delete pod fsx-test
-kubectl run fsx-test2 --restart=Never --image=busybox \
-    --overrides='{"spec":{"containers":[{"name":"fsx-test2","image":"busybox","command":["cat","/mnt/fsx/test.txt"],"volumeMounts":[{"name":"fsx","mountPath":"/mnt/fsx"}]}],"volumes":[{"name":"fsx","persistentVolumeClaim":{"claimName":"fsx-claim"}}]}}'
-kubectl logs fsx-test2
-```
-
-別名の Pod でも `hello-fsx` が読み出せます。Pod（ひいてはノード）が入れ替わっても、共有ストレージ上のデータが残り続けることが確認できます。なお、この静的 PV には topology 制約が付いていないため、busybox Pod は任意の AZ にスケジュールされ得ます。Amazon FSx for Lustre と別 AZ に載った場合はクロス AZ 転送が発生しますが、この規模の確認作業では実害はほぼありません。
-
-## 4. Amazon EFS を有効化する
-
-Amazon EFS は既定で無効なので、マルチ AZ の RWX キャッシュを試すにはまず有効化します。`terraform.tfvars` の `efs_enabled` を `true` に**書き換えて** apply すると、Amazon EFS ファイルシステム・private subnet ごとのマウントターゲット（`length(module.vpc.private_subnets)` 個。`us-east-2` なら 3、`us-west-2` なら 4）・アクセスポイント・StorageClass・static PV（`efs-neuron-workspace`）が作られます。
-
-`terraform.tfvars.example` には `efs_enabled = false` が最初から書かれているため、Basic01 でそれをコピーした場合は必ずこのエントリが存在します。`echo 'efs_enabled = true' >> terraform.tfvars` のように追記すると、同じキーが 2 回現れて plan が次のエラーで止まります。
-
-```text
-Error: Attribute redefined
-The argument "efs_enabled" was already set at terraform.tfvars:169,1-12.
-```
-
-エディタで書き換えるか、次のように既存行を置換してください。
-
-```bash
-# 既存の efs_enabled 行を true に置換する（行が無い場合だけ追記される）
-grep -q '^efs_enabled' terraform.tfvars \
-  && sed -i.bak 's/^efs_enabled.*/efs_enabled = true/' terraform.tfvars \
-  || echo 'efs_enabled = true' >> terraform.tfvars
-
-grep '^efs_enabled' terraform.tfvars   # efs_enabled = true が 1 行だけ出ることを確認
-terraform apply
-```
-
-apply 完了後、マウントターゲットがすべて `available` になるまで数分かかります。PV が追加されたことを確認します。
-
-```bash
-kubectl get pv | grep efs
+k get pv | grep efs
 # efs-neuron-workspace   1000Gi   RWX   Retain   Available   ...
 ```
 
-## 5. Amazon EFS 用の PVC を作成し、書き込みテストを行う
+## 6. Amazon EFS 用の PVC を作成し、書き込みテストを行う
 
 Amazon FSx と同じく、static PV に名前でバインドする PVC を作ります。1 つの PV は 1 つの PVC にしか bind しません（RWX でも同じで、複数 Pod から使えるだけです）。apply 直後の PV は `Available` なので、ここで作る `efs-claim` がそこに bind します。
 
 ```bash
-kubectl apply -f - <<'EOF'
+k apply -n "$NAMESPACE" -f - <<'EOF'
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -348,13 +392,13 @@ EOF
 PVC が `Bound` になったことを確認します。
 
 ```bash
-kubectl get pvc efs-claim
+k get pvc efs-claim -n "$NAMESPACE"
 ```
 
 Amazon EFS にファイルを書き込むテスト Pod を実行します。
 
 ```bash
-kubectl run efs-test --restart=Never \
+k run efs-test -n "$NAMESPACE" --restart=Never \
     --image=busybox \
     --overrides='{"spec":{"containers":[{"name":"efs-test","image":"busybox","command":["sh","-c","echo hello > /mnt/efs/test.txt && cat /mnt/efs/test.txt"],"volumeMounts":[{"name":"efs","mountPath":"/mnt/efs"}]}],"volumes":[{"name":"efs","persistentVolumeClaim":{"claimName":"efs-claim"}}]}}'
 ```
@@ -362,20 +406,42 @@ kubectl run efs-test --restart=Never \
 Pod のログに `hello` が出力されれば、Amazon EFS のマウントと書き込みが成功しています。
 
 ```bash
-kubectl logs efs-test
+k logs efs-test -n "$NAMESPACE"
 ```
 
-## 6. Pod を削除して再作成し、データが残ることを確認する
+## 7. Pod を削除して再作成し、データが残ることを確認する
 
 ```bash
-kubectl delete pod efs-test
-kubectl run efs-test2 --restart=Never \
+k delete pod efs-test -n "$NAMESPACE"
+k run efs-test2 -n "$NAMESPACE" --restart=Never \
     --image=busybox \
     --overrides='{"spec":{"containers":[{"name":"efs-test2","image":"busybox","command":["cat","/mnt/efs/test.txt"],"volumeMounts":[{"name":"efs","mountPath":"/mnt/efs"}]}],"volumes":[{"name":"efs","persistentVolumeClaim":{"claimName":"efs-claim"}}]}}'
-kubectl logs efs-test2
+k logs efs-test2 -n "$NAMESPACE"
 ```
 
-別名の Pod でも `hello` が読み出せます。これが、Karpenter がノードを入れ替えても Pod が再スケジュールされた先で同じキャッシュを読み続けられる、という本章の要点そのものです。Amazon FSx（手順 3）と Amazon EFS（手順 5〜6）のどちらでも、Pod をまたいでデータが残ることを実機で確認できました。
+別名の Pod でも `hello` が読み出せます。これが、Karpenter がノードを入れ替えても Pod が再スケジュールされた先で同じキャッシュを読み続けられる、という本章の要点そのものです。Amazon FSx（手順 4）と Amazon EFS（手順 6〜7）のどちらでも、Pod をまたいでデータが残ることを実機で確認できました。
+
+## 8. 検証用リソースを削除する
+
+検証が終わったら、テスト Pod と PVC を削除しておきます。Amazon FSx for Lustre を無効化する場合は、この削除を先に済ませておかないと、Bound な PV の削除がファイナライザで止まり `terraform apply`/`destroy` が詰まることがあります（前述の message ブロック参照）。
+
+```bash
+k delete pod fsx-test2 efs-test2 -n "$NAMESPACE" --ignore-not-found
+k delete pvc fsx-claim efs-claim -n "$NAMESPACE" --ignore-not-found
+```
+
+PV 自体は Terraform が管理しているため、この削除では消えません。ただし両 PV の `RECLAIM POLICY` は `Retain` のため、Bound だった PVC を削除しても PV は `Available` には戻らず、`claimRef` を残したまま `Released` になります。`k get pv` を実行すると、`fsx-training` と `efs-neuron-workspace` が `Released` になっていることを確認できます。
+
+```bash
+k get pv fsx-training efs-neuron-workspace
+```
+
+再び PVC をバインドしたい場合は、`claimRef` を取り除いて `Available` に戻す必要があります。
+
+```bash
+k patch pv fsx-training --type=json -p '[{"op":"remove","path":"/spec/claimRef"}]'
+k patch pv efs-neuron-workspace --type=json -p '[{"op":"remove","path":"/spec/claimRef"}]'
+```
 
 # まとめ
 
@@ -386,4 +452,6 @@ kubectl logs efs-test2
 - [Amazon EFS CSI Driver](https://github.com/kubernetes-sigs/aws-efs-csi-driver)
 - [Amazon FSx for Lustre CSI Driver](https://github.com/kubernetes-sigs/aws-fsx-csi-driver)
 - [Amazon FSx for Lustre ユーザーガイド](https://docs.aws.amazon.com/fsx/latest/LustreGuide/what-is.html)
+- [Amazon FSx for OpenZFS CSI Driver](https://github.com/kubernetes-sigs/aws-fsx-openzfs-csi-driver)
+- [Amazon FSx for OpenZFS ユーザーガイド](https://docs.aws.amazon.com/fsx/latest/OpenZFSGuide/what-is-fsx.html)
 - [対象モジュール infra/eks](https://github.com/littlemex/distributed-ai/tree/main/infra/eks)

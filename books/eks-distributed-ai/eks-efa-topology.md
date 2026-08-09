@@ -419,20 +419,20 @@ GDRCopy を実際に有効にするには、ノードのカーネルに `gdrdrv`
 
 ## 8. teardown する
 
-検証が終わったら、Capacity Block の期限が来る前にワークロードを退避します。まず本章で投入した TrainJob を消します。`04-teardown.sh` が削除するのは Deployment/StatefulSet/Job/MPIJob で、TrainJob（と配下の JobSet）はこの一覧に含まれないため、先に明示的に削除しないと Pod が残って NodePool の drain が引っかかります。
+検証が終わったら、Capacity Block の期限が来る前にワークロードを退避します。`04-teardown.sh` は Deployment/StatefulSet/Job/TrainJob/MPIJob を削除対象に含むため、本章で投入した `ncclTrainjob` もこのスクリプトで消えます。TrainJob は配下に JobSet が管理する Pod を持ちますが、スクリプトは TrainJob の削除がタイムアウトした場合に finalizer を外して確実に消すフォールバックまで備えているので、Pod が残って NodePool の drain が引っかかることはありません。単独で先に消しておきたい場合は次のコマンドを使いますが、必須ではありません。
 
 ```bash
 k delete trainjob nccl-trainjob -n "$NAMESPACE" --ignore-not-found
 ```
 
-そのうえで Basic05 の helper script でノードプールを退避します。スクリプトはリポジトリ内の `infra/eks/scripts` にあります。
+Basic05 の helper script でノードプールを退避します。スクリプトはリポジトリ内の `infra/eks/scripts` にあります。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks/scripts
 ./04-teardown.sh --namespace "$NAMESPACE" --nodepool "$POOL"
 ```
 
-`04-teardown.sh` は Deployment/StatefulSet/Job/MPIJob を削除し、GPU Pod が完全に終了したのを確認したうえで Karpenter の NodePool を削除します。CB のノード自体は予約期間の終了時に AWS 側で強制回収されるため、このスクリプトは「ワークロードを安全に退避させる」ところまでを担当します。クラスタ全体を壊す `terraform destroy` は `--destroy` を明示した場合のみ実行されます。
+`04-teardown.sh` は Deployment/StatefulSet/Job/TrainJob/MPIJob を削除し、GPU Pod が完全に終了したのを確認したうえで Karpenter の NodePool を削除します。CB のノード自体は予約期間の終了時に AWS 側で強制回収されるため、このスクリプトは「ワークロードを安全に退避させる」ところまでを担当します。クラスタ全体を壊す `terraform destroy` は `--destroy` を明示した場合のみ実行されます。
 
 # まとめ
 
