@@ -69,7 +69,7 @@ relabelings = [
 ]
 ```
 
-データ自体は 1 つの Prometheus に集約されるため、他テナントのデータも「見ようと思えば」見えます。強制的なデータ分離（テナントごとにクエリを分離する `prom-label-proxy` や Grafana の folder permission、Thanos/Mimir によるストレージ分離）は今後の課題として、まずは「ラベル `tenant` を分離の契約点として確立する」ところまでを本章の範囲とします。
+データ自体は 1 つの Prometheus に集約されるため、他テナントのデータも「見ようと思えば」見えます。強制的なデータ分離（テナントごとにクエリを分離する `prom-label-proxy` や Grafana の folder permission、Thanos/Mimir によるストレージ分離）は今後の課題として、まずは「ラベル `tenant` を分離の契約点として確立する」ところまでを作りました。
 
 ## 監視スタックの置き場所
 
