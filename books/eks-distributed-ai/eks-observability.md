@@ -33,14 +33,21 @@ Prometheus と Grafana は [kube-prometheus-stack](https://github.com/prometheus
 
 ## テナントごとに GPU を見る
 
-マルチテナント設計では、チームごとに namespace を分けてダッシュボードを見たいという要求があるはずです。まだ開発中の段階なのでこのマルチテナント機能については現時点では全体設計が未完成ですが、現時点では各チームのノードに `tenantpools.dev/tenant=<namespace>` というラベルがついていれば、observability はこのラベルを収集時に GPU メトリクスへ刻印し、Grafana の「GPU Utilization by Tenant」ダッシュボードのドロップダウンで自分の namespace を選ぶだけで、自分のテナントの GPU だけを見られるようにしています。
+マルチテナント設計では、チームごとに namespace を分けてダッシュボードを見たいという要求があるはずです。このマルチテナント機能は開発中で全体設計はまだ未完成ですが、現時点でも「どのチームの GPU か」を示す `tenant` ラベルを GPU メトリクスに付けて、Grafana の「GPU Utilization by Tenant」ダッシュボードのドロップダウンで自分の namespace を選ぶだけで自分のテナントの GPU だけを見られる、というところまでは動きます。
 
-これを実現するのが、[`observability.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/observability.tf) が作る専用の DCGM ServiceMonitor です。`attachMetadata.node: true` でノードラベルを収集メタデータに載せ、relabeling で `tenantpools.dev/tenant` ラベルを `tenant` というメトリクスラベルに変換します。GPU Operator 標準の ServiceMonitor では `attachMetadata` を設定できず、ノードラベルが収集メタデータに載らないためこの relabeling が成立しません。そこで [`gpu-addons.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/gpu-addons.tf) 側では `dcgmExporter.serviceMonitor.enabled = false` として標準の ServiceMonitor を無効化し、observability.tf の自前 ServiceMonitor に一本化しています。
+ここで「ラベルを付ける側」と「ラベルを使う側」を分けて理解すると、仕組みがはっきりします。
+
+- **付ける側**、つまりノードにラベルを刻むのは observability ではなく、Experiment01 の `karpenter-tenant-pools` の役割です。テナントのプールで起動したノードに `tenantpools.dev/tenant=<namespace>` という**ノードラベル**を付けます。逆に言うと、`karpenter-tenant-pools` を使わずに起動したノード（Basic04 の Terraform 版プールなど）にはこのラベルは付きません。
+- **使う側**、つまりメトリクスに写すのが observability の [`observability.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/observability.tf) が作る専用の DCGM ServiceMonitor です。ノードに付いている `tenantpools.dev/tenant` ラベルを読み取り、GPU メトリクスの `tenant` というラベルとして写します。ラベルを新たに生成しているのではなく、既にノードにあるラベルを拾ってメトリクスに転記しているだけです。
+
+つまり `tenant` ラベルの値は「付ける側」次第です。`karpenter-tenant-pools` でノードを起動していればそのメトリクスに `tenant=<namespace>` が入り、そうでなければ写す元が無いので `tenant` は空になります。
+
+この「写す」を実現しているのが ServiceMonitor の `attachMetadata.node: true`（ノードラベルを収集メタデータに載せる）と relabeling（メタデータの `tenantpools.dev/tenant` を `tenant` ラベルへコピーする）です。GPU Operator 標準の ServiceMonitor では `attachMetadata` を設定できず、ノードラベルが収集メタデータに載らないためこのコピーが成立しません。そこで [`gpu-addons.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/gpu-addons.tf) 側では `dcgmExporter.serviceMonitor.enabled = false` として標準の ServiceMonitor を無効化し、observability.tf の自前 ServiceMonitor に一本化しています。
 
 ```hcl
 relabelings = [
   {
-    # ノードラベル tenantpools.dev/tenant を tenant メトリクスラベルに変換する
+    # ノードラベル tenantpools.dev/tenant を tenant メトリクスラベルへコピーする
     action       = "replace"
     sourceLabels = ["__meta_kubernetes_node_label_tenantpools_dev_tenant"]
     targetLabel  = "tenant"
