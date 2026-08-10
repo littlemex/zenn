@@ -207,7 +207,7 @@ curl -sf http://localhost:3000/api/health >/dev/null \
 手順 3・4 でバックグラウンド（`&`）に起動した port-forward は、ターミナルを閉じるまで残り続けます。確認が終わったら `jobs` でジョブ番号を確認し、`kill %<番号>` で止めておきます（放置すると次の再実行時に 9090 / 3000 が使用中で port-forward が失敗します）。
 
 :::message
-**EFA のネットワークメトリクスは現時点では観測対象に含めていません。** EFA の帯域や RDMA の統計を Prometheus に取り込むには専用の EFA exporter が別途必要ですが、この基盤にはまだ導入していません。今後の対応予定です。
+**EFA のネットワークメトリクスは現時点では観測対象に含めていません。** EFA の帯域や RDMA の統計を Prometheus に取り込むには専用の EFA exporter が別途必要ですが、この基盤にはまだ導入しておらず、今後の対応予定です。**Neuron の Observability についても現状では未対応**で、今後対応予定です。
 :::
 
 ## 5. observability を無効化する（任意）
