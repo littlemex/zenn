@@ -15,7 +15,7 @@ chapters:
   - eks-neuron-trainium-temp
   - eks-shared-storage
   - eks-teardown-and-options
-  - eks-image-cache
-  - eks-gdrcopy
-  - eks-gpu-fault-injection
-  - eks-tenant-pools
+    #  - eks-image-cache
+    #  - eks-gdrcopy
+    #  - eks-gpu-fault-injection
+    #  - eks-tenant-pools
