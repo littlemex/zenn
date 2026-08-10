@@ -52,6 +52,8 @@ Prometheus と Grafana は [kube-prometheus-stack](https://github.com/prometheus
 
 この「写す」を実現しているのが ServiceMonitor の `attachMetadata.node: true` と relabeling です。`attachMetadata.node: true` はスクレイプ対象のノードラベルを収集時のメタデータに載せる設定で、relabeling はそのメタデータに現れた `tenantpools.dev/tenant` を `tenant` というメトリクスラベルへコピーする処理です。GPU Operator 標準の ServiceMonitor では `attachMetadata` を設定できず、ノードラベルが収集メタデータに載らないためこのコピーが成立しません。そこで [`gpu-addons.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/gpu-addons.tf) 側では `dcgmExporter.serviceMonitor.enabled = false` として標準の ServiceMonitor を無効化し、observability.tf の自前 ServiceMonitor に一本化しています。
 
+このとき自前 ServiceMonitor には、GPU Operator が使う名前 `nvidia-dcgm-exporter` をそのまま使ってはいけません。`dcgmExporter.serviceMonitor.enabled = false` の状態では、GPU Operator は「その名前の ServiceMonitor は存在すべきでない」と判断し、reconcile のたびに同名の ServiceMonitor を削除します。GPU ノードが入れ替わって GPU Operator が再度 reconcile するたびに自前 ServiceMonitor が消え、`DCGM_FI_DEV_GPU_UTIL` の系列がゼロになる、という分かりにくい事象に何度も遭遇しました。そこで自前側は `nvidia-dcgm-exporter-tenant` という別名にして、GPU Operator の管理対象から外しています。
+
 ```hcl
 relabelings = [
   {
