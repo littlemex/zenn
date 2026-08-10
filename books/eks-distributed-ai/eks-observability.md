@@ -46,7 +46,7 @@ Prometheus と Grafana は [kube-prometheus-stack](https://github.com/prometheus
 
 ここで ServiceMonitor という言葉が出てきたので、実態を補足します。ServiceMonitor は Prometheus Operator（kube-prometheus-stack に含まれる）が用意する Kubernetes の CRD で、平たく言えば **Prometheus に対する「どの Service を、どのポートで、何秒間隔で収集し、収集したメトリクスにどんなラベルを足すか」を宣言する収集指示書**です。素の Prometheus は設定ファイルに収集対象を静的に書きますが、Prometheus Operator はこの ServiceMonitor という Kubernetes リソースを見て収集設定を自動生成します。
 
-したがって本章で「自前の ServiceMonitor」と呼んでいるのは、GPU メトリクスを出す exporter を自作したという意味ではありません。メトリクスを公開する dcgm-exporter は GPU Operator 同梱のものをそのまま使い、その exporter を **どう収集するか（＝この収集指示書）だけ**を自分で書いた、という意味です。GPU Operator も標準の ServiceMonitor を出せますが、そこには後述の `attachMetadata` を指定できず `tenant` ラベルを写せないため、標準のものを無効化して、必要な relabeling を仕込んだ指示書に置き換えています。
+したがって本章で「自前の ServiceMonitor」と呼んでいるのは、メトリクスを公開する dcgm-exporter は GPU Operator 同梱のものをそのまま使い、その exporter を **どう収集するか（＝この収集指示書）**を自分で書いた、という意味です。GPU Operator も標準の ServiceMonitor を出せますが、そこには後述の `attachMetadata` を指定できず `tenant` ラベルを写せないため、標準のものを無効化して、必要な relabeling を仕込んだ指示書に置き換えています。
 
 つまり `tenant` ラベルの値は「付ける側」次第です。`karpenter-tenant-pools` でノードを起動していればそのメトリクスに `tenant=<namespace>` が入り、そうでなければ写す元が無いので `tenant` は空になります。
 
