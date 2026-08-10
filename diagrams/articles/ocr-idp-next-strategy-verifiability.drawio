@@ -1,0 +1,59 @@
+<mxfile host="app.diagrams.net"><diagram id="xlxvhlps-ak3m" name="Page-1"><mxGraphModel dx="900" dy="600" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="920" pageHeight="600" math="0" shadow="0">
+  <root>
+    <mxCell id="0" />
+    <mxCell id="1" parent="0" />
+    <mxCell id="title" value="帳票の「内在的検証可能性」の二層構造" style="text;html=1;fontSize=24;fontStyle=1;fontColor=#1B5E20;align=center;verticalAlign=middle;" vertex="1" parent="1">
+      <mxGeometry x="40" y="16" width="840" height="36" as="geometry" />
+    </mxCell>
+    <mxCell id="sub" value="決定論的チェック（合計整合・チェックデジット・マスタ照合・順序制約）で機械検証できるフィールドの割合" style="text;html=1;fontSize=16;fontStyle=2;fontColor=#558B2F;align=center;verticalAlign=middle;" vertex="1" parent="1">
+      <mxGeometry x="40" y="54" width="840" height="26" as="geometry" />
+    </mxCell>
+    <mxCell id="highbox" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DCEDC8;strokeColor=#33691E;strokeWidth=3;" vertex="1" parent="1">
+      <mxGeometry x="40" y="100" width="400" height="440" as="geometry" />
+    </mxCell>
+    <mxCell id="hhead" value="規則駆動型
+被覆率 60〜85%" style="text;html=1;fontSize=22;fontStyle=1;fontColor=#1B5E20;align=center;verticalAlign=middle;" vertex="1" parent="1">
+      <mxGeometry x="60" y="112" width="360" height="56" as="geometry" />
+    </mxCell>
+    <mxCell id="hdesc" value="制度・規則そのものが数式や公開マスタとして明文化" style="text;html=1;fontSize=15;fontColor=#33691E;align=center;verticalAlign=middle;whiteSpace=wrap;" vertex="1" parent="1"><mxGeometry x="60" y="168" width="360" height="44" as="geometry" /></mxCell>
+    <mxCell id="h1" value="請求書 — 明細和 = 合計、税額 = 課税額 × 税率" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#7CB342;fontSize=16;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="60" y="222" width="360" height="48" as="geometry" />
+    </mxCell>
+    <mxCell id="h2" value="銀行取引明細 — 残高の連鎖が全行で成立" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#7CB342;fontSize=16;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="60" y="278" width="360" height="48" as="geometry" />
+    </mxCell>
+    <mxCell id="h3" value="給与明細 — 総支給 − 控除 = 手取り" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#7CB342;fontSize=16;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="60" y="334" width="360" height="48" as="geometry" />
+    </mxCell>
+    <mxCell id="h4" value="税務書類 — 税額は税率表からの規則関数" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#7CB342;fontSize=16;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="60" y="390" width="360" height="48" as="geometry" />
+    </mxCell>
+    <mxCell id="h5" value="医療レセプト — 診療報酬点数マスタと照合" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#7CB342;fontSize=16;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="60" y="446" width="360" height="48" as="geometry" />
+    </mxCell>
+    <mxCell id="hfoot" value="RLVR の報酬が濃く回る土台がすでに存在" style="text;html=1;fontSize=16;fontStyle=1;fontColor=#1B5E20;align=center;verticalAlign=middle;" vertex="1" parent="1">
+      <mxGeometry x="60" y="500" width="360" height="30" as="geometry" />
+    </mxCell>
+    <mxCell id="lowbox" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F1F8E9;strokeColor=#AED581;strokeWidth=2;" vertex="1" parent="1">
+      <mxGeometry x="480" y="100" width="400" height="440" as="geometry" />
+    </mxCell>
+    <mxCell id="lhead" value="記述駆動型
+被覆率 30〜55%" style="text;html=1;fontSize=22;fontStyle=1;fontColor=#558B2F;align=center;verticalAlign=middle;" vertex="1" parent="1">
+      <mxGeometry x="500" y="112" width="360" height="56" as="geometry" />
+    </mxCell>
+    <mxCell id="ldesc" value="当事者名・貨物記述・品目名など一回性の高い自由記述が主要フィールド" style="text;html=1;fontSize=15;fontColor=#558B2F;align=center;verticalAlign=middle;whiteSpace=wrap;" vertex="1" parent="1"><mxGeometry x="500" y="166" width="360" height="48" as="geometry" /></mxCell>
+    <mxCell id="l1" value="保険の証明フォーム — 最終確認は外部システム照合に依存" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#C5E1A5;fontSize=16;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="500" y="222" width="360" height="56" as="geometry" />
+    </mxCell>
+    <mxCell id="l2" value="物流書類 — 貨物・当事者情報の個別性が高い" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#C5E1A5;fontSize=16;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="500" y="290" width="360" height="56" as="geometry" />
+    </mxCell>
+    <mxCell id="l3" value="領収書 — 品目記述が粗く外部マスタが乏しい" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#C5E1A5;fontSize=16;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="500" y="358" width="360" height="56" as="geometry" />
+    </mxCell>
+    <mxCell id="lfoot" value="RLVR 単独では報酬が疎
+マスタ拡充や人手レビューの補完を併用" style="text;html=1;fontSize=16;fontStyle=1;fontColor=#558B2F;align=center;verticalAlign=middle;" vertex="1" parent="1">
+      <mxGeometry x="500" y="440" width="360" height="90" as="geometry" />
+    </mxCell>
+  </root>
+</mxGraphModel></diagram></mxfile>
