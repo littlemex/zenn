@@ -33,11 +33,15 @@ Prometheus と Grafana は [kube-prometheus-stack](https://github.com/prometheus
 
 ## テナントごとに GPU を見る
 
+:::message
+マルチテナント機能は現在開発中です。
+:::
+
 マルチテナント設計では、チームごとに namespace を分けてダッシュボードを見たいという要求があるはずです。このマルチテナント機能は開発中で全体設計はまだ未完成ですが、現時点でも「どのチームの GPU か」を示す `tenant` ラベルを GPU メトリクスに付けて、Grafana の「GPU Utilization by Tenant」ダッシュボードのドロップダウンで自分の namespace を選ぶだけで自分のテナントの GPU だけを見られる、というところまでは動きます。
 
 ここで「ラベルを付ける側」と「ラベルを使う側」を分けて理解すると、仕組みがはっきりします。
 
-- **付ける側**、つまりノードにラベルを刻むのは observability ではなく、Experiment01 の `karpenter-tenant-pools` の役割です。テナントのプールで起動したノードに `tenantpools.dev/tenant=<namespace>` という**ノードラベル**を付けます。逆に言うと、`karpenter-tenant-pools` を使わずに起動したノード（Basic04 の Terraform 版プールなど）にはこのラベルは付きません。
+- **付ける側**、つまりノードにラベルを刻むのは observability ではなく、自作中の `karpenter-tenant-pools` CRD の役割です。テナントのプールで起動したノードに `tenantpools.dev/tenant=<namespace>` という**ノードラベル**を付けます。逆に言うと、`karpenter-tenant-pools` を使わずに起動したノードにはこのラベルは付かないので自分でつける必要があります。
 - **使う側**、つまりメトリクスに写すのが observability の [`observability.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/observability.tf) が作る専用の DCGM ServiceMonitor です。ノードに付いている `tenantpools.dev/tenant` ラベルを読み取り、GPU メトリクスの `tenant` というラベルとして写します。ラベルを新たに生成しているのではなく、既にノードにあるラベルを拾ってメトリクスに転記しているだけです。
 
 つまり `tenant` ラベルの値は「付ける側」次第です。`karpenter-tenant-pools` でノードを起動していればそのメトリクスに `tenant=<namespace>` が入り、そうでなければ写す元が無いので `tenant` は空になります。
