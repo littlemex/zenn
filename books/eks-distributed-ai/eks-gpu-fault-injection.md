@@ -54,10 +54,16 @@ resource "helm_release" "node_monitoring_agent" {
 
 エージェント本体はデフォルトで全 taint を tolerate するため、明示的に上書きするのは `dcgm-server` の toleration だけに絞っています。これは NMA 側の設計上の見落とし（エージェント本体は全 taint を許容するのに `dcgm-server` だけ許容しない）と考えられ、将来 upstream で修正されればこの toleration ブロックは不要になります。
 
+## なぜ auto-repair を有効にしないか
+
+NMA が出す NodeCondition は、Karpenter のノード自動修復（auto-repair）と組み合わせると、不健全なノードを自動で terminate して置き換えることもできます。しかしこの基盤では auto-repair を有効にせず、NMA には「検知して知らせる」役割だけを持たせています。
+
+理由は、この基盤の主用途が tightly-coupled な同期集合通信（NCCL によるマルチノード学習）だからです。1 ノードを自動 terminate すると、まだ調査できたはずの高価な GPU ノードを人間の確認なしに失いますし、Capacity Block では同じ故障ホストを引き直して terminate と再起動を繰り返すループに陥る危険もあります。ノードを止める・置き換えるという不可逆な判断は、ジョブの状態を分かっている人間やジョブ層に委ねるのが安全です。まず検知を最速にし、terminate の引き金は握らせない、という切り分けです。この論点は [AWS の解説記事](https://aws.amazon.com/jp/blogs/containers/under-the-hood-how-amazon-eks-auto-mode-detects-repairs-and-diagnoses-node-failures/) が検知・修復・診断の仕組みとして詳しく説明しているので、あわせて参照してください。
+
 # ワークショップ実施
 
 :::message
-手順 1 から 5 は連続して実施してください。注入した値は DCGM のキャッシュに残り、手順 5 でクリアするまで保持されますが、途中で長時間中断すると `dcgm-server` の再起動などで状態が変わることがあります。また、本章で注入する GPU 障害でノードが Unhealthy になっても、Karpenter のノード自動修復（auto-repair）は無効にしてあるため、ノードが勝手に terminate されることはありません（理由は Basic08 参照）。
+手順 1 から 5 は連続して実施してください。注入した値は DCGM のキャッシュに残り、手順 5 でクリアするまで保持されますが、途中で長時間中断すると `dcgm-server` の再起動などで状態が変わることがあります。また、本章で注入する GPU 障害でノードが Unhealthy になっても、Karpenter のノード自動修復は無効にしてあるため、ノードが勝手に terminate されることはありません。この判断の理由は後述の「なぜ auto-repair を有効にしないか」で説明します。
 :::
 
 ## 1. 前提を確認し、対象ノードを決める
