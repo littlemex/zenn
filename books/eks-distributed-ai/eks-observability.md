@@ -194,11 +194,13 @@ curl -sf http://localhost:3000/api/health >/dev/null \
 
 アクセス手順は `terraform output grafana_access` にもワンライナーで出力されます。
 
-ログイン後、左メニューの Dashboards を開くと、kube-prometheus-stack が自動導入した Kubernetes 向けダッシュボード群に加えて、`GPU` フォルダに本 book が配布した「GPU Utilization by Tenant」ダッシュボードが表示されます。
+ログイン後、左メニューの Dashboards を開くと、kube-prometheus-stack が自動導入した Kubernetes 向けダッシュボード群に加えて、本 book が配布したダッシュボードが表示されます。`GPU` フォルダには自作の「GPU Utilization by Tenant」と NVIDIA 公式の「NVIDIA DCGM Exporter Dashboard」、`Nodes` フォルダにはノードの CPU・メモリ・ディスク・ネットワークを網羅する「Node Exporter Full」が入っています。いずれも `terraform apply` で自動的に配置され、手動インポートは不要です。
 
 このダッシュボードの上部にある `Tenant` ドロップダウンで自分の namespace を選ぶと、そのテナントの GPU だけの使用率・メモリ・SM クロック・温度・電力が表示されます。設定ファイルもクエリも書く必要はなく、ドロップダウンを選ぶだけです。`http://localhost:3000/d/gpu-tenant?var-tenant=team-a` のように URL に `var-tenant` を付ければ、選択済みの状態で共有もできます。
 
-GPU がまとまった枚数で動くとダッシュボードがどう見えるかの参考として、別環境での実画面を載せます。以下は、この手順の A10G 1 枚構成とは異なり、Capacity Block で確保した p5en.48xlarge（H200 x8）の 1 ノードで GPU ワークロードを流しているときのもので、ダッシュボードも Grafana に別途インポートした「NVIDIA DCGM Exporter Dashboard」です。8 枚の GPU（GPU 0〜7）それぞれの温度・電力・SM クロック・使用率が個別に可視化され、使用率が最大 100 %、SM クロックが最大 1.98 GHz、電力が 1 枚あたり最大約 690 W に達していることが読み取れます。
+GPU 専用のダッシュボードとして、この book では NVIDIA 公式の「NVIDIA DCGM Exporter Dashboard」（Grafana.com の id 12239）も自動で配布しています。前述の「GPU Utilization by Tenant」と同じく、`terraform apply` 済みであれば Grafana の `GPU` フォルダにすでに入っており、手動インポートは不要です。
+
+GPU がまとまった枚数で動くとこのダッシュボードがどう見えるかの参考として、別環境での実画面を載せます。以下は、この手順の A10G 1 枚構成とは異なり、Capacity Block で確保した p5en.48xlarge（H200 x8）の 1 ノードで GPU ワークロードを流しているときのものです。8 枚の GPU（GPU 0〜7）それぞれの温度・電力・SM クロック・使用率が個別に可視化され、使用率が最大 100 %、SM クロックが最大 1.98 GHz、電力が 1 枚あたり最大約 690 W に達していることが読み取れます。
 
 ![NVIDIA DCGM Exporter Dashboard で p5en の 8 GPU を可視化した実画面](/images/books/eks-distributed-ai/ch7-dcgm-grafana.png)
 
@@ -251,6 +253,11 @@ EKS のクラスタには既定で in-tree の `gp2` StorageClass しか無い�
 kube-prometheus-stack の admission webhook は Helm のインストール時フックとして証明書生成 Job を動かしますが、これが特定の Helm バージョンでインストールを止めてしまう問題があるため、本 book では `admissionWebhooks.enabled = false` にしています。この webhook が担うのは `PrometheusRule` などの apply 時の早期検証だけで、CRD のスキーマ検証は Kubernetes API 側で常に効き、Prometheus Operator も不正な rule を reconcile 時に弾いて処理を続けるため、共有基盤全体が壊れることはありません。将来テナントが独自の rule を投入する運用を始める際は、cert-manager 経由（`admissionWebhooks.certManager.enabled = true`）で再有効化できます。
 :::
 
+:::message
+**EFA のネットワークメトリクスは現時点では観測対象に含めていません。**
+本章で取得しているのは、node-exporter が出すノードの CPU・メモリ・ディスク・ネットワークと、DCGM exporter が出す GPU のメトリクスです。EFA の帯域や RDMA の統計を Prometheus に取り込むには専用の EFA exporter が別途必要ですが、この基盤にはまだ導入していません。したがって EFA の通信量を Grafana で見ることは現状できません。Basic06 で見た EFA マルチノード通信の性能は、当面は NCCL のベンチマーク出力などその場の計測で確認します。EFA メトリクスの常時観測は今後の課題です。
+:::
+
 # まとめ
 
 本章では、`infra/eks` にデフォルトで組み込まれた observability を確認し、GPU Operator 同梱の DCGM exporter が公開する GPU メトリクスを Prometheus で収集、Grafana の UI で可視化しました。observability は `terraform apply` に含まれるため追加の導入操作は不要で、Prometheus/Grafana はすでにクラスタ上で動いています。ポイントは、GPU メトリクスに収集時点で `tenant` ラベルを刻印し、Grafana のドロップダウンでテナントごとに GPU を見られるようにしたこと、そして監視スタックを専用 NodePool・自動生成パスワード・専用 gp3 StorageClass で「宣言的に一発で立ち上がる」形に組み込んだことです。強制的なテナント分離は今後の課題として、まずは `tenant` ラベルを分離の契約点として確立しました。
@@ -260,5 +267,6 @@ kube-prometheus-stack の admission webhook は Helm のインストール時フ
 - [kube-prometheus-stack (Helm chart)](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack)
 - [NVIDIA DCGM Exporter](https://github.com/NVIDIA/dcgm-exporter)
 - [NVIDIA DCGM Exporter Dashboard (Grafana ID 12239)](https://grafana.com/grafana/dashboards/12239-nvidia-dcgm-exporter-dashboard/)
+- [Node Exporter Full (Grafana ID 1860)](https://grafana.com/grafana/dashboards/1860-node-exporter-full/)
 - [Prometheus Operator ServiceMonitor](https://prometheus-operator.dev/docs/getting-started/design/#servicemonitor)
 - [対象モジュール infra/eks](https://github.com/littlemex/distributed-ai/tree/main/infra/eks)
