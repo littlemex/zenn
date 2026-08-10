@@ -65,6 +65,7 @@ resource "helm_release" "node_monitoring_agent" {
 - Basic08 で NMA と kube-prometheus-stack が導入済みであること。
 - `k` エイリアスと `KUBECONFIG` / `--context` は Basic01 で設定済みであること。
 - GPU ノードが 1 台以上動いていること。Basic07 の vLLM や Basic05 の Capacity Block のいずれかを稼働させておきます。
+- 手順 4 の JSON パースに `python3` を使います。無い場合は `dnf install -y python3` などで入れておきます。
 
 まず、NMA のエージェント本体と `dcgm-server` の両方が動いていることを確認します。
 
@@ -72,12 +73,12 @@ resource "helm_release" "node_monitoring_agent" {
 k get ds -n kube-system eks-node-monitoring-agent dcgm-server
 ```
 
-実機出力です。`dcgm-server` が GPU ノードの数だけ `DESIRED` に上がっていれば、GPU taint への toleration が効いています。
+実機出力です。`dcgm-server` が GPU ノードの数だけ `DESIRED` に上がっていれば、GPU taint への toleration が効いています。両者の `NODE SELECTOR` はどちらも `kubernetes.io/os=linux` ですが、`dcgm-server` を GPU ノードだけに限定しているのは `NODE SELECTOR` ではなく nodeAffinity（GPU インスタンスタイプの許可リスト）なので、`DESIRED` はエージェント本体（全ノード）と `dcgm-server`（GPU ノードのみ）で異なります。
 
 ```text
-NAME                        DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   AGE
-eks-node-monitoring-agent   4         4         4       4            4           34m
-dcgm-server                 1         1         1       1            1           34m
+NAME                        DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR            AGE
+eks-node-monitoring-agent   4         4         4       4            4           kubernetes.io/os=linux   34m
+dcgm-server                 1         1         1       1            1           kubernetes.io/os=linux   34m
 ```
 
 前段の `dcgm-server` が `READY` 1 以上になっていることを確認してから進みます（0 のままなら GPU ノードが無いか toleration の問題で、ここから先は動きません）。以降の手順で使う `dcgm-server` の Pod 名と、それが載っているノード名を変数に取ります。ノード名をハードコードせず、注入する GPU と確認するノードを機械的に一致させるためです。
@@ -172,7 +173,7 @@ Basic08 の [`observability.tf`](https://github.com/littlemex/distributed-ai/blo
 k port-forward -n monitoring svc/kps-prometheus 9090:9090 &
 for i in $(seq 1 30); do curl -sf http://localhost:9090/-/ready >/dev/null && break; sleep 1; done
 curl -sf http://localhost:9090/-/ready >/dev/null \
-  || echo "port-forward が確立できていません。jobs と 9090 の占有を確認してください"
+  || echo "port-forward が確立できていません（この後のクエリもエラーになります）。jobs と 9090 の占有を確認し、解消してからやり直してください"
 
 curl -s "http://localhost:9090/api/v1/alerts" \
   | python3 -c "
