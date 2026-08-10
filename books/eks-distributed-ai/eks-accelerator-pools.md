@@ -227,15 +227,6 @@ PASS: 11  FAIL: 0  SKIP: 0  TOTAL: 11
 
 対象の NodePool は cpu 以外の NodePool から自動選択されます（`--gpu-nodepool` で明示指定も可能）。`--gpu-count` には検証したい GPU 枚数を渡します（g6.2xlarge なら 1、g6e.12xlarge なら 4、p4d.24xlarge なら 8）。GPU テストで ICE（InsufficientInstanceCapacity）により起動できない場合は AWS 側のキャパシティ問題であり、インフラの不具合ではありません。
 
-# Intent F と Intent M という 2 つの確保パターン
-
-プールの確保のしかたには、大きく 2 つのパターン（本 book では便宜上 Intent F / Intent M と呼びます）があります。本章で実際に作ったのは Intent F で、Intent M は `reserved`（Capacity Block）を前提とする発展形として Basic05 で扱います。
-
-- **Intent F**: 1 つのプールに複数の capacity_types を並べます。Karpenter は reserved を最優先し、それ以外は価格の低いものから選ぶため、結果として spot が on-demand より先に選ばれ、取れなければ次にフォールバックして台数充足を目指します。全ノードが同じプール・同じ NodePool に属します。
-- **Intent M**: reserved+spot を 1 プールに入れ、reserved ノードで長期訓練を走らせつつ spot ノードで推論やデータ前処理を同時に動かします。訓練 rank は nodeSelector `karpenter.sh/capacity-type: reserved` で reserved にピン留めし、spot に置きたい推論等は同じキーで `spot` にピン留めします。どちらの capacity-type に留まりたいかを Pod 側が明示的に指定する仕組みです。
-
-どちらも `capacity_types` リストで表現しますが、Intent F は「1 プールでフォールバックして台数を満たす」、Intent M は「capacity-type ごとに用途を固定する」点が異なります。Intent M と reserved の詳細は Basic05(Capacity Block)で扱います。
-
 # 今の仕組みの限界
 
 ここまでの `accelerator_pools`（Terraform の map 変数を専用 tfvars ファイルで管理する方式）は、一人ないし信頼できる少人数が同じ Terraform state を触る前提では十分に機能します。一方で、複数チームがひとつのクラスタを共有するマルチテナント運用に持ち込もうとすると、次の限界が見えてきます。
