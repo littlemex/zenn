@@ -82,7 +82,7 @@ Prometheus は PVC を持つ常駐の stateful なコンポーネントで、GPU
 
 ## ノード障害を検知する
 
-メトリクスの可視化とあわせて、この基盤には EKS の Node Monitoring Agent（NMA）も組み込んであります。NMA は各ノードの GPU・カーネル・ネットワークなどの健全性を監視し、`AcceleratedHardwareReady` のような NodeCondition として結果を書き込むエージェントです。この NodeCondition は kube-state-metrics 経由で Prometheus に流れるので、GPU 障害を検知して、これまでと同じ Prometheus/Grafana の仕組みでアラートにできます。[`observability.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/observability.tf) には、そのためのアラートルールもあらかじめ入れてあります。
+メトリクスの可視化とあわせて、この基盤には EKS の Node Monitoring Agent（NMA）も組み込んであります。NMA は各ノードの GPU・カーネル・ネットワークなどの健全性を監視し、NodeCondition 結果を書き込むエージェントです。この NodeCondition は kube-state-metrics 経由で Prometheus に流れるので、GPU 障害を検知して、これまでと同じ Prometheus/Grafana の仕組みでアラートにできます。[`observability.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/observability.tf) には、そのためのアラートルールもあらかじめ入れてあります。
 
 NMA は障害を「検知して知らせる」だけで、Karpenter によるノードの自動修復（auto-repair、不健全なノードを自動で terminate して置き換える機能）は意図的に無効にしています。高価な GPU ノードを止める・置き換えるという不可逆な判断は、人間やジョブ層に委ねる方針です。
 
@@ -92,11 +92,10 @@ NMA をなぜ Helm チャートで導入しているか、実際に GPU 障害�
 
 ## 1. 前提を確認する
 
-- Basic03 以降で `terraform apply` を実行済みであること。observability は `var.enable_observability = true`（既定）で apply に含まれるため、この時点で `monitoring` namespace に監視スタックがすでに立っています。
-- Basic04 で NVIDIA GPU Operator が導入済みであること。本章は GPU Operator が同梱する DCGM exporter を可視化します。
-- `k` エイリアスと `KUBECONFIG` / `--context` は Basic01 で設定済みであること。
-- GPU メトリクスに 0 以外の値が出るのは、GPU ノードが実際に GPU を使っているときです。Basic05 の Capacity Block や Basic07 の vLLM を稼働させたまま本章に進むと、手順 4 で実際の使用率を確認できます。
-- 手順 3 では JSON のパースに `python3` を使い、その後半の Prometheus targets 確認では `jq` を使います。この targets 確認だけは `jq` のフィルタ式そのものが処理の本体なので、整形しかしない `python3 -m json.tool` では代替できません。手元に無い場合は `dnf install -y python3 jq` などで入れておきます。
+- `terraform apply` を実行済みであること
+- Basic04 で NVIDIA GPU Operator 導入済み、vLLM サーバー起動済みであること
+- `k` エイリアスと `KUBECONFIG` / `--context` が設定済みであること
+- `jq` 導入済み
 
 ## 2. 監視スタックが動いていることを確認する
 
