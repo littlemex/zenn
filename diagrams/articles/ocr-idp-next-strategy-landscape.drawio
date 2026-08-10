@@ -1,0 +1,47 @@
+<mxfile host="app.diagrams.net"><diagram id="134jya6x-ijdc" name="Page-1"><mxGraphModel dx="900" dy="600" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="920" pageHeight="620" math="0" shadow="0">
+  <root>
+    <mxCell id="0"/>
+    <mxCell id="1" parent="0"/>
+    <mxCell id="title" value="OCR/IDP 企業の差別化軸と、共通するシフトの方向" style="text;html=1;fontSize=24;fontStyle=1;fontColor=#1B5E20;align=center;verticalAlign=middle;" vertex="1" parent="1">
+      <mxGeometry x="40" y="16" width="840" height="40" as="geometry"/>
+    </mxCell>
+    <mxCell id="from" value="出発点&#10;単純な OCR / 文字認識" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F1F8E9;strokeColor=#9CCC65;strokeWidth=2;fontSize=19;fontColor=#33691E;fontStyle=1;" vertex="1" parent="1">
+      <mxGeometry x="40" y="90" width="200" height="440" as="geometry"/>
+    </mxCell>
+    <mxCell id="a1" value="① 精度・ベンチマーク訴求" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#66BB6A;fontSize=18;fontColor=#1B5E20;" vertex="1" parent="1">
+      <mxGeometry x="320" y="90" width="260" height="56" as="geometry"/>
+    </mxCell>
+    <mxCell id="a2" value="② 文書特化の専用モデルを自社学習" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#66BB6A;fontSize=18;fontColor=#1B5E20;" vertex="1" parent="1">
+      <mxGeometry x="320" y="162" width="260" height="56" as="geometry"/>
+    </mxCell>
+    <mxCell id="a3" value="③ 基盤モデルのオーケストレーション" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#66BB6A;fontSize=18;fontColor=#1B5E20;" vertex="1" parent="1">
+      <mxGeometry x="320" y="234" width="260" height="56" as="geometry"/>
+    </mxCell>
+    <mxCell id="a4" value="④ 決定論ルール + AI ハイブリッド" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#66BB6A;fontSize=18;fontColor=#1B5E20;" vertex="1" parent="1">
+      <mxGeometry x="320" y="306" width="260" height="56" as="geometry"/>
+    </mxCell>
+    <mxCell id="a5" value="⑤ 業務プロセス実行への垂直統合" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#66BB6A;fontSize=18;fontColor=#1B5E20;" vertex="1" parent="1">
+      <mxGeometry x="320" y="378" width="260" height="56" as="geometry"/>
+    </mxCell>
+    <mxCell id="a6" value="⑥ 前処理・パイプラインの OSS 化" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#66BB6A;fontSize=18;fontColor=#1B5E20;" vertex="1" parent="1">
+      <mxGeometry x="320" y="450" width="260" height="56" as="geometry"/>
+    </mxCell>
+    <mxCell id="e1" style="endArrow=classic;html=1;strokeColor=#7CB342;strokeWidth=2;" edge="1" parent="1" source="from" target="a1"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e2" style="endArrow=classic;html=1;strokeColor=#7CB342;strokeWidth=2;" edge="1" parent="1" source="from" target="a2"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e3" style="endArrow=classic;html=1;strokeColor=#7CB342;strokeWidth=2;" edge="1" parent="1" source="from" target="a3"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e4" style="endArrow=classic;html=1;strokeColor=#7CB342;strokeWidth=2;" edge="1" parent="1" source="from" target="a4"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e5" style="endArrow=classic;html=1;strokeColor=#7CB342;strokeWidth=2;" edge="1" parent="1" source="from" target="a5"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e6" style="endArrow=classic;html=1;strokeColor=#7CB342;strokeWidth=2;" edge="1" parent="1" source="from" target="a6"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="conv" value="共通の収斂&#10;BYOM /&#10;マルチベンダー&#10;+&#10;アジェンティック化" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#C5E1A5;strokeColor=#558B2F;strokeWidth=2;fontSize=18;fontColor=#1B5E20;fontStyle=1;" vertex="1" parent="1">
+      <mxGeometry x="640" y="90" width="240" height="200" as="geometry"/>
+    </mxCell>
+    <mxCell id="ec1" style="endArrow=classic;html=1;strokeColor=#9CCC65;strokeWidth=1;dashed=1;" edge="1" parent="1" source="a1" target="conv"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="ec3" style="endArrow=classic;html=1;strokeColor=#9CCC65;strokeWidth=1;dashed=1;" edge="1" parent="1" source="a3" target="conv"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="pitfall" value="落とし穴&#10;差別化軸を持っても&#10;専業単体では持続困難&#10;→ 業態転換 / 大手に被買収" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF3E0;strokeColor=#E65100;strokeWidth=2;fontSize=18;fontColor=#BF360C;fontStyle=1;" vertex="1" parent="1">
+      <mxGeometry x="640" y="330" width="240" height="176" as="geometry"/>
+    </mxCell>
+    <mxCell id="key" value="生死を分ける変数 = 自社モデルの有無ではなく、顧客トラフィックが自社の学習可能資産に変換されるパスの有無" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DCEDC8;strokeColor=#33691E;strokeWidth=3;fontSize=18;fontColor=#1B5E20;fontStyle=1;align=center;" vertex="1" parent="1">
+      <mxGeometry x="40" y="548" width="840" height="56" as="geometry"/>
+    </mxCell>
+  </root>
+</mxGraphModel></diagram></mxfile>
