@@ -80,7 +80,7 @@ Prometheus は PVC を持つ常駐の stateful なコンポーネントで、GPU
 - **system ノードには載せない**: system の managed nodegroup は「Karpenter が落ちてもクラスタが復旧できるための最小構成（kube-system と Karpenter controller）」だけを置く聖域です。Prometheus のような重い常駐物をここに載せると、この聖域の予測可能性が崩れます
 - **GPU ノードには載せない**: GPU ノードは Capacity Block の期限やワークロード終了で消えるため、監視ごと消えてしまいます
 
-そこで [`observability.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/observability.tf) は監視専用の Karpenter NodePool（`node-role=monitoring`）を作り、監視スタックをそこに固定します。この NodePool は `consolidationPolicy: WhenEmpty` で、Pod が完全に無くなったときだけノードを回収します。この設計には理由があり、詳しくは後述の「重要な注意点」で説明します。
+そこで [`observability.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/observability.tf) は監視専用の Karpenter NodePool（`node-role=monitoring`）を作り、監視スタックをそこに固定します。この NodePool は `consolidationPolicy: WhenEmpty` で、Pod が完全に無くなったときだけノードを回収します。
 
 ## ノード障害を検知する
 
@@ -196,17 +196,19 @@ curl -sf http://localhost:3000/api/health >/dev/null \
 
 ログイン後、左メニューの Dashboards を開くと、kube-prometheus-stack が自動導入した Kubernetes 向けダッシュボード群に加えて、本 book が配布したダッシュボードが表示されます。`GPU` フォルダには自作の「GPU Utilization by Tenant」と NVIDIA 公式の「NVIDIA DCGM Exporter Dashboard」、`Nodes` フォルダにはノードの CPU・メモリ・ディスク・ネットワークを網羅する「Node Exporter Full」が入っています。いずれも `terraform apply` で自動的に配置され、手動インポートは不要です。
 
-このダッシュボードの上部にある `Tenant` ドロップダウンで自分の namespace を選ぶと、そのテナントの GPU だけの使用率・メモリ・SM クロック・温度・電力が表示されます。設定ファイルもクエリも書く必要はなく、ドロップダウンを選ぶだけです。`http://localhost:3000/d/gpu-tenant?var-tenant=team-a` のように URL に `var-tenant` を付ければ、選択済みの状態で共有もできます。
+「GPU Utilization by Tenant」ダッシュボードの上部にある `Tenant` ドロップダウンで自分の namespace を選ぶと、そのテナントの GPU だけの使用率・メモリ・SM クロック・温度・電力が表示されます。設定ファイルもクエリも書く必要はなく、ドロップダウンを選ぶだけです。`http://localhost:3000/d/gpu-tenant?var-tenant=team-a` のように URL に `var-tenant` を付ければ、選択済みの状態で共有もできます。
 
-GPU 専用のダッシュボードとして、この book では NVIDIA 公式の「NVIDIA DCGM Exporter Dashboard」（Grafana.com の id 12239）も自動で配布しています。前述の「GPU Utilization by Tenant」と同じく、`terraform apply` 済みであれば Grafana の `GPU` フォルダにすでに入っており、手動インポートは不要です。
-
-GPU がまとまった枚数で動くとこのダッシュボードがどう見えるかの参考として、別環境での実画面を載せます。以下は、この手順の A10G 1 枚構成とは異なり、Capacity Block で確保した p5en.48xlarge（H200 x8）の 1 ノードで GPU ワークロードを流しているときのものです。8 枚の GPU（GPU 0〜7）それぞれの温度・電力・SM クロック・使用率が個別に可視化され、使用率が最大 100 %、SM クロックが最大 1.98 GHz、電力が 1 枚あたり最大約 690 W に達していることが読み取れます。
+ダッシュボードがどう見えるかの参考として実画面を載せます。以下は、今回のワークショップ手順の A10G 1 枚構成とは異なり、Capacity Block で確保した p5en.48xlarge（H200 x8）の 1 ノードで GPU ワークロードを流しているときのものです。8 枚の GPU（GPU 0〜7）それぞれの温度・電力・SM クロック・使用率が個別に可視化されているのが読み取れます。
 
 ![NVIDIA DCGM Exporter Dashboard で p5en の 8 GPU を可視化した実画面](/images/books/eks-distributed-ai/ch7-dcgm-grafana.png)
 
 これで、GPU ワークロードの実行中に各 GPU がどれだけ使われているかを、時系列グラフで観測できます。Basic07 の vLLM 推論であれば 1 枚の GPU 使用率が、Capacity Block で確保したマルチノード学習であれば全 GPU の使用率が、それぞれ可視化されます。
 
 手順 3・4 でバックグラウンド（`&`）に起動した port-forward は、ターミナルを閉じるまで残り続けます。確認が終わったら `jobs` でジョブ番号を確認し、`kill %<番号>` で止めておきます（放置すると次の再実行時に 9090 / 3000 が使用中で port-forward が失敗します）。
+
+:::message
+**EFA のネットワークメトリクスは現時点では観測対象に含めていません。** EFA の帯域や RDMA の統計を Prometheus に取り込むには専用の EFA exporter が別途必要ですが、この基盤にはまだ導入していません。今後の対応予定です。
+:::
 
 ## 5. observability を無効化する（任意）
 
@@ -219,48 +221,12 @@ enable_observability = false
 この状態で `terraform apply` すると、kube-prometheus-stack・専用 NodePool・gp3 StorageClass・自前 DCGM ServiceMonitor・アラートルールといった observability 関連リソースがまとめて削除されます。NMA は別の変数で制御しているため、これを止めるには `enable_node_monitoring_agent = false` も併せて設定します。GPU Operator 側の DCGM ServiceMonitor はもともと無効（`dcgmExporter.serviceMonitor.enabled = false`）のままで、こちらの変更は不要です。
 
 :::message alert
-次章の Advanced03 は本章の NMA とアラートルールが動いていることを前提にします。Advanced03 を実施する予定があるなら、この無効化は行わないでください。
-:::
-
-# 重要な注意点
-
-本章の observability を実運用・改変する際に踏みやすい落とし穴を挙げます。いずれも実際に動かして確認した事実に基づきます。
-
-:::message alert
-**監視スタックは専用 NodePool（`node-role=monitoring`, `WhenEmpty`）に載せます。共有 CPU プールに相乗りさせてはいけません。**
-Prometheus と Grafana は PVC を持つ常駐の stateful なコンポーネントです。共有 CPU プールは idle ノードを短時間（この book では `consolidateAfter: 30s`）で回収する設定なので、ここに載せると再スケジュールや rollout で一時的に Pod が退いた隙にノードが回収され、PVC の再アタッチ待ちや監視の穴が生じます。専用 NodePool を `consolidationPolicy: WhenEmpty` にすると、Pod が完全に無くなったときだけ回収されるため、この隙間が生まれません。「常駐する層である」ことは Pod のアノテーションではなく NodePool の回収ポリシーで表現するのが正解です。
-
-これは Helm でのインストール時にも効きます。kube-prometheus-stack は本体 Pod の前に短命の Job（証明書生成などの Helm フック）を起動することがあり、それが完了してノードが約 30 秒で回収されると本体 Pod が載る前にノードが消えてインストールが途中で止まります。この book では後述のとおり admission webhook 自体を無効化してこの Job を減らしていますが、`WhenEmpty` の専用 NodePool なら本体 Pod がスケジュールされるまでノードが保持されるので、フックの有無に関わらず安全です。
-:::
-
-:::message alert
-**Grafana の admin パスワードは Terraform が自動生成します。本文に平文で書いたりプレースホルダを埋めたりしないでください。**
-[`observability.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/observability.tf) は `random_password` でパスワードを生成し、Kubernetes Secret に格納して Grafana に渡します。取得は `terraform output -raw grafana_admin_password` です。ただしこのパスワードは Terraform の state に平文で保存されるため、state は必ず暗号化されたバックエンド（S3 + SSE-KMS など）と最小権限の IAM で保護してください。
-:::
-
-:::message
-**PVC 用に gp3 StorageClass を用意しています。**
-EKS のクラスタには既定で in-tree の `gp2` StorageClass しか無いことがあります（本 book の検証クラスタもそうでした）。observability.tf は EBS CSI ドライバの `gp3` StorageClass を（既定クラスタを変えずに）作成し、Prometheus/Grafana の PVC がそれを使います。この StorageClass は `volumeBindingMode: WaitForFirstConsumer` で定義しているため、Karpenter が Pod の載る AZ にノードを起こし、その AZ にボリュームが作られます。「PVC が別 AZ に固定されてノードが起動しない」という事故を避けられます。
-:::
-
-:::message
-**Experiment01 のマルチテナント VAP を導入している場合、`monitoring` namespace は除外対象にします。**
-`karpenter-tenant-pools` の ValidatingAdmissionPolicy は「Pod は自分のテナントの taint しか tolerate できない」というルールを課します。監視スタックの node-exporter は DaemonSet で全ノードに載るためにあらゆる taint を tolerate する必要があり、このルールと衝突します。observability.tf は `monitoring` namespace に `tenantpools.dev/excluded=true` ラベルを付けて VAP の対象から外しています。監視はテナントのワークロードではなく基盤コンポーネントなので、この扱いが正しく、Experiment01 を導入していない環境ではこのラベルは単に無視されます。
-:::
-
-:::message
-**Prometheus の admission webhook は無効化しています。**
-kube-prometheus-stack の admission webhook は Helm のインストール時フックとして証明書生成 Job を動かしますが、これが特定の Helm バージョンでインストールを止めてしまう問題があるため、本 book では `admissionWebhooks.enabled = false` にしています。この webhook が担うのは `PrometheusRule` などの apply 時の早期検証だけで、CRD のスキーマ検証は Kubernetes API 側で常に効き、Prometheus Operator も不正な rule を reconcile 時に弾いて処理を続けるため、共有基盤全体が壊れることはありません。将来テナントが独自の rule を投入する運用を始める際は、cert-manager 経由（`admissionWebhooks.certManager.enabled = true`）で再有効化できます。
-:::
-
-:::message
-**EFA のネットワークメトリクスは現時点では観測対象に含めていません。**
-本章で取得しているのは、node-exporter が出すノードの CPU・メモリ・ディスク・ネットワークと、DCGM exporter が出す GPU のメトリクスです。EFA の帯域や RDMA の統計を Prometheus に取り込むには専用の EFA exporter が別途必要ですが、この基盤にはまだ導入していません。したがって EFA の通信量を Grafana で見ることは現状できません。Basic06 で見た EFA マルチノード通信の性能は、当面は NCCL のベンチマーク出力などその場の計測で確認します。EFA メトリクスの常時観測は今後の課題です。
+Advanced03 は本章の NMA とアラートルールが動いていることを前提にします。Advanced03 を実施する予定があるなら、この無効化は行わないでください。
 :::
 
 # まとめ
 
-本章では、`infra/eks` にデフォルトで組み込まれた observability を確認し、GPU Operator 同梱の DCGM exporter が公開する GPU メトリクスを Prometheus で収集、Grafana の UI で可視化しました。observability は `terraform apply` に含まれるため追加の導入操作は不要で、Prometheus/Grafana はすでにクラスタ上で動いています。ポイントは、GPU メトリクスに収集時点で `tenant` ラベルを刻印し、Grafana のドロップダウンでテナントごとに GPU を見られるようにしたこと、そして監視スタックを専用 NodePool・自動生成パスワード・専用 gp3 StorageClass で「宣言的に一発で立ち上がる」形に組み込んだことです。強制的なテナント分離は今後の課題として、まずは `tenant` ラベルを分離の契約点として確立しました。
+本章では、GPU Operator 同梱の DCGM exporter が公開する GPU メトリクスを Prometheus で収集、Grafana の UI で可視化しました。observability は `terraform apply` に含まれるため追加の導入操作は不要で、Prometheus/Grafana はすでにクラスタ上で動いています。ポイントは、GPU メトリクスに収集時点で `tenant` ラベルを刻印し、Grafana のドロップダウンでテナントごとに GPU を見られるようにしたこと、そして監視スタックを専用 NodePool・自動生成パスワード・専用 gp3 StorageClass で「宣言的に一発で立ち上がる」形に組み込んだことです。
 
 # 参考資料
 
