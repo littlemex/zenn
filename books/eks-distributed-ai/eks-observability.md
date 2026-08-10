@@ -44,13 +44,13 @@ Prometheus と Grafana は [kube-prometheus-stack](https://github.com/prometheus
 - **付ける側**、つまりノードにラベルを刻むのは observability ではなく、自作中の `karpenter-tenant-pools` CRD の役割です。テナントのプールで起動したノードに `tenantpools.dev/tenant=<namespace>` という**ノードラベル**を付けます。逆に言うと、`karpenter-tenant-pools` を使わずに起動したノードにはこのラベルは付かないので自分でつける必要があります。
 - **使う側**、つまりメトリクスに写すのが observability の [`observability.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/observability.tf) が作る専用の DCGM ServiceMonitor です。ノードに付いている `tenantpools.dev/tenant` ラベルを読み取り、GPU メトリクスの `tenant` というラベルとして写します。ラベルを新たに生成しているのではなく、既にノードにあるラベルを拾ってメトリクスに転記しているだけです。
 
-ここで ServiceMonitor という言葉が出てきたので、実態を補足します。ServiceMonitor は Prometheus Operator（kube-prometheus-stack に含まれる）が用意する Kubernetes の CRD で、平たく言えば **Prometheus に対する「どの Service を、どのポートで、何秒間隔で収集し、収集したメトリクスにどんなラベルを足すか」を宣言する収集指示書**です。素の Prometheus は設定ファイルに収集対象を静的に書きますが、Prometheus Operator はこの ServiceMonitor という Kubernetes リソースを見て収集設定を自動生成します。
+ここで ServiceMonitor という言葉が出てきたので、実態を補足します。ServiceMonitor は kube-prometheus-stack に含まれる Prometheus Operator が用意する Kubernetes の CRD で、平たく言えば **Prometheus に対する「どの Service を、どのポートで、何秒間隔で収集し、収集したメトリクスにどんなラベルを足すか」を宣言する収集指示書**です。素の Prometheus は設定ファイルに収集対象を静的に書きますが、Prometheus Operator はこの ServiceMonitor という Kubernetes リソースを見て収集設定を自動生成します。
 
-したがって本章で「自前の ServiceMonitor」と呼んでいるのは、メトリクスを公開する dcgm-exporter は GPU Operator 同梱のものをそのまま使い、その exporter を **どう収集するか（＝この収集指示書）**を自分で書いた、という意味です。GPU Operator も標準の ServiceMonitor を出せますが、そこには後述の `attachMetadata` を指定できず `tenant` ラベルを写せないため、標準のものを無効化して、必要な relabeling を仕込んだ指示書に置き換えています。
+したがって本章で「自前の ServiceMonitor」と呼んでいるのは、メトリクスを公開する dcgm-exporter は GPU Operator 同梱のものをそのまま使い、その exporter を **どう収集するか**という指示書だけを自分で書いた、という意味です。GPU Operator も標準の ServiceMonitor を出せますが、そこには後述の `attachMetadata` を指定できず `tenant` ラベルを写せないため、標準のものを無効化して、必要な relabeling を仕込んだ指示書に置き換えています。
 
 つまり `tenant` ラベルの値は「付ける側」次第です。`karpenter-tenant-pools` でノードを起動していればそのメトリクスに `tenant=<namespace>` が入り、そうでなければ写す元が無いので `tenant` は空になります。
 
-この「写す」を実現しているのが ServiceMonitor の `attachMetadata.node: true`（ノードラベルを収集メタデータに載せる）と relabeling（メタデータの `tenantpools.dev/tenant` を `tenant` ラベルへコピーする）です。GPU Operator 標準の ServiceMonitor では `attachMetadata` を設定できず、ノードラベルが収集メタデータに載らないためこのコピーが成立しません。そこで [`gpu-addons.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/gpu-addons.tf) 側では `dcgmExporter.serviceMonitor.enabled = false` として標準の ServiceMonitor を無効化し、observability.tf の自前 ServiceMonitor に一本化しています。
+この「写す」を実現しているのが ServiceMonitor の `attachMetadata.node: true` と relabeling です。`attachMetadata.node: true` はスクレイプ対象のノードラベルを収集時のメタデータに載せる設定で、relabeling はそのメタデータに現れた `tenantpools.dev/tenant` を `tenant` というメトリクスラベルへコピーする処理です。GPU Operator 標準の ServiceMonitor では `attachMetadata` を設定できず、ノードラベルが収集メタデータに載らないためこのコピーが成立しません。そこで [`gpu-addons.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/gpu-addons.tf) 側では `dcgmExporter.serviceMonitor.enabled = false` として標準の ServiceMonitor を無効化し、observability.tf の自前 ServiceMonitor に一本化しています。
 
 ```hcl
 relabelings = [
@@ -100,7 +100,7 @@ Prometheus は PVC を持つ常駐の stateful なコンポーネントで、GPU
 - Basic04 で NVIDIA GPU Operator が導入済みであること。本章は GPU Operator が同梱する DCGM exporter を可視化します。
 - `k` エイリアスと `KUBECONFIG` / `--context` は Basic01 で設定済みであること。
 - GPU メトリクスに 0 以外の値が出るのは、GPU ノードが実際に GPU を使っているときです。Basic05 の Capacity Block や Basic07 の vLLM を稼働させたまま本章に進むと、手順 4 で実際の使用率を確認できます。
-- 手順 3 で `python3`（JSON のパースに使用）を、手順 3 の後半（Prometheus の targets 確認）で `jq` を使います。この targets 確認だけは `jq` のフィルタ式が本体なので、`python3 -m json.tool`（整形のみ）では代替できません。手元に無い場合は `dnf install -y python3 jq` などで入れておきます。
+- 手順 3 では JSON のパースに `python3` を使い、その後半の Prometheus targets 確認では `jq` を使います。この targets 確認だけは `jq` のフィルタ式そのものが処理の本体なので、整形しかしない `python3 -m json.tool` では代替できません。手元に無い場合は `dnf install -y python3 jq` などで入れておきます。
 
 ## 2. 監視スタックが動いていることを確認する
 

@@ -21,7 +21,7 @@ NVIDIA の DCGM には、GPU のテレメトリフィールドに任意の値を
 
 NMA が GPU の健全性をどこから読んでいるかを押さえておくと、注入をどこに打てばよいかがわかります。
 
-NMA は各ノードで動くエージェント本体（`eks-node-monitoring-agent` DaemonSet）と、GPU の健全性を読むための DCGM サーバー（`dcgm-server` DaemonSet）の二つで構成されます。`dcgm-server` は NMA に同梱された `nv-hostengine`（DCGM のホストエンジン）をホストのポート 5555 で起動し、エージェント本体は同じノードの `localhost:5555` に接続して GPU のフィールド値を読みます。GPU の XID・ECC・NVLink といった障害はこの DCGM が拾い、エージェントが `AcceleratedHardwareReady` という NodeCondition に変換します。
+NMA は二つの DaemonSet で構成されます。エージェント本体である `eks-node-monitoring-agent` と、GPU の健全性を読むための DCGM サーバーである `dcgm-server` です。`dcgm-server` は NMA に同梱された DCGM のホストエンジン `nv-hostengine` をホストのポート 5555 で起動し、エージェント本体は同じノードの `localhost:5555` に接続して GPU のフィールド値を読みます。GPU の XID・ECC・NVLink といった障害はこの DCGM が拾い、エージェントが `AcceleratedHardwareReady` という NodeCondition に変換します。
 
 ここで、Basic04 で導入した GPU Operator の dcgm-exporter との関係が問題になります。dcgm-exporter は使用率などの連続的なメトリクスを Prometheus に出すためのもので、既定では埋め込み（embedded）モードで動き、自分の中に DCGM を抱えてポート 9400 でメトリクスを公開します。NMA の `dcgm-server`（ポート 5555）とは別のポート・別の役割なので、両者は同じ GPU ノードで問題なく共存します。
 
@@ -73,7 +73,7 @@ resource "helm_release" "node_monitoring_agent" {
 k get ds -n kube-system eks-node-monitoring-agent dcgm-server
 ```
 
-実機出力です。`dcgm-server` が GPU ノードの数だけ `DESIRED` に上がっていれば、GPU taint への toleration が効いています。両者の `NODE SELECTOR` はどちらも `kubernetes.io/os=linux` ですが、`dcgm-server` を GPU ノードだけに限定しているのは `NODE SELECTOR` ではなく nodeAffinity（GPU インスタンスタイプの許可リスト）なので、`DESIRED` はエージェント本体（全ノード）と `dcgm-server`（GPU ノードのみ）で異なります。
+実機出力です。`dcgm-server` が GPU ノードの数だけ `DESIRED` に上がっていれば、GPU taint への toleration が効いています。両者の `NODE SELECTOR` はどちらも `kubernetes.io/os=linux` ですが、`dcgm-server` を GPU ノードだけに限定しているのは `NODE SELECTOR` ではなく、GPU インスタンスタイプの許可リストを持つ nodeAffinity です。そのため `DESIRED` は、全ノードに載るエージェント本体と、GPU ノードだけに載る `dcgm-server` とで異なります。
 
 ```text
 NAME                        DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR            AGE
@@ -253,7 +253,7 @@ port-forward はバックグラウンドで起動したので、確認が終わ�
 
 # まとめ
 
-本章では、DCGM の fault injection で XID 79 を GPU に注入し、NMA が `AcceleratedHardwareReady` を `False`（`NvidiaXID79Error`）に反転させ、Prometheus の `AcceleratedHardwareUnhealthy` アラートが発火するところまでを実機で確かめました。実際の GPU を壊さずに検知経路の端から端までを検証できるのが fault injection の価値です。あわせて、NMA が GPU 健全性を `dcgm-server`（同梱の `nv-hostengine`、ポート 5555）から読むこと、GPU Operator の埋め込み dcgm-exporter（ポート 9400）とは共存する一方で standalone DCGM とはポートが競合すること、そして GPU taint のために `dcgm-server` へ toleration を渡す必要があり Helm 導入でそれを解決していることを見ました。検知が本当に動くことを平常時に確かめておけば、いざ GPU が壊れたときに「監視が入っていたのに気づけなかった」という事態を避けられます。
+本章では、DCGM の fault injection で XID 79 を GPU に注入し、NMA が `AcceleratedHardwareReady` を理由 `NvidiaXID79Error` とともに `False` へ反転させ、Prometheus の `AcceleratedHardwareUnhealthy` アラートが発火するところまでを実機で確かめました。実際の GPU を壊さずに検知経路の端から端までを検証できるのが fault injection の価値です。あわせて次のことを見ました。NMA は GPU 健全性を、同梱の `nv-hostengine` をポート 5555 で動かす `dcgm-server` から読みます。これは GPU Operator の埋め込み dcgm-exporter がポート 9400 で公開するメトリクスとは別経路なので共存できますが、standalone DCGM を有効にするとポート 5555 が競合します。そして GPU taint のために `dcgm-server` へ toleration を渡す必要があり、それを Helm 導入で解決しています。検知が本当に動くことを平常時に確かめておけば、いざ GPU が壊れたときに「監視が入っていたのに気づけなかった」という事態を避けられます。
 
 # 参考資料
 
