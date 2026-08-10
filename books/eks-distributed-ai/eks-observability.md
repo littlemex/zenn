@@ -82,15 +82,11 @@ Prometheus は PVC を持つ常駐の stateful なコンポーネントで、GPU
 
 ## ノード障害を検知する
 
-メトリクスの可視化とは別に、この基盤では EKS の Node Monitoring Agent（NMA）を有効化しています。NMA は各ノードで動くエージェントで、カーネル・コンテナランタイム・ネットワーク・ストレージ・アクセラレータの健全性を監視し、その結果を `KernelReady` や `AcceleratedHardwareReady` といった NodeCondition としてノードに書き込みます。GPU の場合は同梱の DCGM（Data Center GPU Manager）経由で XID エラー・訂正不可能な ECC エラー・NVLink 障害を検知します。dcgm-exporter が使用率などの連続的なメトリクスを流すのに対し、NMA は「このノードは健全か否か」という機械可読な単一の判定を出す点が異なります。
+メトリクスの可視化とあわせて、この基盤には EKS の Node Monitoring Agent（NMA）も組み込んであります。NMA は各ノードの GPU・カーネル・ネットワークなどの健全性を監視し、`AcceleratedHardwareReady` のような NodeCondition として結果を書き込むエージェントです。この NodeCondition は kube-state-metrics 経由で Prometheus に流れるので、GPU 障害を検知して、これまでと同じ Prometheus/Grafana の仕組みでアラートにできます。[`observability.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/observability.tf) には、そのためのアラートルールもあらかじめ入れてあります。
 
-なお NMA は EKS アドオンではなく Helm チャートで導入しています。GPU ノードに taint を付けているこの基盤では、アドオン版では GPU 健全性を読むコンポーネントが GPU ノードに載れず検知が沈黙してしまうためで、この理由は Advanced03 で詳しく扱います。
+NMA は障害を「検知して知らせる」だけで、Karpenter によるノードの自動修復（auto-repair、不健全なノードを自動で terminate して置き換える機能）は意図的に無効にしています。高価な GPU ノードを止める・置き換えるという不可逆な判断は、人間やジョブ層に委ねる方針です。
 
-この判定は kube-state-metrics 経由で Prometheus に流れるため、`kube_node_status_condition{condition="AcceleratedHardwareReady"}` のようなクエリでそのままアラートを組めます。この基盤では [`observability.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/observability.tf) が、GPU 障害を critical、その他の NodeCondition を warning、そして NMA 自身の DaemonSet がダウンした場合を warning とするアラートルールをあらかじめ入れてあります。dcgm-exporter のメトリクスと同じ Grafana に並べれば、NMA が異常と判定した瞬間に GPU で何が起きていたかを 1 画面で相関できます。
-
-なぜこれを入れるかというと、分散学習の最悪のシナリオは「1 枚の GPU が故障し、NCCL の集合通信が全ランクでハングしたまま、高価な Capacity Block の時間課金だけが無言で溶けていく」ことだからです。NMA を入れると、この故障が数十秒から数分で NodeCondition として立ち上がり、人間がダッシュボードで気づくよりはるかに早く検知できます。実際に GPU 障害を擬似的に注入して、NMA が `AcceleratedHardwareReady` を `False` に反転させアラートが発火するところまでを試す手順は、Advanced03「GPU 障害を注入して検知を確かめる」で扱います。
-
-ここで重要なのは、**検知だけを有効化し、Karpenter のノード自動修復（auto-repair）は有効化していない**という点です。auto-repair は不健全なノードを自動で terminate して置き換える機能ですが、この基盤の tightly-coupled な同期集合通信では、故障ノードを自動 terminate すると、まだ調査できたはずの高価なノードを人間の確認なしに潰したり、Capacity Block の同じ故障ホストを引き直して terminate と再起動を繰り返すループに陥る危険があります。そのため、ノードを止める・置き換えるという不可逆な判断は人間やジョブ層に委ね、NMA には「早く正確に知らせる」役割だけを持たせています。この判断の詳細な根拠は [AWS の解説記事](https://aws.amazon.com/jp/blogs/containers/under-the-hood-how-amazon-eks-auto-mode-detects-repairs-and-diagnoses-node-failures/) が検知・修復・診断の仕組みを詳しく説明しているので、あわせて参照してください。
+NMA をなぜ Helm チャートで導入しているか、実際に GPU 障害を注入して検知が働くことをどう確かめるか、auto-repair を無効にした詳しい理由といった踏み込んだ話は、Advanced03「GPU 障害を注入して検知を確かめる」でまとめて扱います。本章のワークショップでは、監視スタックと NMA がすでに動いていることの確認までを行います。
 
 # ワークショップ実施
 
