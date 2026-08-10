@@ -3,10 +3,10 @@ title: "Basic08 - Observability を導入する"
 free: true
 ---
 
-本章では、Basic07 で動かした GPU ワークロードを「見える化」します。kube-prometheus-stack（Prometheus + Grafana）で、NVIDIA GPU Operator に同梱される DCGM exporter が公開する GPU メトリクス（使用率・温度・メモリなど）を Grafana の UI で確認し、あわせてノード障害の検知も見ていきます。
+本章では、Basic07 で動かした GPU ワークロードを観測します。kube-prometheus-stack（Prometheus + Grafana）で、NVIDIA GPU Operator に同梱される DCGM exporter が公開する GPU メトリクス（使用率・温度・メモリなど）を Grafana の UI で確認し、あわせてノード障害の検知も見ていきます。
 
 :::message
-observability は `var.enable_observability = true`（既定で有効）で `terraform apply` に含まれます。Basic03 以降の apply を済ませていれば、`monitoring` namespace に Prometheus と Grafana がすでに立っています。observability の導入は Terraform（`terraform apply`）が自動で行うため、本章では手動でのインストール作業はなく、すでに導入されたものを確認して使っていきます。observability が追加される前のバージョンで apply 済みの場合は、リポジトリを `git pull` してから `cd infra/eks && terraform init -upgrade && terraform apply` を再実行してください（新しい provider が増えているため `init -upgrade` が要ります）。`monitoring` namespace・専用 NodePool・kube-prometheus-stack・NMA などが追加されます。
+observability は `var.enable_observability = true`（既定で有効）で `terraform apply` に含まれます。Basic03 以降の apply を済ませていれば、`monitoring` namespace に Prometheus と Grafana がすでに立っています。
 :::
 
 # 解説
@@ -25,15 +25,15 @@ GPU を使った分散学習・推論では、「GPU が本当に使われてい
 
 構成要素は 3 つです。
 
-- **DCGM exporter**: NVIDIA の Data Center GPU Manager が公開する GPU メトリクス（使用率 `DCGM_FI_DEV_GPU_UTIL`、温度、メモリ使用量、電力など）を Prometheus 形式で公開する exporter です。Basic04 で導入した NVIDIA GPU Operator に同梱されており、GPU ノードが立つと各ノードで自動的に動きます
-- **Prometheus**: 各 exporter からメトリクスを定期的に収集（scrape）し、時系列データとして保持します
+- **DCGM exporter**: NVIDIA の Data Center GPU Manager が公開する GPU メトリクスを Prometheus 形式で公開する exporter です。NVIDIA GPU Operator に同梱されており、GPU ノードが立つと各ノードで自動的に動きます
+- **Prometheus**: 各 exporter からメトリクスを定期的に収集・時系列データ保持します
 - **Grafana**: Prometheus のデータをダッシュボードとして可視化します
 
-Prometheus と Grafana は [kube-prometheus-stack](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack) という Helm チャートでまとめて導入します。このチャートは Prometheus Operator・Grafana・node-exporter・kube-state-metrics・各種 Kubernetes ダッシュボードを一括で入れてくれるため、EKS の observability の定番です。この book では [`observability.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/observability.tf) がこのチャートを `helm_release` として管理し、GPU 用の ServiceMonitor・テナント別ダッシュボード・専用 NodePool までを一括で構築します。
+Prometheus と Grafana は [kube-prometheus-stack](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack) という Helm チャートでまとめて導入します。このチャートは Prometheus Operator・Grafana・node-exporter・kube-state-metrics・各種 Kubernetes ダッシュボードを一括で入れてくれます。この book では [`observability.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/observability.tf) がこのチャートを `helm_release` として管理し、GPU 用の ServiceMonitor・テナント別ダッシュボード・専用 NodePool までを一括で構築します。
 
 ## テナントごとに GPU を見る
 
-本 book のマルチテナント設計（Experiment01 の `karpenter-tenant-pools`）では、各チームのノードに `tenantpools.dev/tenant=<namespace>` というラベルが付きます。observability はこのラベルを収集時に GPU メトリクスへ刻印し、Grafana の「GPU Utilization by Tenant」ダッシュボードのドロップダウンで自分の namespace を選ぶだけで、自分のテナントの GPU だけを見られるようにしています。
+マルチテナント設計では、チームごとに namespace を分けてダッシュボードを見たいという要求があるはずです。まだ開発中の段階なのでこのマルチテナント機能については現時点では全体設計が未完成ですが、現時点では各チームのノードに `tenantpools.dev/tenant=<namespace>` というラベルがついていれば、observability はこのラベルを収集時に GPU メトリクスへ刻印し、Grafana の「GPU Utilization by Tenant」ダッシュボードのドロップダウンで自分の namespace を選ぶだけで、自分のテナントの GPU だけを見られるようにしています。
 
 これを実現するのが、[`observability.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/observability.tf) が作る専用の DCGM ServiceMonitor です。`attachMetadata.node: true` でノードラベルを収集メタデータに載せ、relabeling で `tenantpools.dev/tenant` ラベルを `tenant` というメトリクスラベルに変換します。GPU Operator 標準の ServiceMonitor では `attachMetadata` を設定できず、ノードラベルが収集メタデータに載らないためこの relabeling が成立しません。そこで [`gpu-addons.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/gpu-addons.tf) 側では `dcgmExporter.serviceMonitor.enabled = false` として標準の ServiceMonitor を無効化し、observability.tf の自前 ServiceMonitor に一本化しています。
 
