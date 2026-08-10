@@ -6,7 +6,7 @@ free: true
 本章では、Basic07 で動かした GPU ワークロードを「見える化」します。kube-prometheus-stack（Prometheus + Grafana）で、NVIDIA GPU Operator に同梱される DCGM exporter が公開する GPU メトリクス（使用率・温度・メモリなど）を Grafana の UI で確認し、あわせてノード障害の検知も見ていきます。
 
 :::message
-observability は `var.enable_observability = true`（既定で有効）で `terraform apply` に含まれます。Basic03 以降の apply を済ませていれば、`monitoring` namespace に Prometheus と Grafana がすでに立っています。本章は「入れる」章ではなく、「すでに入っているものを確認して使う」章です。observability が追加される前のバージョンで apply 済みの場合は、リポジトリを `git pull` してから `cd infra/eks && terraform init -upgrade && terraform apply` を再実行してください（新しい provider が増えているため `init -upgrade` が要ります）。`monitoring` namespace・専用 NodePool・kube-prometheus-stack・NMA などが追加されます。
+observability は `var.enable_observability = true`（既定で有効）で `terraform apply` に含まれます。Basic03 以降の apply を済ませていれば、`monitoring` namespace に Prometheus と Grafana がすでに立っています。observability の導入は Terraform（`terraform apply`）が自動で行うため、本章では手動でのインストール作業はなく、すでに導入されたものを確認して使っていきます。observability が追加される前のバージョンで apply 済みの場合は、リポジトリを `git pull` してから `cd infra/eks && terraform init -upgrade && terraform apply` を再実行してください（新しい provider が増えているため `init -upgrade` が要ります）。`monitoring` namespace・専用 NodePool・kube-prometheus-stack・NMA などが追加されます。
 :::
 
 # 解説
@@ -85,7 +85,7 @@ Prometheus は PVC を持つ常駐の stateful なコンポーネントで、GPU
 - Basic04 で NVIDIA GPU Operator が導入済みであること。本章は GPU Operator が同梱する DCGM exporter を可視化します。
 - `k` エイリアスと `KUBECONFIG` / `--context` は Basic01 で設定済みであること。
 - GPU メトリクスに 0 以外の値が出るのは、GPU ノードが実際に GPU を使っているときです。Basic05 の Capacity Block や Basic07 の vLLM を稼働させたまま本章に進むと、手順 4 で実際の使用率を確認できます。
-- 手順 3 の後半（Prometheus の targets 確認）で `jq` を使います。この確認だけは `jq` のフィルタ式が本体なので、`python3 -m json.tool`（整形のみ）では代替できません。手元に無い場合は `dnf install -y jq` などで入れておきます。
+- 手順 3 で `python3`（JSON のパースに使用）を、手順 3 の後半（Prometheus の targets 確認）で `jq` を使います。この targets 確認だけは `jq` のフィルタ式が本体なので、`python3 -m json.tool`（整形のみ）では代替できません。手元に無い場合は `dnf install -y python3 jq` などで入れておきます。
 
 ## 2. 監視スタックが動いていることを確認する
 
@@ -133,7 +133,7 @@ Grafana を見る前に、DCGM の GPU メトリクスが Prometheus に届い�
 k port-forward -n monitoring svc/kps-prometheus 9090:9090 &
 for i in $(seq 1 30); do curl -sf http://localhost:9090/-/ready >/dev/null && break; sleep 1; done
 curl -sf http://localhost:9090/-/ready >/dev/null \
-  || echo "port-forward が確立できていません。jobs で状態を、lsof -i:9090 で 9090 の占有を確認してください"
+  || echo "port-forward が確立できていません（この後のクエリもエラーになります）。jobs で状態を、lsof -i:9090 で 9090 の占有を確認し、解消してからやり直してください"
 curl -s "http://localhost:9090/api/v1/query?query=DCGM_FI_DEV_GPU_UTIL" \
   | python3 -c "
 import json, sys
@@ -174,8 +174,10 @@ cd infra/eks
 terraform output -raw grafana_admin_password    # パスワードを表示
 
 k port-forward -n monitoring svc/kps-grafana 3000:80 &
-# ブラウザで http://localhost:3000 を開く
-# ユーザー: admin / パスワード: 上で表示した値
+for i in $(seq 1 30); do curl -sf http://localhost:3000/api/health >/dev/null && break; sleep 1; done
+curl -sf http://localhost:3000/api/health >/dev/null \
+  && echo "ブラウザで http://localhost:3000 を開く（ユーザー: admin / パスワード: 上で表示した値）" \
+  || echo "port-forward が確立できていません。jobs と lsof -i:3000 で 3000 の占有を確認してください"
 ```
 
 アクセス手順は `terraform output grafana_access` にもワンライナーで出力されます。
