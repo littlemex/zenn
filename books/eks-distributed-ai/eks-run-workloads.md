@@ -247,6 +247,10 @@ port-forward はバックグラウンド（`&`）で起動したので、確認�
 
 ## 6. 後片付け
 
+:::message
+もし次の Observability をそのまま実施する場合はこの後片付けは Basic08 の後に実施してください。
+:::
+
 推論サーバーを止めれば、GPU ノードは `consolidateAfter`（本構成の NodePool では 5 分に設定）のアイドル後に Karpenter が自動回収します。`gpu-ddp` は spot 優先で確保するため、使った分だけの課金です。Deployment・Service の名前は `--set` の値に関わらず変わらないため、`gpuServingVllm.enabled=true` と `nodeRole` だけを付けてレンダリングした結果を `k delete` に渡せば、投入時に指定した `model` や `memory` などの値を覚えておく必要なく、チャートが出力した全リソースを取りこぼしなく削除できます。
 
 ```bash
