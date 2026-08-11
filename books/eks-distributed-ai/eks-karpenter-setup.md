@@ -198,37 +198,6 @@ data "aws_iam_policy_document" "karpenter_node_s3" {
 
 `karpenter.tf` にはもう 1 つ、Helm リリースそのものとは別に `null_resource.wait_for_node_drain` があります。これは Karpenter 自体の機能ではなく、リソース削除を安全に行うための Terraform 側の工夫です。
 
-```hcl
-# karpenter.tf（抜粋）
-resource "null_resource" "wait_for_node_drain" {
-  triggers = {
-    cluster_name = module.eks.cluster_name
-    region       = var.region
-    aws_profile  = var.aws_profile != null ? var.aws_profile : ""
-  }
-
-  depends_on = [
-    helm_release.karpenter,
-    helm_release.gpu_operator,
-    helm_release.aws_efa_k8s_device_plugin,
-    helm_release.neuron,
-    helm_release.trainer,
-    aws_eks_addon.efs_csi_driver,
-    aws_eks_addon.fsx_csi_driver,
-    helm_release.openzfs_csi_driver,
-    aws_security_group.efa_node,
-    aws_placement_group.accelerator,
-    aws_vpc_endpoint.interface,
-    aws_vpc_endpoint.s3,
-  ]
-
-  provisioner "local-exec" {
-    when = destroy
-    # ... kubectl get nodeclaims.karpenter.sh が 0 件になるまでポーリングする
-  }
-}
-```
-
 **なぜこれが要るのか。** `kubectl_manifest` は `NodePool` / `NodeClaim` の削除を Kubernetes API が受理した瞬間に「完了」として報告しますが、実際のノード drain・Amazon EC2 インスタンス終了・ENI 解放は Karpenter コントローラが非同期に行う後処理です。GPU ノードが起動中に `terraform destroy` で Karpenter やその関連コントローラ（EFA デバイスプラグイン、Amazon EFS/Amazon FSx for Lustre CSI ドライバなど）を先に消してしまうと、その Amazon EC2 インスタンスは誰にも終了されずに課金され続ける「孤児」インスタンスになります。
 
 ## Dynamic Resource Allocation（DRA）とは何か
