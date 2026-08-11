@@ -3,7 +3,7 @@ title: "Basic10 - 共有ストレージ (Amazon FSx for Lustre)"
 free: true
 ---
 
-本章では、Basic01からBasic04で構築した Amazon VPC・Amazon EKS コントロールプレーン・アクセラレータノードの土台の上に、Karpenter がノードを入れ替えても失われないデータ層として Amazon FSx for Lustre を構成します。Amazon FSx for Lustre は単一 AZ の高スループットなスクラッチ・チェックポイント領域で、Terraform で 1 度作成すれば以降の Karpenter によるノード入れ替えの影響を受けません。
+本章では、Basic01 から Basic04 で構築した Amazon VPC・Amazon EKS コントロールプレーン・アクセラレータノードの土台の上に、Karpenter がノードを入れ替えても失われないデータ層として Amazon FSx for Lustre を構成します。Amazon FSx for Lustre は単一 AZ の高スループットなスクラッチおよびチェックポイント領域で、Terraform で 1 度作成すれば以降の Karpenter によるノード入れ替えの影響を受けません。
 
 :::message
 共有ストレージのうち Amazon FSx for OpenZFS と、静的 PersistentVolume・PersistentVolumeClaim の基本的な仕組みは Basic02 で解説済みです。本章ではそれらの再説明は行わず、Amazon FSx for Lustre 固有の特徴と制約に絞って扱います。Amazon EFS については本章の末尾で選択肢として簡単に触れるにとどめ、詳細は Neuron を扱う章に譲ります。
@@ -23,11 +23,11 @@ Karpenter は consolidate・drift・expire でノードを次々に入れ替え�
 
 Amazon FSx for Lustre は、この用途のうち高いスループットが要る領域を受け持ちます。PERSISTENT_2 デプロイタイプの SSD ストレージを使い、実装では既定で有効です。大規模データセットの読み出しや学習チェックポイントの書き込みのように、帯域が性能を左右するワークロードに向きます。
 
-以降で Amazon FSx for Lustre 固有の 3 つの論点を見ていきます。1 つ目は静的プロビジョニングしか使えないという CSI ドライバの制約、2 つ目は PersistentVolume と PersistentVolumeClaim がどう結びつくか、3 つ目は EFA によるさらに高いスループットの選択肢です。対象モジュールは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks) です。
+以降で Amazon FSx for Lustre 固有の 3 つの論点を見ていきます。1 つ目は既存ファイルシステムには静的プロビジョニングしか使えないという CSI ドライバの制約、2 つ目は PersistentVolume と PersistentVolumeClaim がどう結びつくか、3 つ目は EFA によるさらに高いスループットの選択肢です。対象モジュールは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks) です。
 
-## Amazon FSx for Lustre は静的プロビジョニングしか使えない
+## Terraform で作った既存ファイルシステムには静的プロビジョニングを使う
 
-Amazon FSx for Lustre は [`fsx.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/fsx.tf) で構成します。ここでの最大の制約は、動的プロビジョニングの StorageClass が使えないことです。ファイル冒頭のコメントに理由が書かれています。
+Amazon FSx for Lustre は [`fsx.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/fsx.tf) で構成します。`aws-fsx-csi-driver` は動的プロビジョニングにも対応していますが、それは StorageClass 経由で PVC ごとに新規ファイルシステムを作成する用途に限られ、Terraform が作成済みの既存ファイルシステムに StorageClass をバインドすることはできません。ファイル冒頭のコメントに理由が書かれています。
 
 ```hcl
 # fsx.tf（冒頭コメント抜粋）
@@ -69,7 +69,7 @@ persistentVolumeReclaimPolicy = "Retain"
 mountOptions                  = ["flock"]
 ```
 
-`reclaimPolicy` は `Retain` です。`aws-fsx-csi-driver` の公式サンプルの実体（`pv.yaml`）も一貫して `Retain` を使っています。ドキュメント中のコード例に `Recycle` と書かれている箇所がありますが、`Recycle` は Kubernetes で非推奨となっており、Amazon FSx for Lustre の CSI ドライバは実装していないため機能しません。静的プロビジョニングで正しいのは `Retain` です。
+`reclaimPolicy` は `Retain` です。`aws-fsx-csi-driver` の公式サンプルの `pv.yaml` も一貫して `Retain` を使っています。同ドライバの README のコード例には `Recycle` と書かれている箇所がありますが、`Recycle` は Kubernetes で非推奨となっており、Amazon FSx for Lustre の CSI ドライバは実装していないため機能しません。静的プロビジョニングで正しいのは `Retain` です。
 
 ## EFA でさらに高いスループットを得る
 
@@ -82,7 +82,9 @@ Amazon FSx for Lustre は Elastic Fabric Adapter（EFA）を有効にすると�
 | EFA 有効 | EFA | 700 Gbps |
 | EFA 有効 | EFA + GPUDirect Storage | 1200 Gbps |
 
-EFA は OS をバイパスし SRD プロトコルで RDMA 通信を行うため、CPU 負荷を下げつつスループットを上げ、テールレイテンシを縮めます。大規模モデルのチェックポイント読み込みのように、ファイルシステムのスループットがそのままジョブのコールドスタート時間に効く場面で価値が大きく、AWS は 10 GBps を超えるスループット容量を要する場合に EFA を推奨しています。表の 2 行目が示すとおり、ファイルシステムを EFA 有効にしても、クライアント側が EFA 対応でなければスループットは 100 Gbps に留まります。EFA の効果を得るにはファイルシステムとクライアントの両方の準備が要ります。なお EFA 有効時もメタデータサーバとの通信は TCP を使い、実データが EFA ネットワークを流れます。
+EFA は OS をバイパスし SRD プロトコルで RDMA 通信を行うため、CPU 負荷を下げつつスループットを上げ、テールレイテンシを縮めます。大規模モデルのチェックポイント読み込みのように、ファイルシステムのスループットがそのままジョブのコールドスタート時間に効く場面で価値が大きく、AWS は 10 GBps を超えるスループット容量を要する場合に EFA を推奨しています。ここで単位に注意が必要で、この 10 GBps はバイト毎秒で、ビット毎秒に直すと 80 Gbps にあたります。上の表の 100 Gbps などはビット毎秒なので、両者を混同しないでください。
+
+表の 2 行目が示すとおり、ファイルシステムを EFA 有効にしても、クライアント側が EFA 対応でなければスループットは 100 Gbps に留まります。EFA の効果を得るにはファイルシステムとクライアントの両方の準備が要ります。なお EFA 有効時もメタデータサーバとの通信は TCP を使い、実データが EFA ネットワークを流れます。
 
 ただし EFA 有効化には守るべき制約が複数あります。
 
@@ -99,11 +101,11 @@ EFA は OS をバイパスし SRD プロトコルで RDMA 通信を行うため�
 `fsx_efa_enabled = true` はファイルシステム側の設定だけを行います。ノード側の EFA ドライバ・Lustre クライアント・LNET の EFA 設定と、ノードをファイルシステムのセキュリティグループに参加させる構成は本実装では導入していないため、この設定だけを有効にしてもクライアントは EFA データパスを使えません。ノード側の具体的な導入手順は、後述の参考資料に挙げた AWS の FSx for Lustre ワークショップの EFA および EKS+EFA のセクションを参照してください。加えて `EfaEnabled` は作成時のみ指定できる設定のため、稼働中のファイルシステムでこの値を切り替えると `terraform apply` はファイルシステムを再作成し、保存済みのデータはすべて失われます。切り替える場合は、事前に必要なデータを Amazon S3 などへ退避してください。
 :::
 
-## EFA を FSx と GPU 通信で共有するときの考え方
+## EFA を共有ストレージと GPU 通信で共有するときの考え方
 
 GPU 分散学習では NCCL の集合通信も EFA を使います。Amazon FSx for Lustre を EFA 有効にすると、ファイルシステムの I/O と NCCL 通信が同じノードの EFA を使うことになるため、両者の関係を理解しておく必要があります。
 
-結論として、両者は同一インスタンスが持つ複数の EFA デバイスのうち別々のデバイスに分離して割り当てられます。AWS の EKS 向け FSx チューニング手順では、P5 系のように 32 枚のネットワークカードを持つインスタンスで、そのうち 8 枚だけを Lustre 用の LNET に割り当て、残りを NCCL の集合通信用に空けています。ただし機種によって既定の割り当ては異なり、P6-B300 では既定で EFA 対応カードすべてを Lustre に割り当てるため、複数ノード学習ではデバイスを明示的に分割する設定が推奨されます。単一ノードでチェックポイントを読み込むだけで NCCL 通信が発生しない場合は、全デバイスを Lustre に使って構いません。なお EFA と IP の通信はインスタンス全体の帯域を共有するため、デバイスを分離しても総帯域の上限は共通である点は意識しておきます。
+結論として、両者は同一インスタンスが持つ複数の EFA デバイスのうち別々のデバイスに分離して割り当てられます。AWS の EKS 向け FSx チューニング手順では、P5 系のように 32 枚のネットワークカードを持つインスタンスで、そのうち 8 枚だけを Lustre 用の LNET に割り当て、残りを NCCL の集合通信用に空けています。ただし機種によって既定の割り当ては異なり、P6-B300 では既定で EFA 対応カードすべてを Lustre に割り当てるため、複数ノード学習ではデバイスを明示的に分割する設定が推奨されます。単一ノードでチェックポイントを読み込むだけで NCCL 通信が発生しない場合は、全デバイスを Lustre に使って構いません。なお EFA と IP の通信はインスタンス全体の帯域を共有するため、デバイスを分離しても総帯域の上限は共通である点には留意してください。
 
 # ワークショップ実施
 
@@ -111,9 +113,9 @@ GPU 分散学習では NCCL の集合通信も EFA を使います。Amazon FSx 
 
 ## 1. 前提を確認する
 
-- Basic01からBasic04 で Amazon VPC・Amazon EKS コントロールプレーン・アクセラレータプールの土台を構築済み。
-- `k` エイリアスと `KUBECONFIG` / `--context` は Basic01 で設定済み、作業用 namespace は `distai` に統一済み。
-- `terraform.tfvars` は既定値のまま。Amazon FSx for Lustre と Amazon FSx for OpenZFS はこの時点で Terraform が作成済みです。
+- Basic01 から Basic04 で Amazon VPC・Amazon EKS コントロールプレーン・アクセラレータプールの土台を構築済みです。
+- `k` エイリアスと `KUBECONFIG` / `--context` は Basic01 で設定済みで、作業用 namespace は `distai` に統一済みです。
+- `terraform.tfvars` は既定値のままです。Amazon FSx for Lustre と Amazon FSx for OpenZFS はこの時点で Terraform が作成済みです。
 
 ```bash
 export NAMESPACE=distai
@@ -165,7 +167,9 @@ fsx-training     4800Gi     RWX            Retain           Available           
 openzfs-shared   256Gi      RWX            Retain           Available                          <unset>                         7h
 ```
 
-いずれも `storageClassName` が空の静的 PV です。Amazon FSx for Lustre が `RWX`（ReadWriteMany）なのは、複数ノードの Pod から同時にチェックポイント書き込みやデータ読み出しができるようにするためです。
+いずれも `storageClassName` が空の静的 PV です。アクセスモードが ReadWriteMany なのは、複数ノードの Pod から同時にチェックポイント書き込みやデータ読み出しができるようにするためです。
+
+`STATUS` が `Available` ではなく `Bound` や `Released` になっている場合は、Basic02 で `fsx` バックエンドを試すなどして、この PV を掴んだ PVC が過去にあったことを意味します。その状態では次の手順で作る PVC が `Pending` のままになるため、先に Basic02 で解説した手順で PV を解放しておきます。
 
 ## 4. Amazon FSx for Lustre に書き込み、ノードを跨いでデータが残ることを確認する
 
@@ -193,15 +197,17 @@ k get pvc fsx-claim -n "$NAMESPACE"
 ```bash
 k run fsx-test -n "$NAMESPACE" --restart=Never --image=busybox \
     --overrides='{"spec":{"containers":[{"name":"fsx-test","image":"busybox","command":["sh","-c","echo hello-fsx > /mnt/fsx/test.txt && cat /mnt/fsx/test.txt"],"volumeMounts":[{"name":"fsx","mountPath":"/mnt/fsx"}]}],"volumes":[{"name":"fsx","persistentVolumeClaim":{"claimName":"fsx-claim"}}]}}'
+k wait --for=jsonpath='{.status.phase}'=Succeeded pod/fsx-test -n "$NAMESPACE" --timeout=180s
 k logs fsx-test -n "$NAMESPACE"
 ```
 
-Pod のログに `hello-fsx` が出れば、マウントと書き込みが成功しています。続いて Pod を削除し、別名の Pod から同じファイルを読み出します。
+初回はイメージの取得とそのノードでの初回マウントに数十秒かかり、Pod はしばらく `ContainerCreating` にとどまります。これは正常な待ち時間なので、上の `k wait` で完了を待ってからログを見ます。Pod のログに `hello-fsx` が出れば、マウントと書き込みが成功しています。続いて Pod を削除し、別名の Pod から同じファイルを読み出します。
 
 ```bash
 k delete pod fsx-test -n "$NAMESPACE"
 k run fsx-test2 -n "$NAMESPACE" --restart=Never --image=busybox \
     --overrides='{"spec":{"containers":[{"name":"fsx-test2","image":"busybox","command":["cat","/mnt/fsx/test.txt"],"volumeMounts":[{"name":"fsx","mountPath":"/mnt/fsx"}]}],"volumes":[{"name":"fsx","persistentVolumeClaim":{"claimName":"fsx-claim"}}]}}'
+k wait --for=jsonpath='{.status.phase}'=Succeeded pod/fsx-test2 -n "$NAMESPACE" --timeout=180s
 k logs fsx-test2 -n "$NAMESPACE"
 ```
 
@@ -222,13 +228,13 @@ PV 自体は Terraform が管理しているため、この削除では消えま
 Amazon FSx for Lustre は有効な間、プロビジョニングした容量分の課金が常時発生します。PERSISTENT_2 SSD は使用量ではなく容量に対して課金され続けるため、学習ジョブを実行する期間だけ `fsx_enabled = true` で apply し、終わったら `false` に戻して apply する運用が費用を抑えます。ただし無効化するとファイルシステム上のデータはすべて削除されるため、必要なチェックポイントは事前に Amazon S3 などへ退避してください。
 :::
 
-# Amazon EFS を使いたい場合
-
+:::message
 マルチ AZ で ReadWriteMany のキャッシュが必要な場合は、opt-in の Amazon EFS を選べます。`terraform.tfvars` で `efs_enabled = true` にして apply すると、ファイルシステムと private subnet ごとのマウントターゲット、静的 PV が作られ、Karpenter がノードを別 AZ に入れ替えても同じキャッシュを読み続けられます。CSI ドライバ自体は既定で常設されているため、有効化するのはファイルシステム本体だけです。Amazon EFS の詳しい構成と用途は、マルチ AZ での NEFF キャッシュ共有が要点になる Neuron の章で扱います。
+:::
 
 # まとめ
 
-本章では、Karpenter によるノード入れ替えから独立したデータ層として Amazon FSx for Lustre を構成しました。Amazon FSx for Lustre は動的プロビジョニングに対応しないため静的プロビジョニングを用いる点、`volumeAttributes` のキーが小文字でないと読まれない点、`reclaimPolicy` は `Retain` が正しい点を押さえておけば、以降の章で GPU/Neuron ワークロードがこの共有ストレージを安心して利用できます。さらに高いスループットが必要な場合は EFA 有効化という選択肢があり、この実装では `fsx_efa_enabled` で切り替えられます。EFA 有効時はメタデータ 6000 IOPS・容量 4800 GiB・単一 AZ・ノード側の EFA 設定という制約を伴い、GPU 学習では NCCL 通信との EFA デバイス分離も検討することになります。
+本章では、Karpenter によるノード入れ替えから独立したデータ層として Amazon FSx for Lustre を構成しました。既存ファイルシステムには静的プロビジョニングを用いる点、`volumeAttributes` のキーが小文字でないと読まれない点、`reclaimPolicy` は `Retain` が正しい点を押さえておけば、以降の章で GPU/Neuron ワークロードがこの共有ストレージを安心して利用できます。さらに高いスループットが必要な場合は EFA 有効化という選択肢があり、この実装では `fsx_efa_enabled` で切り替えられます。EFA 有効時はメタデータ 6000 IOPS・容量 4800 GiB・単一 AZ・ノード側の EFA 設定という制約を伴い、GPU 学習では NCCL 通信との EFA デバイス分離も検討することになります。
 
 # 参考資料
 

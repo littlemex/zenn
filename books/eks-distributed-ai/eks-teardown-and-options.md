@@ -17,7 +17,7 @@ free: true
 
 現在の実装は、Amazon FSx for Lustre や Amazon EFS を含むすべてのリソースを 1 つの Terraform state で管理しており、`terraform destroy` はストレージも含めて丸ごと削除します。これは再現性を優先した使い捨て環境としての設計です。
 
-クラスタだけ壊してストレージを残したい、あるいは次に立てるクラスタで既存のファイルシステムを再利用したい、という要求も実運用では出てきます。現時点の結論を先に述べると、どちらも現在の実装のままでは対応していません。
+クラスタだけ壊してストレージを残したい、あるいは次に立てるクラスタで既存のファイルシステムを再利用したい、という要求も実運用では出てきます。結論として、どちらも現在の実装では対応していません。
 
 - **ストレージだけ残す** — ストレージをクラスタとは別の Terraform state に切り出す、破棄の直前に対象リソースを state から外す、`prevent_destroy` を設定するといった方法が一般にはありますが、いずれも現在の実装には入っていません。長期保持したいデータがある場合は、破棄の前に Amazon S3 などへ退避するのが現実的です。
 - **既存ファイルシステムの再利用** — 静的プロビジョニングの仕組み自体は、PersistentVolume の `volumeHandle` に既存ファイルシステムの ID を指定すれば技術的には成立します。ただし作成をスキップして既存 ID を参照するための変数は用意されておらず、同一 VPC 内であればセキュリティグループの追加、別 VPC であれば VPC ピアリングなどのネットワーク到達性の確保が別途必要になります。
@@ -25,7 +25,7 @@ free: true
 これらを恒久的に運用へ組み込むかどうかは今後の検討事項です。本章の手順は、あくまで環境を綺麗に消し切ることを前提にしています。
 
 :::message
-オプション機能として、外部公開エンドポイントのデモ（Amazon CloudFront から Application Load Balancer を経由して Pod に到達する経路）の実装も [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks) に含まれていますが、既定では無効で、破棄手順とは独立しています。本章では扱いません。
+オプション機能として、Amazon CloudFront から Application Load Balancer を経由して Pod に到達する外部公開エンドポイントのデモも [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks) に実装が含まれていますが、既定では無効で、破棄手順とは独立しています。本章では扱いません。
 :::
 
 # ワークショップ実施
@@ -63,16 +63,18 @@ Accelerator nodes still registered:
 ```
 
 :::message alert
-プールを 1 つでも取り残すと、そのノードは課金され続けます。GPU や Neuron は時間単価が高いので、「Accelerator nodes still registered」が `none` になるまで確認してから次に進んでください。ノードは非同期に消えるため、`k get nodeclaims -w` で消えていく様子を追えます。
+プールを 1 つでも取り残すと、そのノードは課金され続けます。GPU や Neuron は時間単価が高いので、「Accelerator nodes still registered」が `none` になるまで確認してから次に進んでください。ノードは非同期に消えるため、`k get nodeclaims -l karpenter.sh/nodepool=gpu-ddp -w` のようにアクセラレータプール名で絞って消えていく様子を追えます。
 :::
 
-## 3. ドレインの完了を確認する
+## 3. アクセラレータノードのドレイン完了を確認する
 
 ```bash
 k get nodeclaims -w
 ```
 
-NodePool 削除の直後は NodeClaim が `Terminating` で残り、Karpenter が Amazon EC2 インスタンスの終了をバックグラウンドで進めます。単一ノードなら概ね 9 分前後で 0 件になります。EFA を複数枚持つ大きなノードは ENI の解放に時間がかかり、さらに長くかかることがあります。0 件になったら、クラスタ全体の破棄に進みます。
+NodePool 削除の直後は、そのプールの NodeClaim が `Terminating` で残り、Karpenter が Amazon EC2 インスタンスの終了をバックグラウンドで進めます。単一ノードなら概ね 9 分前後で消えます。EFA を複数枚持つ大きなノードは ENI の解放に時間がかかり、さらに長くかかることがあります。
+
+ここで確認したいのは、手順 2 で削除したアクセラレータプールの NodeClaim が消えることです。observability の章を実施している場合は監視スタック用の `monitoring` NodePool の NodeClaim が残りますが、これは高価なアクセラレータではなく、次の手順 4 でクラスタごと破棄されるので、ここで 0 件になるのを待つ必要はありません。アクセラレータプールの NodeClaim が消えたら破棄に進みます。
 
 ## 4. クラスタ全体を破棄する
 
@@ -80,7 +82,7 @@ NodePool 削除の直後は NodeClaim が `Terminating` で残り、Karpenter �
 ./04-teardown.sh --namespace "$NAMESPACE" --destroy
 ```
 
-`--destroy` を付けると、ワークロードとノードの片付けに続けて `terraform destroy` が走ります。その内部で、Karpenter がすべての NodeClaim を終了し終えるまで待ってから、Karpenter 本体やアクセラレータ関連のコントローラを破棄します。ログに NodeClaim が残っていないことを示す行が出てから次に進むので、非同期処理の途中でノードが取り残されることはありません。
+`--destroy` を付けると、ワークロードとノードの片付けに続けて `terraform destroy` が走ります。このとき `04-teardown.sh` は、手順 2 で消したアクセラレータプールに加えて、`monitoring` などクラスタに残っている Karpenter の NodePool もすべて先に削除します。これは、NodePool が残っていると Karpenter が Pod を載せるためにノードを作り続け、`terraform destroy` が内部で待つノードのドレイン完了がいつまでも来なくなるためです。すべての NodePool を止めたうえで `terraform destroy` に入り、Karpenter がノードを終了し終えるのを待ってから、Karpenter 本体やアクセラレータ関連のコントローラを破棄します。この順序により、アクセラレータノードが終了されないまま課金だけが残る事態を防ぎます。
 
 :::message alert
 `terraform destroy` の完了まで、ターミナルを閉じずに待ちましょう。途中で中断すると、アクセラレータノードが取り残されて課金が続く可能性があります。破棄が完了したら、Amazon EC2 コンソールや `aws ec2 describe-instances` で対象リソースが残っていないことを最終確認すると確実です。
