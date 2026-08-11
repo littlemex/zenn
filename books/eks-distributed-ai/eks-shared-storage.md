@@ -158,7 +158,21 @@ openzfs-shared   256Gi      RWX            Retain           Available           
 
 いずれも `storageClassName` が空の静的 PV です。アクセスモードが ReadWriteMany なのは、複数ノードの Pod から同時にチェックポイント書き込みやデータ読み出しができるようにするためです。
 
-`STATUS` が `Available` ではなく `Bound` や `Released` になっている場合は、Basic02 で `fsx` バックエンドを試すなどして、この PV を掴んだ PVC が過去にあったことを意味します。その状態では次の手順で作る PVC が `Pending` のままになるため、先に PV を解放しておきます。名前を直接書かず、PV から `claimRef` を引いて変数で扱います。
+`STATUS` が `Available` ではなく `Bound` や `Released` になっている場合は、Basic02 で `fsx` バックエンドを試すなどして、この PV を掴んだ PVC が過去にあったことを意味します。その状態では次の手順で作る PVC が `Pending` のままになるため、先に PV を解放しておきます。
+
+:::message
+ここで注意したいのが、`kubectl get pv` で `STATUS=Available` に見えても、`CLAIM` 欄に別 namespace の PVC 名が残っていると、その PV は「その PVC 専用に予約された」状態で、別 namespace の PVC はバインドできず `Pending` のままになる点です。静的 PV は `Retain` なので、一度どれかの PVC がバインドすると `spec.claimRef` が残り続けるためです。この解放は手順を 1 つでも誤ると PVC を掴んだ Pod のファイナライザやテナントの ValidatingAdmissionPolicy でハマりやすいので、確実に済ませたい場合は次のスクリプトを使えます。
+
+```bash
+cd "$(git rev-parse --show-toplevel)"/infra/eks/scripts
+# fsx / openzfs / efs のいずれかを指定。PV を確実に Available に戻す
+./05-release-pv.sh --storage fsx
+```
+
+`05-release-pv.sh` は、PVC が既に消えている残骸なら claimRef を外して `Available` に戻し、PVC がまだ生きている場合は誤って壊さないよう `--force` を要求します。`reclaimPolicy` が `Retain` 以外の PV は拒否するため、データを削除してしまう事故も防げます。以下は、このスクリプトが内部で行っている手動手順です。
+:::
+
+手動で行う場合は、名前を直接書かず、PV から `claimRef` を引いて変数で扱います。
 
 ```bash
 PV=fsx-training
@@ -169,9 +183,13 @@ echo "この PV を掴んでいる PVC: ${PVC_NS}/${PVC_NAME}"
 # 状態が Bound の場合: 掴んでいる PVC を消す。reclaimPolicy=Retain なので PV は消えず Released になる
 k delete pvc "$PVC_NAME" -n "$PVC_NS"
 
-# 状態が Released の場合: claimRef の uid/resourceVersion だけ外して再バインド可能に戻す
+# 同じ namespace で同名の PVC を再作成して使い続ける場合: claimRef の uid/resourceVersion だけ外す
 k patch pv "$PV" --type=json \
   -p '[{"op":"remove","path":"/spec/claimRef/uid"},{"op":"remove","path":"/spec/claimRef/resourceVersion"}]'
+
+# 別の namespace の PVC で使いたい場合: claimRef 全体を外して完全な Available に戻す
+# (uid だけ外しても claimRef の namespace/name が残っていると別 namespace の PVC は弾かれる)
+k patch pv "$PV" --type=json -p '[{"op":"remove","path":"/spec/claimRef"}]'
 ```
 
 `k delete pvc` が返ってこないときは、その PVC を使っている Pod がまだ残っています。PVC には `kubernetes.io/pvc-protection` ファイナライザが付いており、参照する Pod が 1 つでもある限り削除は完了しません。この場合は Pod を先に消します。
