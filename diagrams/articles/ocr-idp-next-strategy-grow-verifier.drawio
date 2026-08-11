@@ -1,0 +1,63 @@
+<mxfile host="app.diagrams.net"><diagram id="grow-verifier-01" name="Page-1"><mxGraphModel dx="900" dy="600" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="940" pageHeight="600" math="0" shadow="0">
+  <root>
+    <mxCell id="0"/>
+    <mxCell id="1" parent="0"/>
+    <mxCell id="title" value="現場は「検証器」を育て、LLMは判定に立ち入らない" style="text;html=1;fontSize=22;fontStyle=1;fontColor=#1B5E20;align=center;verticalAlign=middle;" vertex="1" parent="1">
+      <mxGeometry x="20" y="18" width="900" height="34" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="growbox" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F1F8E9;strokeColor=#7CB342;strokeWidth=2;dashed=1;" vertex="1" parent="1">
+      <mxGeometry x="40" y="70" width="480" height="440" as="geometry"/>
+    </mxCell>
+    <mxCell id="growlabel" value="育成の時間 ── LLM が居てよい" style="text;html=1;fontSize=15;fontStyle=1;fontColor=#558B2F;align=left;verticalAlign=middle;" vertex="1" parent="1">
+      <mxGeometry x="56" y="78" width="440" height="26" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="s1" value="現場が気づく&#10;「この請求書、税額が合わない」" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DCEDC8;strokeColor=#33691E;fontSize=15;fontColor=#1B5E20;fontStyle=1;" vertex="1" parent="1">
+      <mxGeometry x="80" y="118" width="400" height="52" as="geometry"/>
+    </mxCell>
+    <mxCell id="s2" value="LLM が検証ルールを提案&#10;（自由文でなく構造化された小さな差分）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DCEDC8;strokeColor=#33691E;fontSize=15;fontColor=#1B5E20;" vertex="1" parent="1">
+      <mxGeometry x="80" y="196" width="400" height="52" as="geometry"/>
+    </mxCell>
+    <mxCell id="s3" value="証拠つきの承認&#10;遡及テスト（実物の帳票）＋ 反例テスト" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DCEDC8;strokeColor=#33691E;fontSize=15;fontColor=#1B5E20;fontStyle=1;" vertex="1" parent="1">
+      <mxGeometry x="80" y="274" width="400" height="52" as="geometry"/>
+    </mxCell>
+    <mxCell id="s4" value="検証器スイートに追加&#10;（自分を検証するテストを連れて歩く）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DCEDC8;strokeColor=#33691E;fontSize=15;fontColor=#1B5E20;" vertex="1" parent="1">
+      <mxGeometry x="80" y="352" width="400" height="52" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#558B2F;strokeWidth=2;endArrow=block;" edge="1" parent="1" source="s1" target="s2"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#558B2F;strokeWidth=2;endArrow=block;" edge="1" parent="1" source="s2" target="s3"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#558B2F;strokeWidth=2;endArrow=block;" edge="1" parent="1" source="s3" target="s4"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+    <mxCell id="incentive" value="動機は個人へ：測るのは「止めた誤り − 誤って止めた数」の純益" style="text;html=1;fontSize=13;fontStyle=2;fontColor=#9E9E9E;align=left;verticalAlign=middle;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="80" y="424" width="400" height="40" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="judgebox" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#33691E;strokeWidth=2;" vertex="1" parent="1">
+      <mxGeometry x="560" y="70" width="340" height="440" as="geometry"/>
+    </mxCell>
+    <mxCell id="judgelabel" value="判定の時間 ── LLM は居ない（決定論のみ）" style="text;html=1;fontSize=15;fontStyle=1;fontColor=#1B5E20;align=left;verticalAlign=middle;" vertex="1" parent="1">
+      <mxGeometry x="576" y="78" width="310" height="26" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="compile" value="承認された検証器をコンパイル&#10;→ 決定論コードとして固定" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DCEDC8;strokeColor=#33691E;fontSize=15;fontColor=#1B5E20;fontStyle=1;" vertex="1" parent="1">
+      <mxGeometry x="590" y="132" width="280" height="56" as="geometry"/>
+    </mxCell>
+    <mxCell id="run" value="抽出結果(JSON)を pass / fail 判定&#10;同じ入力に同じ答え・GPU不要" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F1F8E9;strokeColor=#AED581;fontSize=15;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="590" y="212" width="280" height="56" as="geometry"/>
+    </mxCell>
+    <mxCell id="reward" value="通過率 = RLVR の採点関数&#10;小型モデルを鍛える報酬になる" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F1F8E9;strokeColor=#AED581;fontSize=15;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="590" y="292" width="280" height="56" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="ej1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#33691E;strokeWidth=2;endArrow=block;" edge="1" parent="1" source="compile" target="run"><mxGeometry relative="1" as="geometry"/></mxCell>
+    <mxCell id="ej2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#33691E;strokeWidth=2;endArrow=block;" edge="1" parent="1" source="run" target="reward"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+    <mxCell id="boundary" value="この境界を成果物の形で強制する&#10;LLM の提案は必ずコンパイルを経てからでないと判定に届かない" style="text;html=1;fontSize=13;fontStyle=2;fontColor=#9E9E9E;align=center;verticalAlign=middle;whiteSpace=wrap;" vertex="1" parent="1">
+      <mxGeometry x="590" y="392" width="280" height="72" as="geometry"/>
+    </mxCell>
+
+    <mxCell id="cross" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#33691E;strokeWidth=3;endArrow=block;dashed=0;" edge="1" parent="1" source="s4" target="compile"><mxGeometry relative="1" as="geometry"/></mxCell>
+  </root>
+</mxGraphModel></diagram></mxfile>
