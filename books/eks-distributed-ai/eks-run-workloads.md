@@ -104,7 +104,7 @@ CPU リクエストの既定値は `2` なので g6.2xlarge / g5.2xlarge（8 vCP
 そこで最小タイプの g6.xlarge / g5.xlarge（物理 16 GiB）にも収まる値を明示します。
 
 ```bash
-cd infra/eks
+cd "$(git rev-parse --show-toplevel)"/infra/eks
 MODEL=Qwen/Qwen2.5-0.5B-Instruct     # ゲートなし・小型
 helm template exp charts/experiments -n "$NAMESPACE" \
     --set gpuServingVllm.enabled=true \

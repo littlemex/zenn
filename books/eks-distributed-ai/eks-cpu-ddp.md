@@ -108,7 +108,7 @@ k create namespace distai --dry-run=client -o yaml | k apply -f -
 このイメージのビルドは、上述した BuildKit で実施します。ビルド先の ECR URL は Terraform の出力から取得できます。イメージタグはワークショップ用に `v1` を使います（再ビルドするときは `v2` のようにタグを進めると、`latest` のキャッシュ問題を避けられます）。
 
 ```bash
-cd infra/eks
+cd "$(git rev-parse --show-toplevel)"/infra/eks
 ECR_URL=$(terraform output -raw ddp_sample_ecr_url)
 IMAGE=${ECR_URL}:v1
 
@@ -179,8 +179,9 @@ k get pvc shared-claim
 `numNodes=2` がノード数、`nprocPerNode=1` が各ノード内のプロセス数です（Helm の `nprocPerNode` は TrainJob の `numProcPerNode` に対応します）。本 book がクラスタに用意した Runtime（[`torch-distributed-eks`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/clustertrainingruntime-eks.yaml)）に `topologyKey: kubernetes.io/hostname` の podAntiAffinity が入っているので、2 つの Pod は必ず別ノードに分かれて配置されます。PVC は step 3 で作った `shared-claim` を使います。
 
 ```bash
-# step 2 から続けて infra/eks にいる前提です。ターミナルを変えた場合は cd infra/eks した上で
-# 変数を再取得します: ECR_URL=$(terraform output -raw ddp_sample_ecr_url); IMAGE=${ECR_URL}:v1
+cd "$(git rev-parse --show-toplevel)"/infra/eks
+# ターミナルを変えた場合は変数も再取得します:
+# ECR_URL=$(terraform output -raw ddp_sample_ecr_url); IMAGE=${ECR_URL}:v1
 
 # 同名の TrainJob が残っていると、変更箇所によっては apply が拒否される。作り直しは削除が確実。
 # 作り直すときは先に削除する（初回は存在しなくても --ignore-not-found で安全）。

@@ -175,7 +175,7 @@ EFA 関連のアドオン（EC2NodeClass の `networkInterfaces` 自動生成、
 この手順は **ノードを 1 台も起動せずに実行できます**。EFA のトポロジは EC2 の API から plan 時に取得しているので、プールを定義して `terraform apply` した時点で答えが出ています。`terraform output` は Terraform モジュールのディレクトリで実行します。
 
 ```bash
-cd infra/eks
+cd "$(git rev-parse --show-toplevel)"/infra/eks
 terraform output accelerator_pool_efa_schedulable
 ```
 
@@ -226,7 +226,7 @@ GPU=$(aws ec2 describe-instance-types --instance-types "$ITYPE" \
   --query 'InstanceTypes[0].GpuInfo.Gpus[0].Count' --output text --region $REGION)
 
 cd "$(git rev-parse --show-toplevel)"   # リポジトリルートへ（helm の charts/experiments 相対パスの基点）
-EFA=$(cd infra/eks && terraform output -json accelerator_pool_efa_schedulable | jq -r ".\"$POOL\"")
+EFA=$(cd "$(git rev-parse --show-toplevel)"/infra/eks && terraform output -json accelerator_pool_efa_schedulable | jq -r ".\"$POOL\"")
 echo "gpu=$GPU efa=$EFA"   # p4d.24xlarge では gpu=8 efa=3
 
 helm template exp charts/experiments -n "$NAMESPACE" \

@@ -85,7 +85,7 @@ NVIDIA GPU Operator は Basic03 の時点では入っていません。`accelera
 リポジトリにはコメント付きの雛形 `accelerator-pools.tfvars.example` があります。初回はこれをコピーして自分用のファイルを作ります。コピー直後は全プール例がコメントアウトされた空の map（`accelerator_pools = {}`）なので、そのままでも apply は通ります。
 
 ```bash
-cd infra/eks
+cd "$(git rev-parse --show-toplevel)"/infra/eks
 # 以下のテンプレートを手動で書き換えても構いません
 # cp accelerator-pools.tfvars.example accelerator-pools.auto.tfvars
 ```
@@ -197,8 +197,7 @@ Basic01 で紹介したインフラ層のスモークテストには、GPU ノ�
 `$PROFILE` は Basic01 で設定した AWS プロファイル名です（未設定なら `export PROFILE=<your-aws-profile>`、素の `[default]` なら `--profile` ごと省略します）。
 
 ```bash
-# ここまでの手順で infra/eks にいる前提です（別の場所にいる場合は cd <repo>/infra/eks）
-cd tests
+cd "$(git rev-parse --show-toplevel)"/infra/eks/tests
 
 # Karpenter が GPU ノードを起動するため 5-10 分かかります
 ./run-tests.sh --with-gpu --profile $PROFILE --gpu-count 1

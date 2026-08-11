@@ -182,7 +182,7 @@ curl -s "http://localhost:9090/api/v1/targets" \
 Grafana の admin パスワードは Terraform が自動生成し、Secret に保存しています。平文でどこかに書く必要はなく、`terraform output` で取り出します。
 
 ```bash
-cd infra/eks
+cd "$(git rev-parse --show-toplevel)"/infra/eks
 terraform output -raw grafana_admin_password    # パスワードを表示
 
 k port-forward -n monitoring svc/kps-grafana 3000:80 &

@@ -95,7 +95,7 @@ check "capacity_block_ready" {
 ## 1. オファリングを検索する（読み取りのみ、課金なし）
 
 ```bash
-cd infra/eks/scripts
+cd "$(git rev-parse --show-toplevel)"/infra/eks/scripts
 ./00-check-cb-offerings.sh \
   --region us-west-2 \
   --instance-types p4d.24xlarge \
@@ -177,7 +177,7 @@ gpu-p5en = {
 ## 4. apply して NodePool を確認する
 
 ```bash
-cd infra/eks
+cd "$(git rev-parse --show-toplevel)"/infra/eks
 terraform apply
 k get nodepool $POOL
 k get ec2nodeclass $POOL
