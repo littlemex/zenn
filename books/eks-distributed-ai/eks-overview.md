@@ -35,6 +35,8 @@ Kubernetes はもともと「多様なサービスを動的にスケジュール
 Slurm が劣っているという話ではありません。Slurm ベースの構成のほうがシンプルなこともあります。この book は「推論と学習が入り混じる実験を回したい」というユースケースに対して、Amazon EKS を土台に選ぶ理由と、その具体的な作り方を示すものです。
 :::
 
+以下は、AWS 公式が提供する Amazon SageMaker Hyperpod のガイドです。非常に参考になるので本 book と合わせて、もしくは先にこちらを実施しても良いと思います。
+
 https://awslabs.github.io/ai-on-sagemaker-hyperpod/
 
 # インフラ層とアプリ層の境界
