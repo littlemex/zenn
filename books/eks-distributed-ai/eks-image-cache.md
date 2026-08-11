@@ -299,7 +299,7 @@ prewarm 済みノードでは `Pulling` イベントすら出ず、`Container im
 zstd 化は BuildKit の出力で行います。Basic02 のクラスタ内ビルドがそのまま使えるので、`imageBuild.zstd=true` を足すだけです。
 
 ```bash
-cd infra/eks
+cd "$(git rev-parse --show-toplevel)"/infra/eks
 ECR_URL=$(terraform output -raw ddp_sample_ecr_url)
 
 kubectl delete job build-ddp-sample-v2-zstd -n image-builder --ignore-not-found

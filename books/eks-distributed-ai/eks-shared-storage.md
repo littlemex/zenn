@@ -1,5 +1,5 @@
 ---
-title: "Basic10 - 共有ストレージ (Amazon FSx for Lustre) を導入する"
+title: "Basic10 - Amazon FSx for Lustre を導入する"
 free: true
 ---
 
@@ -114,7 +114,7 @@ k create namespace "$NAMESPACE" --dry-run=client -o yaml | k apply -f -
 ## 2. Terraform の出力を確認する
 
 ```bash
-cd infra/eks
+cd "$(git rev-parse --show-toplevel)"/infra/eks
 terraform output shared_storage
 ```
 

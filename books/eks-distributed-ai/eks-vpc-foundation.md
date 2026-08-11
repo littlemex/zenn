@@ -215,8 +215,12 @@ IRSA は ServiceAccount にアノテーションで IAM ロールを結び付け
 まず、この book が対象とするリポジトリを clone します。以降の章もこの作業ディレクトリを前提に進めます。
 
 ```bash
-git clone https://github.com/littlemex/distributed-ai.git
-cd distributed-ai/infra/eks
+git clone --depth 1 --branch release/eks-distributed-ai/v0.0.1 \
+  --filter=blob:none --sparse \
+  https://github.com/littlemex/distributed-ai.git
+cd distributed-ai
+git sparse-checkout set infra
+cd infra/eks
 ```
 
 続いて `terraform.tfvars.example` を `terraform.tfvars` にコピーし、`region` と `cluster_name` を自分の環境に合わせて設定します。AZ もサブネット CIDR も `region` から自動導出されるので、この段階で書くのはこの 2 つだけです。`accelerator_pools` も空のままで構いません。名前付き profile（AWS SSO や assume-role）で認証している場合は、****`aws_profile` にその profile 名も設定**します。この値を設定しておくと、Terraform が aws/helm/kubectl の各 provider と CLI ヘルパーすべてに同じ profile を渡すため、以降の操作が同一プリンシパルで実行されます。あわせて `expected_account_id` にデプロイ先の 12 桁のアカウント ID を設定しておくことを強く推奨します。この値を設定すると、認証情報が別のアカウントを指したまま apply しようとしたときに plan の段階で停止するため、profile の取り違えでクラスタを別アカウントに作ってしまう事故を未然に防げます。自分のアカウント ID は `aws sts get-caller-identity --query Account --output text` で確認できます。
@@ -322,8 +326,7 @@ k config view --minify -o 'jsonpath={.contexts[0].context.namespace} @ {.cluster
 リポジトリの [`infra/eks/tests/`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/tests) にインフラ層のスモークテストが用意されています。実行は任意ですが、初回構築後やモジュール変更後に回すと「apply は通ったが何かが壊れている」を早期に検出できます。基盤テストは GPU ノードを起動せず約 1 分で完了します。
 
 ```bash
-# ここまでの手順で infra/eks にいる前提です（別の場所にいる場合は cd <repo>/infra/eks）
-cd tests
+cd "$(git rev-parse --show-toplevel)"/infra/eks/tests
 
 # 基盤テスト: control-plane / system-nodes / karpenter / trainer /
 #            csi-drivers / device-plugins / storage-mount (FSx read/write)

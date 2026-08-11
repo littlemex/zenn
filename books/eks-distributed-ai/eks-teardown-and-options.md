@@ -43,7 +43,7 @@ export NAMESPACE=distai
 `04-teardown.sh` を `--destroy` なしで実行すると、指定した namespace のワークロードを削除し、アクセラレータプールのノードを Karpenter に回収させます。作業用 namespace は Basic01 以降で使ってきた `distai` です。
 
 ```bash
-cd scripts
+cd "$(git rev-parse --show-toplevel)"/infra/eks/scripts
 ./04-teardown.sh --namespace "$NAMESPACE"
 ```
 

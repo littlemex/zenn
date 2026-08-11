@@ -193,7 +193,7 @@ Scheduler Extension（後述）を有効にする `neuron_enable_scheduler` は�
 ## 3. apply する
 
 ```bash
-cd infra/eks
+cd "$(git rev-parse --show-toplevel)"/infra/eks
 terraform apply
 k get nodepool trn2
 k get ec2nodeclass trn2
