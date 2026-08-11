@@ -1,0 +1,47 @@
+<mxfile host="app.diagrams.net" type="device"><diagram name="storage-pv-pvc" id="storage-pv-pvc"><mxGraphModel dx="1400" dy="900" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="900" math="0" shadow="0"><root><mxCell id="0" /><mxCell id="1" parent="0" />
+<mxCell id="t1" value="Amazon FSx for Lustre — 静的 PersistentVolume と PersistentVolumeClaim の結びつき" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;whiteSpace=wrap;fontSize=28;fontColor=#14442F;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="50" y="24" width="1500" height="40" as="geometry" /></mxCell>
+<mxCell id="bandL" value="Terraform が管理 — 基盤が続く限り存在する" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1E7E5A;strokeColor=#1E7E5A;fontSize=17;fontColor=#FFFFFF;fontStyle=1;arcSize=8;verticalAlign=middle;align=center;" vertex="1" parent="1"><mxGeometry x="60" y="100" width="740" height="40" as="geometry" /></mxCell>
+<mxCell id="bandR" value="利用者が 1 度だけ作成 — ワークロードの寿命に追従" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#2FA374;strokeColor=#2FA374;fontSize=17;fontColor=#FFFFFF;fontStyle=1;arcSize=8;verticalAlign=middle;align=center;" vertex="1" parent="1"><mxGeometry x="840" y="100" width="700" height="40" as="geometry" /></mxCell>
+<mxCell id="boxL" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EAF7F0;strokeColor=#1E7E5A;strokeWidth=2.5;arcSize=3;dashed=0;" vertex="1" parent="1"><mxGeometry x="60" y="160" width="740" height="360" as="geometry" /></mxCell>
+<mxCell id="boxR" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F4FBF7;strokeColor=#2FA374;strokeWidth=2.5;arcSize=3;dashed=0;" vertex="1" parent="1"><mxGeometry x="840" y="160" width="700" height="360" as="geometry" /></mxCell>
+<mxCell id="fs" value="Amazon FSx for Lustre ファイルシステム" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1E7E5A;strokeColor=#1E7E5A;fontSize=18;fontColor=#FFFFFF;fontStyle=1;arcSize=10;verticalAlign=middle;align=center;" vertex="1" parent="1"><mxGeometry x="100" y="210" width="300" height="60" as="geometry" /></mxCell>
+<mxCell id="fsd" value="単一 AZ / PERSISTENT_2 SSD
+LZ4 圧縮 / RWX" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontSize=15;fontColor=#14442F;" vertex="1" parent="1"><mxGeometry x="100" y="272" width="300" height="44" as="geometry" /></mxCell>
+<mxCell id="pv" value="PersistentVolume
+fsx-training" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#2FA374;strokeColor=#1E7E5A;fontSize=18;fontColor=#FFFFFF;fontStyle=1;arcSize=10;verticalAlign=middle;align=center;" vertex="1" parent="1"><mxGeometry x="470" y="210" width="290" height="60" as="geometry" /></mxCell>
+<mxCell id="pvd" value="volumeHandle = ファイルシステム ID
+volumeAttributes { dnsname, mountname }
+storageClassName = &quot;&quot; (静的)
+reclaimPolicy = Retain / mountOptions = flock" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;fontSize=15;fontColor=#14442F;spacingLeft=8;" vertex="1" parent="1"><mxGeometry x="470" y="278" width="300" height="120" as="geometry" /></mxCell>
+<mxCell id="pvc" value="PersistentVolumeClaim
+fsx-claim" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#2FA374;strokeColor=#2FA374;fontSize=18;fontColor=#FFFFFF;fontStyle=1;arcSize=10;verticalAlign=middle;align=center;" vertex="1" parent="1"><mxGeometry x="880" y="210" width="300" height="60" as="geometry" /></mxCell>
+<mxCell id="pvcd" value="volumeName = fsx-training で PV を名指し
+storageClassName = &quot;&quot; / accessModes = RWX
+容量が PV と一致すると Bound" style="text;html=1;strokeColor=none;fillColor=none;align=left;verticalAlign=top;whiteSpace=wrap;fontSize=15;fontColor=#14442F;spacingLeft=8;" vertex="1" parent="1"><mxGeometry x="880" y="278" width="320" height="90" as="geometry" /></mxCell>
+<mxCell id="pod" value="Pod" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#2FA374;fontSize=18;fontColor=#1E7E5A;fontStyle=1;arcSize=12;verticalAlign=middle;align=center;" vertex="1" parent="1"><mxGeometry x="1310" y="210" width="190" height="60" as="geometry" /></mxCell>
+<mxCell id="podd" value="claimName で
+PVC を掴む
+/mnt にマウント" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=top;whiteSpace=wrap;fontSize=15;fontColor=#14442F;" vertex="1" parent="1"><mxGeometry x="1310" y="278" width="190" height="70" as="geometry" /></mxCell>
+<mxCell id="ea" style="endArrow=block;endFill=1;html=1;strokeColor=#1E7E5A;strokeWidth=3;" edge="1" parent="1"><mxGeometry relative="1" as="geometry"><mxPoint x="400" y="240" as="sourcePoint" /><mxPoint x="470" y="240" as="targetPoint" /></mxGeometry></mxCell>
+<mxCell id="eal" value="固定 volumeHandle" style="text;html=1;strokeColor=none;fillColor=none;align=center;fontSize=13;fontColor=#1E7E5A;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="392" y="182" width="150" height="20" as="geometry" /></mxCell>
+<mxCell id="eb" style="endArrow=block;startArrow=block;endFill=1;startFill=1;html=1;strokeColor=#2FA374;strokeWidth=3;" edge="1" parent="1"><mxGeometry relative="1" as="geometry"><mxPoint x="760" y="240" as="sourcePoint" /><mxPoint x="880" y="240" as="targetPoint" /></mxGeometry></mxCell>
+
+<mxCell id="ec" style="endArrow=block;endFill=1;html=1;strokeColor=#2FA374;strokeWidth=3;" edge="1" parent="1"><mxGeometry relative="1" as="geometry"><mxPoint x="1310" y="240" as="sourcePoint" /><mxPoint x="1180" y="240" as="targetPoint" /></mxGeometry></mxCell>
+<mxCell id="ecl" value="claimName" style="text;html=1;strokeColor=none;fillColor=none;align=center;fontSize=13;fontColor=#2FA374;fontStyle=1;" vertex="1" parent="1"><mxGeometry x="1195" y="182" width="120" height="20" as="geometry" /></mxCell>
+<mxCell id="warn" value="Amazon FSx for Lustre 固有の 3 つの注意点" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1E7E5A;strokeColor=#1E7E5A;fontSize=18;fontColor=#FFFFFF;fontStyle=1;arcSize=8;verticalAlign=middle;align=center;" vertex="1" parent="1"><mxGeometry x="60" y="560" width="1480" height="40" as="geometry" /></mxCell>
+<mxCell id="w1" value="動的プロビジョニング不可" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F4FBF7;strokeColor=#2FA374;strokeWidth=2;fontSize=16;fontColor=#14442F;fontStyle=1;arcSize=6;verticalAlign=top;align=center;spacingTop=10;" vertex="1" parent="1"><mxGeometry x="60" y="620" width="480" height="130" as="geometry" /></mxCell>
+<mxCell id="w1d" value="StorageClass 経由で既存 FS に
+バインドできない。固定 volumeHandle の
+静的 PV を 1 つ用意し PVC を名指しする。
+誤ると 2 つ目の FS が課金され得る。" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontSize=14;fontColor=#14442F;" vertex="1" parent="1"><mxGeometry x="70" y="654" width="460" height="90" as="geometry" /></mxCell>
+<mxCell id="w2" value="volumeAttributes は小文字キー" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F4FBF7;strokeColor=#2FA374;strokeWidth=2;fontSize=16;fontColor=#14442F;fontStyle=1;arcSize=6;verticalAlign=top;align=center;spacingTop=10;" vertex="1" parent="1"><mxGeometry x="560" y="620" width="480" height="130" as="geometry" /></mxCell>
+<mxCell id="w2d" value="dnsname / mountname のみ読まれる。
+dnsName のようなキャメルケースは
+無視され NodeStageVolume が失敗し
+Pod が ContainerCreating で止まる。" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontSize=14;fontColor=#14442F;" vertex="1" parent="1"><mxGeometry x="570" y="654" width="460" height="90" as="geometry" /></mxCell>
+<mxCell id="w3" value="reclaimPolicy は Retain" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F4FBF7;strokeColor=#2FA374;strokeWidth=2;fontSize=16;fontColor=#14442F;fontStyle=1;arcSize=6;verticalAlign=top;align=center;spacingTop=10;" vertex="1" parent="1"><mxGeometry x="1060" y="620" width="480" height="130" as="geometry" /></mxCell>
+<mxCell id="w3d" value="PVC を消しても PV は Released で残る。
+Recycle は非推奨かつ CSI 未実装。
+再バインドの復旧手順は Basic02 と共通
+(PV は PVC を実体で覚えるため)。" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;fontSize=14;fontColor=#14442F;" vertex="1" parent="1"><mxGeometry x="1070" y="654" width="460" height="90" as="geometry" /></mxCell>
+</root></mxGraphModel></diagram></mxfile>
