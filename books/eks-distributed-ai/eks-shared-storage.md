@@ -1,5 +1,5 @@
 ---
-title: "Basic10 - 共有ストレージ (Amazon FSx for Lustre)"
+title: "Basic10 - 共有ストレージ (Amazon FSx for Lustre) を導入する"
 free: true
 ---
 

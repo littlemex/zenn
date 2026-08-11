@@ -1,5 +1,5 @@
 ---
-title: "Basic09 - Neuron/Trainium 対応"
+title: "Basic09 - Neuron/Trainium に対応する"
 free: true
 ---
 
