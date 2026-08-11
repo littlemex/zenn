@@ -16,7 +16,7 @@ published: false
 
 ![MiniMax-H3 で生成したモンスターバトルの動画](/images/comfyui-minimax-h3-eks-l40s/battle.gif)
 
-GIF のため無音ですが、元の mp4 には生成された効果音と BGM が同期して入っています。音声付きの元動画は [リポジトリのサンプル](https://github.com/littlemex/distributed-ai/tree/main/2026-08-comfyui-minimax-h3-g6e) から確認できます。
+GIF のため無音ですが、元の mp4 には生成された効果音と BGM が同期して入っています。音声付きの元動画は [リポジトリのサンプル](https://github.com/littlemex/distributed-ai/tree/main/2026-08-12-comfyui-minmax-h3) から確認できます。
 
 ## MiniMax-H3 とは何か
 
