@@ -1,7 +1,7 @@
 title: "Amazon EKS Distributed AI ワークショップ"
-summary: "Terraform + Karpenter で GPU/Neuron アクセラレータを動的にプロビジョニングする Amazon EKS クラスタの構築・運用ガイド"
+summary: "Amazon EKS を用いた分散 AI ワークショップ"
 topics: ["EKS", "Terraform", "Karpenter", "GPU", "DistributedAI"]
-published: false
+published: true
 chapters:
   - eks-overview
   - eks-vpc-foundation
@@ -19,3 +19,4 @@ chapters:
     #  - eks-gdrcopy
     #  - eks-gpu-fault-injection
     #  - eks-tenant-pools
+    #  - Kueue のセクションを追加したい
