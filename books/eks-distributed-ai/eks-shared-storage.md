@@ -23,21 +23,11 @@ Karpenter は consolidate・drift・expire でノードを次々に入れ替え�
 
 Amazon FSx for Lustre は、この用途のうち高いスループットが要る領域を受け持ちます。PERSISTENT_2 デプロイタイプの SSD ストレージを使い、実装では既定で有効です。大規模データセットの読み出しや学習チェックポイントの書き込みのように、帯域が性能を左右するワークロードに向きます。
 
-以降で Amazon FSx for Lustre 固有の 3 つの論点を見ていきます。1 つ目は既存ファイルシステムには静的プロビジョニングしか使えないという CSI ドライバの制約、2 つ目は PersistentVolume と PersistentVolumeClaim がどう結びつくか、3 つ目は EFA によるさらに高いスループットの選択肢です。対象モジュールは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks) です。
+以降で Amazon FSx for Lustre 固有の 3 つの論点を見ていきます。1 つ目は既存ファイルシステムには静的プロビジョニングしか使えないという CSI ドライバの制約、2 つ目は PersistentVolume と PersistentVolumeClaim がどう結びつくか、3 つ目は EFA によるさらに高いスループットの選択肢です。
 
 ## Terraform で作った既存ファイルシステムには静的プロビジョニングを使う
 
-Amazon FSx for Lustre は [`fsx.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/fsx.tf) で構成します。`aws-fsx-csi-driver` は動的プロビジョニングにも対応していますが、それは StorageClass 経由で PVC ごとに新規ファイルシステムを作成する用途に限られ、Terraform が作成済みの既存ファイルシステムに StorageClass をバインドすることはできません。ファイル冒頭のコメントに理由が書かれています。
-
-```hcl
-# fsx.tf（冒頭コメント抜粋）
-# Static provisioning only (mirrors efs.tf): Terraform creates ONE filesystem and a
-# PersistentVolume with a fixed volumeHandle. There is no dynamic-provisioning StorageClass
-# here — aws-fsx-csi-driver does not support binding a StorageClass to an EXISTING
-# filesystem via a "fileSystemId" parameter (that key is not read by the driver; a PVC
-# against such a StorageClass would either error or silently provision an unwanted second
-# multi-TB filesystem).
-```
+Amazon FSx for Lustre は [`fsx.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/fsx.tf) で構成します。`aws-fsx-csi-driver` は動的プロビジョニングにも対応していますが、それは StorageClass 経由で PVC ごとに新規ファイルシステムを作成する用途に限られ、Terraform が作成済みの既存ファイルシステムに StorageClass をバインドすることはできません。
 
 `aws-fsx-csi-driver` の StorageClass は新規にファイルシステムを作成するためのパラメータしか読みません。既存ファイルシステムの ID を StorageClass に渡しても無視され、最悪の場合は意図しない 2 つ目のファイルシステムが暗黙に作られ、TB 単位の課金が発生します。そのため、この実装では Terraform が作成した 1 つのファイルシステムに対して固定の `volumeHandle` を持つ PersistentVolume を 1 つだけ用意し、PVC はその PV に名前でバインドします。この静的プロビジョニングのパターンそのものは Basic02 の OpenZFS で扱ったものと同じで、PV が PVC を名前ではなく実体で覚える性質や `Released` からの復旧手順も Basic02 で解説済みです。
 
@@ -69,7 +59,7 @@ persistentVolumeReclaimPolicy = "Retain"
 mountOptions                  = ["flock"]
 ```
 
-`reclaimPolicy` は `Retain` です。`aws-fsx-csi-driver` の公式サンプルの `pv.yaml` も一貫して `Retain` を使っています。同ドライバの README のコード例には `Recycle` と書かれている箇所がありますが、`Recycle` は Kubernetes で非推奨となっており、Amazon FSx for Lustre の CSI ドライバは実装していないため機能しません。静的プロビジョニングで正しいのは `Retain` です。
+`reclaimPolicy` は `Retain` です。`aws-fsx-csi-driver` の公式サンプルの `pv.yaml` も `Retain` を使っています。同ドライバの README のコード例には `Recycle` と書かれている箇所がありますが、`Recycle` は Kubernetes で非推奨となっており、Amazon FSx for Lustre の CSI ドライバは実装していないため機能しません。
 
 ## EFA でさらに高いスループットを得る
 
@@ -98,7 +88,7 @@ EFA は OS をバイパスし SRD プロトコルで RDMA 通信を行うため�
 この実装では、ファイルシステム側の EFA 有効化を `terraform.tfvars` の `fsx_efa_enabled`（既定 `false`）で切り替えられるようにしてあります。`true` にすると `EfaEnabled` の付与、USER_PROVISIONED メタデータ 6000 IOPS、EFA 用の自己参照セキュリティグループルールが自動で構成され、容量と IOPS の下限は `terraform plan` の段階で検証されます。
 
 :::message alert
-`fsx_efa_enabled = true` はファイルシステム側の設定だけを行います。ノード側の EFA ドライバ・Lustre クライアント・LNET の EFA 設定と、ノードをファイルシステムのセキュリティグループに参加させる構成は本実装では導入していないため、この設定だけを有効にしてもクライアントは EFA データパスを使えません。ノード側の具体的な導入手順は、後述の参考資料に挙げた AWS の FSx for Lustre ワークショップの EFA および EKS+EFA のセクションを参照してください。加えて `EfaEnabled` は作成時のみ指定できる設定のため、稼働中のファイルシステムでこの値を切り替えると `terraform apply` はファイルシステムを再作成し、保存済みのデータはすべて失われます。切り替える場合は、事前に必要なデータを Amazon S3 などへ退避してください。
+`fsx_efa_enabled = true` はファイルシステム側の設定だけを行います。ノード側の EFA ドライバ・Lustre クライアント・LNET の EFA 設定と、ノードをファイルシステムのセキュリティグループに参加させる構成は本実装では導入していないため、この設定だけを有効にしてもクライアントは EFA データパスを使えません。ノード側の具体的な導入手順は、後述の参考資料に挙げた AWS の FSx for Lustre ワークショップの EFA および EKS+EFA のセクションを参照してください。加えて `EfaEnabled` は作成時のみ指定できる設定のため、稼働中のファイルシステムでこの値を切り替えると `terraform apply` はファイルシステムを再作成し、保存済みのデータはすべて失われます。切り替える場合は、事前に必要なデータを Amazon S3 などへ退避してください。今後の課題として EFA 利用有無をより柔軟に扱う仕組みを検討します。
 :::
 
 ## EFA を共有ストレージと GPU 通信で共有するときの考え方
@@ -113,9 +103,8 @@ GPU 分散学習では NCCL の集合通信も EFA を使います。Amazon FSx 
 
 ## 1. 前提を確認する
 
-- Basic01 から Basic04 で Amazon VPC・Amazon EKS コントロールプレーン・アクセラレータプールの土台を構築済みです。
-- `k` エイリアスと `KUBECONFIG` / `--context` は Basic01 で設定済みで、作業用 namespace は `distai` に統一済みです。
-- `terraform.tfvars` は既定値のままです。Amazon FSx for Lustre と Amazon FSx for OpenZFS はこの時点で Terraform が作成済みです。
+- `terraform apply` 実行ずみ
+- `k` エイリアスと `KUBECONFIG` / `--context` 設定済み
 
 ```bash
 export NAMESPACE=distai
@@ -151,7 +140,7 @@ terraform output shared_storage
 }
 ```
 
-`enabled` がその層を使うかどうか、`persistent_volume` がその層を裏づける静的 PV の名前です。
+`enabled` がその層を使うかどうか、`persistent_volume` が静的 PV の名前です。
 
 ## 3. PersistentVolume を確認する
 
@@ -169,7 +158,63 @@ openzfs-shared   256Gi      RWX            Retain           Available           
 
 いずれも `storageClassName` が空の静的 PV です。アクセスモードが ReadWriteMany なのは、複数ノードの Pod から同時にチェックポイント書き込みやデータ読み出しができるようにするためです。
 
-`STATUS` が `Available` ではなく `Bound` や `Released` になっている場合は、Basic02 で `fsx` バックエンドを試すなどして、この PV を掴んだ PVC が過去にあったことを意味します。その状態では次の手順で作る PVC が `Pending` のままになるため、先に Basic02 で解説した手順で PV を解放しておきます。
+`STATUS` が `Available` ではなく `Bound` や `Released` になっている場合は、Basic02 で `fsx` バックエンドを試すなどして、この PV を掴んだ PVC が過去にあったことを意味します。その状態では次の手順で作る PVC が `Pending` のままになるため、先に PV を解放しておきます。名前を直接書かず、PV から `claimRef` を引いて変数で扱います。
+
+```bash
+PV=fsx-training
+PVC_NS=$(k get pv "$PV" -o jsonpath='{.spec.claimRef.namespace}')
+PVC_NAME=$(k get pv "$PV" -o jsonpath='{.spec.claimRef.name}')
+echo "この PV を掴んでいる PVC: ${PVC_NS}/${PVC_NAME}"
+
+# 状態が Bound の場合: 掴んでいる PVC を消す。reclaimPolicy=Retain なので PV は消えず Released になる
+k delete pvc "$PVC_NAME" -n "$PVC_NS"
+
+# 状態が Released の場合: claimRef の uid/resourceVersion だけ外して再バインド可能に戻す
+k patch pv "$PV" --type=json \
+  -p '[{"op":"remove","path":"/spec/claimRef/uid"},{"op":"remove","path":"/spec/claimRef/resourceVersion"}]'
+```
+
+`k delete pvc` が返ってこないときは、その PVC を使っている Pod がまだ残っています。PVC には `kubernetes.io/pvc-protection` ファイナライザが付いており、参照する Pod が 1 つでもある限り削除は完了しません。この場合は Pod を先に消します。
+
+::::details PVC の削除が Pod で止まるときの対処
+まず PVC を参照している Pod を洗い出します。
+
+```bash
+k get pods -n "$PVC_NS" -o json \
+  | PVC_NAME="$PVC_NAME" python3 -c "
+import json, sys, os
+name = os.environ['PVC_NAME']
+for p in json.load(sys.stdin).get('items', []):
+    for v in p.get('spec', {}).get('volumes', []):
+        if v.get('persistentVolumeClaim', {}).get('claimName') == name:
+            print(p['metadata']['name'], p.get('status', {}).get('phase')); break
+"
+```
+
+出てきた Pod を消すとファイナライザが外れ、PVC の削除が完了します。`Succeeded` や `Failed` のまま残っているのは、作成元の Job などが消えて後始末されなくなった残骸です。Pod を直接消します。
+
+```bash
+k delete pod -n "$PVC_NS" <上で出た Pod 名> --wait=false
+```
+
+Pod 自身が `Terminating` のまま消えないこともあります。多くは Job 管理の `batch.kubernetes.io/job-tracking` ファイナライザが残っているケースで、作成元の Job が既に無いと誰も外してくれません。終了済みの残骸 Pod に対してのみ、ファイナライザを手で外します。
+
+```bash
+k patch pod -n "$PVC_NS" <残骸 Pod 名> -p '{"metadata":{"finalizers":null}}' --type=merge
+```
+
+Experiment01 のマルチテナント ValidatingAdmissionPolicy を導入している場合、この patch が「pod may not set spec.nodeName directly」で拒否されることがあります。対象 namespace に一時的に `tenantpools.dev/excluded=true` ラベルを付けて VAP の対象から外し、patch を実行してからラベルを戻します。
+
+```bash
+k label namespace "$PVC_NS" tenantpools.dev/excluded=true --overwrite
+k patch pod -n "$PVC_NS" <残骸 Pod 名> -p '{"metadata":{"finalizers":null}}' --type=merge
+k label namespace "$PVC_NS" tenantpools.dev/excluded-
+```
+::::
+
+:::message
+PersistentVolume と PersistentVolumeClaim の namespace の考え方を整理しておきます。PV はクラスタスコープのリソースで namespace を持ちません。namespace を持つのは PVC のほうで、Pod は自分と同じ namespace の PVC しか参照できません。つまり「PVC と、それをマウントする Pod は必ず同じ namespace に置く」「PV はどの namespace の PVC からでも `volumeName` でバインドできる共通の存在」と理解しておくと混乱しません。本 book は作業用 namespace を `distai` に統一しているので、PVC も Pod も `distai` に作ります。`default` などにうっかり作ると、Basic11 の `04-teardown.sh --namespace distai` が対象にせず消し漏らし、Bound な PV が残って `terraform destroy` を止める原因になります。
+:::
 
 ## 4. Amazon FSx for Lustre に書き込み、ノードを跨いでデータが残ることを確認する
 
@@ -221,6 +266,8 @@ k logs fsx-test2 -n "$NAMESPACE"
 k delete pod fsx-test2 -n "$NAMESPACE" --ignore-not-found
 k delete pvc fsx-claim -n "$NAMESPACE" --ignore-not-found
 ```
+
+Pod を先に、PVC を後に消すこの順序が大事です。逆にすると `k delete pvc` が Pod の残るあいだファイナライザで止まります。namespace 内の PVC をまとめて片付けたい場合は、Basic11 の `04-teardown.sh` に `--delete-pvcs` を付けると、その namespace の PVC を storage の種類によらず一括削除できます。削除が止まったときの原因の切り分けは、手順 3 の details で示した Pod の調べ方と同じです。
 
 PV 自体は Terraform が管理しているため、この削除では消えません。`reclaimPolicy` が `Retain` なので、Bound だった PVC を削除しても PV は `Released` になります。同じ PV に再びバインドしたい場合の復旧手順は Basic02 で扱ったものと同じです。
 
