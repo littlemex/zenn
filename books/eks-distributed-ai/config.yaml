@@ -12,6 +12,7 @@ chapters:
   - eks-efa-topology
   - eks-run-workloads
   - eks-observability
+  - eks-run-workloads-neuron
   - eks-shared-storage
   - eks-teardown-and-options
     #  - eks-image-cache

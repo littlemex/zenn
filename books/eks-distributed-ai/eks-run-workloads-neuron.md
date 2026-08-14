@@ -41,18 +41,17 @@ GPU 版（Basic07）との対応関係は次のとおりです。
 | 並列度 | 単一 GPU | NeuronCore 4 個のテンソル並列（`--tensor-parallel-size 4`） |
 | 初回起動時のコンパイル | CUDA グラフのキャプチャや torch.compile（比較的短時間） | モデル全体を NEFF へ AOT コンパイル（数分） |
 
-初回起動時のコンパイルは GPU 版も無縁ではありません。vLLM は GPU でも起動時に CUDA グラフのキャプチャ（既定）や torch.compile によるコンパイルを行います。違いは度合いと方式で、Neuron はモデルの計算グラフ全体を NEFF（Neuron Executable File Format）へ AOT（事前）コンパイルするため、初回の所要時間が長く（実機で数分）、その効果も大きくなります。いずれの場合もコンパイル成果物は `VLLM_CACHE_ROOT`（vLLM 共通のキャッシュ置き場で、Neuron では NEFF が入ります）配下に残り、残しておけば次回以降は再利用されて起動が速くなります。
+初回起動時のコンパイルは GPU 版も無縁ではありません。vLLM は GPU でも起動時に CUDA グラフのキャプチャ（既定）や torch.compile によるコンパイルを行います。違いは度合いと方式で、Neuron はモデルの計算グラフ全体を NEFF（Neuron Executable File Format）へ AOT（事前）コンパイルするため、初回の所要時間が長く（実機で数分）なります。いずれの場合もコンパイル成果物は `VLLM_CACHE_ROOT` 配下に残り、残しておけば次回以降は再利用されて起動が速くなります。
 
 # ワークショップ実施
 
 ## 1. 前提を確認する
 
-- Basic05 で trn2 の Capacity Block を確保し、その AZ の subnet に紐づく managed nodegroup（`capacityType=CAPACITY_BLOCK`）で trn2 ノードが 1 台 join していること
-- Neuron device plugin（`neuron-device-plugin` DaemonSet）が導入され、ノードが Neuron のアクセラレータリソースを advertise していること
-- そのノードに、本章のチャートが許容しない taint が付いていないこと（チャートは `aws.amazon.com/neuron` と `capacity-reservation` の taint を許容します。それ以外の taint がある場合は toleration を追加してください）
-- `k` エイリアスと `--context` は Basic01 で設定済み
+- Basic05 の手順で trn2.3xlarge の Capacity Block をメルボルンリージョンで確保ずみ
+- Basic05 の手順で `terraform apply` で NodePool 作成済み
+- `k` エイリアスと `--context` は設定済み
 
-trn2 ノードと Neuron リソースの advertise を確認します。
+trn2 ノードと Neuron リソースを確認します。
 
 ```bash
 k get nodes -l node.kubernetes.io/instance-type=trn2.3xlarge \
@@ -74,7 +73,7 @@ ip-10-0-21-164.ap-southeast-4.compute.internal   1        4
 
 ## 2. 作業用 namespace を用意する
 
-Basic01 で作った作業用 namespace を冪等に用意し直します。
+作業用 namespace を用意します。
 
 ```bash
 export NAMESPACE=distai
@@ -83,7 +82,7 @@ k create namespace "$NAMESPACE" --dry-run=client -o yaml | k apply -f -
 
 ## 3. vLLM Neuron plugin の Deployment を投入する
 
-投入するチャートの前に、Neuron 固有のポイントを順に押さえます。
+投入する前に、Neuron 固有のポイントを順に押さえます。
 
 ### アクセラレータはデバイス単位で要求する
 
@@ -98,30 +97,24 @@ Set NEURON_VISIBLE_DEVICES to control device visibility.
 
 デバイス単位（`aws.amazon.com/neuron: 1`）で要求すると `NEURON_RT_VISIBLE_CORES` は注入されず、plugin はデバイス全体の 4 個のコアを使ってテンソル並列を組めます。本章のチャート（`neuronVllmPlugin`）がデバイス単位で要求しているのはこのためです。
 
-:::message
-**補足: Dynamic Resource Allocation（DRA）との関係**
-Kubernetes には、アクセラレータの割り当てをより柔軟に扱う Dynamic Resource Allocation（DRA）という仕組みがあり、本来はコア数などを動的に要求する余地があります。ただし DRA を使うには DRA 対応のデバイスドライバが必要で、Neuron は現状 device plugin による拡張リソース方式のみを提供しています。加えて本書はノードのプロビジョニングに Karpenter を使っていますが、Karpenter は DRA の ResourceClaim を見てノードをスケールさせる方式に対応していません。この 2 つの理由から、本書では従来どおり device plugin が公開する拡張リソース（`aws.amazon.com/neuron`）で要求します。
-:::
-
-### 初回コンパイルとキャッシュ（VLLM_CACHE_ROOT）
-
-前述のとおり Neuron は初回起動時にモデルを NEFF へコンパイルします。`VLLM_CACHE_ROOT` にコンパイル成果物の置き場を指定すると、次回以降はキャッシュから読み込まれ、コンパイルを飛ばして起動します。ここで注意したいのは、`VLLM_CACHE_ROOT` がキャッシュするのは NEFF 成果物であって、HuggingFace から取得するモデル本体（数 GB）ではない点です。本章ではどちらも Pod 内の一時ボリューム（`emptyDir`）に置くため、Pod を作り直すと「モデルの再ダウンロード」と「NEFF の再コンパイル」の両方が発生します。後述の Recreate 戦略のもとでは、Deployment を更新するたびにこの両方が走ります。永続ストレージ（EFS など）にキャッシュを置けば、Pod やノードを跨いで NEFF を再利用できます。
-
 ### 単一デバイスノードでは Recreate 戦略を使う
 
 trn2 ノードは Trainium デバイスが 1 個しかないため、Deployment の既定の RollingUpdate だと更新時に新旧 Pod がデバイスを取り合い、新 Pod が `Pending` のまま進まなくなります。旧 Pod を先に落としてデバイスを解放する `strategy.type: Recreate` を使います。
 
+### 初回コンパイルとキャッシュ（VLLM_CACHE_ROOT）
+
+前述のとおり Neuron は初回起動時にモデルを NEFF へコンパイルします。`VLLM_CACHE_ROOT` にコンパイル成果物の置き場を指定すると、次回以降はキャッシュから読み込まれ、コンパイルを飛ばして起動します。ここで注意したいのは、`VLLM_CACHE_ROOT` がキャッシュするのは NEFF 成果物であって、HuggingFace から取得するモデル本体（数 GB）ではない点です。本章ではどちらも Pod 内の一時ボリューム（`emptyDir`）に置くため、Pod を作り直すと「モデルの再ダウンロード」と「NEFF の再コンパイル」の両方が発生します。Recreate 戦略のもとでは、Deployment を更新するたびにこの両方が走ります。永続ストレージにキャッシュを置けば、Pod やノードを跨いで NEFF を再利用できます。
+
 ### 環境変数と権限、初回のデプロイ期限
 
-- `NEURON_SKIP_EFA_AFFINITY=1`: EFA を持たない構成（本章の単一ノード）で Neuron ランタイムの EFA アフィニティ処理をスキップします。
-- `securityContext.capabilities.add: ["IPC_LOCK"]`: Neuron ランタイム（libnrt）が要求します。特権（privileged）は不要です。
-- `progressDeadlineSeconds: 2400`: 初回は数 GB の DLC の pull、モデルのダウンロード、NEFF コンパイルが順に走り、Deployment 既定の進捗期限 600 秒を超えます。これを延ばしておかないと、後述の `rollout status` が待機途中で `ProgressDeadlineExceeded` により失敗します（Pod 自体は起動を続けるため、混乱を避けるためにも必須です）。
+- `securityContext.capabilities.add: ["IPC_LOCK"]`: Neuron ランタイムが要求します。
+- `progressDeadlineSeconds: 2400`: 初回は数 GB の DLC の pull、モデルのダウンロード、NEFF コンパイルが順に走り、Deployment 既定の進捗期限 600 秒を超えます。これを延ばしておかないと、後述の `rollout status` が待機途中で `ProgressDeadlineExceeded` により失敗します。
 
 以上の設定はチャート（`charts/experiments` の `values.yaml`、`neuronVllmPlugin`）に定義されています。有効化してレンダリングし、適用します。`model` などを変えたい場合は `--set neuronVllmPlugin.model=...` で上書きできます。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
-# チャートはサブチャート image-builder-lib を依存に持つため、初回だけローカル依存を取得します（冪等）。
+# チャートはサブチャート image-builder-lib を依存に持つため、初回だけローカル依存を取得します。
 helm dependency build charts/experiments
 helm template exp charts/experiments -n "$NAMESPACE" \
     --set neuronVllmPlugin.enabled=true \
@@ -130,13 +123,13 @@ helm template exp charts/experiments -n "$NAMESPACE" \
 
 ## 4. Pod の Ready を待つ
 
-初回はモデルのダウンロードに続いて NEFF コンパイルが走るため、`Ready` まで GPU 版より時間がかかります。実機（イメージがノードにキャッシュ済みの状態）では約 8 分で `Ready` になりました。イメージが未キャッシュのノードでは、その pull ぶんさらに数分かかります。`timeout` はマージンを含めて 40 分にしています。
+初回はモデルのダウンロードに続いて NEFF コンパイルが走るため、`Ready` まで GPU 版より時間がかかります。イメージがノードにキャッシュ済みの状態では約 8 分で `Ready` になりました。イメージが未キャッシュのノードでは、その pull ぶんさらに数分かかります。
 
 ```bash
 k -n "$NAMESPACE" rollout status deploy/neuron-vllm --timeout=40m
 ```
 
-途中経過はログで確認できます（初回はコンパイルのログが大量に流れるため `--tail` で絞ります）。
+途中経過はログで確認できます。
 
 ```bash
 k -n "$NAMESPACE" logs deploy/neuron-vllm --tail=20 \
@@ -208,7 +201,7 @@ curl -s localhost:8000/v1/chat/completions \
 }
 ```
 
-`Qwen3-VL` はマルチモーダルなので、画像を与えた推論も確認します。`content` を配列にして、画像（`image_url`）とテキスト（`text`）を並べます。
+`Qwen3-VL` はマルチモーダルなので、画像を与えた推論も確認します。`content` を配列にして、画像とテキストを並べます。
 
 ```bash
 curl -s localhost:8000/v1/chat/completions \
@@ -239,36 +232,19 @@ curl -s localhost:8000/v1/chat/completions \
 }
 ```
 
-この画像はソファの上の猫 2 匹で、モデルは画像を正しく認識しています。テキストのみの `prompt_tokens=18` に対し、画像を含むと `prompt_tokens=323` に増えており、画像がトークンとしてモデルに渡っていることも確認できます。テキストと画像の両方で応答と `usage` が返れば、trn2 の 1 ノード上で vLLM Neuron plugin のマルチモーダル推論が動いていることが確認できます。
-
-:::message
-port-forward はバックグラウンド（`&`）で起動したので、確認が終わったら止めます。`jobs` で番号を確認し、対応する番号を `kill %<n>`（1 個だけなら `kill %1`）に指定します。
-:::
+この画像はソファの上の猫 2 匹で、モデルは画像を正しく認識しています。テキストと画像の両方で応答と `usage` が返れば、trn2 の 1 ノード上で vLLM Neuron plugin のマルチモーダル推論が動いていることが確認できます。
 
 ## 6. 後片付け
 
-推論サーバーを削除します。
+推論サーバーを削除します。Capacity Block for ML の場合、インスタンスは期限で自動的に削除されます。
 
 ```bash
 k delete deploy/neuron-vllm svc/neuron-vllm -n "$NAMESPACE"
 ```
 
-trn2 ノードは、Basic05 の手順に従って nodegroup を `desiredSize=0` に戻すか、予約終了時刻での自動スケールダウンで停止します。
-
-:::message alert
-Capacity Block は予約時間ぶんが課金されます。検証が終わったら忘れずにノードを止めてください。
-:::
-
 # まとめ
 
-本章では、Capacity Block で確保した Trainium ノードに vLLM Neuron plugin の OpenAI 互換サーバーをデプロイし、マルチモーダルモデル `Qwen3-VL-4B-Instruct` でテキストと画像の推論が動くことを確認しました。GPU 版との差分は次の 4 点です。
-
-- Neuron 向け DLC（plugin 同梱）を使う
-- アクセラレータ要求がコア単位ではなくデバイス単位（`aws.amazon.com/neuron`）になる
-- 初回のみ NEFF コンパイルが走るため、キャッシュ（`VLLM_CACHE_ROOT`）が効く
-- 単一デバイスノードでは Recreate 戦略と、コンパイルを見込んだ `progressDeadlineSeconds` が要る
-
-単一ノードのテンソル並列で完結するため EFA は不要で、確保済みの trn2 ノードに Pod を投げるだけで OpenAI 互換 API が立ち上がります。
+本章では、Capacity Block で確保した Trainium ノードに vLLM Neuron plugin の OpenAI 互換サーバーをデプロイし、マルチモーダルモデル `Qwen3-VL-4B-Instruct` でテキストと画像の推論が動くことを確認しました。
 
 # 参考資料
 
