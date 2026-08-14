@@ -50,7 +50,7 @@ GPU 版（Basic07）との対応関係は次のとおりです。
 - Basic05 で trn2 の Capacity Block を確保し、その AZ の subnet に紐づく managed nodegroup（`capacityType=CAPACITY_BLOCK`）で trn2 ノードが 1 台 join していること
 - Neuron device plugin（`neuron-device-plugin` DaemonSet）が導入され、ノードが Neuron のアクセラレータリソースを advertise していること
 - そのノードに、本章のチャートが許容しない taint が付いていないこと（チャートは `aws.amazon.com/neuron` と `capacity-reservation` の taint を許容します。それ以外の taint がある場合は toleration を追加してください）
-- `k` エイリアスと `--context` は Basic01 で設定済みであること
+- `k` エイリアスと `--context` は Basic01 で設定済み
 
 trn2 ノードと Neuron リソースの advertise を確認します。
 
@@ -121,6 +121,8 @@ trn2 ノードは Trainium デバイスが 1 個しかないため、Deployment 
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
+# チャートはサブチャート image-builder-lib を依存に持つため、初回だけローカル依存を取得します（冪等）。
+helm dependency build charts/experiments
 helm template exp charts/experiments -n "$NAMESPACE" \
     --set neuronVllmPlugin.enabled=true \
     | k apply -f -
