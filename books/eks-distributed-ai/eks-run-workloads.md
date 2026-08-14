@@ -105,6 +105,8 @@ CPU リクエストの既定値は `2` なので g6.2xlarge / g5.2xlarge（8 vCP
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
+# チャートはサブチャート image-builder-lib を依存に持つため、初回だけローカル依存を取得します（冪等）。
+helm dependency build charts/experiments
 MODEL=Qwen/Qwen2.5-0.5B-Instruct     # ゲートなし・小型
 helm template exp charts/experiments -n "$NAMESPACE" \
     --set gpuServingVllm.enabled=true \
