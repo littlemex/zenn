@@ -78,7 +78,7 @@ CSI の node ロールには `s3files:ClientMount` は与えますが `ClientWri
 
 ## 1. データ層を適用する
 
-`infra/data-layer` を専用の state で初期化し、S3 Files とマネージド MLflow を有効にして適用します。適用後、`terraform output` で以降に使う値 (S3 Files の volumeHandle、MLflow の ARN、`mcp-reader` ロールの ARN、trace バケット名) が得られます。
+`infra/data-layer` を専用の state で初期化し、S3 Files とマネージド MLflow を有効にして適用します。適用後、`terraform output` で以降に使う値 (S3 Files の volumeHandle、MLflow の ARN、`mcp-reader` ロールの ARN、`producer` ロールの ARN、trace バケット名) が得られます。
 
 ```bash
 cd infra/data-layer
@@ -89,27 +89,66 @@ terraform output -raw s3files_file_system_id   # クラスタ側 apply の -var 
 terraform output -raw s3files_volume_handle    # mcp-host の values に渡す
 terraform output -raw mlflow_app_arn           # 分析 MCP の MCP_MLFLOW_TRACKING_URI に渡す
 terraform output -raw mcp_reader_role_arn      # クラスタ側 apply の -var mcp_reader_role_arn に渡す
+terraform output -raw producer_role_arn        # クラスタ側 apply の -var mcp_producer_role_arn に渡す
 terraform output trace_buckets                 # リージョン別バケット名 (map)
 ```
 
-## 2. クラスタ側のマウントと mcp-reader を追加する
+## 2. クラスタ側のマウントと ServiceAccount を追加する
 
-`infra/eks` 側で、データ層の出力を変数として渡し、S3 Files のマウントターゲットと、`mcp` 名前空間・`mcp-reader` (分析 MCP 用の読み取り専用 ServiceAccount で、Pod Identity 経由でデータ層の IAM ロールに紐付きます) を追加します。
+`infra/eks` 側で、データ層の出力を変数として渡し、S3 Files のマウントターゲット、`mcp` 名前空間、`mcp-reader` (分析 MCP 用の読み取り専用 ServiceAccount)、`producer` (プロファイルを書き込む producer 用 ServiceAccount) と、それぞれの Pod Identity 紐付け、そして次の手順で使う ECR リポジトリ (`accelprof` / `accelprof-knowledge`) を追加します。いずれも Pod Identity 経由でデータ層の IAM ロールに紐付きます。
 
 ```bash
 cd infra/eks
 terraform apply \
   -var s3files_enabled=true -var s3files_file_system_id=<FS_ID> \
-  -var analysis_mcp_enabled=true -var mcp_reader_role_arn=<MCP_READER_ARN>
+  -var analysis_mcp_enabled=true \
+  -var mcp_reader_role_arn=<MCP_READER_ARN> \
+  -var mcp_producer_role_arn=<PRODUCER_ARN>
+```
+
+S3 Files を初めて有効化したこの apply の直後に、EFS CSI driver の node プラグイン (DaemonSet) を一度再起動します。マウントを担う node プラグインは Pod 生成時にしか Pod Identity の資格情報を受け取らないため、これをしないと既存 node 上の Pod は古い node インスタンスロールを使い続け、S3 Files のマウントが `mount.nfs4: access denied by server` になります。
+
+```bash
+kubectl rollout restart ds/efs-csi-node -n kube-system
+kubectl rollout status  ds/efs-csi-node -n kube-system
 ```
 
 ## 3. イメージをクラスタ内 BuildKit でビルドする
 
-デプロイ用イメージは、ローカルの Docker ではなくクラスタ内の rootless BuildKit (root 権限を要しないコンテナビルダ) でビルドして ECR に push します。この仕組みは `infra/eks` の [`image-builder.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/image-builder.tf) と `image-builder-lib` チャートが提供し、汎用の呼び出し口 `image-build-custom.yaml` に Dockerfile を ConfigMap で渡してビルドします。
+デプロイ用イメージは、ローカルの Docker ではなくクラスタ内の rootless BuildKit (root 権限を要しないコンテナビルダ) でビルドして ECR に push します。この仕組みは `infra/eks` の [`image-builder.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/image-builder.tf) と `image-builder-lib` チャートが提供し、汎用の呼び出し口 `image-build-custom.yaml` に Dockerfile を ConfigMap で渡してビルドします。push 先の ECR リポジトリ (`accelprof` / `accelprof-knowledge`) は手順 2 の `infra/eks` apply で作成済みです。
+
+ビルドするイメージは 3 つです。分析 MCP は「[`accelprof`](https://pypi.org/project/accelprof/) を固定バージョンで入れただけのベースイメージ」の上に、実際のツール (GPU なら `nsys`) を積んだ変種を作る構成なので、(1) ベースイメージ、(2) それに `nsys` を積んだ分析イメージ、(3) knowledge イメージ、の順にビルドします。ビルドの呼び出し口である `experiments` チャートは `image-builder-lib` をローカル依存に持つため、初回のみ依存を取り込みます (これをしないと "missing in charts/ directory: image-builder-lib" で失敗します)。まずベースをビルドし、その digest を取ります。
 
 ```bash
-# 例: knowledge MCP イメージをビルドして ECR に push (analysis も同様)
+helm dependency build infra/eks/charts/experiments   # 初回のみ
 export ECR=<account-id>.dkr.ecr.<region>.amazonaws.com   # 自分の ECR レジストリ URI に置き換える
+# (1) ベースイメージ (組み込みの inventory アナライザのみ) を accelprof:v1 としてビルド
+kubectl -n image-builder create configmap base-ctx \
+  --from-file=Dockerfile=infra/eks/images/Dockerfile.accelprof-analysis
+helm template exp infra/eks/charts/experiments -s templates/image-build-custom.yaml \
+  --set imageBuild.enabled=true --set imageBuild.jobName=build-base \
+  --set imageBuild.repository=$ECR/accelprof --set imageBuild.tag=v1 \
+  --set imageBuild.contextSource=configMap --set imageBuild.contextConfigMap=base-ctx \
+  | kubectl apply -f -
+# ベースの digest を控える (次の nsys 層の BASE 引数に渡す)
+export BASE=$ECR/accelprof@$(aws ecr describe-images --repository-name accelprof \
+  --image-ids imageTag=v1 --query 'imageDetails[0].imageDigest' --output text)
+```
+
+```bash
+# (2) ベースに nsys を積んだ分析イメージを accelprof:v1-nsys としてビルド (BASE は digest 固定)
+kubectl -n image-builder create configmap nsys-ctx \
+  --from-file=Dockerfile=infra/eks/images/Dockerfile.accelprof-analysis-nsys
+helm template exp infra/eks/charts/experiments -s templates/image-build-custom.yaml \
+  --set imageBuild.enabled=true --set imageBuild.jobName=build-nsys \
+  --set imageBuild.repository=$ECR/accelprof --set imageBuild.tag=v1-nsys \
+  --set imageBuild.buildArgs.BASE=$BASE \
+  --set imageBuild.contextSource=configMap --set imageBuild.contextConfigMap=nsys-ctx \
+  | kubectl apply -f -
+```
+
+```bash
+# (3) knowledge MCP イメージを accelprof-knowledge:v1 としてビルド
 kubectl -n image-builder create configmap knowledge-ctx \
   --from-file=Dockerfile=infra/eks/images/Dockerfile.accelprof-knowledge
 helm template exp infra/eks/charts/experiments -s templates/image-build-custom.yaml \
@@ -119,24 +158,29 @@ helm template exp infra/eks/charts/experiments -s templates/image-build-custom.y
   | kubectl apply -f -
 ```
 
-push が終わったら、digest を控えておきます。「理解しておくべき詳細」4 のとおり digest 固定を推奨するので、values にはタグではなくこの digest を渡します。
+push が終わったら、それぞれの digest を控えておきます。「理解しておくべき詳細」4 のとおり digest 固定を推奨するので、values にはタグではなくこの digest を渡します。
 
 ```bash
+aws ecr describe-images --repository-name accelprof \
+  --image-ids imageTag=v1-nsys --query 'imageDetails[0].imageDigest' --output text   # 分析 MCP 用
 aws ecr describe-images --repository-name accelprof-knowledge \
-  --image-ids imageTag=v1 --query 'imageDetails[0].imageDigest' --output text
+  --image-ids imageTag=v1 --query 'imageDetails[0].imageDigest' --output text        # knowledge MCP 用
 ```
 
 ## 4. mcp-host でデプロイする
 
-`mcp-host` チャートの values に、knowledge と analysis の 2 つのエントリを書きます。analysis は `mcp-reader` サービスアカウント、マネージド MLflow の ARN、S3 Files の volumeHandle、digest 固定のイメージを指定します。values の雛形は [`values-verify.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/mcp-host/values-verify.yaml) にあります。
+`mcp-host` チャートの values に、knowledge と analysis の 2 つのエントリを書きます。analysis は `mcp-reader` サービスアカウント、マネージド MLflow の ARN、S3 Files の volumeHandle、digest 固定のイメージ (analysis は手順 3 の `v1-nsys` の digest) を指定します。values の雛形は [`values-verify.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/mcp-host/values-verify.yaml) にあります。
+
+`mcp-host` は S3 Files 用の PV を提供する `s3files-lib` をローカルの chart 依存として持つため、`helm upgrade` の前に一度だけ依存を取り込みます (これをしないと "missing in charts/ directory: s3files-lib" で失敗します)。
 
 ```bash
+helm dependency build infra/eks/charts/mcp-host
 helm upgrade --install mcp infra/eks/charts/mcp-host -n mcp -f my-values.yaml
 ```
 
 ## 5. プロファイルを取って run を記録する
 
-分析対象がまだ無いので、まず producer 側でプロファイルを 1 本取り、trace バケットと MLflow に記録します。ここで得られる `run_id` を次の動作確認で使います。対象は Basic 章で動かしたワークロードでも任意のサンプルでもよく、`nsys profile <コマンド>` で包めば `.nsys-rep` が得られます。producer は `accelprof` (import 名は `experiment_store`) を入れ、その成果物を `store.log(...)` に渡すだけです。
+分析対象がまだ無いので、まず producer 側でプロファイルを 1 本取り、trace バケットと MLflow に記録します。ここで得られる `run_id` を次の動作確認で使います。対象は Basic 章で動かしたワークロードでも任意のサンプルでもよく、`nsys profile <コマンド>` で包めば `.nsys-rep` が得られます。producer は `accelprof` (import 名は `experiment_store`) を入れ、その成果物を `store.log(...)` に渡すだけです。この producer を動かす Pod は、手順 2 で作成した `producer` ServiceAccount を指定してください (`spec.serviceAccountName: producer`)。Pod Identity 経由で trace バケットへの書き込みと MLflow への記録の権限が付きます。
 
 ```python
 from experiment_store import ExperimentStore
@@ -150,7 +194,14 @@ print(run_id)   # 動作確認で使う
 
 ## 6. 動作確認
 
-port-forward して MCP クライアントから接続します。knowledge MCP は依存が無いのでそのまま `search_knowledge` が返ります。analysis MCP には先ほどの `run_id` を渡し、`stage_run` で成果物を読める状態にしてから `analyze` でアナライザを走らせます。
+MCP クライアントから接続します。`mcp-host` は各 MCP エントリ名の Service を `mcp` 名前空間に作る (ポート 8080) ので、それぞれ port-forward します。
+
+```bash
+kubectl port-forward svc/knowledge -n mcp 8081:8080 &
+kubectl port-forward svc/analysis  -n mcp 8080:8080 &
+```
+
+knowledge MCP は依存が無いのでそのまま `search_knowledge` が返ります。analysis MCP には先ほどの `run_id` を渡し、`stage_run` で成果物を読める状態にしてから `analyze` でアナライザを走らせます。
 
 `analyze(run_id, "nsys-stats")` は、S3 Files 上の `.nsys-rep` を読んで実測のサマリを返します (下は検証で取った小さなトレースの OS ランタイム部分の抜粋で、アカウント固有値は伏せています)。
 
@@ -174,16 +225,19 @@ port-forward して MCP クライアントから接続します。knowledge MCP 
 
 ## 7. 後片付け
 
-課金を止めるため、`mcp-host` のリリースを削除し、Terraform を撤去順どおりに戻します。マウントターゲットを持つ `infra/eks` の該当リソースを先に、データ層を後に破棄します。
+課金を止めるため、`mcp-host` のリリースを削除し、Terraform のトグルを戻します。マウントターゲットを持つ `infra/eks` 側を先に、データ層を後に無効化します。
+
+データ層は `terraform destroy` ではなく、トグルを `false` にした `terraform apply` で畳みます。trace バケットと MLflow アーティファクトのバケットには「記録の正本」を守るために `prevent_destroy` が付いており、`terraform destroy` は plan 段階でこのバケット破棄を検出して操作全体を中断してしまうため、課金対象の MLflow App や S3 Files ファイルシステムまで実際には消えないからです。トグルを false にした apply なら、バケット (と中の記録) は残したまま、MLflow App と S3 Files ファイルシステムだけを破棄できます。
 
 ```bash
 helm uninstall mcp -n mcp
-# 先に infra/eks 側のマウントと mcp-reader を無効化して apply
+# 先に infra/eks 側のマウント・mcp-reader・producer を無効化して apply
 cd infra/eks
 terraform apply -var s3files_enabled=false -var analysis_mcp_enabled=false
-# その後にデータ層を destroy (この順序でないと FS がマウントターゲット依存で消せない)
+# その後にデータ層のトグルを false にして apply (destroy ではない)
+# → MLflow App と S3 Files FS は破棄、prevent_destroy 付きバケットは保持
 cd ../data-layer
-terraform destroy -var s3files_enabled=true -var mlflow_enabled=true
+terraform apply -var s3files_enabled=false -var mlflow_enabled=false
 ```
 
 # まとめ
