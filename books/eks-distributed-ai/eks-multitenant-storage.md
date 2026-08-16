@@ -16,7 +16,7 @@ free: true
 「マルチテナント」を一括りにすると設計が破綻します。本章では次の 2 階層に分けて考えます。
 
 - **階層 1: パス分離** — namespace ごとにデータの置き場所を分けるだけの分離です。テナントごとに別のディレクトリ（サブボリューム）を割り当てますが、同じファイルシステムを共有しているため、権限を絞らなければ相互にデータが見えます。運用規約による分離であり、強制力はありません。
-- **階層 2: 強制隔離** — テナントごとに独立した領域を割り当て、他テナントの領域に触れられないようにする分離です。これは「領域の分離（PVC ごとに別ボリューム・別アクセスポイントを払い出す）」と「ID 制御（POSIX の uid/gid をテナントごとに強制する squash）」の 2 要素からなります。本章のワークショップでは前者（Amazon FSx for OpenZFS の動的子ボリュームによる領域の強制分離）を実演し、後者の ID 制御は NFS export の squash や Pod の `securityContext` と組み合わせる追加レイヤーとして解説します。
+- **階層 2: 強制隔離** — テナントごとに独立した領域を割り当て、他テナントの領域に触れられないようにする分離です。これは「領域の分離（PVC ごとに別ボリューム、すなわち子ボリュームを払い出す）」と「ID 制御（POSIX の uid/gid をテナントごとに強制する squash）」の 2 要素からなります。本章のワークショップでは前者（Amazon FSx for OpenZFS の動的子ボリュームによる領域の強制分離）を実演し、後者の ID 制御は NFS export の squash や Pod の `securityContext` と組み合わせる追加レイヤーとして解説します。
 
 Basic02・Basic10 で作った「同一ファイルシステムを複数 namespace から使う」構成は階層 1 です。階層 2 まで踏み込むかどうかは、テナントが同じチーム内の区分なのか、互いに信頼しない別組織なのかで変わります。なお階層 2 の「強制力」は FSx 単体ではなく、誰が PV/PVC を作れるかという Kubernetes RBAC と、NFS export の絞り込みの組み合わせで担保される点に注意してください。
 
@@ -24,7 +24,7 @@ Basic02・Basic10 で作った「同一ファイルシステムを複数 namespa
 Kubernetes の namespace はそれ自体では強いセキュリティ境界ではありません。ストレージの隔離は、namespace に加えて POSIX 権限・RBAC・IAM・セキュリティグループ・Pod Security と組み合わせて初めて意味を持ちます。テナントが真の信頼境界（別顧客・別 KMS 鍵・別課金）であれば、同一ファイルシステム内の論理分離で頑張らず、ファイルシステムごと、場合によってはアカウントごとに分けてください。
 :::
 
-## 3 つのストレージの非対称
+## 2 つのストレージの非対称
 
 同じ「共有ストレージ」でも、マルチテナントの実現手段はバックエンドで大きく異なります。次の表は本 book の検証結果をまとめたものです。
 
@@ -70,7 +70,7 @@ Amazon FSx for OpenZFS の動的プロビジョニングを使うには、CSI �
 
 - namespace ごとに PVC を作っただけで「隔離できた」と考える（共有ファイルシステムならデータは相互可視です）。
 - Amazon FSx for Lustre を汎用のマルチテナント NAS として使う（高スループットのスクラッチ用途に割り切ります）。
-- 1 つの ReadWriteMany の PVC を全チームに配る。
+- 1 つの namespace に全チームを同居させ、単一の ReadWriteMany PVC を共用させる（PVC は namespace スコープなので namespace を跨いで「配る」ことはできず、同居させると分離が消える）。
 - 動的プロビジョニングが常に安価で速いと考える（Lustre の動的はファイルシステムを量産し高コストです）。
 - Kueue でストレージまで分離できると考える（Kueue は計算資源のキューイングで、ストレージは PVC・StorageClass・ResourceQuota・RBAC で設計します）。
 
@@ -91,17 +91,23 @@ terraform output shared_storage
 
 ```bash
 k get pv
+
+ZFS_FS_ID=$(terraform output -json shared_storage | jq -r '.fsx_openzfs.id')
+LUSTRE_FS_ID=$(terraform output -json shared_storage | jq -r '.fsx_lustre.id')
+FSX_PV=$(terraform output -json shared_storage | jq -r '.fsx_lustre.persistent_volume')
 ```
+
+以降の手順は、この `ZFS_FS_ID` / `LUSTRE_FS_ID` / `FSX_PV` を参照します（`jq` が必要です）。
 
 ## 2. パス分離（階層 1）: 1 つの Lustre を複数 namespace で共有する
 
 同じ Amazon FSx for Lustre を 2 つの namespace から使います。同一のファイルシステムを指す 2 つ目の静的 PV を、`volumeHandle` だけ一意にして作り、`claimRef` で予約します。
 
 ```bash
-DNS=$(k get pv fsx-training -o jsonpath='{.spec.csi.volumeAttributes.dnsname}')
-MOUNT=$(k get pv fsx-training -o jsonpath='{.spec.csi.volumeAttributes.mountname}')
-HANDLE=$(k get pv fsx-training -o jsonpath='{.spec.csi.volumeHandle}')
-CAP=$(k get pv fsx-training -o jsonpath='{.spec.capacity.storage}')
+DNS=$(k get pv "$FSX_PV" -o jsonpath='{.spec.csi.volumeAttributes.dnsname}')
+MOUNT=$(k get pv "$FSX_PV" -o jsonpath='{.spec.csi.volumeAttributes.mountname}')
+HANDLE=$(k get pv "$FSX_PV" -o jsonpath='{.spec.csi.volumeHandle}')
+CAP=$(k get pv "$FSX_PV" -o jsonpath='{.spec.capacity.storage}')
 
 k create namespace team-b --dry-run=client -o yaml | k apply -f -
 k apply -f - <<EOF
@@ -176,7 +182,7 @@ k delete namespace team-b --ignore-not-found
 まず StorageClass を作ります。`ParentVolumeId` には Basic02 で作った OpenZFS ファイルシステムのルートボリュームを指定します（`terraform output` の `fsx_openzfs` から取得できます）。`StorageCapacityQuotaGiB` が per-PVC の容量クォータになります。
 
 ```bash
-ROOT_VOL=$(aws fsx describe-file-systems --file-system-ids <openzfs-fs-id> \
+ROOT_VOL=$(aws fsx describe-file-systems --file-system-ids "$ZFS_FS_ID" \
   --query 'FileSystems[0].OpenZFSConfiguration.RootVolumeId' --output text)
 
 k apply -f - <<EOF
@@ -223,7 +229,7 @@ k wait --for=jsonpath='{.status.phase}'=Bound pvc/cache -n tenant-b --timeout=18
 親ファイルシステムの配下に、PVC ごとの子ボリュームが 2 つ作られています。
 
 ```bash
-aws fsx describe-volumes --filters Name=file-system-id,Values=<openzfs-fs-id> \
+aws fsx describe-volumes --filters Name=file-system-id,Values="$ZFS_FS_ID" \
   --query 'Volumes[?OpenZFSConfiguration.ParentVolumeId==`'"$ROOT_VOL"'`].{name:Name,quota:OpenZFSConfiguration.StorageCapacityQuotaGiB,path:OpenZFSConfiguration.VolumePath}' \
   --output table
 ```
@@ -248,7 +254,7 @@ k logs r -n tenant-b
 ```bash
 k delete namespace tenant-a tenant-b
 k get pv | grep pvc- || echo "no dynamic PV remaining"
-aws fsx describe-volumes --filters Name=file-system-id,Values=<openzfs-fs-id> \
+aws fsx describe-volumes --filters Name=file-system-id,Values="$ZFS_FS_ID" \
   --query 'Volumes[?OpenZFSConfiguration.ParentVolumeId==`'"$ROOT_VOL"'`].Name' --output text
 k delete sc openzfs-sc
 ```
@@ -260,13 +266,15 @@ k delete sc openzfs-sc
 Lustre のパスと S3 バケットを関連付けます。まず退避先の S3 バケットを用意します（既存のバケットがあればそれを使います）。`AutoImportPolicy` と `AutoExportPolicy` で双方向に自動同期します。
 
 ```bash
-BUCKET=your-cold-storage-bucket
+# 本章専用の新規バケット(S3 バケット名はグローバル一意)
+BUCKET=fsx-cold-$(aws sts get-caller-identity --query Account --output text)
 aws s3 mb s3://$BUCKET
 
+# DRA は s3://$BUCKET/lustre 以下に紐付ける(ZFS 退避が使う openzfs-cold/ を巻き込まないため)
 aws fsx create-data-repository-association \
-  --file-system-id <lustre-fs-id> \
+  --file-system-id "$LUSTRE_FS_ID" \
   --file-system-path /s3data \
-  --data-repository-path s3://$BUCKET \
+  --data-repository-path s3://$BUCKET/lustre \
   --batch-import-meta-data-on-create \
   --s3 'AutoImportPolicy={Events=[NEW,CHANGED,DELETED]},AutoExportPolicy={Events=[NEW,CHANGED,DELETED]}'
 ```
@@ -275,8 +283,8 @@ DRA の作成には数分かかります。`AVAILABLE` になるまで待って�
 
 ```bash
 ASSOC_ID=$(aws fsx describe-data-repository-associations \
-  --filters Name=file-system-id,Values=<lustre-fs-id> \
-  --query 'Associations[0].AssociationId' --output text)
+  --filters Name=file-system-id,Values="$LUSTRE_FS_ID" \
+  --query 'Associations[?FileSystemPath==`/s3data`].AssociationId | [0]' --output text)
 aws fsx describe-data-repository-associations --association-ids "$ASSOC_ID" \
   --query 'Associations[0].Lifecycle' --output text
 ```
@@ -302,11 +310,16 @@ k delete pod dra -n distai --ignore-not-found
 aws fsx create-snapshot --volume-id "$ROOT_VOL" --name checkpoint-snap
 ```
 
-スナップショットはファイルシステム内に保存され、`restore-volume-from-snapshot` でその時点に戻せます。クローンボリューム（書き込み可能な複製）や full-copy ボリュームも作れます。
+スナップショットはファイルシステム内に保存され、`restore-volume-from-snapshot` でその時点に戻せます。クローンボリューム（書き込み可能な複製）や full-copy ボリュームも作れます。次は参考コマンドです。
+
+:::message alert
+`restore-volume-from-snapshot` はボリュームをスナップショット時点へ**巻き戻す破壊的操作**で、`DELETE_INTERMEDIATE_SNAPSHOTS` はそれ以降のスナップショットも消します。`$ROOT_VOL` は Basic02 の共有ルートボリュームなので、ここには入れないでください。本ワークショップでは実行しません。
+:::
 
 ```bash
+# 参考(本ワークショップでは実行しない)
 aws fsx restore-volume-from-snapshot \
-  --volume-id <volume-id> --snapshot-id <fsvolsnap-id> \
+  --volume-id <restore-対象の-volume-id> --snapshot-id <fsvolsnap-id> \
   --options DELETE_INTERMEDIATE_SNAPSHOTS
 ```
 
@@ -314,14 +327,14 @@ aws fsx restore-volume-from-snapshot \
 
 ### FSx for OpenZFS を S3 に退避する
 
-Amazon FSx for OpenZFS には Lustre の DRA のような S3 ネイティブ連携がありません。S3 へコールド退避するには、ボリュームをマウントした Pod から `aws s3 sync` で明示的に書き出します。ここでは Basic02 の共有 PVC（`shared-claim`、`/shared` にマウント）を `amazon/aws-cli` イメージの Pod でマウントし、S3 に同期します。Pod には S3 への書き込み権限（Pod Identity か、ノードのインスタンスロール）が必要です。
+Amazon FSx for OpenZFS には Lustre の DRA のような S3 ネイティブ連携がありません。S3 へコールド退避するには、ボリュームをマウントした Pod から `aws s3 sync` で明示的に書き出します。ここでは Basic02 の共有 PVC（`shared-claim`、`/shared` にマウント）を `public.ecr.aws/aws-cli/aws-cli` イメージの Pod でマウントし、S3 に同期します。Pod の `default` ServiceAccount に S3 書き込み権限が要ります（Pod Identity の association か、ノードのインスタンスロール）。Pod Identity はリージョンを渡さないため、`AWS_REGION` を明示します。バケットは DRA 節で定義した `$BUCKET` を使い、DRA と衝突しない `openzfs-cold/` プレフィックスへ書きます。
 
 ```bash
-BUCKET=your-cold-storage-bucket   # 退避先。未作成なら aws s3 mb s3://$BUCKET
+REGION=$(aws configure get region)
 
-k run zfs-evac -n distai --restart=Never --image=amazon/aws-cli \
-    --overrides='{"spec":{"containers":[{"name":"e","image":"amazon/aws-cli","command":["aws","s3","sync","/shared","s3://'"$BUCKET"'/openzfs-cold/"],"volumeMounts":[{"name":"zfs","mountPath":"/shared"}]}],"volumes":[{"name":"zfs","persistentVolumeClaim":{"claimName":"shared-claim"}}]}}'
-k wait --for=jsonpath='{.status.phase}'=Succeeded pod/zfs-evac -n distai --timeout=300s
+k run zfs-evac -n distai --restart=Never --image=public.ecr.aws/aws-cli/aws-cli \
+    --overrides='{"spec":{"containers":[{"name":"e","image":"public.ecr.aws/aws-cli/aws-cli","env":[{"name":"AWS_REGION","value":"'"$REGION"'"}],"command":["aws","s3","sync","/shared","s3://'"$BUCKET"'/openzfs-cold/"],"volumeMounts":[{"name":"zfs","mountPath":"/shared"}]}],"volumes":[{"name":"zfs","persistentVolumeClaim":{"claimName":"shared-claim"}}]}}'
+k wait --for=jsonpath='{.status.phase}'=Succeeded pod/zfs-evac -n distai --timeout=600s
 aws s3 ls s3://$BUCKET/openzfs-cold/ --recursive
 k delete pod zfs-evac -n distai --ignore-not-found
 ```
@@ -333,12 +346,24 @@ k delete pod zfs-evac -n distai --ignore-not-found
 本章の DRA・スナップショット・S3 バケット（と手順 3 の動的子ボリューム）は、消さないと課金・容量消費・S3 との同期が続きます。検証が終わったら片付けます。
 
 ```bash
+# DRA を削除(S3 側のデータは残す)。boolean はフラグ形式で値は取らない。
 aws fsx delete-data-repository-association \
-  --association-id "$ASSOC_ID" --delete-data-in-file-system false
+  --association-id "$ASSOC_ID" --no-delete-data-in-file-system
+# DRA の削除は非同期。消えるまで待つ。
+while aws fsx describe-data-repository-associations --association-ids "$ASSOC_ID" \
+      --query 'Associations[0].Lifecycle' --output text 2>/dev/null | grep -q DELETING; do sleep 15; done
+
 SNAP_ID=$(aws fsx describe-snapshots \
   --filters Name=volume-id,Values="$ROOT_VOL" \
   --query 'Snapshots[?Name==`checkpoint-snap`].SnapshotId' --output text)
 aws fsx delete-snapshot --snapshot-id "$SNAP_ID"
+```
+
+:::message alert
+次のバケット削除は `$BUCKET` の全オブジェクトを消します。本章で新規作成したバケット（`fsx-cold-<account>`）にのみ実行してください。既存バケットを流用した場合は実行しないでください。
+:::
+
+```bash
 aws s3 rm s3://$BUCKET --recursive && aws s3 rb s3://$BUCKET
 ```
 
@@ -348,7 +373,7 @@ aws s3 rm s3://$BUCKET --recursive && aws s3 rb s3://$BUCKET
 
 # まとめ
 
-本章では、共有ストレージのマルチテナントを 2 階層（パス分離と ID 制御）で整理し、Amazon FSx for OpenZFS と Amazon FSx for Lustre の非対称を確認しました。パス分離は、同一ファイルシステムを指す静的 PV を namespace ごとに用意することで両者で実現できます（`volumeHandle` は一意に、`claimRef` で予約）。per-PVC の強制隔離は、Amazon FSx for OpenZFS の動的子ボリュームで実演し、相互不可視とクォータを確認しました。Amazon FSx for Lustre は既存ファイルシステムを PVC 単位に分割できないため、隔離が要件ならファイルシステムごとに分けるか、root squash とクォータでソフトに固めます。コールドデータは S3 を正とし、Amazon FSx for Lustre は DRA で、Amazon FSx for OpenZFS はスナップショットでローカルに世代管理しつつ Pod からの `aws s3 sync` で S3 に退避します。namespace はそれ自体では境界にならないこと、真の信頼境界ならファイルシステムやアカウントごとに分けることを、設計の前提に置いてください。
+本章では、共有ストレージのマルチテナントを 2 階層（パス分離と強制隔離）で整理し、Amazon FSx for OpenZFS と Amazon FSx for Lustre の非対称を確認しました。パス分離は、同一ファイルシステムを指す静的 PV を namespace ごとに用意することで両者で実現できます（`volumeHandle` は一意に、`claimRef` で予約）。per-PVC の強制隔離は、Amazon FSx for OpenZFS の動的子ボリュームで実演し、相互不可視とクォータを確認しました。Amazon FSx for Lustre は既存ファイルシステムを PVC 単位に分割できないため、隔離が要件ならファイルシステムごとに分けるか、root squash とクォータでソフトに固めます。コールドデータは S3 を正とし、Amazon FSx for Lustre は DRA で、Amazon FSx for OpenZFS はスナップショットでローカルに世代管理しつつ Pod からの `aws s3 sync` で S3 に退避します。namespace はそれ自体では境界にならないこと、真の信頼境界ならファイルシステムやアカウントごとに分けることを、設計の前提に置いてください。
 
 # 参考資料
 
