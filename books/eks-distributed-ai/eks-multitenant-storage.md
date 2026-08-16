@@ -34,7 +34,7 @@ Kubernetes の namespace はそれ自体では強いセキュリティ境界で�
 | 動的な per-PVC 隔離（PVC ごとに独立領域を自動払い出し） | 可（子ボリューム） | 不可（動的は新規 FS 作成） | 可（アクセスポイント） |
 | パス分離（階層 1） | 可 | 可 | 可 |
 | ID 制御（squash/POSIX） | NFS export の squash | RootSquashConfiguration | アクセスポイントの PosixUser |
-| per-PVC 容量クォータ | 可 | FS 単位の user/group/project quota | 非対応 |
+| per-PVC 容量クォータ | 可 | FS 単位の user/group/project quota（project は Lustre 2.15） | 非対応 |
 | AZ | Multi-AZ / Single-AZ 選択可 | 単一 AZ | マルチ AZ |
 | コールド退避 | per-volume スナップショット + バックアップ | DRA（S3 sync） | AWS Backup |
 
@@ -46,7 +46,7 @@ Kubernetes の namespace はそれ自体では強いセキュリティ境界で�
 
 静的 PersistentVolume は 1 つの PersistentVolumeClaim としか結びつきません（1 対 1）。一方で、同じファイルシステムを指す静的 PV は名前を変えていくつでも作れます。`aws-fsx-csi-driver` も `aws-fsx-openzfs-csi-driver` も、静的プロビジョニングではマウント先を `volumeAttributes` の値（Lustre なら `dnsname`/`mountname`、OpenZFS なら別のキー）で決め、`volumeHandle` はマウントには使いません。そのため、マウント情報を同じにした PV を namespace の数だけ用意すれば、1 つのファイルシステムを複数 namespace が同時にマウントできます。動的プロビジョニングも独自コントローラも要りません。
 
-この設計で 2 点、気をつけることがあります。1 つ目は `volumeHandle` を PV ごとに一意にすることです。kubelet は CSI ボリュームを「ドライバ名と `volumeHandle`」の組で識別するため、同じ `volumeHandle` を持つ PV の Pod が同一ノードに同居するとマウント管理が競合する恐れがあります。マウント先は `volumeAttributes` で決まるので、`volumeHandle` には元の値に接尾辞を付けるなど、任意の一意な文字列を与えれば十分です。2 つ目は PV に `claimRef` を焼き込むことです。`claimRef` のない空きの静的 PV は、条件が合えば意図しない namespace の PVC にバインドされ得ます。共有ファイルシステムを指す PV では、これはクロステナントのデータ露出につながるため、`claimRef` に namespace と名前を書いて予約状態にしておきます。
+この設計で 2 点、気をつけることがあります。1 つ目は `volumeHandle` を PV ごとに一意にすることです。kubelet は CSI ボリュームを「ドライバ名と `volumeHandle`」の組で識別するため、同じ `volumeHandle` を持つ PV の Pod が同一ノードに同居するとマウント管理が競合する恐れがあります。マウント先は `volumeAttributes` で決まるので、`volumeHandle` には元の値に接尾辞を付けるなど、任意の一意な文字列を与えれば十分です。ただしこの接尾辞つき handle が使えるのは、PV を `Retain` で運用して CSI の削除・拡張 API を呼ばせない前提のときだけです。`Delete` にすると、ドライバが handle を実リソース ID として解釈しようとして失敗します（本章の共有用 PV は `Retain` です）。2 つ目は PV に `claimRef` を焼き込むことです。`claimRef` のない空きの静的 PV は、条件が合えば意図しない namespace の PVC にバインドされ得ます。共有ファイルシステムを指す PV では、これはクロステナントのデータ露出につながるため、`claimRef` に namespace と名前を書いて予約状態にしておきます。
 
 ## 隔離（階層 2）の実現
 
