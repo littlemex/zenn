@@ -3,7 +3,7 @@ title: "Advanced01 - プロファイルを MCP で分析する基盤を動かす
 free: true
 ---
 
-本章では、Basic01 から Basic11 で構築した Amazon EKS の土台の上に、GPU / Neuron のプロファイルを収集し、Model Context Protocol (MCP) 経由で分析する基盤を動かします。設計思想と全体像は別記事「GPU/Neuron のプロファイルを MCP で分析する基盤を設計した話」で解説済みなので、本章はそれを読んだ前提で、実際に手を動かすうえで理解しておくべき勘所に絞ります。
+本章では、Basic01 から Basic11 で構築した Amazon EKS の土台の上に、GPU / Neuron のプロファイルを収集し、Model Context Protocol (MCP) 経由で分析する基盤を動かします。設計思想と全体像は別記事「[GPU/Neuron のプロファイリングを楽にしたい](https://zenn.dev/littlemex/articles/8ab01bc40f627a)」で解説済みなので、本章はそれを読んだ前提で、実際に手を動かすうえで理解しておくべき勘所に絞ります。
 
 :::message
 本章の開始状態は、クラスタが `terraform apply` 済み (Basic01 から Basic11 相当の `infra/eks` が稼働) で、かつプロファイル基盤のデータ層 (`infra/data-layer`) はまだ適用していない状態です。データ層の適用から始め、イメージのビルド、`mcp-host` チャートでのデプロイ、MCP からの分析までを通します。
@@ -13,7 +13,7 @@ free: true
 
 ## この章で動かすもの
 
-動かす経路は次のとおりです。producer が実ワークロードにプロファイル収集を差し込んでバケットに書き、分析 MCP が MLflow で run を解決し、S3 Files マウント越しにプロファイルをその場で読んで、アナライザの結果をテキストで返します。
+動かす経路は次のとおりです。producer が実ワークロードにプロファイル収集を差し込んでバケットに書き、分析 MCP が MLflow で run を解決し、S3 Files マウント越しにプロファイルをその場で読んで、アナライザの結果をテキストで返します。各要素がなぜこの形なのかは冒頭のブログで解説しているので、設計の背景はそちらを確認してください。
 
 ```mermaid
 flowchart LR
@@ -36,7 +36,7 @@ flowchart LR
 
 ## 理解しておくべき詳細
 
-演習のコマンドをただ流すのではなく、次の 5 点を押さえておくと、詰まったときに自力で切り分けられます。
+演習のコマンドをただ流すのではなく、次の 4 点を押さえておくと、詰まったときに自力で切り分けられます。
 
 ### 1. Terraform state を 2 つに分ける理由
 
@@ -62,15 +62,11 @@ csi:
 node SA に Pod Identity を設定しないと、node プラグインは Pod が載っている node のインスタンスロールにフォールバックします。Karpenter が起動する node とマネージドノードグループの node はインスタンスロールが異なるため、片方のロールにだけ権限を付けると、別の node に載った Pod が `mount.nfs4: access denied by server` で失敗します。`efs-csi-node-sa` に明示的に Pod Identity を紐付けることで、どの node に載ってもマウントが通ります。
 :::
 
-### 3. 固定 ID・自由な中身という契約
-
-run は `alias`・`chip`・`region`・`workload_id`・`artifacts_uri`・`schema_version` という予約タグで指され、`s3://<bucket>/<alias>/<run_id>/` に置かれます。それ以外のメトリクスや成果物ファイルには制約がありません。この契約のおかげで、別々のツールで測った GPU と Neuron の run を同じ索引に並べられます。`artifacts_uri` と `schema_version` はストアが自動で付けます。
-
-### 4. 読み取り専用マウントという不変条件
+### 3. 読み取り専用マウントという不変条件
 
 CSI の node ロールには `s3files:ClientMount` は与えますが `ClientWrite` は与えません。そのため、クラスタ上のどの Pod も書き込み可能なマウントを得られません。加えてオブジェクトの削除 (`s3:DeleteObject`) を持つのは削除専用の janitor ロール (古い run を掃除する GC 用のロール) だけで、producer は run ごとに一意な `<run_id>` 入りの prefix に書くので上書きの衝突も起きません。分析 MCP が誤ってデータを壊す経路を、権限の側で塞いでいます。
 
-### 5. イメージは digest で固定する
+### 4. イメージは digest で固定する
 
 `mcp-host` チャートは、イメージの指定に digest かタグの少なくとも一方を要求します。両方を指定しても構いませんが、`:latest` と未指定はエラーになります。タグは可変なので、再現性が要る本番相当のデプロイでは digest 固定を推奨します。
 
@@ -78,9 +74,9 @@ CSI の node ロールには `s3files:ClientMount` は与えますが `ClientWri
 アカウントによっては、組織ポリシーで SageMaker MLflow のデータプレーンを管理者権限のプリンシパルに限定していることがあります。この場合、IAM を正しく与えていても、Pod Identity で紐付けた `mcp-reader` からの MLflow 呼び出しが `403` で拒否されます。これはコードや IAM の不備ではなくアカウント側の制約です。制約の無いアカウントで使うか、自前管理の tracking サーバを指してください。
 :::
 
-## 手順の骨子
+# ワークショップ実施
 
-### データ層を適用する
+## 1. データ層を適用する
 
 `infra/data-layer` を専用の state で初期化し、S3 Files とマネージド MLflow を有効にして適用します。適用後、`terraform output` で以降に使う値 (S3 Files の volumeHandle、MLflow の ARN、`mcp-reader` ロールの ARN、trace バケット名) が得られます。
 
@@ -96,7 +92,7 @@ terraform output -raw mcp_reader_role_arn      # クラスタ側 apply の -var 
 terraform output trace_buckets                 # リージョン別バケット名 (map)
 ```
 
-### クラスタ側のマウントと mcp-reader を追加する
+## 2. クラスタ側のマウントと mcp-reader を追加する
 
 `infra/eks` 側で、データ層の出力を変数として渡し、S3 Files のマウントターゲットと、`mcp` 名前空間・`mcp-reader` (分析 MCP 用の読み取り専用 ServiceAccount で、Pod Identity 経由でデータ層の IAM ロールに紐付きます) を追加します。
 
@@ -107,7 +103,7 @@ terraform apply \
   -var analysis_mcp_enabled=true -var mcp_reader_role_arn=<MCP_READER_ARN>
 ```
 
-### イメージをクラスタ内 BuildKit でビルドする
+## 3. イメージをクラスタ内 BuildKit でビルドする
 
 デプロイ用イメージは、ローカルの Docker ではなくクラスタ内の rootless BuildKit (root 権限を要しないコンテナビルダ) でビルドして ECR に push します。この仕組みは `infra/eks` の [`image-builder.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/image-builder.tf) と `image-builder-lib` チャートが提供し、汎用の呼び出し口 `image-build-custom.yaml` に Dockerfile を ConfigMap で渡してビルドします。
 
@@ -123,18 +119,14 @@ helm template exp infra/eks/charts/experiments -s templates/image-build-custom.y
   | kubectl apply -f -
 ```
 
-push が終わったら、digest を控えておきます。「理解しておくべき詳細」5 のとおり digest 固定を推奨するので、values にはタグではなくこの digest を渡します。
+push が終わったら、digest を控えておきます。「理解しておくべき詳細」4 のとおり digest 固定を推奨するので、values にはタグではなくこの digest を渡します。
 
 ```bash
 aws ecr describe-images --repository-name accelprof-knowledge \
   --image-ids imageTag=v1 --query 'imageDetails[0].imageDigest' --output text
 ```
 
-:::details ローカルでビルドしない理由
-分析イメージは `nsight-systems-cli` を含み linux/amd64 が要ります。ローカル (特に arm64 の macOS) からクロスビルドして ECR に載せるのは面倒で壊れやすいので、クラスタ内でネイティブにビルドして直接 ECR に push します。Dockerfile だけの軽いコンテキストは ConfigMap を context source にするのが最短です。
-:::
-
-### mcp-host でデプロイする
+## 4. mcp-host でデプロイする
 
 `mcp-host` チャートの values に、knowledge と analysis の 2 つのエントリを書きます。analysis は `mcp-reader` サービスアカウント、マネージド MLflow の ARN、S3 Files の volumeHandle、digest 固定のイメージを指定します。values の雛形は [`values-verify.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/mcp-host/values-verify.yaml) にあります。
 
@@ -142,7 +134,7 @@ aws ecr describe-images --repository-name accelprof-knowledge \
 helm upgrade --install mcp infra/eks/charts/mcp-host -n mcp -f my-values.yaml
 ```
 
-### プロファイルを取って run を記録する
+## 5. プロファイルを取って run を記録する
 
 分析対象がまだ無いので、まず producer 側でプロファイルを 1 本取り、trace バケットと MLflow に記録します。ここで得られる `run_id` を次の動作確認で使います。対象は Basic 章で動かしたワークロードでも任意のサンプルでもよく、`nsys profile <コマンド>` で包めば `.nsys-rep` が得られます。producer は `accelprof` (import 名は `experiment_store`) を入れ、その成果物を `store.log(...)` に渡すだけです。
 
@@ -154,13 +146,9 @@ run_id = store.log("verify-gpu", chip="gpu", region=REGION, workload_id="smoke",
 print(run_id)   # 動作確認で使う
 ```
 
-`log()` は成果物を `s3://<bucket>/verify-gpu/<run_id>/` に上げ、run を MLflow に記録して FINISHED にします。これで固定 ID・自由な中身の契約 (この章の「理解しておくべき詳細」3) が具体的な 1 本の run として手元にできます。
+`log()` は成果物を `s3://<bucket>/verify-gpu/<run_id>/` に上げ、run を MLflow に記録します。これで具体的な 1 本の run が手元にでき、次の動作確認の対象になります。
 
-:::message
-本章の手順はマネージド MLflow を前提とします。マネージド MLflow のデータプレーンが管理者権限に限定されたアカウントでは、この呼び出しが `403` になります。その場合は tracking URI に自前 MLflow の URL を渡す構成になりますが、その MLflow の構築は本章の範囲外です (背景は「理解しておくべき詳細」の details 参照)。
-:::
-
-## 動作確認
+## 6. 動作確認
 
 port-forward して MCP クライアントから接続します。knowledge MCP は依存が無いのでそのまま `search_knowledge` が返ります。analysis MCP には先ほどの `run_id` を渡し、`stage_run` で成果物を読める状態にしてから `analyze` でアナライザを走らせます。
 
@@ -173,9 +161,18 @@ port-forward して MCP クライアントから接続します。knowledge MCP 
      57.4           355561         42  ...  stat64
 ```
 
-この出力は「どこに時間が溶けているか」という事実です。次の一手は、症状を knowledge MCP に `search_knowledge` で投げて得ます。両者を突き合わせて次の実験を決める、というのがこの基盤の使い方です (設計意図の詳細は冒頭で挙げたブログ記事を参照)。
+この出力は「どこに時間が溶けているか」という事実です。次の一手は knowledge MCP から得ます。症状を `search_knowledge` に投げると、関連する playbook がランク付きで返ります。
 
-## 後片付け
+```jsonc
+// search_knowledge("memory bound but occupancy is high", chip="gpu")
+{ "count": 2, "results": [
+  { "id": "gpu/roofline", "score": 12.0, "title": "Roofline diagnosis …" },
+  { "id": "gpu/memory-and-fusion", "score": 7.0, "title": "…" } ]}
+```
+
+上位に出た `get_topic("gpu/roofline")` を開けば、症状 → 原因 → 確認点 → 次の一手が読めます。分析 MCP が返した事実と、この knowledge MCP の指針を突き合わせて次の実験を決める、というのがこの基盤の使い方です (設計意図の詳細は冒頭で挙げたブログ記事を参照)。
+
+## 7. 後片付け
 
 課金を止めるため、`mcp-host` のリリースを削除し、Terraform を撤去順どおりに戻します。マウントターゲットを持つ `infra/eks` の該当リソースを先に、データ層を後に破棄します。
 
@@ -189,4 +186,13 @@ cd ../data-layer
 terraform destroy -var s3files_enabled=true -var mlflow_enabled=true
 ```
 
-これで、GPU / Neuron のプロファイルを MCP 経由でその場分析する一連の流れを、実機で動かせました。日々の実験では producer に数行を差し込むだけで、以降は MCP から分析と次の一手の提示を受け取れます。
+# まとめ
+
+本章では、データ層の適用から `mcp-host` でのデプロイ、producer での run 記録、そして分析 MCP と knowledge MCP を使った分析までを、実機で一通り動かしました。日々の実験では producer に数行を差し込むだけで、以降は MCP 経由でプロファイルの分析と次の一手の提示を受け取れます。設計思想の全体像は冒頭のブログにまとめてあります。
+
+# 参考資料
+
+- [GPU/Neuron のプロファイリングを楽にしたい](https://zenn.dev/littlemex/articles/8ab01bc40f627a) - 本基盤の設計思想を解説したブログ
+- [littlemex/distributed-ai](https://github.com/littlemex/distributed-ai) - `infra/data-layer` / `infra/eks` / `mcp-host` チャートの実装
+- [accelprof](https://pypi.org/project/accelprof/) / [accelprof-knowledge](https://pypi.org/project/accelprof-knowledge/) - 分析 MCP と知識 MCP の pip パッケージ
+- [Amazon S3 Files (EFS ユーザーガイド)](https://docs.aws.amazon.com/efs/latest/ug/s3-file-systems.html) - S3 Files の公式ドキュメント
