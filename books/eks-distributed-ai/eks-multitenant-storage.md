@@ -6,7 +6,7 @@ free: true
 本章では、Basic02 と Basic10 で扱った共有ストレージ（Amazon FSx for OpenZFS と Amazon FSx for Lustre）を、複数のチームや namespace で使うときの設計を扱います。Basic02・Basic10 では単一の利用者を前提に「共有」の最小構成を組みましたが、共有クラスタを複数テナントで使うと「どこまで分離できるのか」「どの層で分離するのか」を設計として決める必要が出てきます。
 
 :::message
-本章は Amazon FSx for OpenZFS と Amazon FSx for Lustre に絞ります。Amazon EFS のアクセスポイントによるマルチテナントは Neuron の章で別途扱います。前提として Basic01 から Basic10 までのファイルシステムと静的 PersistentVolume が作成済みであること、`k` エイリアスと `--context` が設定済みであることを想定します。
+本章は Amazon FSx for OpenZFS と Amazon FSx for Lustre に絞ります。前提として Basic01 から Basic10 までのファイルシステムと静的 PersistentVolume が作成済みであること、`k` エイリアスと `--context` が設定済みであることを想定します。
 :::
 
 # 解説
@@ -28,15 +28,15 @@ Kubernetes の namespace はそれ自体では強いセキュリティ境界で�
 
 同じ「共有ストレージ」でも、マルチテナントの実現手段はバックエンドで大きく異なります。次の表は本 book の検証結果をまとめたものです。
 
-| 観点 | FSx for OpenZFS | FSx for Lustre | (参考) EFS |
-|---|---|---|---|
-| 複数 namespace 共有（同一 FS を指す静的 PV を複数） | 可 | 可 | 可 |
-| 動的な per-PVC 隔離（PVC ごとに独立領域を自動払い出し） | 可（子ボリューム） | 不可（動的は新規 FS 作成） | 可（アクセスポイント） |
-| パス分離（階層 1） | 可 | 可 | 可 |
-| ID 制御（squash/POSIX） | NFS export の squash | RootSquashConfiguration | アクセスポイントの PosixUser |
-| per-PVC 容量クォータ | 可 | FS 単位の user/group/project quota（project は Lustre 2.15） | 非対応 |
-| AZ | Multi-AZ / Single-AZ 選択可 | 単一 AZ | マルチ AZ |
-| コールド退避 | per-volume スナップショット + バックアップ | DRA（S3 sync） | AWS Backup |
+| 観点 | FSx for OpenZFS | FSx for Lustre |
+|---|---|---|
+| 複数 namespace 共有（同一 FS を指す静的 PV を複数） | 可 | 可 |
+| 動的な per-PVC 隔離（PVC ごとに独立領域を自動払い出し） | 可（子ボリューム） | 不可（動的は新規 FS 作成） |
+| パス分離（階層 1） | 可 | 可 |
+| ID 制御（squash/POSIX） | NFS export の squash | RootSquashConfiguration |
+| per-PVC 容量クォータ | 可 | FS 単位の user/group/project quota（project は Lustre 2.15） |
+| AZ | Multi-AZ / Single-AZ 選択可 | 単一 AZ |
+| S3 へのコールド退避 | スナップショット（ローカル世代管理）+ Pod からの `aws s3 sync` | DRA（S3 と双方向 sync） |
 
 要点は、**Amazon FSx for OpenZFS は既存ファイルシステムの配下に PVC ごとの子ボリュームを動的に切り出せる**のに対し、**Amazon FSx for Lustre は既存ファイルシステムを PVC 単位に分割できない**ことです。Lustre の動的プロビジョニングは PVC ごとに新しいファイルシステムを作成する動作で、作成に時間がかかり容量単位も大きいため、テナント分離の通常解にはなりません。したがって本章では、パス分離（階層 1）は両者で、per-PVC の動的隔離は OpenZFS でのみ実演し、Lustre は解説にとどめます。
 
@@ -63,7 +63,7 @@ Amazon FSx for OpenZFS の動的プロビジョニングを使うには、CSI �
 
 学習データの正（source of truth）と最終成果物は、可用性とコストの観点から Amazon S3 に置くのが基本です。共有ファイルシステムはあくまでホット層で、そこから S3 へ退避する経路を設計します。
 
-- **FSx for OpenZFS**: per-volume スナップショットでボリューム単位の世代管理・クローン・full-copy ができます。ただしスナップショットはファイルシステム内（`.zfs/snapshot`）に保存されるため、**同一 AZ・同一リージョン内**の保護です。別 AZ・別リージョンへ退避するには、スナップショットではなく FSx バックアップ（AWS Backup 経由でクロスリージョンコピー可）を使います。
+- **FSx for OpenZFS**: per-volume スナップショットでボリューム単位の世代管理・クローン・full-copy ができます。ただしスナップショットはファイルシステム内（`.zfs/snapshot`）に保存され、ファイルシステムと運命を共にする**ローカルな保護**です。S3 へコールド退避するには、Lustre の DRA のようなネイティブ連携が OpenZFS には無いため、ボリュームをマウントした Pod から `aws s3 sync` で S3 バケットへ明示的に書き出します。スナップショットで直近の状態をローカルに世代管理しつつ、`aws s3 sync` で S3 を正とする、という二段構えにします。
 - **FSx for Lustre**: DRA（Data Repository Association）で Lustre のパスと S3 プレフィックスを関連付け、双方向に自動同期します。S3 にあるデータは Lustre から遅延ロード（HSM）で読め、Lustre に書いたデータは S3 に自動エクスポートされます。学習データを S3 に置き、成果物を S3 に逃がす定石です。DRA は PERSISTENT_2 デプロイタイプで使えます。
 
 ## アンチパターン
@@ -294,7 +294,7 @@ k delete pod dra -n distai --ignore-not-found
 
 学習データの正を S3 に置き、DRA でホットな Lustre に取り込み、成果物を S3 に書き戻す、という往復がこれで成立します。
 
-### FSx for OpenZFS をスナップショットで保護する
+### FSx for OpenZFS をスナップショットでローカル保護する
 
 ボリューム単位のスナップショットを取ります。手順 3 の子ボリュームはすでに削除済みなので、ここでは Basic02 で作成した OpenZFS のルートボリューム（`$ROOT_VOL`）を対象にします。
 
@@ -310,7 +310,23 @@ aws fsx restore-volume-from-snapshot \
   --options DELETE_INTERMEDIATE_SNAPSHOTS
 ```
 
-ここで重要なのは、スナップショットは同一ファイルシステム内（同一 AZ・同一リージョン）の保護であることです。別 AZ・別リージョンへ退避するには、スナップショットではなく FSx バックアップを使います。バックアップは AWS Backup と連携し、別リージョンへコピーできます。「スナップショット＝ローカルな世代管理」「バックアップ＝越境の退避」と役割を分けて覚えてください。
+スナップショットはファイルシステム内（`.zfs/snapshot`）に保存されるローカルな保護で、ファイルシステムが失われれば道連れになります。別 AZ・別リージョンにデータを残す目的には使えません。越境の退避は、次に示す S3 への同期で行います。
+
+### FSx for OpenZFS を S3 に退避する
+
+Amazon FSx for OpenZFS には Lustre の DRA のような S3 ネイティブ連携がありません。S3 へコールド退避するには、ボリュームをマウントした Pod から `aws s3 sync` で明示的に書き出します。ここでは Basic02 の共有 PVC（`shared-claim`、`/shared` にマウント）を `amazon/aws-cli` イメージの Pod でマウントし、S3 に同期します。Pod には S3 への書き込み権限（Pod Identity か、ノードのインスタンスロール）が必要です。
+
+```bash
+BUCKET=your-cold-storage-bucket   # 退避先。未作成なら aws s3 mb s3://$BUCKET
+
+k run zfs-evac -n distai --restart=Never --image=amazon/aws-cli \
+    --overrides='{"spec":{"containers":[{"name":"e","image":"amazon/aws-cli","command":["aws","s3","sync","/shared","s3://'"$BUCKET"'/openzfs-cold/"],"volumeMounts":[{"name":"zfs","mountPath":"/shared"}]}],"volumes":[{"name":"zfs","persistentVolumeClaim":{"claimName":"shared-claim"}}]}}'
+k wait --for=jsonpath='{.status.phase}'=Succeeded pod/zfs-evac -n distai --timeout=300s
+aws s3 ls s3://$BUCKET/openzfs-cold/ --recursive
+k delete pod zfs-evac -n distai --ignore-not-found
+```
+
+`aws s3 sync` は差分だけを送るので、CronJob 化すればホット層の成果物を継続的に S3 へ逃がせます。Lustre は DRA でこれを自動化でき、OpenZFS は明示的な同期ジョブで行う、という違いです。
 
 ### 本章で作ったリソースの後片付け
 
@@ -327,12 +343,12 @@ aws s3 rm s3://$BUCKET --recursive && aws s3 rb s3://$BUCKET
 ```
 
 :::message alert
-動的子ボリューム・DRA・スナップショット・バックアップはいずれも FSx / S3 の課金に直結します。テナントのセルフサービスで PVC を作らせる運用では、`reclaimPolicy` と `OptionsOnDeletion` の組み合わせ次第で PVC 削除がそのままデータ削除になる点にも注意してください。削除漏れも誤削除もどちらもリスクです。
+動的子ボリューム・DRA・スナップショット・S3 に退避したオブジェクトはいずれも FSx / S3 の課金に直結します。テナントのセルフサービスで PVC を作らせる運用では、`reclaimPolicy` と `OptionsOnDeletion` の組み合わせ次第で PVC 削除がそのままデータ削除になる点にも注意してください。削除漏れも誤削除もどちらもリスクです。
 :::
 
 # まとめ
 
-本章では、共有ストレージのマルチテナントを 2 階層（パス分離と ID 制御）で整理し、Amazon FSx for OpenZFS と Amazon FSx for Lustre の非対称を確認しました。パス分離は、同一ファイルシステムを指す静的 PV を namespace ごとに用意することで両者で実現できます（`volumeHandle` は一意に、`claimRef` で予約）。per-PVC の強制隔離は、Amazon FSx for OpenZFS の動的子ボリュームで実演し、相互不可視とクォータを確認しました。Amazon FSx for Lustre は既存ファイルシステムを PVC 単位に分割できないため、隔離が要件ならファイルシステムごとに分けるか、root squash とクォータでソフトに固めます。コールドデータは S3 を正とし、Amazon FSx for Lustre は DRA で、Amazon FSx for OpenZFS はスナップショット（ローカル）とバックアップ（越境）で退避します。namespace はそれ自体では境界にならないこと、真の信頼境界ならファイルシステムやアカウントごとに分けることを、設計の前提に置いてください。
+本章では、共有ストレージのマルチテナントを 2 階層（パス分離と ID 制御）で整理し、Amazon FSx for OpenZFS と Amazon FSx for Lustre の非対称を確認しました。パス分離は、同一ファイルシステムを指す静的 PV を namespace ごとに用意することで両者で実現できます（`volumeHandle` は一意に、`claimRef` で予約）。per-PVC の強制隔離は、Amazon FSx for OpenZFS の動的子ボリュームで実演し、相互不可視とクォータを確認しました。Amazon FSx for Lustre は既存ファイルシステムを PVC 単位に分割できないため、隔離が要件ならファイルシステムごとに分けるか、root squash とクォータでソフトに固めます。コールドデータは S3 を正とし、Amazon FSx for Lustre は DRA で、Amazon FSx for OpenZFS はスナップショットでローカルに世代管理しつつ Pod からの `aws s3 sync` で S3 に退避します。namespace はそれ自体では境界にならないこと、真の信頼境界ならファイルシステムやアカウントごとに分けることを、設計の前提に置いてください。
 
 # 参考資料
 
@@ -340,4 +356,4 @@ aws s3 rm s3://$BUCKET --recursive && aws s3 rb s3://$BUCKET
 - [Amazon FSx for OpenZFS のデプロイタイプと可用性](https://docs.aws.amazon.com/fsx/latest/OpenZFSGuide/availability-durability.html)
 - [aws-fsx-openzfs-csi-driver の動的プロビジョニング](https://github.com/kubernetes-sigs/aws-fsx-openzfs-csi-driver)
 - [Amazon FSx for Lustre のデータリポジトリ連携（DRA）](https://docs.aws.amazon.com/fsx/latest/LustreGuide/create-dra-linked-data-repo.html)
-- [Amazon EFS のアクセスポイント](https://docs.aws.amazon.com/efs/latest/ug/efs-access-points.html)
+- [Amazon FSx for Lustre のストレージクォータ（user/group/project）](https://docs.aws.amazon.com/fsx/latest/LustreGuide/lustre-quotas.html)
