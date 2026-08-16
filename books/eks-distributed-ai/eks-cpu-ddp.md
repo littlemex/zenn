@@ -210,7 +210,7 @@ k get pods -o wide -l jobset.sigs.k8s.io/jobset-name=ddp-trainjob
 k get trainjob ddp-trainjob -w
 ```
 
-rank 0 が載る Pod のログを追います。Pod 名は末尾のランダム文字が変わるので、決め打ちせずラベルで選びます。rank 0 は JobSet の completion index 0 なので、`batch.kubernetes.io/job-completion-index=0` と jobset 名の 2 つのラベルで一意に選べます（この Pod ラベルは Kubernetes 1.28 以降で既定有効です）。そもそも TrainJob が展開する子 Job の名前は `ddp-trainjob-node` で、`ddp-trainjob` という名前の Job は無いため `logs job/ddp-trainjob` は該当なしになります。複数ある Pod のどれを見るかを確実に選ぶにはラベルセレクタが向いています。ログは Pod が存在する間に取ります（完了 Pod は Job/TrainJob を消すまで残るので完了後でも取れますが、`k delete` で消した後は取れません。この学習ジョブには `ttlSecondsAfterFinished` を設定していないので、消すまで自動回収はされません）。
+rank 0 が載る Pod のログを追います。Pod 名は末尾のランダム文字が変わるので、決め打ちせずラベルで選びます。rank 0 は JobSet の completion index 0 なので、`batch.kubernetes.io/job-completion-index=0` と jobset 名の 2 つのラベルで一意に選べます（この Pod ラベルは Kubernetes 1.28 以降で既定有効です）。そもそも TrainJob が展開する子 Job の名前は `ddp-trainjob-node-0` で、`ddp-trainjob` という名前の Job は無いため `logs job/ddp-trainjob` は該当なしになります。複数ある Pod のどれを見るかを確実に選ぶにはラベルセレクタが向いています。ログは Pod が存在する間に取ります（完了 Pod は Job/TrainJob を消すまで残るので完了後でも取れますが、`k delete` で消した後は取れません。この学習ジョブには `ttlSecondsAfterFinished` を設定していないので、消すまで自動回収はされません）。
 
 ```bash
 SEL="jobset.sigs.k8s.io/jobset-name=ddp-trainjob,batch.kubernetes.io/job-completion-index=0"
