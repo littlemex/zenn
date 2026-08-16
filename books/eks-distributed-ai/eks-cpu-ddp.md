@@ -101,6 +101,10 @@ Basic01 で current-context をこのクラスタに切り替え、既定 namesp
 k create namespace distai --dry-run=client -o yaml | k apply -f -
 ```
 
+:::message
+本章のコマンドは `jq` を使います。未インストールだと `terraform output` の抽出が空文字になり、PVC が `Pending` のまま止まります。あわせて `kubectl` の current namespace が `distai` を指していることを `k config view --minify -o jsonpath='{..namespace}'` で確認しておくと、以降のリソースが別 namespace に作られる事故を防げます。
+:::
+
 ## 2. 学習用イメージを用意する
 
 本章のワークロード（`trainjobTrain`）は、MNIST MLP を DDP で学習する `ddp.py` を焼き込んだ専用イメージ `ddp-sample` を使います。`ddp.py` は [awslabs/awsome-distributed-ai の DDP サンプル](https://github.com/awslabs/awsome-distributed-ai/tree/main/3.test_cases/pytorch/ddp) をベースに、保存先を共有 PVC へ寄せて adapt したものです。Dockerfile はリポジトリの [`infra/eks/manifests/ddp-sample/`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/manifests/ddp-sample) に置いてあります。
@@ -266,7 +270,7 @@ k logs --tail=-1 -l "jobset.sigs.k8s.io/jobset-name=ddp-trainjob,batch.kubernete
 
 ```bash
 k wait --for=condition=Complete trainjob/ddp-trainjob --timeout=30m
-k run peek --rm -it --restart=Never --image=busybox:1.36 \
+k run peek --rm -it --pod-running-timeout=5m --restart=Never --image=busybox:1.36 \
   --overrides='{"apiVersion":"v1","spec":{"containers":[{"name":"peek","image":"busybox:1.36","command":["ls","-lh","/shared/output/trainjob-cpu"],"volumeMounts":[{"name":"s","mountPath":"/shared"}]}],"volumes":[{"name":"s","persistentVolumeClaim":{"claimName":"shared-claim"}}]}}'
 ```
 
@@ -281,8 +285,9 @@ k delete trainjob ddp-trainjob
 最後に、step 3 で触れた「なぜチャートが PVC を自動生成しないのか」を実際に確かめます。ワークロード（Job/TrainJob）を消すのと同じ感覚で、共有 PVC 自体を消してみましょう。
 
 ```bash
+POOL_PV=$(terraform output -json shared_storage | jq -r '.fsx_openzfs.persistent_volume')
 k delete pvc shared-claim
-k get pv openzfs-shared
+k get pv "$POOL_PV"
 ```
 
 `STATUS` が `Released` になっているはずです。`Available`（誰にも bound されていない、次の PVC を待てる状態）ではなく `Released`（前の持ち主の後始末を待っている状態）である点に注目してください。この状態で、もう一度 `shared-claim` を作り直してみます。
@@ -302,7 +307,7 @@ PV は PVC を「名前」ではなく、bind が成立した瞬間に書き込�
 復旧するには、PV の `claimRef` のうち `uid` と `resourceVersion` だけを取り除きます。`claimRef` 全体を消すのではないことに注意してください。`name`/`namespace` を残すことで、PV は「その名前の PVC が来たら bind する」という pre-bind 状態に戻り、無関係な別の PVC に横取りされるレースを防げます。
 
 ```bash
-k patch pv openzfs-shared --type json \
+k patch pv "$POOL_PV" --type json \
   -p '[{"op":"remove","path":"/spec/claimRef/uid"},{"op":"remove","path":"/spec/claimRef/resourceVersion"}]'
 k get pvc shared-claim
 ```
@@ -310,6 +315,17 @@ k get pvc shared-claim
 数秒待つと `shared-claim` が `Bound` に変わります。他の静的 PV（`fsx-training`、`efs-neuron-workspace`）も同じ `Retain` なので、それらを使っている場合も同じ症状・同じ復旧手順になります。
 
 これで step 3 で 1 回だけ手動作成した理由が実感できたはずです。PVC の生成をワークロードの `apply`/`delete` に乗せていたら、ワークロードを作り直すたびにこの `Released` を踏むことになります。基盤を用意するタイミングで 1 回だけ作り、以降のワークロードはその PVC の**名前を渡すだけ**にする、というこの章の設計はこの事故を避けるためのものです。
+
+## 6. 後片付け
+
+次章以降でこの学習イメージや共有データを使わない場合は、残ったリソースを片付けます。共有 PVC（`shared-claim`）と共有ストレージ上の MNIST データ・スナップショットは、後続の章でも使うため残して構いません。
+
+```bash
+k delete pod peek -n distai --ignore-not-found
+k delete job build-ddp-sample-v1 -n image-builder --ignore-not-found
+```
+
+ECR に push した `ddp-sample:v1` イメージは、再利用しないなら ECR コンソールから削除します。
 
 # まとめ
 
