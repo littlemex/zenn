@@ -19,7 +19,7 @@ free: true
 
 ## DDP
 
-分散学習の基本的な形が DDP（Distributed Data Parallel）です。DDP については参考情報がたくさんあるので調べてみてください。DDP の通信バックエンドにはいくつか種類がありますが、本章で押さえておきたいのは次の 2 つです。
+分散学習の基本的な形が DDP（Distributed Data Parallel）です。各プロセス（rank と呼びます）がモデルの完全なコピーとデータセットの異なる分割を持ち、それぞれが forward と backward で勾配を計算したあと、all-reduce で全 rank の勾配を平均して共有します。全 rank が同じ平均勾配で同じ更新をするため、モデルは学習を通じて常に一致します。プロセスの総数を world_size、各プロセスの通し番号を rank と呼び、最初にどこへ集合して通信を確立するかの待ち合わせを rendezvous と呼びます。この 3 語は本章のログを読むときの鍵になります。DDP の通信バックエンドにはいくつか種類がありますが、本章で押さえておきたいのは次の 2 つです。
 
 - **gloo**: CPU 上で動きます。GPU は不要です。
 - **nccl**: NVIDIA GPU 上で動き、GPU 間の高速な集合通信を担います。
@@ -193,7 +193,7 @@ helm template exp charts/experiments -n distai \
     --set trainjobTrain.nodeRole=cpu \
     --set trainjobTrain.numNodes=2 \
     --set trainjobTrain.nprocPerNode=1 \
-    --set trainjobTrain.totalEpochs=10 \
+    --set trainjobTrain.totalEpochs=20 \
     --set sharedStorage.existingClaimName=shared-claim \
     | k apply -f -
 ```
@@ -313,7 +313,7 @@ k get pvc shared-claim
 
 # まとめ
 
-本章では、GPU を使わずに Amazon EKS の CPU ノード上で MNIST MLP の DDP 学習を、Kubeflow Trainer v2 の TrainJob で 2 ノードにまたがって走らせました。gloo backend で動かし、loss が減少すること、そして rank 0 のみがスナップショットを共有ストレージに保存するという DDP の基本動作を確認しました。さらに、共有ストレージの PVC を意図的に削除して `Released` 状態を再現し、`claimRef` の `uid`/`resourceVersion` だけを取り除く復旧手順まで体験しました。静的プロビジョニングされた PV は PVC を名前ではなく実体（UID）で覚えるという、この基盤の共有ストレージ全体を貫く重要な性質です。
+本章では、GPU を使わずに Amazon EKS の CPU ノード上で MNIST MLP の DDP 学習を、Kubeflow Trainer v2 の TrainJob で 2 ノードにまたがって走らせました。gloo backend で動かし、loss が減少すること、そして rank 0 のみがスナップショットを共有ストレージに保存するという DDP の基本動作を確認しました。さらに、共有ストレージの PVC を意図的に削除して `Released` 状態を再現し、`claimRef` の `uid`/`resourceVersion` だけを取り除く復旧手順まで体験しました。静的プロビジョニングされた PV は PVC を名前ではなく実体（UID）で覚えます。これは静的プロビジョニングと Retain に固有の運用上の性質で、動的プロビジョニングでは PVC 削除時の挙動は StorageClass の reclaimPolicy が決めます。1 つのファイルシステムを複数の namespace で共有する方法や、Amazon EFS のアクセスポイント・Amazon FSx for OpenZFS の動的な子ボリュームによる強制分離は Basic10 で扱います。
 
 # 参考資料
 
