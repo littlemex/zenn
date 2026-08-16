@@ -276,7 +276,98 @@ k logs fsx-test2 -n "$NAMESPACE"
 
 別名の Pod でも `hello-fsx` が読み出せます。Pod やノードが入れ替わっても、共有ストレージ上のデータが残り続けることが確認できます。
 
-## 5. 検証用リソースを削除する
+## 5. 1 つの Amazon FSx for Lustre を複数 namespace で共有する
+
+ここまでは 1 つの namespace から共有ストレージを使いました。共有クラスタを複数のチームや利用者で使う場合は、同じファイルシステムを複数の namespace から使いたくなります。ここで効いてくるのが、手順 3 の `:::message` で触れた「PV はクラスタスコープで namespace を持たず、PVC は namespace を持つ」という性質です。
+
+静的 PV は 1 つの PVC としか結びつきません（1 対 1）。一方で、同じ Amazon FSx for Lustre ファイルシステムを指す静的 PV は、名前を変えていくつでも作れます。`volumeHandle` はあくまで Kubernetes 側の識別子で、実際のマウントは `volumeAttributes` の `dnsname` と `mountname` で行われるため、これらを同じ値にした PV を namespace の数だけ用意すれば、1 つのファイルシステムを複数の namespace が同時にマウントできます。動的プロビジョニングも CRD も要りません。
+
+:::message
+ここで実現するのは「共有」であって「隔離」ではありません。すべての namespace が同一のファイルシステムを見るため、ある namespace が書いたファイルは他の namespace からも見えます。チームごとにサブディレクトリを分ける運用（`/team-a`、`/team-b` など）で整理はできますが、これは規約であって強制的な分離ではありません。namespace ごとに強制的に分離された領域が要る場合は、この章の末尾で触れる Amazon EFS のアクセスポイントや、Amazon FSx for OpenZFS の動的な子ボリュームを使います（後述）。
+:::
+
+2 つ目の namespace 用に、同じファイルシステムを指す 2 つ目の PV を作ります。`dnsname` と `mountname` は手順 2 の `terraform output` で確認した値、あるいは既存の `fsx-training` PV から引き写します。
+
+```bash
+# 既存 PV から dnsname / mountname を引き写す
+DNS=$(k get pv fsx-training -o jsonpath='{.spec.csi.volumeAttributes.dnsname}')
+MOUNT=$(k get pv fsx-training -o jsonpath='{.spec.csi.volumeAttributes.mountname}')
+HANDLE=$(k get pv fsx-training -o jsonpath='{.spec.csi.volumeHandle}')
+
+k apply -f - <<EOF
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: fsx-training-team-b
+spec:
+  capacity: { storage: 4800Gi }
+  accessModes: ["ReadWriteMany"]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  mountOptions: ["flock"]
+  csi:
+    driver: fsx.csi.aws.com
+    volumeHandle: ${HANDLE}
+    volumeAttributes:
+      dnsname: ${DNS}
+      mountname: ${MOUNT}
+EOF
+```
+
+2 つ目の namespace とその PVC を作り、この PV にバインドします。
+
+```bash
+k create namespace team-b --dry-run=client -o yaml | k apply -f -
+k apply -n team-b -f - <<'EOF'
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fsx-claim
+spec:
+  accessModes: ["ReadWriteMany"]
+  storageClassName: ""
+  volumeName: fsx-training-team-b
+  resources:
+    requests:
+      storage: 4800Gi
+EOF
+k get pvc fsx-claim -n team-b
+```
+
+`Bound` になったら、`team-b` の Pod から書き込み、同じファイルシステムを使う既定 namespace（`$NAMESPACE`）の Pod から読み出してみます。手順 4 で `$NAMESPACE` に `fsx-claim` を作っていない場合は、手順 4 の PVC 作成を先に実行しておきます。
+
+```bash
+# team-b が自分のサブディレクトリに書く
+k run w -n team-b --restart=Never --image=busybox \
+    --overrides='{"spec":{"containers":[{"name":"w","image":"busybox","command":["sh","-c","mkdir -p /mnt/fsx/team-b && echo from-team-b > /mnt/fsx/team-b/note.txt"],"volumeMounts":[{"name":"fsx","mountPath":"/mnt/fsx"}]}],"volumes":[{"name":"fsx","persistentVolumeClaim":{"claimName":"fsx-claim"}}]}}'
+k wait --for=jsonpath='{.status.phase}'=Succeeded pod/w -n team-b --timeout=180s
+
+# 既定 namespace 側の Pod から、team-b が書いたファイルが見える（＝共有されている）
+k run r -n "$NAMESPACE" --restart=Never --image=busybox \
+    --overrides='{"spec":{"containers":[{"name":"r","image":"busybox","command":["cat","/mnt/fsx/team-b/note.txt"],"volumeMounts":[{"name":"fsx","mountPath":"/mnt/fsx"}]}],"volumes":[{"name":"fsx","persistentVolumeClaim":{"claimName":"fsx-claim"}}]}}'
+k wait --for=jsonpath='{.status.phase}'=Succeeded pod/r -n "$NAMESPACE" --timeout=180s
+k logs r -n "$NAMESPACE"
+```
+
+既定 namespace 側の Pod のログに `from-team-b` が出れば、2 つの namespace が同じファイルシステムを共有できていることが確認できます。2 つの PVC はそれぞれ別の PV（`fsx-training` と `fsx-training-team-b`）にバインドされていますが、その背後の実体は同じ 1 つの Amazon FSx for Lustre です。
+
+namespace が増えるたびに PV と PVC を手で作るのは煩雑なので、実運用では Terraform やスクリプトで namespace ごとの PV と PVC を生成すると管理が楽になります。ファイルシステムは 1 つのまま、PV と PVC だけを namespace の数だけ増やす形です。専用のオペレータや CRD を用意するほどの仕組みは要りません。
+
+:::message
+Amazon FSx for OpenZFS も同じ静的プロビジョニングの仕組みなので、同一ファイルシステムを指す PV を namespace ごとに複数作れば、まったく同じやり方で複数 namespace から共有できます。加えて OpenZFS は、Amazon EFS のアクセスポイントに相当する強制分離を、CSI ドライバの動的プロビジョニングで実現できます。StorageClass に `ResourceType: volume` と親ボリュームの `ParentVolumeId` を指定すると、PVC ごとに親ファイルシステム配下へ独立した子ボリューム（それぞれ独自の容量クォータを持てる）が自動で切り出されます。Amazon EFS のアクセスポイント方式ともども、namespace ごとに強制的に分離された領域が要るケースでは、この静的な共有ではなく動的プロビジョニングを選びます。Amazon FSx for Lustre は既存ファイルシステムを PVC 単位に分割できず（動的プロビジョニングは PVC ごとに新規ファイルシステムを作成します）、この強制分離には向きません。
+:::
+
+検証が終わったら、`team-b` の Pod と PVC、2 つ目の PV を片付けておきます。
+
+```bash
+k delete pod r -n "$NAMESPACE" --ignore-not-found
+k delete pod w -n team-b --ignore-not-found
+k delete pvc fsx-claim -n team-b --ignore-not-found
+k delete pv fsx-training-team-b --ignore-not-found
+k delete namespace team-b --ignore-not-found
+```
+
+## 6. 検証用リソースを削除する
 
 検証が終わったら、テスト Pod と PVC を削除しておきます。Amazon FSx for Lustre を無効化する場合は、この削除を先に済ませておかないと、Bound な PV の削除がファイナライザで止まり `terraform apply` や `terraform destroy` が詰まることがあります。
 
