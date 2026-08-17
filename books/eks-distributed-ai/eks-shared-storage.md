@@ -6,7 +6,7 @@ free: true
 本章では、Basic01 から Basic04 で構築した Amazon VPC・Amazon EKS コントロールプレーン・アクセラレータノードの土台の上に、Karpenter がノードを入れ替えても失われないデータ層として Amazon FSx for Lustre を構成します。Amazon FSx for Lustre は単一 AZ の高スループットなスクラッチおよびチェックポイント領域で、Terraform で 1 度作成すれば以降の Karpenter によるノード入れ替えの影響を受けません。
 
 :::message
-共有ストレージのうち Amazon FSx for OpenZFS と、静的 PersistentVolume・PersistentVolumeClaim の基本的な仕組みは Basic02 で解説済みです。本章ではそれらの再説明は行わず、Amazon FSx for Lustre 固有の特徴と制約に絞って扱います。Amazon EFS については本章の末尾で選択肢として簡単に触れるにとどめ、詳細は Neuron を扱う章に譲ります。
+共有ストレージのうち Amazon FSx for OpenZFS と、静的 PersistentVolume・PersistentVolumeClaim の基本的な仕組みは Basic02 で解説済みです。本章ではそれらの再説明は行わず、Amazon FSx for Lustre 固有の特徴と制約に絞って扱います。どのストレージをどの用途に使い分けるか（Amazon EFS や Amazon S3 を含む選定）は Advanced01「共有ストレージをマルチテナントで扱う」で扱います。
 :::
 
 # 解説
@@ -293,13 +293,9 @@ PV 自体は Terraform が管理しているため、この削除では消えま
 Amazon FSx for Lustre は有効な間、プロビジョニングした容量分の課金が常時発生します。PERSISTENT_2 SSD は使用量ではなく容量に対して課金され続けるため、学習ジョブを実行する期間だけ `fsx_enabled = true` で apply し、終わったら `false` に戻して apply する運用が費用を抑えます。ただし無効化するとファイルシステム上のデータはすべて削除されるため、必要なチェックポイントは事前に Amazon S3 などへ退避してください。
 :::
 
-:::message
-マルチ AZ で ReadWriteMany のキャッシュが必要な場合は、opt-in の Amazon EFS を選べます。`terraform.tfvars` で `efs_enabled = true` にして apply すると、ファイルシステムと private subnet ごとのマウントターゲット、静的 PV が作られ、Karpenter がノードを別 AZ に入れ替えても同じキャッシュを読み続けられます。CSI ドライバ自体は既定で常設されているため、有効化するのはファイルシステム本体だけです。Amazon EFS の詳しい構成と用途は、マルチ AZ での NEFF キャッシュ共有が要点になる Neuron の章で扱います。
-:::
-
 # まとめ
 
-本章では、Karpenter によるノード入れ替えから独立したデータ層として Amazon FSx for Lustre を構成しました。既存ファイルシステムには静的プロビジョニングを用いる点、`volumeAttributes` のキーが小文字でないと読まれない点、`reclaimPolicy` は `Retain` が正しい点を押さえておけば、以降の章で GPU/Neuron ワークロードがこの共有ストレージを安心して利用できます。さらに高いスループットが必要な場合は EFA 有効化という選択肢があり、この実装では `fsx_efa_enabled` で切り替えられます。EFA 有効時はメタデータ 6000 IOPS・容量 4800 GiB・単一 AZ・ノード側の EFA 設定という制約を伴い、GPU 学習では NCCL 通信との EFA デバイス分離も検討することになります。
+本章では、Karpenter によるノード入れ替えから独立したデータ層として Amazon FSx for Lustre を構成しました。既存ファイルシステムには静的プロビジョニングを用いる点、`volumeAttributes` のキーが小文字でないと読まれない点、`reclaimPolicy` は `Retain` が正しい点を押さえておけば、以降の章で GPU/Neuron ワークロードがこの共有ストレージを安心して利用できます。複数の namespace で 1 つのファイルシステムを共有する方法や、テナントごとに強制的に分離する設計、そしてどのストレージをどの用途に使い分けるか（Amazon EFS や Amazon S3 を含む）は、Advanced01「共有ストレージをマルチテナントで扱う」で扱います。さらに高いスループットが必要な場合は EFA 有効化という選択肢があり、この実装では `fsx_efa_enabled` で切り替えられます。EFA 有効時はメタデータ 6000 IOPS・容量 4800 GiB・単一 AZ・ノード側の EFA 設定という制約を伴い、GPU 学習では NCCL 通信との EFA デバイス分離も検討することになります。
 
 # 参考資料
 
