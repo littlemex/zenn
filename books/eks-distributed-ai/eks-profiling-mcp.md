@@ -38,19 +38,23 @@ flowchart LR
 
 ## 2. データ層を適用する
 
-`infra/data-layer` を専用の state で初期化し、S3 Files とマネージド MLflow を有効にして適用します。適用後、`terraform output` で以降に使う値が得られます。
+`infra/data-layer` を専用の state で初期化し、S3 Files とマネージド MLflow を有効にして適用します。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/data-layer
 terraform init -backend-config=backend.hcl
 terraform apply -var s3files_enabled=true -var mlflow_enabled=true
-# 以降の手順で使う値を環境変数に取り出す (同じシェルで手順 3 以降まで続ける)
-export S3FILES_FS_ID=$(terraform output -raw s3files_file_system_id)       # 手順 3 のクラスタ apply で使う
-export S3FILES_VOLUME_HANDLE=$(terraform output -raw s3files_volume_handle) # 手順 5 の mcp-host values で使う
-export MLFLOW_APP_ARN=$(terraform output -raw mlflow_app_arn)              # 分析 MCP の MCP_MLFLOW_TRACKING_URI で使う
-export MCP_READER_ARN=$(terraform output -raw mcp_reader_role_arn)         # 手順 3 のクラスタ apply で使う
-export MCP_PRODUCER_ARN=$(terraform output -raw producer_role_arn)         # 手順 3 のクラスタ apply で使う
-terraform output trace_buckets                                             # リージョン別バケット名 (map、参照用)
+```
+
+適用後、以降の手順で使う値を環境変数に取り出します（手順 3 以降まで同じシェルで続けてください）。`S3FILES_FS_ID` と `MCP_READER_ARN`・`MCP_PRODUCER_ARN` は手順 3 のクラスタ apply で、`S3FILES_VOLUME_HANDLE` は手順 5 の mcp-host values で、`MLFLOW_APP_ARN` は分析 MCP の `MCP_MLFLOW_TRACKING_URI` で使います。`trace_buckets` はリージョン別バケット名のマップで、参照用に表示します。
+
+```bash
+export S3FILES_FS_ID=$(terraform output -raw s3files_file_system_id)
+export S3FILES_VOLUME_HANDLE=$(terraform output -raw s3files_volume_handle)
+export MLFLOW_APP_ARN=$(terraform output -raw mlflow_app_arn)
+export MCP_READER_ARN=$(terraform output -raw mcp_reader_role_arn)
+export MCP_PRODUCER_ARN=$(terraform output -raw producer_role_arn)
+terraform output trace_buckets
 ```
 
 このデータ層の apply が、S3 Files のファイルシステムとアクセスポイントを AWS Cloud Control API 経由で作成します。アクセスポイントは `volumeHandle` に必須ですが、手で `aws s3files create-access-point` を叩く必要はありません。
@@ -79,13 +83,19 @@ k rollout status  ds/efs-csi-node -n kube-system
 
 デプロイ用イメージは、クラスタ内の rootless BuildKit でビルドして ECR に push します。この仕組みは `infra/eks` の [`image-builder.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/image-builder.tf) と `image-builder-lib` チャートが提供し、汎用の呼び出し口 `image-build-custom.yaml` に Dockerfile を ConfigMap で渡します。push 先の ECR リポジトリは手順 3 で作成済みです。
 
-分析 MCP はベースイメージ (`accelprof` を固定バージョンで入れたもの) の上に `nsys` を積んだ変種を使うので、(1) ベース、(2) nsys 積み、(3) knowledge の順にビルドします。`experiments` チャートはサブチャート `image-builder-lib` を依存に持つため、初回だけ依存を取得します。
+分析 MCP はベースイメージ (`accelprof` を固定バージョンで入れたもの) の上に `nsys` を積んだ変種を使うので、(1) ベース、(2) nsys 積み、(3) knowledge の順にビルドします。
+
+まず依存の取得 (初回のみ) と、リージョン・ECR レジストリ URI の準備です。`REGION` は演習を行うリージョンに合わせます。
 
 ```bash
-helm dependency build infra/eks/charts/experiments   # 初回のみ
-export REGION=us-east-2   # 演習を行うリージョンに合わせる
+helm dependency build infra/eks/charts/experiments
+export REGION=us-east-2
 export ECR=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$REGION.amazonaws.com
-# (1) ベースイメージを accelprof:v1 としてビルド
+```
+
+(1) ベースイメージを `accelprof:v1` としてビルドし、その digest を `BASE` に控えます。
+
+```bash
 k -n image-builder create configmap base-ctx \
   --from-file=Dockerfile=infra/eks/images/Dockerfile.accelprof-analysis
 helm template exp infra/eks/charts/experiments -s templates/image-build-custom.yaml \
@@ -97,8 +107,9 @@ export BASE=$ECR/accelprof@$(aws ecr describe-images --repository-name accelprof
   --image-ids imageTag=v1 --query 'imageDetails[0].imageDigest' --output text)
 ```
 
+(2) ベースに `nsys` を積んだ分析イメージを `accelprof:v1-nsys` としてビルドします (`BASE` は digest 固定で渡します)。
+
 ```bash
-# (2) ベースに nsys を積んだ分析イメージを accelprof:v1-nsys としてビルド (BASE は digest 固定)
 k -n image-builder create configmap nsys-ctx \
   --from-file=Dockerfile=infra/eks/images/Dockerfile.accelprof-analysis-nsys
 helm template exp infra/eks/charts/experiments -s templates/image-build-custom.yaml \
@@ -109,8 +120,9 @@ helm template exp infra/eks/charts/experiments -s templates/image-build-custom.y
   | k apply -f -
 ```
 
+(3) knowledge MCP イメージを `accelprof-knowledge:v1` としてビルドします。
+
 ```bash
-# (3) knowledge MCP イメージを accelprof-knowledge:v1 としてビルド
 k -n image-builder create configmap knowledge-ctx \
   --from-file=Dockerfile=infra/eks/images/Dockerfile.accelprof-knowledge
 helm template exp infra/eks/charts/experiments -s templates/image-build-custom.yaml \
@@ -120,13 +132,13 @@ helm template exp infra/eks/charts/experiments -s templates/image-build-custom.y
   | k apply -f -
 ```
 
-push 後、values にはタグではなく digest を渡すため、それぞれの digest を控えます (`:latest` と未指定は `mcp-host` チャートがエラーにします)。
+push 後、values にはタグではなく digest を渡すため、それぞれの digest を控えます (`:latest` と未指定は `mcp-host` チャートがエラーにします)。1 つ目が分析 MCP 用 (`accelprof:v1-nsys`)、2 つ目が knowledge MCP 用 (`accelprof-knowledge:v1`) です。
 
 ```bash
 aws ecr describe-images --repository-name accelprof \
-  --image-ids imageTag=v1-nsys --query 'imageDetails[0].imageDigest' --output text   # 分析 MCP 用
+  --image-ids imageTag=v1-nsys --query 'imageDetails[0].imageDigest' --output text
 aws ecr describe-images --repository-name accelprof-knowledge \
-  --image-ids imageTag=v1 --query 'imageDetails[0].imageDigest' --output text        # knowledge MCP 用
+  --image-ids imageTag=v1 --query 'imageDetails[0].imageDigest' --output text
 ```
 
 ## 5. mcp-host でデプロイする
@@ -142,10 +154,10 @@ helm upgrade --install mcp infra/eks/charts/mcp-host -n mcp -f my-values.yaml
 
 分析対象を作るため、producer 側でプロファイルを 1 本取り、trace バケットと MLflow に記録します。対象は Basic 章で動かしたワークロードでも任意のサンプルでもよく、`nsys profile <コマンド>` で包めば `.nsys-rep` が得られます。
 
-producer を動かす namespace (手順 3 の `mcp_producer_namespace`、既定 `distai`) に `mcp-producer` ServiceAccount を作ります。手順 3 の Pod Identity 紐付けはこの `(namespace, mcp-producer)` を対象にしているので、この SA を持つ Pod が trace バケットへの書き込みと MLflow への記録の権限を得ます。
+producer を動かす namespace に `mcp-producer` ServiceAccount を作ります。`NAMESPACE` は手順 3 の `mcp_producer_namespace` と一致させます。手順 3 の Pod Identity 紐付けはこの `(namespace, mcp-producer)` を対象にしているので、この SA を持つ Pod が trace バケットへの書き込みと MLflow への記録の権限を得ます。
 
 ```bash
-export NAMESPACE=distai   # 手順 3 の mcp_producer_namespace と一致させる
+export NAMESPACE=distai
 k create namespace "$NAMESPACE" --dry-run=client -o yaml | k apply -f -
 k create serviceaccount mcp-producer -n "$NAMESPACE" --dry-run=client -o yaml | k apply -f -
 ```
@@ -195,15 +207,13 @@ k port-forward svc/analysis  -n mcp 8080:8080 &
 
 課金を止めるため、`mcp-host` のリリースを削除し、Terraform のトグルを戻します。データ層は `terraform destroy` ではなく、トグルを `false` にした `terraform apply` で畳みます。trace バケットと MLflow アーティファクトのバケットには「記録の正本」を守るために `prevent_destroy` が付いており、`terraform destroy` は plan 段階でこのバケット破棄を検出して操作全体を中断してしまうため、MLflow App や S3 Files ファイルシステムまで実際には消えないからです。トグルを false にした apply なら、バケット (と中の記録) は残したまま、MLflow App と S3 Files ファイルシステムだけを破棄できます。
 
+まず `mcp-host` を削除し、producer ワークロードが作った `mcp-producer` ServiceAccount を掃除します (infra は SA を管理しないため手動です)。次に `infra/eks` 側のマウントと mcp-reader を無効化します。`mcp_producer_role_arn` を渡さないと既定の空になり、producer の Pod Identity 紐付けも破棄されます。最後にデータ層のトグルを false にして apply します (destroy ではありません)。
+
 ```bash
 helm uninstall mcp -n mcp
-# producer ワークロードが作った SA を掃除 (infra は SA を管理しないため手動)
 k delete serviceaccount mcp-producer -n "$NAMESPACE" --ignore-not-found
-# infra/eks 側のマウント・mcp-reader・producer 紐付けを無効化して apply
-# (mcp_producer_role_arn を渡さない = 既定の空になり producer の Pod Identity 紐付けが破棄される)
 cd "$(git rev-parse --show-toplevel)"/infra/eks
 terraform apply -var s3files_enabled=false -var analysis_mcp_enabled=false
-# その後にデータ層のトグルを false にして apply (destroy ではない)
 cd "$(git rev-parse --show-toplevel)"/infra/data-layer
 terraform apply -var s3files_enabled=false -var mlflow_enabled=false
 ```
