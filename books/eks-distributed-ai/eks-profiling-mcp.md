@@ -105,7 +105,7 @@ helm template exp charts/experiments -s templates/image-build-custom.yaml \
   --set imageBuild.contextSource=configMap --set imageBuild.contextConfigMap=base-ctx \
   | k apply -f -
 export BASE=$ECR/accelprof@$(aws ecr describe-images --repository-name accelprof \
-  --image-ids imageTag=v1 --query 'imageDetails[0].imageDigest' --output text)
+  --image-ids imageTag=v1 --query 'imageDetails[0].imageDigest' --output text --region "$REGION")
 ```
 
 (2) ベースに `nsys` を積んだ分析イメージを `accelprof:v1-nsys` としてビルドします (`BASE` は digest 固定で渡します)。
@@ -137,9 +137,9 @@ push 後、values にはタグではなく digest を渡すため、それぞれ
 
 ```bash
 aws ecr describe-images --repository-name accelprof \
-  --image-ids imageTag=v1-nsys --query 'imageDetails[0].imageDigest' --output text
+  --image-ids imageTag=v1-nsys --query 'imageDetails[0].imageDigest' --output text --region "$REGION"
 aws ecr describe-images --repository-name accelprof-knowledge \
-  --image-ids imageTag=v1 --query 'imageDetails[0].imageDigest' --output text
+  --image-ids imageTag=v1 --query 'imageDetails[0].imageDigest' --output text --region "$REGION"
 ```
 
 ## 5. mcp-host でデプロイする
