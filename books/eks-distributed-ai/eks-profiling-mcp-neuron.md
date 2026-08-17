@@ -116,13 +116,14 @@ Advanced02 でデータ層・マウント・`mcp-reader`・GPU 用 analysis は�
 analysis MCP のベースイメージ (accelprof を固定バージョンで入れた薄いイメージ) に、`neuron-explorer` を含む `aws-neuronx-tools` を積んだ変種を作ります。GPU 用に `nsys` を積んだイメージと同じ考え方です。Dockerfile は `infra/eks/images/Dockerfile.accelprof-analysis-neuron` に置き、Advanced02 と同じくクラスタ内 BuildKit でビルドして ECR に push します。`REGION` は演習を行うリージョン、`BASE` は Advanced02 でビルドした base イメージの digest です。
 
 ```bash
+cd "$(git rev-parse --show-toplevel)"/infra/eks
 export REGION=us-east-2
 export ECR=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$REGION.amazonaws.com
 export BASE=$ECR/accelprof@$(aws ecr describe-images --repository-name accelprof \
   --image-ids imageTag=v1 --query 'imageDetails[0].imageDigest' --output text)
 k -n image-builder create configmap analysis-neuron-ctx \
-  --from-file=Dockerfile=infra/eks/images/Dockerfile.accelprof-analysis-neuron
-helm template exp infra/eks/charts/experiments -s templates/image-build-custom.yaml \
+  --from-file=Dockerfile=images/Dockerfile.accelprof-analysis-neuron
+helm template exp charts/experiments -s templates/image-build-custom.yaml \
   --set imageBuild.enabled=true --set imageBuild.jobName=build-analysis-neuron \
   --set imageBuild.repository=$ECR/accelprof --set imageBuild.tag=v1-neuron \
   --set imageBuild.buildArgs.BASE=$BASE \
@@ -162,7 +163,8 @@ EOF
 ```
 
 ```bash
-helm upgrade --install mcp infra/eks/charts/mcp-host -n mcp -f my-values.yaml
+cd "$(git rev-parse --show-toplevel)"/infra/eks
+helm upgrade --install mcp charts/mcp-host -n mcp -f my-values.yaml
 ```
 
 ## 3. Neuron プロファイルを取って run を記録する
@@ -249,7 +251,8 @@ Neuron の producer Pod は Trainium ノードを占有するので、確認後�
 export PRODUCER_POD=neuron-producer
 export NAMESPACE=distai
 k delete pod "$PRODUCER_POD" -n "$NAMESPACE"
-helm upgrade --install mcp infra/eks/charts/mcp-host -n mcp -f my-values.yaml
+cd "$(git rev-parse --show-toplevel)"/infra/eks
+helm upgrade --install mcp charts/mcp-host -n mcp -f my-values.yaml
 ```
 
 # まとめ

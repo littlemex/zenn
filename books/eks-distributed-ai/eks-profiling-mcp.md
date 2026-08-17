@@ -88,7 +88,8 @@ k rollout status  ds/efs-csi-node -n kube-system
 まず依存の取得 (初回のみ) と、リージョン・ECR レジストリ URI の準備です。`REGION` は演習を行うリージョンに合わせます。
 
 ```bash
-helm dependency build infra/eks/charts/experiments
+cd "$(git rev-parse --show-toplevel)"/infra/eks
+helm dependency build charts/experiments
 export REGION=us-east-2
 export ECR=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$REGION.amazonaws.com
 ```
@@ -97,8 +98,8 @@ export ECR=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.
 
 ```bash
 k -n image-builder create configmap base-ctx \
-  --from-file=Dockerfile=infra/eks/images/Dockerfile.accelprof-analysis
-helm template exp infra/eks/charts/experiments -s templates/image-build-custom.yaml \
+  --from-file=Dockerfile=images/Dockerfile.accelprof-analysis
+helm template exp charts/experiments -s templates/image-build-custom.yaml \
   --set imageBuild.enabled=true --set imageBuild.jobName=build-base \
   --set imageBuild.repository=$ECR/accelprof --set imageBuild.tag=v1 \
   --set imageBuild.contextSource=configMap --set imageBuild.contextConfigMap=base-ctx \
@@ -111,8 +112,8 @@ export BASE=$ECR/accelprof@$(aws ecr describe-images --repository-name accelprof
 
 ```bash
 k -n image-builder create configmap nsys-ctx \
-  --from-file=Dockerfile=infra/eks/images/Dockerfile.accelprof-analysis-nsys
-helm template exp infra/eks/charts/experiments -s templates/image-build-custom.yaml \
+  --from-file=Dockerfile=images/Dockerfile.accelprof-analysis-nsys
+helm template exp charts/experiments -s templates/image-build-custom.yaml \
   --set imageBuild.enabled=true --set imageBuild.jobName=build-nsys \
   --set imageBuild.repository=$ECR/accelprof --set imageBuild.tag=v1-nsys \
   --set imageBuild.buildArgs.BASE=$BASE \
@@ -124,8 +125,8 @@ helm template exp infra/eks/charts/experiments -s templates/image-build-custom.y
 
 ```bash
 k -n image-builder create configmap knowledge-ctx \
-  --from-file=Dockerfile=infra/eks/images/Dockerfile.accelprof-knowledge
-helm template exp infra/eks/charts/experiments -s templates/image-build-custom.yaml \
+  --from-file=Dockerfile=images/Dockerfile.accelprof-knowledge
+helm template exp charts/experiments -s templates/image-build-custom.yaml \
   --set imageBuild.enabled=true --set imageBuild.jobName=build-knowledge \
   --set imageBuild.repository=$ECR/accelprof-knowledge --set imageBuild.tag=v1 \
   --set imageBuild.contextSource=configMap --set imageBuild.contextConfigMap=knowledge-ctx \
@@ -146,8 +147,9 @@ aws ecr describe-images --repository-name accelprof-knowledge \
 `mcp-host` チャートの values に knowledge と analysis の 2 エントリを書きます。analysis は `mcp-reader` サービスアカウント、マネージド MLflow の ARN、S3 Files の volumeHandle、digest 固定のイメージ (手順 4 の `v1-nsys` の digest) を指定します。values の雛形は [`values-verify.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/mcp-host/values-verify.yaml) にあります。`mcp-host` は S3 Files 用の PV を提供する `s3files-lib` をローカル依存に持つため、`helm upgrade` の前に一度だけ依存を取り込みます。
 
 ```bash
-helm dependency build infra/eks/charts/mcp-host
-helm upgrade --install mcp infra/eks/charts/mcp-host -n mcp -f my-values.yaml
+cd "$(git rev-parse --show-toplevel)"/infra/eks
+helm dependency build charts/mcp-host
+helm upgrade --install mcp charts/mcp-host -n mcp -f my-values.yaml
 ```
 
 ## 6. プロファイルを取って run を記録する
