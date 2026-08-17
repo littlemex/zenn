@@ -100,13 +100,11 @@ GPU の analysis イメージが `nsys` を積んでいるのと同じ発想で�
 
 ### 5. `.neff` はコンパイルキャッシュに出力される
 
-torch-xla 経由でコンパイルすると、`.neff` は明示的なパスにではなく Neuron のコンパイルキャッシュに書かれます。採取時に確実に `.neff` を拾えるよう、キャッシュ先を環境変数で固定しておきます。
+torch-xla 経由でコンパイルすると、`.neff` は明示的なパスにではなく Neuron のコンパイルキャッシュに書かれます。採取時に確実に `.neff` を拾えるよう、キャッシュ先を環境変数で固定しておきます。実行後、キャッシュ配下 (`neuronxcc-<バージョン>/MODULE_<ハッシュ>/model.neff` のような場所) に `.neff` が生成されるので、`find` で拾います。
 
 ```bash
 export NEURON_COMPILE_CACHE_URL=/tmp/nccache
-# 実行後、キャッシュ配下に model.neff が生成される
 find /tmp/nccache -name '*.neff'
-# 例: /tmp/nccache/neuronxcc-<ver>/MODULE_<hash>/model.neff
 ```
 
 # ワークショップ実施
@@ -115,13 +113,13 @@ Advanced02 でデータ層・マウント・`mcp-reader`・GPU 用 analysis は�
 
 ## 1. Neuron analysis イメージをビルドする
 
-analysis MCP のベースイメージ (accelprof を固定バージョンで入れた薄いイメージ) に、`neuron-explorer` を含む `aws-neuronx-tools` を積んだ変種を作ります。GPU 用に `nsys` を積んだイメージと同じ考え方です。Dockerfile は `infra/eks/images/Dockerfile.accelprof-analysis-neuron` に置き、Advanced02 と同じくクラスタ内 BuildKit でビルドして ECR に push します。
+analysis MCP のベースイメージ (accelprof を固定バージョンで入れた薄いイメージ) に、`neuron-explorer` を含む `aws-neuronx-tools` を積んだ変種を作ります。GPU 用に `nsys` を積んだイメージと同じ考え方です。Dockerfile は `infra/eks/images/Dockerfile.accelprof-analysis-neuron` に置き、Advanced02 と同じくクラスタ内 BuildKit でビルドして ECR に push します。`REGION` は演習を行うリージョン、`BASE` は Advanced02 でビルドした base イメージの digest です。
 
 ```bash
-export REGION=us-east-2   # 演習を行うリージョンに合わせる
+export REGION=us-east-2
 export ECR=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$REGION.amazonaws.com
 export BASE=$ECR/accelprof@$(aws ecr describe-images --repository-name accelprof \
-  --image-ids imageTag=v1 --query 'imageDetails[0].imageDigest' --output text)   # Advanced02 の base
+  --image-ids imageTag=v1 --query 'imageDetails[0].imageDigest' --output text)
 k -n image-builder create configmap analysis-neuron-ctx \
   --from-file=Dockerfile=infra/eks/images/Dockerfile.accelprof-analysis-neuron
 helm template exp infra/eks/charts/experiments -s templates/image-build-custom.yaml \
@@ -157,7 +155,7 @@ cat <<EOF
     image:
       repository: $ECR/accelprof
       digest: "$NEURON_DIGEST"
-    serviceAccount: mcp-reader          # GPU 用 analysis と共用
+    serviceAccount: mcp-reader
     env:
       MCP_MLFLOW_TRACKING_URI: "$MLFLOW_APP_ARN"
 EOF
@@ -171,8 +169,9 @@ helm upgrade --install mcp infra/eks/charts/mcp-host -n mcp -f my-values.yaml
 
 Trainium ノードに producer Pod を載せ (詳細 2 の toleration とデバイス要求)、モデルをコンパイルして `.neff` を得て、`neuron-explorer capture` で `.ntff` を採り、両方を `store.log` に渡します。ここでは最小の計算をトレースして採取する例を示します。実際の演習では Basic 章で動かした学習・推論ワークロードを対象にできます。
 
+torch-xla の Neuron バックエンド (詳細 3 の `libneuronxla`) を補い、PJRT とコンパイルキャッシュを設定します。
+
 ```bash
-# torch-xla の Neuron バックエンドを補う (詳細 3)
 pip install libneuronxla --extra-index-url https://pip.repos.neuron.amazonaws.com
 export PJRT_DEVICE=NEURON NEURON_COMPILE_CACHE_URL=/tmp/nccache NEURON_RT_NUM_CORES=1
 ```
@@ -187,8 +186,9 @@ _ = (a @ b).relu().sum()
 xm.mark_step()
 ```
 
+(2) `.neff` を特定し、デバイス上で実行して `.ntff` を採ります。
+
 ```bash
-# 2) .neff を特定し、デバイス上で実行して .ntff を採る
 NEFF=$(find /tmp/nccache -name '*.neff' | head -1)
 neuron-explorer capture -n "$NEFF" -s /tmp/profile.ntff
 ```
@@ -243,14 +243,12 @@ playbook は英語のコーパスなので、検索も英語キーワード (dma
 
 ## 5. 後片付け
 
-Neuron の producer Pod は Trainium ノードを占有するので、確認後に削除します。analysis のエントリは values から Neuron 分を外して `helm upgrade` すれば戻せます。データ層とクラスタ側のマウントは Advanced02 の後片付け手順で撤去します (撤去順は `infra/eks` を先、`infra/data-layer` を後)。
+Neuron の producer Pod は Trainium ノードを占有するので、確認後に削除します。analysis のエントリは values から Neuron 分を外して `helm upgrade` すれば戻せます。データ層とクラスタ側のマウントは Advanced02 の後片付け手順で撤去します (撤去順は `infra/eks` を先、`infra/data-layer` を後)。`PRODUCER_POD` と `NAMESPACE` は手順 3 で producer Pod を作った名前と namespace に合わせます。producer Pod を削除したあと、values から analysis-neuron エントリを外して再適用します。
 
 ```bash
-# 手順 3 で producer Pod を作った名前と namespace に合わせる
 export PRODUCER_POD=neuron-producer
 export NAMESPACE=distai
 k delete pod "$PRODUCER_POD" -n "$NAMESPACE"
-# values から analysis-neuron エントリを外して再適用
 helm upgrade --install mcp infra/eks/charts/mcp-host -n mcp -f my-values.yaml
 ```
 
