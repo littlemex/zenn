@@ -48,6 +48,21 @@ flowchart TD
 
 本章の手順 2（パス分離）は静的プロビジョニングの応用で、手順 3（per-PVC 隔離）は動的プロビジョニングの応用です。
 
+## ワークロード特性で選ぶ: どのストレージを何に使うか
+
+マルチテナントの隔離手段は、ストレージの用途特性から決まります。「マルチテナントだから一律にこう隔離する」のではなく、ワークロードが要求する性能と可用性が、そもそも使うべきストレージと隔離の仕方を決めます。本章が per-PVC の強制隔離を Amazon FSx for OpenZFS で実演し、Amazon FSx for Lustre では実演しないのも、この使い分けの帰結です。
+
+- **大規模分散学習（高スループット I/O）** — Amazon FSx for Lustre。大きな連続 I/O、多数ノードからの並列アクセス、チェックポイントのバースト書き込みに最適化されており、容量に比例して集約スループットを水平に拡張できます。1 つのファイルシステムを複数テナント（複数ジョブ）で共有すること自体は Lustre の標準的な使い方ですが、スループットとメタデータ処理はファイルシステム全体で共有され、片方のバースト I/O がもう片方を圧迫する「ノイジーネイバー」が起き得ます。学習では I/O 待ちがそのまま GPU のアイドルに直結するため、高価なアクセラレータを遊ばせないことが最優先の場面では避けたいところです。FSx for Lustre は執筆時点で、テナントやクライアント単位に I/O 帯域を割り当て・保証する QoS を提供しません。したがって**性能の隔離が要件になる場合は、Lustre はテナントごとにファイルシステムを分ける**のが定石になります。本章が per-PVC の動的隔離を Lustre で実演しないのは、CSI の制約（動的プロビジョニングは新しいファイルシステムの作成になる）に加え、1 つのファイルシステムの相乗りでは性能隔離を保証できないためでもあります。
+
+- **多数の小さなファイル・POSIX 共有（home・コード・成果物・キャッシュ）** — Amazon FSx for OpenZFS。NFS でアクセスする共有ファイルシステムで、ボリューム単位でクォータ・スナップショット・クローンを細かく管理できます。FSx for OpenZFS も高スループット構成を選べますが、Lustre のように容量に応じてスケールアウトし多数ノードの大規模並列 I/O を捌く設計とは重心が異なり、多数の小さなファイルを低レイテンシで扱い、テナントごとに領域とクォータを細かく切りたい用途に向きます。本章の per-PVC 隔離（子ボリューム）はこの OpenZFS の使い方で、Basic02 で使った共有ストレージ（静的 PV）とは別に、StorageClass 経由の動的プロビジョニングでテナントごとに独立した子ボリュームを切り出します。
+
+- **複数 AZ からの共有・可用性重視（推論のモデルやキャッシュの配布）** — Amazon EFS や Amazon S3。この基盤では Lustre と OpenZFS をいずれも単一 AZ 構成で使います（FSx for Lustre は単一 AZ のファイルシステムで、FSx for OpenZFS には Single-AZ と Multi-AZ のデプロイタイプがありますが、この基盤では OpenZFS も意図的に Single-AZ にしています）。学習系のワークロードは EFA・Capacity Block・Lustre を前提とするため計算が 1 つの AZ に寄り、ストレージだけを Multi-AZ にしてもジョブ継続の観点では可用性が活きにくく、コスト増に見合いにくいからです（AZ 障害に備えた成果物の長期保全は、ストレージの Multi-AZ 化ではなくチェックポイントの Amazon S3 退避で担います）。一方、推論サービングは可用性のために複数 AZ に分散するのが定石で、そこから同じモデルやキャッシュを共有するなら、複数 AZ にまたがる共有ファイルシステムが要ります。選択肢は次のとおりです。
+    - **Amazon EFS（Regional 構成）** — 複数 AZ にまたがる共有ファイルシステムで、ReadWriteMany の PV として各 AZ のノードから読めます（One Zone ストレージクラスもあるため、複数 AZ 共有には Regional 構成を使います）。
+    - **Amazon S3 Files** — Amazon S3 のデータを共有ファイルシステムとして直接マウントする Amazon S3 の機能です。Amazon EFS 上に構築され、NFS（v4.1/v4.2）と POSIX のセマンティクス（書き込み後読み取り整合性・ファイルロック・POSIX 権限）を提供し、耐久性のバックエンドは S3 バケットです。アベイラビリティーゾーンごとにマウントターゲットを作れるため複数 AZ から共有でき、Advanced02 のプロファイル基盤では S3 上のプロファイルを Pod に POSIX で見せるのに使います。
+    - **Amazon S3（Mountpoint for Amazon S3 CSI 経由）** — S3 オブジェクトをファイルパスとして読み出せます。完全な POSIX ファイルシステムではないため、read-heavy なモデル配布や、推論フレームワークからの直接ロードに向きます。
+
+つまり、マルチテナントの「隔離」も「共有」も一様な機能ではなく、ワークロードの性能特性と可用性要件で手段が変わります。学習の性能隔離は Lustre のファイルシステム分割、細粒度の領域隔離は OpenZFS の子ボリューム、複数 AZ での共有は Amazon EFS・Amazon S3 Files・Amazon S3、という使い分けになります。次節では、このうち同一クラスタ内で共存させる Lustre と OpenZFS について、マルチテナントの実現手段の非対称を詳しく見ます。
+
 ## 2 つのストレージの非対称
 
 同じ「共有ストレージ」でも、マルチテナントの実現手段はバックエンドで大きく異なります。次の表は本 book の検証結果をまとめたものです。
@@ -496,5 +511,7 @@ terraform apply -var enable_fsx_openzfs_s3_backup=false
 - [Amazon FSx for OpenZFS のデプロイタイプと可用性](https://docs.aws.amazon.com/fsx/latest/OpenZFSGuide/availability-durability.html)
 - [aws-fsx-openzfs-csi-driver の動的プロビジョニング](https://github.com/kubernetes-sigs/aws-fsx-openzfs-csi-driver)
 - [Amazon FSx for Lustre のデータリポジトリ連携（DRA）](https://docs.aws.amazon.com/fsx/latest/LustreGuide/create-dra-linked-data-repo.html)
+- [Amazon S3 Files](https://docs.aws.amazon.com/ja_jp/AmazonS3/latest/userguide/s3-files.html)
+- [Amazon EFS CSI Driver](https://github.com/kubernetes-sigs/aws-efs-csi-driver)
 - [Amazon FSx for Lustre のストレージクォータ（user/group/project）](https://docs.aws.amazon.com/fsx/latest/LustreGuide/lustre-quotas.html)
 - [littlemex/distributed-ai](https://github.com/littlemex/distributed-ai) - `infra/eks` の openzfs 動的 IAM・`charts/openzfs-multitenant`・`manifests/advanced01`・`scripts/fsx-openzfs-s3-sync.sh`・`openzfs-s3-backup.tf` の実装
