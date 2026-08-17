@@ -57,7 +57,7 @@ terraform output trace_buckets                                             # リ
 
 ## 3. クラスタ側のマウントと ServiceAccount を追加する
 
-`infra/eks` 側で、データ層の出力を変数として渡し、S3 Files のマウントターゲット、`mcp` 名前空間と `mcp-reader` (分析 MCP 用の読み取り専用 ServiceAccount)、`mcp-producer` (プロファイルを書き込む ServiceAccount)、それぞれの Pod Identity 紐付け、次の手順で使う ECR リポジトリ (`accelprof` / `accelprof-knowledge`) を追加します。`mcp-producer` は、プロファイル収集ワークロードを動かす既存の namespace (`mcp_producer_namespace`、既定 `distai`) に作られます。
+`infra/eks` 側で、データ層の出力を変数として渡し、S3 Files のマウントターゲット、`mcp` 名前空間と `mcp-reader` (分析 MCP 用の読み取り専用 ServiceAccount) とその Pod Identity 紐付け、書き込み側 `mcp-producer` の Pod Identity 紐付け、次の手順で使う ECR リポジトリ (`accelprof` / `accelprof-knowledge`) を追加します。producer 側は **Pod Identity の紐付けだけ**を作ります (紐付けは EKS コントロールプレーン上の `(namespace, ServiceAccount 名)` レコードで、namespace や SA の実在を要求しません)。`mcp-producer` ServiceAccount 自体はプロファイル収集ワークロードを動かす namespace (`mcp_producer_namespace`、既定 `distai`) に手順 6 で作ります。この分離により、ワークロード namespace が未作成でもこの apply は失敗しません。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
@@ -140,7 +140,17 @@ helm upgrade --install mcp infra/eks/charts/mcp-host -n mcp -f my-values.yaml
 
 ## 6. プロファイルを取って run を記録する
 
-分析対象を作るため、producer 側でプロファイルを 1 本取り、trace バケットと MLflow に記録します。対象は Basic 章で動かしたワークロードでも任意のサンプルでもよく、`nsys profile <コマンド>` で包めば `.nsys-rep` が得られます。producer を動かす Pod は、手順 3 で作成した `mcp-producer` ServiceAccount を指定してください (`spec.serviceAccountName: mcp-producer`)。Pod Identity 経由で trace バケットへの書き込みと MLflow への記録の権限が付きます。
+分析対象を作るため、producer 側でプロファイルを 1 本取り、trace バケットと MLflow に記録します。対象は Basic 章で動かしたワークロードでも任意のサンプルでもよく、`nsys profile <コマンド>` で包めば `.nsys-rep` が得られます。
+
+producer を動かす namespace (手順 3 の `mcp_producer_namespace`、既定 `distai`) に `mcp-producer` ServiceAccount を作ります。手順 3 の Pod Identity 紐付けはこの `(namespace, mcp-producer)` を対象にしているので、この SA を持つ Pod が trace バケットへの書き込みと MLflow への記録の権限を得ます。
+
+```bash
+export NS=distai   # 手順 3 の mcp_producer_namespace と一致させる
+kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
+kubectl create serviceaccount mcp-producer -n "$NS" --dry-run=client -o yaml | kubectl apply -f -
+```
+
+producer を動かす Pod で `spec.serviceAccountName: mcp-producer` を指定します。紐付けより前から動いている Pod には資格情報が注入されないので、既存 Pod を使う場合は作成し直してください。
 
 ```python
 from experiment_store import ExperimentStore
@@ -187,8 +197,10 @@ kubectl port-forward svc/analysis  -n mcp 8080:8080 &
 
 ```bash
 helm uninstall mcp -n mcp
-# 先に infra/eks 側のマウント・mcp-reader・mcp-producer を無効化して apply
-# (mcp_producer_role_arn を渡さない = 既定の空になり producer SA と紐付けも破棄される)
+# producer ワークロードが作った SA を掃除 (infra は SA を管理しないため手動)
+kubectl delete serviceaccount mcp-producer -n "$NS" --ignore-not-found
+# infra/eks 側のマウント・mcp-reader・producer 紐付けを無効化して apply
+# (mcp_producer_role_arn を渡さない = 既定の空になり producer の Pod Identity 紐付けが破棄される)
 cd "$(git rev-parse --show-toplevel)"/infra/eks
 terraform apply -var s3files_enabled=false -var analysis_mcp_enabled=false
 # その後にデータ層のトグルを false にして apply (destroy ではない)
