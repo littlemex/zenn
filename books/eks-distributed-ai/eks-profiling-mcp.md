@@ -41,7 +41,7 @@ flowchart LR
 `infra/data-layer` を専用の state で初期化し、S3 Files とマネージド MLflow を有効にして適用します。適用後、`terraform output` で以降に使う値が得られます。
 
 ```bash
-cd infra/data-layer
+cd "$(git rev-parse --show-toplevel)"/infra/data-layer
 terraform init -backend-config=backend.hcl
 terraform apply -var s3files_enabled=true -var mlflow_enabled=true
 # 以降の手順で使う値を環境変数に取り出す (同じシェルで手順 3 以降まで続ける)
@@ -57,15 +57,14 @@ terraform output trace_buckets                                             # リ
 
 ## 3. クラスタ側のマウントと ServiceAccount を追加する
 
-`infra/eks` 側で、データ層の出力を変数として渡し、S3 Files のマウントターゲット、`mcp` 名前空間、`mcp-reader` (分析 MCP 用の読み取り専用 ServiceAccount)、`producer` (プロファイルを書き込む ServiceAccount)、それぞれの Pod Identity 紐付け、次の手順で使う ECR リポジトリ (`accelprof` / `accelprof-knowledge`) を追加します。
+`infra/eks` 側で、データ層の出力を変数として渡し、S3 Files のマウントターゲット、`mcp` 名前空間、`mcp-reader` (分析 MCP 用の読み取り専用 ServiceAccount) とその Pod Identity 紐付け、次の手順で使う ECR リポジトリ (`accelprof` / `accelprof-knowledge`) を追加します。
 
 ```bash
-cd infra/eks
+cd "$(git rev-parse --show-toplevel)"/infra/eks
 terraform apply \
   -var s3files_enabled=true -var s3files_file_system_id=$S3FILES_FS_ID \
   -var analysis_mcp_enabled=true \
-  -var mcp_reader_role_arn=$MCP_READER_ARN \
-  -var mcp_producer_role_arn=$MCP_PRODUCER_ARN
+  -var mcp_reader_role_arn=$MCP_READER_ARN
 ```
 
 S3 Files を初めて有効化したこの apply の直後に、EFS CSI driver の node プラグイン (DaemonSet) を一度再起動します。マウントを担う node プラグインは Pod 生成時にしか Pod Identity の資格情報を受け取らないため、これをしないと既存 node 上の Pod は古い node インスタンスロールを使い続け、S3 Files のマウントが `mount.nfs4: access denied by server` になります。
@@ -73,6 +72,17 @@ S3 Files を初めて有効化したこの apply の直後に、EFS CSI driver �
 ```bash
 kubectl rollout restart ds/efs-csi-node -n kube-system
 kubectl rollout status  ds/efs-csi-node -n kube-system
+```
+
+`infra/eks` が配線するのは分析 MCP 用の `mcp-reader` だけです。プロファイルを書き込む `producer` 側は、ワークロードを動かす namespace に ServiceAccount を作り、データ層の producer ロールへ Pod Identity で紐付けます (手順 6 の producer Pod がこれを使います)。
+
+```bash
+export NS=distai   # producer(プロファイル収集ワークロード)を動かす namespace
+export CLUSTER=$(terraform output -raw cluster_name)
+kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
+kubectl create serviceaccount producer -n "$NS" --dry-run=client -o yaml | kubectl apply -f -
+aws eks create-pod-identity-association --cluster-name "$CLUSTER" \
+  --namespace "$NS" --service-account producer --role-arn "$MCP_PRODUCER_ARN"
 ```
 
 ## 4. イメージをクラスタ内 BuildKit でビルドする
@@ -187,11 +197,17 @@ kubectl port-forward svc/analysis  -n mcp 8080:8080 &
 
 ```bash
 helm uninstall mcp -n mcp
-# 先に infra/eks 側のマウント・mcp-reader・producer を無効化して apply
-cd infra/eks
+# 手動で作った producer の Pod Identity 紐付けと ServiceAccount を外す
+aws eks list-pod-identity-associations --cluster-name "$CLUSTER" \
+  --namespace "$NS" --service-account producer \
+  --query 'associations[].associationId' --output text \
+  | xargs -r -n1 aws eks delete-pod-identity-association --cluster-name "$CLUSTER" --association-id
+kubectl delete serviceaccount producer -n "$NS" --ignore-not-found
+# 先に infra/eks 側のマウントと mcp-reader を無効化して apply
+cd "$(git rev-parse --show-toplevel)"/infra/eks
 terraform apply -var s3files_enabled=false -var analysis_mcp_enabled=false
 # その後にデータ層のトグルを false にして apply (destroy ではない)
-cd ../data-layer
+cd "$(git rev-parse --show-toplevel)"/infra/data-layer
 terraform apply -var s3files_enabled=false -var mlflow_enabled=false
 ```
 
