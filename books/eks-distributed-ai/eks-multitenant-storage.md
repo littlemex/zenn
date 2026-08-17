@@ -5,10 +5,6 @@ free: true
 
 本章では、Basic02 と Basic10 で扱った共有ストレージ（Amazon FSx for OpenZFS と Amazon FSx for Lustre）を、複数のチームや namespace で使うときの設計を扱います。Basic02・Basic10 では単一の利用者を前提に「共有」の最小構成を組みましたが、共有クラスタを複数テナントで使うと「どこまで分離できるのか」「どの層で分離するのか」を設計として決める必要が出てきます。
 
-:::message
-本章は Amazon FSx for OpenZFS と Amazon FSx for Lustre に絞ります。前提として Basic01 から Basic10 までのファイルシステムと静的 PersistentVolume が作成済みであること、`k` エイリアスと `--context` が設定済みであることを想定します。
-:::
-
 # 解説
 
 ## マルチテナントを 2 階層で捉える
@@ -24,6 +20,34 @@ Basic02・Basic10 で作った「同一ファイルシステムを複数 namespa
 Kubernetes の namespace はそれ自体では強いセキュリティ境界ではありません。ストレージの隔離は、namespace に加えて POSIX 権限・RBAC・IAM・セキュリティグループ・Pod Security と組み合わせて初めて意味を持ちます。テナントが真の信頼境界（別顧客・別 KMS 鍵・別課金）であれば、同一ファイルシステム内の論理分離で頑張らず、ファイルシステムごと、場合によってはアカウントごとに分けてください。
 :::
 
+## 基本概念: PV・PVC・squash の関係
+
+本章で繰り返し出てくる PersistentVolume（PV）・PersistentVolumeClaim（PVC）・squash の関係を、先に図で押さえておきます。Pod は PVC を経由してマウントし、PVC は PV にバインドし、PV は CSI ドライバ経由で実体である FSx のファイルシステム・ボリュームにつながります。squash は NFS export の設定で、マウント時に uid/gid をどう変換するかを決めるレイヤーです。
+
+```mermaid
+graph LR
+    Pod["Pod"] -->|マウント要求| PVC["PersistentVolumeClaim (PVC)"]
+    PVC -->|バインド| PV["PersistentVolume (PV)"]
+    PV -->|CSI ドライバ経由でマウント| FS["FSx ファイルシステム / ボリューム"]
+    FS -->|NFS export の squash 設定で uid/gid を変換| Pod
+```
+
+PV と実ボリュームの結びつき方には、静的プロビジョニングと動的プロビジョニングの 2 種類があります。静的は既存のファイルシステムを指す PV を管理者が事前に用意する方式、動的は PVC の作成をきっかけに CSI ドライバが新規ボリュームを作って PV を自動生成する方式です。
+
+```mermaid
+flowchart TD
+    subgraph 静的プロビジョニング
+        S1["管理者が既存の FSx を参照する PV を事前作成"] --> S2["利用者が PVC を作成"]
+        S2 --> S3["PVC が既存 PV にバインド"]
+    end
+    subgraph 動的プロビジョニング
+        D1["利用者が StorageClass を指定して PVC を作成"] --> D2["CSI ドライバが FSx 側に新規ボリュームを作成"]
+        D2 --> D3["PV が自動生成されて PVC にバインド"]
+    end
+```
+
+本章の手順 2（パス分離）は静的プロビジョニングの応用で、手順 3（per-PVC 隔離）は動的プロビジョニングの応用です。
+
 ## 2 つのストレージの非対称
 
 同じ「共有ストレージ」でも、マルチテナントの実現手段はバックエンドで大きく異なります。次の表は本 book の検証結果をまとめたものです。
@@ -35,12 +59,12 @@ Kubernetes の namespace はそれ自体では強いセキュリティ境界で�
 | パス分離（階層 1） | 可 | 可 |
 | ID 制御（squash/POSIX） | NFS export の squash | RootSquashConfiguration |
 | per-PVC 容量クォータ | 可 | FS 単位の user/group/project quota（project は Lustre 2.15） |
-| AZ | Multi-AZ / Single-AZ 選択可 | 単一 AZ |
+| AZ | マルチ AZ / 単一 AZ 選択可 | 単一 AZ |
 | S3 へのコールド退避 | スナップショット（ローカル世代管理）+ Pod からの `aws s3 sync` | DRA（S3 と双方向 sync） |
 
 要点は、**Amazon FSx for OpenZFS は既存ファイルシステムの配下に PVC ごとの子ボリュームを動的に切り出せる**のに対し、**Amazon FSx for Lustre は既存ファイルシステムを PVC 単位に分割できない**ことです。Lustre の動的プロビジョニングは PVC ごとに新しいファイルシステムを作成する動作で、作成に時間がかかり容量単位も大きいため、テナント分離の通常解にはなりません。したがって本章では、パス分離（階層 1）は両者で、per-PVC の動的隔離は OpenZFS でのみ実演し、Lustre は解説にとどめます。
 
-もう 1 つ、AZ の扱いも設計事項です。Amazon FSx for Lustre は単一 AZ、Amazon FSx for OpenZFS も Single-AZ を選ぶとその AZ からのアクセスが前提になります。マルチテナントの共有クラスタでは、別 AZ のノードからマウントするとクロス AZ 転送コストとレイテンシが乗るため、`topology.kubernetes.io/zone` の nodeSelector や PV の `nodeAffinity` で、テナントの Pod をファイルシステムと同じ AZ に寄せます。
+もう 1 つ、AZ の扱いも設計事項です。Amazon FSx for Lustre は単一 AZ、Amazon FSx for OpenZFS も単一 AZ のデプロイタイプ（`SINGLE_AZ_1` など）を選ぶとその AZ からのアクセスが前提になります。マルチテナントの共有クラスタでは、別 AZ のノードからマウントするとクロス AZ 転送コストとレイテンシが乗るため、`topology.kubernetes.io/zone` の nodeSelector や PV の `nodeAffinity` で、テナントの Pod をファイルシステムと同じ AZ に寄せます。
 
 ## 共有（パス分離）の仕組み
 
@@ -63,22 +87,12 @@ Amazon FSx for OpenZFS の動的プロビジョニングを使うには、CSI �
 
 学習データの正（source of truth）と最終成果物は、可用性とコストの観点から Amazon S3 に置くのが基本です。共有ファイルシステムはあくまでホット層で、そこから S3 へ退避する経路を設計します。
 
-- **FSx for OpenZFS**: per-volume スナップショットでボリューム単位の世代管理・クローン・full-copy ができます。ただしスナップショットはファイルシステム内（`.zfs/snapshot`）に保存され、ファイルシステムと運命を共にする**ローカルな保護**です。S3 へコールド退避するには、Lustre の DRA のようなネイティブ連携が OpenZFS には無いため、ボリュームをマウントした Pod から `aws s3 sync` で S3 バケットへ明示的に書き出します。スナップショットで直近の状態をローカルに世代管理しつつ、`aws s3 sync` で S3 を正とする、という二段構えにします。
+- **FSx for OpenZFS**: per-volume スナップショットでボリューム単位の世代管理・クローン・full-copy ができます。スナップショットはファイルシステム内（`.zfs/snapshot`）に保存される点は変わりませんが、保存先や保持期間の詳細な挙動は変わり得るため、最新の[Amazon FSx for OpenZFS のスナップショット](https://docs.aws.amazon.com/fsx/latest/OpenZFSGuide/snapshots-openzfs.html)を確認してください。原則としてはファイルシステムと運命を共にする**ローカルな保護**と捉えておくのが安全です。本書執筆時点では、Lustre の DRA に相当する S3 とのネイティブ連携は OpenZFS には用意されていないため、ボリュームをマウントした Pod から `aws s3 sync` で S3 バケットへ明示的に書き出す構成をとります。スナップショットで直近の状態をローカルに世代管理しつつ、`aws s3 sync` で S3 を正とする、という二段構えにします。
 - **FSx for Lustre**: DRA（Data Repository Association）で Lustre のパスと S3 プレフィックスを関連付け、双方向に自動同期します。S3 にあるデータは Lustre から遅延ロード（HSM）で読め、Lustre に書いたデータは S3 に自動エクスポートされます。学習データを S3 に置き、成果物を S3 に逃がす定石です。DRA は PERSISTENT_2 デプロイタイプで使えます。
-
-## アンチパターン
-
-- namespace ごとに PVC を作っただけで「隔離できた」と考える（共有ファイルシステムならデータは相互可視です）。
-- Amazon FSx for Lustre を汎用のマルチテナント NAS として使う（高スループットのスクラッチ用途に割り切ります）。
-- 1 つの namespace に全チームを同居させ、単一の ReadWriteMany PVC を共用させる（PVC は namespace スコープなので namespace を跨いで「配る」ことはできず、同居させると分離が消える）。
-- 動的プロビジョニングが常に安価で速いと考える（Lustre の動的はファイルシステムを量産し高コストです）。
-- Kueue でストレージまで分離できると考える（Kueue は計算資源のキューイングで、ストレージは PVC・StorageClass・ResourceQuota・RBAC で設計します）。
-
-容量の食い潰し対策として、Kubernetes 側では ResourceQuota で namespace ごとに上限を設定できます。ただし動的プロビジョニングでは PVC の要求容量が `1Gi` に固定される（実容量は StorageClass のクォータで決まる）ため、`<storageclass>.storageclass.storage.k8s.io/requests.storage` の集計は実消費と乖離します。実効的なのは `<storageclass>.storageclass.storage.k8s.io/persistentvolumeclaims` による PVC 個数の上限で、これに OpenZFS の per-PVC クォータ（1 個あたりの容量）を掛けて namespace の総容量を間接的に縛ります。Kueue は GPU/CPU など計算資源のキューイングを担い、ストレージ容量は対象外です。ストレージの容量とアクセス境界は PVC・StorageClass・ResourceQuota・RBAC で、計算資源は Kueue で、とレイヤーを分けて設計します。
 
 # ワークショップ実施
 
-以下は `ap-southeast-4` での実機出力例です。リージョンやファイルシステム ID は環境で変わりますが、手順は同じです。作業用 namespace は Basic02 と同じく既定を `distai` とし、テナント役の namespace を追加で作ります。
+以下は `us-east-2` での実機出力例です。リージョンやファイルシステム ID は環境で変わりますが、手順は同じです。作業用 namespace は Basic02 と同じく既定を `distai` とし、テナント役の namespace を追加で作ります。
 
 ## 1. 前提を確認する
 
@@ -110,7 +124,20 @@ HANDLE=$(k get pv "$FSX_PV" -o jsonpath='{.spec.csi.volumeHandle}')
 CAP=$(k get pv "$FSX_PV" -o jsonpath='{.spec.capacity.storage}')
 
 k create namespace team-b --dry-run=client -o yaml | k apply -f -
-k apply -f - <<EOF
+```
+
+PV と PVC のマニフェストは、本文に heredoc で埋め込むのではなく、リポジトリの `manifests/advanced01/pv-team-b.yaml.tmpl` と `manifests/advanced01/pvc-team-b.yaml.tmpl` にテンプレートとして管理します。`${DNS}` / `${MOUNT}` / `${HANDLE}` / `${CAP}` を環境変数として export し、`envsubst` で値を埋め込んで `kubectl apply -f -` に渡します。
+
+```bash
+export DNS MOUNT HANDLE CAP
+envsubst < manifests/advanced01/pv-team-b.yaml.tmpl | k apply -f -
+envsubst < manifests/advanced01/pvc-team-b.yaml.tmpl | k apply -n team-b -f -
+k wait --for=jsonpath='{.status.phase}'=Bound pvc/fsx-claim -n team-b --timeout=60s
+```
+
+::::details テンプレートの内容（参考）
+```yaml
+# manifests/advanced01/pv-team-b.yaml.tmpl
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -128,9 +155,10 @@ spec:
     volumeAttributes:
       dnsname: ${DNS}
       mountname: ${MOUNT}
-EOF
+```
 
-k apply -n team-b -f - <<EOF
+```yaml
+# manifests/advanced01/pvc-team-b.yaml.tmpl
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -142,9 +170,8 @@ spec:
   resources:
     requests:
       storage: ${CAP}
-EOF
-k wait --for=jsonpath='{.status.phase}'=Bound pvc/fsx-claim -n team-b --timeout=60s
 ```
+::::
 
 `team-b` の Pod が自分のサブディレクトリに書き込み、既定 namespace（`distai`）の Pod から同じファイルが読めることを確認します。`distai` 側の `fsx-claim` は Basic10 の手順で作成済みの前提です。
 
@@ -181,50 +208,58 @@ k delete namespace team-b --ignore-not-found
 
 まず StorageClass を作ります。`ParentVolumeId` には Basic02 で作った OpenZFS ファイルシステムのルートボリュームを指定します（`terraform output` の `fsx_openzfs` から取得できます）。`StorageCapacityQuotaGiB` が per-PVC の容量クォータになります。
 
+StorageClass と、テナントごとの PVC はどちらも同じパラメータ（quota やクライアント制限）を共有するため、本文に heredoc の YAML を並べるのではなく、リポジトリの `charts/openzfs-multitenant/` に Helm chart としてまとめています。`values.yaml` で `parentVolumeId`・`storageCapacityQuotaGiB`・`tenants`（PVC を作る namespace のリスト）を差し替えられるようにしてあります。
+
 ```bash
 ROOT_VOL=$(aws fsx describe-file-systems --file-system-ids "$ZFS_FS_ID" \
   --query 'FileSystems[0].OpenZFSConfiguration.RootVolumeId' --output text)
 
-k apply -f - <<EOF
+for ns in tenant-a tenant-b; do
+  k create namespace $ns --dry-run=client -o yaml | k apply -f -
+done
+
+helm upgrade --install openzfs-multitenant charts/openzfs-multitenant \
+  --set parentVolumeId="$ROOT_VOL" \
+  --set storageCapacityQuotaGiB=10 \
+  --set tenants[0]=tenant-a \
+  --set tenants[1]=tenant-b
+
+k wait --for=jsonpath='{.status.phase}'=Bound pvc/cache -n tenant-a --timeout=180s
+k wait --for=jsonpath='{.status.phase}'=Bound pvc/cache -n tenant-b --timeout=180s
+```
+
+::::details chart が生成する主なリソース（参考）
+StorageClass はクラスタスコープで 1 つ、PVC は `tenants` で指定した namespace ごとに 1 つ生成されます。要点だけ抜くと次のような内容です。
+
+```yaml
+# charts/openzfs-multitenant/templates/storageclass.yaml (要点)
 kind: StorageClass
 apiVersion: storage.k8s.io/v1
 metadata: { name: openzfs-sc }
 provisioner: fsx.openzfs.csi.aws.com
 parameters:
   ResourceType: "volume"
-  ParentVolumeId: '"${ROOT_VOL}"'
-  CopyTagsToSnapshots: 'false'
-  DataCompressionType: '"NONE"'
+  ParentVolumeId: '"{{ .Values.parentVolumeId }}"'
   NfsExports: '[{"ClientConfigurations": [{"Clients": "*", "Options": ["rw","crossmnt"]}]}]'
-  ReadOnly: 'false'
-  RecordSizeKiB: '128'
-  StorageCapacityReservationGiB: '-1'
-  StorageCapacityQuotaGiB: '10'
+  StorageCapacityQuotaGiB: '{{ .Values.storageCapacityQuotaGiB }}'
   OptionsOnDeletion: '["DELETE_CHILD_VOLUMES_AND_SNAPSHOTS"]'
 reclaimPolicy: Delete
-allowVolumeExpansion: false
 mountOptions: [ "nfsvers=4.1", "rsize=1048576", "wsize=1048576", "timeo=600" ]
-EOF
 ```
 
-2 つの namespace（`tenant-a` / `tenant-b`）にそれぞれ PVC を作ります。動的プロビジョニングでは PVC の要求容量は無視され、クォータは StorageClass の値が使われるため、要求は `1Gi` に固定します。
-
-```bash
-for ns in tenant-a tenant-b; do
-  k create namespace $ns --dry-run=client -o yaml | k apply -f -
-  k apply -n $ns -f - <<'EOF'
+```yaml
+# charts/openzfs-multitenant/templates/pvc.yaml (要点、tenants でループ)
 apiVersion: v1
 kind: PersistentVolumeClaim
-metadata: { name: cache }
+metadata: { name: cache, namespace: "{{ .tenant }}" }
 spec:
   accessModes: ["ReadWriteMany"]
   storageClassName: openzfs-sc
   resources: { requests: { storage: 1Gi } }
-EOF
-done
-k wait --for=jsonpath='{.status.phase}'=Bound pvc/cache -n tenant-a --timeout=180s
-k wait --for=jsonpath='{.status.phase}'=Bound pvc/cache -n tenant-b --timeout=180s
 ```
+
+動的プロビジョニングでは PVC の要求容量は無視され、実際のクォータは StorageClass の `StorageCapacityQuotaGiB` が使われるため、PVC 側の要求は `1Gi` に固定しています。
+::::
 
 親ファイルシステムの配下に、PVC ごとの子ボリュームが 2 つ作られています。
 
@@ -256,7 +291,7 @@ k delete namespace tenant-a tenant-b
 k get pv | grep pvc- || echo "no dynamic PV remaining"
 aws fsx describe-volumes --filters Name=file-system-id,Values="$ZFS_FS_ID" \
   --query 'Volumes[?OpenZFSConfiguration.ParentVolumeId==`'"$ROOT_VOL"'`].Name' --output text
-k delete sc openzfs-sc
+helm uninstall openzfs-multitenant
 ```
 
 ## 4. コールドデータ退避
@@ -278,6 +313,8 @@ aws fsx create-data-repository-association \
   --batch-import-meta-data-on-create \
   --s3 'AutoImportPolicy={Events=[NEW,CHANGED,DELETED]},AutoExportPolicy={Events=[NEW,CHANGED,DELETED]}'
 ```
+
+ここではワークショップの検証を素早く行うため AWS CLI で直接作成していますが、この S3 バケットと DRA はいずれも Terraform で宣言的に作成できるリソースです。S3 バケットは aws provider の `aws_s3_bucket`、DRA は `aws_fsx_data_repository_association` に対応します。本番運用では CLI での手動作成ではなく、本 book の他のリソースと同じく Terraform 管理下に置くことを推奨します。
 
 DRA の作成には数分かかります。`AVAILABLE` になるまで待ってから確認します。
 
@@ -327,19 +364,51 @@ aws fsx restore-volume-from-snapshot \
 
 ### FSx for OpenZFS を S3 に退避する
 
-Amazon FSx for OpenZFS には Lustre の DRA のような S3 ネイティブ連携がありません。S3 へコールド退避するには、ボリュームをマウントした Pod から `aws s3 sync` で明示的に書き出します。ここでは Basic02 の共有 PVC（`shared-claim`、`/shared` にマウント）を `public.ecr.aws/aws-cli/aws-cli` イメージの Pod でマウントし、S3 に同期します。Pod の `default` ServiceAccount に S3 書き込み権限が要ります（Pod Identity の association か、ノードのインスタンスロール）。Pod Identity はリージョンを渡さないため、`AWS_REGION` を明示します。バケットは DRA 節で定義した `$BUCKET` を使い、DRA と衝突しない `openzfs-cold/` プレフィックスへ書きます。
+Amazon FSx for OpenZFS には Lustre の DRA のような S3 ネイティブ連携がありません。S3 へコールド退避するには、ボリュームをマウントした Pod から `aws s3 sync` で明示的に書き出します。この操作はワークショップ以外でも（検証・オンボーディング・定期退避で）繰り返し使うため、`k run` の長い overrides をその場で書くのではなく、リポジトリの `scripts/fsx-openzfs-s3-sync.sh` に切り出しています。このスクリプトは namespace・PVC 名・宛先バケット・プレフィックスを引数に取り、`aws s3 sync` を実行する 1 回限りの Pod を起動し、完了を待って結果を表示してから Pod を削除するところまでを一括で行います。
+
+ここでは Basic02 の共有 PVC（`shared-claim`、`/shared` にマウント）を対象に、DRA 節で定義した `$BUCKET` の `openzfs-cold/` プレフィックス（DRA と衝突しないパス）へ同期します。Pod の `default` ServiceAccount に S3 書き込み権限が要ります（Pod Identity の association か、ノードのインスタンスロール）。
 
 ```bash
-REGION=$(aws configure get region)
-
-k run zfs-evac -n distai --restart=Never --image=public.ecr.aws/aws-cli/aws-cli \
-    --overrides='{"spec":{"containers":[{"name":"e","image":"public.ecr.aws/aws-cli/aws-cli","env":[{"name":"AWS_REGION","value":"'"$REGION"'"}],"command":["aws","s3","sync","/shared","s3://'"$BUCKET"'/openzfs-cold/"],"volumeMounts":[{"name":"zfs","mountPath":"/shared"}]}],"volumes":[{"name":"zfs","persistentVolumeClaim":{"claimName":"shared-claim"}}]}}'
-k wait --for=jsonpath='{.status.phase}'=Succeeded pod/zfs-evac -n distai --timeout=600s
-aws s3 ls s3://$BUCKET/openzfs-cold/ --recursive
-k delete pod zfs-evac -n distai --ignore-not-found
+./scripts/fsx-openzfs-s3-sync.sh \
+  --namespace distai \
+  --pvc shared-claim \
+  --bucket "$BUCKET" \
+  --prefix openzfs-cold/
 ```
 
-`aws s3 sync` は差分だけを送るので、CronJob 化すればホット層の成果物を継続的に S3 へ逃がせます。Lustre は DRA でこれを自動化でき、OpenZFS は明示的な同期ジョブで行う、という違いです。
+`aws s3 sync` は差分だけを送るので、このスクリプトを CronJob 化すればホット層の成果物を継続的に S3 へ逃がせます。Lustre は DRA でこれを自動化でき、OpenZFS はこうした同期ジョブで行う、という違いです。
+
+### 定期退避を CronJob 化する
+
+ワークショップの手順は 1 回限りの手動実行ですが、実運用では手動で都度実行するのではなく、`scripts/fsx-openzfs-s3-sync.sh` の内容を Kubernetes の CronJob として定期実行し、さらに Terraform 側のトグル変数で有効・無効を切り替えられるようにします。トグルを立てると、CronJob 本体と、それが使う ServiceAccount・Pod Identity の association までを Terraform が一括でデプロイし、決めたスケジュールで自動的に差分を S3 へ送ります。トグルを倒せば CronJob が削除され、余計な同期が走らなくなります。
+
+```bash
+terraform apply -var enable_fsx_openzfs_s3_backup=true
+```
+
+::::details CronJob の要点（参考）
+```yaml
+# manifests/advanced01/openzfs-s3-sync-cronjob.yaml (要点)
+apiVersion: batch/v1
+kind: CronJob
+metadata: { name: fsx-openzfs-s3-sync, namespace: distai }
+spec:
+  schedule: "0 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: sync
+              image: public.ecr.aws/aws-cli/aws-cli
+              command: ["aws", "s3", "sync", "/shared", "s3://BUCKET/openzfs-cold/"]
+              volumeMounts:
+                - { name: zfs, mountPath: /shared }
+          volumes:
+            - { name: zfs, persistentVolumeClaim: { claimName: shared-claim } }
+          restartPolicy: OnFailure
+```
+::::
 
 ### 本章で作ったリソースの後片付け
 

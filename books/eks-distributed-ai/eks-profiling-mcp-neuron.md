@@ -1,19 +1,19 @@
 ---
-title: "Advanced02 - Neuron のプロファイルを MCP で分析する"
+title: "Advanced03 - Neuron プロファイルを MCP で分析する仕組みを体験する"
 free: true
 ---
 
-本章は Advanced01「[プロファイルを MCP で分析する基盤を動かす](https://zenn.dev/littlemex/books/eks-distributed-ai/viewer/eks-profiling-mcp)」の続きです。Advanced01 では GPU の `.nsys-rep` を対象に、データ層の適用・S3 Files マウント・`mcp-host` でのデプロイ・analysis MCP と knowledge MCP による分析までを動かしました。本章では同じ基盤の上に AWS Trainium / Inferentia (Neuron) のプロファイルを載せ、GPU と同じ analyze / knowledge の流れで扱えるようにします。
+本章は Advanced02「[プロファイルを MCP で分析する基盤を動かす](https://zenn.dev/littlemex/books/eks-distributed-ai/viewer/eks-profiling-mcp)」の続きです。Advanced02 では GPU の `.nsys-rep` を対象に、データ層の適用・S3 Files マウント・`mcp-host` でのデプロイ・analysis MCP と knowledge MCP による分析までを動かしました。本章では同じ基盤の上に AWS Trainium / Inferentia (Neuron) のプロファイルを載せ、GPU と同じ analyze / knowledge の流れで扱えるようにします。
 
 :::message
-本章の開始状態は、Advanced01 を実施済みで、データ層 (`infra/data-layer`) とクラスタ側のマウント・`mcp-reader`・`mcp-host` の GPU 用 analysis がすでに稼働している状態です。ここではその上に Neuron 用の analysis を足し、Neuron の producer からプロファイルを 1 本記録して分析まで通します。Advanced01 の予約タグ・prefix 規約・`volumeHandle` 書式・digest 固定といった前提はそのまま引き継ぐので、本章では繰り返しません。
+本章の開始状態は、Advanced02 を実施済みで、データ層 (`infra/data-layer`) とクラスタ側のマウント・`mcp-reader`・`mcp-host` の GPU 用 analysis がすでに稼働している状態です。ここではその上に Neuron 用の analysis を足し、Neuron の producer からプロファイルを 1 本記録して分析まで通します。Advanced02 の予約タグ・prefix 規約・`volumeHandle` 書式・digest 固定といった前提はそのまま引き継ぐので、本章では繰り返しません。
 :::
 
 # 解説
 
 ## この章で動かすもの
 
-経路は Advanced01 と同じで、対象が Neuron のプロファイルに変わるだけです。producer が Trainium ノード上でモデルをコンパイルし、そのコンパイル成果物 (`.neff`) をデバイス上で実行してプロファイル (`.ntff`) を採取し、両方を trace バケットに書いて run を MLflow に記録します。analysis MCP はその run を解決し、S3 Files マウント越しに `.neff` と `.ntff` を読んで、`neuron-summary` アナライザの結果をテキストで返します。
+経路は Advanced02 と同じで、対象が Neuron のプロファイルに変わるだけです。producer が Trainium ノード上でモデルをコンパイルし、そのコンパイル成果物 (`.neff`) をデバイス上で実行してプロファイル (`.ntff`) を採取し、両方を trace バケットに書いて run を MLflow に記録します。analysis MCP はその run を解決し、S3 Files マウント越しに `.neff` と `.ntff` を読んで、`neuron-summary` アナライザの結果をテキストで返します。
 
 ```mermaid
 flowchart LR
@@ -32,7 +32,7 @@ flowchart LR
 
 GPU と Neuron で、基盤の骨格は同じでも、producer 側の手数と成果物の形が変わります。
 
-| 観点 | GPU (Advanced01) | Neuron (本章) |
+| 観点 | GPU (Advanced02) | Neuron (本章) |
 | --- | --- | --- |
 | 成果物 | `.nsys-rep` の 1 ファイル | `.neff` (コンパイル成果物) と `.ntff` (プロファイル) の 2 ファイルの組 |
 | 採取コマンド | `nsys profile <cmd>` | コンパイルで `.neff` を得て `neuron-explorer capture` で `.ntff` を採る |
@@ -56,7 +56,7 @@ Neuron のコンパイル自体はデバイス不要です (`neuronx-cc` や tor
 ```yaml
 # producer Pod (Trainium ノードに載せる)
 spec:
-  serviceAccountName: producer          # Advanced01 手順2 で作った SA (バケット書き込み + MLflow 記録)
+  serviceAccountName: producer          # Advanced02 手順2 で作った SA (バケット書き込み + MLflow 記録)
   tolerations:
     - key: aws.amazon.com/neuron
       operator: Exists
@@ -111,15 +111,15 @@ find /tmp/nccache -name '*.neff'
 
 # ワークショップ実施
 
-Advanced01 でデータ層・マウント・`mcp-reader`・GPU 用 analysis はすでに動いている前提です。本章では Neuron 用の analysis を足し、Neuron の producer から run を 1 本記録して分析します。
+Advanced02 でデータ層・マウント・`mcp-reader`・GPU 用 analysis はすでに動いている前提です。本章では Neuron 用の analysis を足し、Neuron の producer から run を 1 本記録して分析します。
 
 ## 1. Neuron analysis イメージをビルドする
 
-analysis MCP のベースイメージ (accelprof を固定バージョンで入れた薄いイメージ) に、`neuron-explorer` を含む `aws-neuronx-tools` を積んだ変種を作ります。GPU 用に `nsys` を積んだイメージと同じ考え方です。Dockerfile は `infra/eks/images/Dockerfile.accelprof-analysis-neuron` に置き、Advanced01 と同じくクラスタ内 BuildKit でビルドして ECR に push します。
+analysis MCP のベースイメージ (accelprof を固定バージョンで入れた薄いイメージ) に、`neuron-explorer` を含む `aws-neuronx-tools` を積んだ変種を作ります。GPU 用に `nsys` を積んだイメージと同じ考え方です。Dockerfile は `infra/eks/images/Dockerfile.accelprof-analysis-neuron` に置き、Advanced02 と同じくクラスタ内 BuildKit でビルドして ECR に push します。
 
 ```bash
 export ECR=<account-id>.dkr.ecr.<region>.amazonaws.com   # 自分の ECR レジストリ URI に置き換える
-export BASE=$ECR/accelprof@sha256:<base-digest>          # Advanced01 でビルドした base の digest
+export BASE=$ECR/accelprof@sha256:<base-digest>          # Advanced02 でビルドした base の digest
 kubectl -n image-builder create configmap analysis-neuron-ctx \
   --from-file=Dockerfile=infra/eks/images/Dockerfile.accelprof-analysis-neuron
 helm template exp infra/eks/charts/experiments -s templates/image-build-custom.yaml \
@@ -130,7 +130,7 @@ helm template exp infra/eks/charts/experiments -s templates/image-build-custom.y
   | kubectl apply -f -
 ```
 
-push 後、Advanced01 と同様に digest を控え、values にはタグではなくこの digest を渡します。
+push 後、Advanced02 と同様に digest を控え、values にはタグではなくこの digest を渡します。
 
 ```bash
 aws ecr describe-images --repository-name accelprof \
@@ -139,7 +139,7 @@ aws ecr describe-images --repository-name accelprof \
 
 ## 2. mcp-host に Neuron analysis のエントリを足す
 
-`mcp-host` の values に analysis のエントリをもう 1 つ足します。GPU 用 analysis との違いは、指すイメージが Neuron 版 (`neuron-explorer` を積んだもの) であることだけです。`neuron-summary` はパッケージの組み込みアナライザで、イメージに `neuron-explorer` バイナリがあれば自動で有効になるため、`MCP_ANALYZERS` を書く必要はありません (`MCP_ANALYZERS` は独自アナライザを足すときだけ使う JSON マップです)。`mcp-reader` サービスアカウント・マネージド MLflow の ARN・S3 Files の `volumeHandle` は Advanced01 と同じ値を使い回します。
+`mcp-host` の values に analysis のエントリをもう 1 つ足します。GPU 用 analysis との違いは、指すイメージが Neuron 版 (`neuron-explorer` を積んだもの) であることだけです。`neuron-summary` はパッケージの組み込みアナライザで、イメージに `neuron-explorer` バイナリがあれば自動で有効になるため、`MCP_ANALYZERS` を書く必要はありません (`MCP_ANALYZERS` は独自アナライザを足すときだけ使う JSON マップです)。`mcp-reader` サービスアカウント・マネージド MLflow の ARN・S3 Files の `volumeHandle` は Advanced02 と同じ値を使い回します。
 
 ```yaml
 # my-values.yaml に追記するイメージ (抜粋)
@@ -198,7 +198,7 @@ print(run_id)   # 動作確認で使う
 
 ## 4. 動作確認
 
-Advanced01 と同じく port-forward して MCP クライアントから接続します。今回足した Neuron 用 analysis はエントリ名 `analysis-neuron` の Service として `mcp` 名前空間に作られます。
+Advanced02 と同じく port-forward して MCP クライアントから接続します。今回足した Neuron 用 analysis はエントリ名 `analysis-neuron` の Service として `mcp` 名前空間に作られます。
 
 ```bash
 kubectl port-forward svc/analysis-neuron -n mcp 8080:8080 &
@@ -234,7 +234,7 @@ playbook は英語のコーパスなので、検索も英語キーワード (dma
 
 ## 5. 後片付け
 
-Neuron の producer Pod は Trainium ノードを占有するので、確認後に削除します。analysis のエントリは values から Neuron 分を外して `helm upgrade` すれば戻せます。データ層とクラスタ側のマウントは Advanced01 の後片付け手順で撤去します (撤去順は `infra/eks` を先、`infra/data-layer` を後)。
+Neuron の producer Pod は Trainium ノードを占有するので、確認後に削除します。analysis のエントリは values から Neuron 分を外して `helm upgrade` すれば戻せます。データ層とクラスタ側のマウントは Advanced02 の後片付け手順で撤去します (撤去順は `infra/eks` を先、`infra/data-layer` を後)。
 
 ```bash
 kubectl delete pod <producer-pod> -n <ns>
@@ -244,12 +244,12 @@ helm upgrade --install mcp infra/eks/charts/mcp-host -n mcp -f my-values.yaml
 
 # まとめ
 
-本章では、Advanced01 で作った基盤の上に Neuron のプロファイルを載せ、GPU と同じ analyze / knowledge の流れで分析できるところまでを動かしました。Neuron 特有の勘所は、プロファイルが `.neff` と `.ntff` のペアであること、採取だけが実 Trainium 実行を要すること、torch-xla の Neuron バックエンド (`libneuronxla`) が DLC によっては欠けること、そして分析側は GPU と同じく CPU Pod でよいこと (`neuron-explorer view` はデバイスを開かない) の 4 点です。基盤の骨格は GPU と共通なので、追加したのは Neuron 用の analysis イメージ 1 つと values のエントリ 1 つだけでした。「ID は固定、中身は自由」という設計により、GPU と Neuron を同じ索引・同じツール群で並べて扱えます。
+本章では、Advanced02 で作った基盤の上に Neuron のプロファイルを載せ、GPU と同じ analyze / knowledge の流れで分析できるところまでを動かしました。Neuron 特有の勘所は、プロファイルが `.neff` と `.ntff` のペアであること、採取だけが実 Trainium 実行を要すること、torch-xla の Neuron バックエンド (`libneuronxla`) が DLC によっては欠けること、そして分析側は GPU と同じく CPU Pod でよいこと (`neuron-explorer view` はデバイスを開かない) の 4 点です。基盤の骨格は GPU と共通なので、追加したのは Neuron 用の analysis イメージ 1 つと values のエントリ 1 つだけでした。「ID は固定、中身は自由」という設計により、GPU と Neuron を同じ仕組み・同じツール群で並べて扱えます。
 
 # 参考資料
 
-- [Advanced01 - プロファイルを MCP で分析する基盤を動かす](https://zenn.dev/littlemex/books/eks-distributed-ai/viewer/eks-profiling-mcp) - 本章の前提となる GPU 版の演習
-- [GPU/Neuron のプロファイリングを楽にしたい](https://zenn.dev/littlemex/articles/8ab01bc40f627a) - 本基盤の設計思想を解説したブログ
+- [Advanced02 - GPU プロファイルを MCP で分析する仕組みを体験する](https://zenn.dev/littlemex/books/eks-distributed-ai/viewer/eks-profiling-mcp) - 本章の前提となる GPU 版の演習
+- [プロファイリングを楽にしたい](https://zenn.dev/littlemex/articles/8ab01bc40f627a) - 本基盤の設計思想を解説したブログ
 - [AWS Neuron Documentation](https://awsdocs-neuron.readthedocs-hosted.com/en/latest/) - Neuron SDK・`neuron-explorer`・`neuronx-cc` の公式ドキュメント
 - [littlemex/distributed-ai](https://github.com/littlemex/distributed-ai) - `infra/eks/images` の analysis イメージと `mcp-host` チャートの実装
 - [accelprof](https://pypi.org/project/accelprof/) / [accelprof-knowledge](https://pypi.org/project/accelprof-knowledge/) - 分析 MCP と知識 MCP の pip パッケージ
