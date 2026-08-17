@@ -61,15 +61,15 @@ terraform output trace_buckets
 
 ## 3. クラスタ側のマウントと ServiceAccount を追加する
 
-`infra/eks` 側で、データ層の出力を変数として渡し、S3 Files のマウントターゲット、`mcp` 名前空間と `mcp-reader` (分析 MCP 用の読み取り専用 ServiceAccount) とその Pod Identity 紐付け、書き込み側 `mcp-producer` の Pod Identity 紐付け、次の手順で使う ECR リポジトリ (`accelprof` / `accelprof-knowledge`) を追加します。producer 側は **Pod Identity の紐付けだけ**を作ります (紐付けは EKS コントロールプレーン上の `(namespace, ServiceAccount 名)` レコードで、namespace や SA の実在を要求しません)。`mcp-producer` ServiceAccount 自体はプロファイル収集ワークロードを動かす namespace (`mcp_producer_namespace`、既定 `distai`) に手順 6 で作ります。この分離により、ワークロード namespace が未作成でもこの apply は失敗しません。
+`infra/eks` 側で、データ層の出力を変数として渡し、S3 Files のマウントターゲット、`mcp` 名前空間と `mcp-reader` (分析 MCP 用の読み取り専用 ServiceAccount) とその Pod Identity 紐付け、書き込み側 `mcp-producer` の Pod Identity 紐付けを追加します。producer 側は **Pod Identity の紐付けだけ**を作ります (紐付けは EKS コントロールプレーン上の `(namespace, ServiceAccount 名)` レコードで、namespace や SA の実在を要求しません)。`mcp-producer` ServiceAccount 自体はプロファイル収集ワークロードを動かす namespace (`mcp_producer_namespace`、既定 `distai`) に手順 6 で作ります。この分離により、ワークロード namespace が未作成でもこの apply は失敗しません。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
 terraform apply \
-  -var s3files_enabled=true -var s3files_file_system_id=$S3FILES_FS_ID \
+  -var s3files_enabled=true -var s3files_file_system_id="$S3FILES_FS_ID" \
   -var analysis_mcp_enabled=true \
-  -var mcp_reader_role_arn=$MCP_READER_ARN \
-  -var mcp_producer_role_arn=$MCP_PRODUCER_ARN
+  -var mcp_reader_role_arn="$MCP_READER_ARN" \
+  -var mcp_producer_role_arn="$MCP_PRODUCER_ARN"
 ```
 
 S3 Files を初めて有効化したこの apply の直後に、EFS CSI driver の node プラグイン (DaemonSet) を一度再起動します。マウントを担う node プラグインは Pod 生成時にしか Pod Identity の資格情報を受け取らないため、これをしないと既存 node 上の Pod は古い node インスタンスロールを使い続け、S3 Files のマウントが `mount.nfs4: access denied by server` になります。
@@ -81,59 +81,81 @@ k rollout status  ds/efs-csi-node -n kube-system
 
 ## 4. イメージをクラスタ内 BuildKit でビルドする
 
-デプロイ用イメージは、クラスタ内の rootless BuildKit でビルドして ECR に push します。この仕組みは `infra/eks` の [`image-builder.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/image-builder.tf) と `image-builder-lib` チャートが提供し、汎用の呼び出し口 `image-build-custom.yaml` に Dockerfile を ConfigMap で渡します。push 先の ECR リポジトリは手順 3 で作成済みです。
+デプロイ用イメージは、クラスタ内の rootless BuildKit でビルドして ECR に push します。この仕組みは `infra/eks` の [`image-builder.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/image-builder.tf) と `image-builder-lib` チャートが提供し、汎用の呼び出し口 `image-build-custom.yaml` に Dockerfile を ConfigMap で渡します。push 先の ECR リポジトリ (`accelprof` / `accelprof-knowledge`) は ECR では push 時に自動作成されないため、次のセットアップでまだ無ければ作成します。
 
 分析 MCP はベースイメージ (`accelprof` を固定バージョンで入れたもの) の上に `nsys` を積んだ変種を使うので、(1) ベース、(2) nsys 積み、(3) knowledge の順にビルドします。
 
-まず依存の取得 (初回のみ) と、リージョン・ECR レジストリ URI の準備です。`REGION` は演習を行うリージョンに合わせます。
+まず依存の取得、リージョンと ECR レジストリ URI の準備、push 先リポジトリの作成です。`REGION` は演習を行うリージョンに合わせます。リポジトリ作成は冪等なので、既にあればスキップします。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
 helm dependency build charts/experiments
 export REGION=us-east-2
 export ECR=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$REGION.amazonaws.com
+for repo in accelprof accelprof-knowledge; do
+  aws ecr describe-repositories --repository-names "$repo" --region "$REGION" >/dev/null 2>&1 \
+    || aws ecr create-repository --repository-name "$repo" --region "$REGION" >/dev/null
+done
 ```
 
-(1) ベースイメージを `accelprof:v1` としてビルドし、その digest を `BASE` に控えます。
+:::message
+以降の (1) から (3) と手順 5 は、このセットアップと同じシェルで続けて実行します (`REGION` と `ECR` を引き継ぎます)。新しいシェルで始めるときはこのセットアップから流し直してください (すべて冪等です)。各ブロックの先頭でリポジトリルートから `infra/eks` へ `cd` するので、相対パスは崩れません。ConfigMap は毎回上書き適用し、Job は作り直すので、途中の状態からでも同じブロックを流し直せます。各ビルドは非同期の Job として走り、Job 名は `jobName` にタグが付いた形 (`build-base-v1` など) になります。`k wait` で完了を待ってから digest を控えます。ビルドが成功したときだけ digest を控えるよう、待ち合わせと digest 取得は `&&` でつないであります。ビルドが失敗すると `k wait` はタイムアウトするので、戻ってこないときは別ターミナルで `k -n image-builder logs -f job/build-base-v1` を見て原因を確認し、直してから流し直してください。
+:::
+
+(1) ベースイメージを `accelprof:v1` としてビルドし、Job の完了を待ってから digest を `BASE` に控えます。
 
 ```bash
+cd "$(git rev-parse --show-toplevel)"/infra/eks
 k -n image-builder create configmap base-ctx \
-  --from-file=Dockerfile=images/Dockerfile.accelprof-analysis
+  --from-file=Dockerfile=images/Dockerfile.accelprof-analysis \
+  --dry-run=client -o yaml | k apply -f -
+k -n image-builder delete job build-base-v1 --ignore-not-found
 helm template exp charts/experiments -s templates/image-build-custom.yaml \
   --set imageBuild.enabled=true --set imageBuild.jobName=build-base \
   --set imageBuild.repository=$ECR/accelprof --set imageBuild.tag=v1 \
   --set imageBuild.contextSource=configMap --set imageBuild.contextConfigMap=base-ctx \
   | k apply -f -
-export BASE=$ECR/accelprof@$(aws ecr describe-images --repository-name accelprof \
+k -n image-builder wait --for=condition=complete job/build-base-v1 --timeout=30m \
+  && export BASE=$ECR/accelprof@$(aws ecr describe-images --repository-name accelprof \
   --image-ids imageTag=v1 --query 'imageDetails[0].imageDigest' --output text --region "$REGION")
 ```
 
-(2) ベースに `nsys` を積んだ分析イメージを `accelprof:v1-nsys` としてビルドします (`BASE` は digest 固定で渡します)。
+(2) ベースに `nsys` を積んだ分析イメージを `accelprof:v1-nsys` としてビルドします (`BASE` は digest 固定で渡します)。このブロックは (1) と別に流し直せるよう、先頭で `BASE` を再導出します。
 
 ```bash
+cd "$(git rev-parse --show-toplevel)"/infra/eks
+export BASE=$ECR/accelprof@$(aws ecr describe-images --repository-name accelprof \
+  --image-ids imageTag=v1 --query 'imageDetails[0].imageDigest' --output text --region "$REGION")
 k -n image-builder create configmap nsys-ctx \
-  --from-file=Dockerfile=images/Dockerfile.accelprof-analysis-nsys
+  --from-file=Dockerfile=images/Dockerfile.accelprof-analysis-nsys \
+  --dry-run=client -o yaml | k apply -f -
+k -n image-builder delete job build-nsys-v1-nsys --ignore-not-found
 helm template exp charts/experiments -s templates/image-build-custom.yaml \
   --set imageBuild.enabled=true --set imageBuild.jobName=build-nsys \
   --set imageBuild.repository=$ECR/accelprof --set imageBuild.tag=v1-nsys \
   --set imageBuild.buildArgs.BASE=$BASE \
   --set imageBuild.contextSource=configMap --set imageBuild.contextConfigMap=nsys-ctx \
   | k apply -f -
+k -n image-builder wait --for=condition=complete job/build-nsys-v1-nsys --timeout=30m
 ```
 
 (3) knowledge MCP イメージを `accelprof-knowledge:v1` としてビルドします。
 
 ```bash
+cd "$(git rev-parse --show-toplevel)"/infra/eks
 k -n image-builder create configmap knowledge-ctx \
-  --from-file=Dockerfile=images/Dockerfile.accelprof-knowledge
+  --from-file=Dockerfile=images/Dockerfile.accelprof-knowledge \
+  --dry-run=client -o yaml | k apply -f -
+k -n image-builder delete job build-knowledge-v1 --ignore-not-found
 helm template exp charts/experiments -s templates/image-build-custom.yaml \
   --set imageBuild.enabled=true --set imageBuild.jobName=build-knowledge \
   --set imageBuild.repository=$ECR/accelprof-knowledge --set imageBuild.tag=v1 \
   --set imageBuild.contextSource=configMap --set imageBuild.contextConfigMap=knowledge-ctx \
   | k apply -f -
+k -n image-builder wait --for=condition=complete job/build-knowledge-v1 --timeout=30m
 ```
 
-push 後、values にはタグではなく digest を渡すため、それぞれの digest を控えます (`:latest` と未指定は `mcp-host` チャートがエラーにします)。1 つ目が分析 MCP 用 (`accelprof:v1-nsys`)、2 つ目が knowledge MCP 用 (`accelprof-knowledge:v1`) です。
+push が成功し digest を取得できることを確認します。values にはタグではなく digest を渡すためで (`:latest` と未指定は `mcp-host` チャートがエラーにします)、手順 5 で自動で再取得するので手で控える必要はありません。1 つ目が分析 MCP 用 (`accelprof:v1-nsys`)、2 つ目が knowledge MCP 用 (`accelprof-knowledge:v1`) です。
 
 ```bash
 aws ecr describe-images --repository-name accelprof \
@@ -144,13 +166,68 @@ aws ecr describe-images --repository-name accelprof-knowledge \
 
 ## 5. mcp-host でデプロイする
 
-`mcp-host` チャートの values に knowledge と analysis の 2 エントリを書きます。analysis は `mcp-reader` サービスアカウント、マネージド MLflow の ARN、S3 Files の volumeHandle、digest 固定のイメージ (手順 4 の `v1-nsys` の digest) を指定します。values の雛形は [`values-verify.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/mcp-host/values-verify.yaml) にあります。`mcp-host` は S3 Files 用の PV を提供する `s3files-lib` をローカル依存に持つため、`helm upgrade` の前に一度だけ依存を取り込みます。
+`mcp-host` チャートの values に knowledge と analysis の 2 エントリを書きます。analysis は `mcp-reader` サービスアカウント、マネージド MLflow の ARN、S3 Files の volumeHandle、digest 固定のイメージ (手順 4 の `v1-nsys` の digest) を指定します。これらの値は手順 2〜4 の出力からすべて導出できるので、`my-values.yaml` を生成して渡します (雛形は [`values-verify.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/mcp-host/values-verify.yaml) にあります)。
+
+まず必要な値を出力から取り出します。イメージの digest は ECR から、マネージド MLflow の ARN・S3 Files の volumeHandle・リージョンの trace バケットはデータ層の出力から、S3 Files マウント先の AZ は `infra/eks` の出力から取ります。
+
+```bash
+cd "$(git rev-parse --show-toplevel)"/infra/eks
+export REGION=us-east-2
+export ECR=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$REGION.amazonaws.com
+export ANALYSIS_DIGEST=$(aws ecr describe-images --repository-name accelprof \
+  --image-ids imageTag=v1-nsys --query 'imageDetails[0].imageDigest' --output text --region "$REGION")
+export KNOWLEDGE_DIGEST=$(aws ecr describe-images --repository-name accelprof-knowledge \
+  --image-ids imageTag=v1 --query 'imageDetails[0].imageDigest' --output text --region "$REGION")
+export S3FILES_ZONE=$(terraform output -raw s3files_mount_target_az)
+export DATA_LAYER="$(git rev-parse --show-toplevel)/infra/data-layer"
+export MLFLOW_APP_ARN=$(terraform -chdir="$DATA_LAYER" output -raw mlflow_app_arn)
+export S3FILES_VOLUME_HANDLE=$(terraform -chdir="$DATA_LAYER" output -raw s3files_volume_handle)
+export TRACE_BUCKET=$(terraform -chdir="$DATA_LAYER" output -json trace_buckets \
+  | python3 -c "import sys, json, os; print(json.load(sys.stdin)[os.environ['REGION']])")
+```
+
+`mcp-host` は S3 Files 用の PV を提供する `s3files-lib` をローカル依存に持つため、`helm upgrade` の前に一度だけ依存を取り込みます。取り出した値で `my-values.yaml` を生成し、`mcp` 名前空間 (手順 3 で作成済み) にデプロイします。値の取り出しに失敗したまま空の値で values を作らないよう、すべて非空であることを確認してから生成します。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
 helm dependency build charts/mcp-host
+test -n "$ANALYSIS_DIGEST" && test -n "$KNOWLEDGE_DIGEST" && test -n "$MLFLOW_APP_ARN" \
+  && test -n "$S3FILES_VOLUME_HANDLE" && test -n "$TRACE_BUCKET" && test -n "$S3FILES_ZONE" \
+  && cat > my-values.yaml <<EOF
+mcps:
+  - name: knowledge
+    transport: http
+    image:
+      repository: "$ECR/accelprof-knowledge"
+      digest: "$KNOWLEDGE_DIGEST"
+    command: ["accelprof-knowledge-mcp"]
+  - name: analysis
+    transport: http
+    image:
+      repository: "$ECR/accelprof"
+      digest: "$ANALYSIS_DIGEST"
+    command: ["accelprof-analysis-mcp"]
+    serviceAccountName: mcp-reader
+    env:
+      MCP_MLFLOW_TRACKING_URI: "$MLFLOW_APP_ARN"
+      MCP_AWS_REGION: "$REGION"
+      MCP_TRACE_BUCKET: "$TRACE_BUCKET"
+      MCP_MOUNT_BASE: "/traces"
+    resources:
+      requests: { cpu: "250m", memory: "512Mi" }
+      limits: { memory: "2Gi" }
+    s3files:
+      enabled: true
+      volumeHandle: "$S3FILES_VOLUME_HANDLE"
+      mountBase: "/traces"
+      zone: "$S3FILES_ZONE"
+EOF
 helm upgrade --install mcp charts/mcp-host -n mcp -f my-values.yaml
+k -n mcp wait --for=condition=Available deploy -l role=mcp-host --timeout=5m
+k -n mcp get pods -o wide
 ```
+
+`helm upgrade` は Pod の起動を待たずに戻るので、`k wait` で 2 つの Deployment (`knowledge` と `analysis`) が Available になるまで確認します。`namespaces "mcp" not found` で失敗する場合は、手順 3 の apply が `analysis_mcp_enabled=true` で成功しているかを確認します。analysis Pod が `Pending` のまま Available にならない場合は、S3 Files のマウント先 AZ (`$S3FILES_ZONE`) にノードがあるかを `k get nodes -L topology.kubernetes.io/zone` で確認します。マウントは単一 AZ からしか到達できないため、その AZ にワーカーノードが必要です。
 
 ## 6. プロファイルを取って run を記録する
 
