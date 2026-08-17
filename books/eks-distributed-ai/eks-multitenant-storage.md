@@ -58,7 +58,7 @@ flowchart TD
 | 動的な per-PVC 隔離（PVC ごとに独立領域を自動払い出し） | 可（子ボリューム） | 不可（動的は新規 FS 作成） |
 | パス分離（階層 1） | 可 | 可 |
 | ID 制御（squash/POSIX） | NFS export の squash | RootSquashConfiguration |
-| per-PVC 容量クォータ | 可 | FS 単位の user/group/project quota（project は Lustre 2.15） |
+| per-PVC 容量クォータ | 可（StorageClass 側、PVC 要求は CSI ドライバの制約で 1Gi 固定） | FS 単位の user/group/project quota（project は Lustre 2.15） |
 | AZ | マルチ AZ / 単一 AZ 選択可 | 単一 AZ |
 | S3 へのコールド退避 | スナップショット（ローカル世代管理）+ Pod からの `aws s3 sync` | DRA（S3 と双方向 sync） |
 
@@ -80,7 +80,7 @@ flowchart TD
 - **FSx for Lustre**: 既存ファイルシステムを PVC 単位に分割できないため、パス分離（サブディレクトリ規約）に、`RootSquashConfiguration` による root squash と user/group/project クォータを組み合わせてソフトに隔離します。強制力は OpenZFS の子ボリュームより弱く、真の分離が要件なら Lustre はテナントごとにファイルシステムを分けます。
 
 :::message
-Amazon FSx for OpenZFS の動的プロビジョニングを使うには、CSI コントローラの IAM ロールに `fsx:CreateVolume`・`fsx:DeleteVolume`・`fsx:DescribeVolumes`・`fsx:TagResource` が必要です。静的マウントだけを想定した権限（describe のみ）だと、動的プロビジョニングは `AccessDeniedException` で失敗します。本 book の Terraform はこの権限を OpenZFS CSI ロールに付与します。
+Amazon FSx for OpenZFS の動的プロビジョニングを使うには、CSI コントローラの IAM ロールに `fsx:CreateVolume`・`fsx:DeleteVolume`・`fsx:TagResource`・`fsx:ListTagsForResource`（`fsx:DescribeVolumes` は静的マウント用の describe 専用ポリシーに元から含まれています）が必要です。この権限は課金・削除を伴うため既定では無効（`openzfs_dynamic_provisioning_enabled = false`）で、静的マウントだけを想定した describe のみの権限だと動的プロビジョニングは `AccessDeniedException` で失敗します。手順 3 の冒頭でこのトグルを有効化します。
 :::
 
 ## コールドデータの退避
@@ -204,25 +204,31 @@ k delete namespace team-b --ignore-not-found
 
 ## 3. per-PVC 隔離（階層 2）: OpenZFS 動的子ボリューム
 
-パス分離では相互にデータが見えました。Amazon FSx for OpenZFS の動的プロビジョニングを使うと、PVC ごとに独立した子ボリューム（別々のデータセット）が親ファイルシステムの配下に作られ、既定では他テナントの子ボリュームはマウントされず相互に見えません。ただしこの分離を「強制」しているのは FSx 単体ではなく、PV/PVC を作れるのは誰かという Kubernetes RBAC と NFS export の設定です。StorageClass の `NfsExports` を `Clients: "*"` のままにすると VPC 内から子ボリュームを直接マウントする経路は塞げませんし、親ルートボリュームを `crossmnt` でマウントしている共有 PV があればそこから子ボリュームが見えます。本番では `Clients` をノードのサブネットに絞り、テナントに PV 作成権限を与えない RBAC と併せて初めて隔離が成立します。
+パス分離では相互にデータが見えました。Amazon FSx for OpenZFS の動的プロビジョニングを使うと、PVC ごとに独立した子ボリューム（別々のデータセット）が親ファイルシステムの配下に作られ、既定では他テナントの子ボリュームはマウントされず相互に見えません。ただしこの分離を「強制」しているのは FSx 単体ではなく、PV/PVC を作れるのは誰かという Kubernetes RBAC と NFS export の設定です。StorageClass の `NfsExports` を `Clients: "*"` のままにすると VPC 内から子ボリュームを直接マウントする経路は塞げません。本番では `Clients` をノードのサブネットに絞り、テナントに PV 作成権限を与えない RBAC と併せて初めて隔離が成立します。`crossmnt` オプションは親ボリュームの共有 PV から子ボリュームまで見せてしまう経路になるため、本章の chart では付けていません。
 
-まず StorageClass を作ります。`ParentVolumeId` には Basic02 で作った OpenZFS ファイルシステムのルートボリュームを指定します（`terraform output` の `fsx_openzfs` から取得できます）。`StorageCapacityQuotaGiB` が per-PVC の容量クォータになります。
-
-StorageClass と、テナントごとの PVC はどちらも同じパラメータ（quota やクライアント制限）を共有するため、本文に heredoc の YAML を並べるのではなく、リポジトリの `charts/openzfs-multitenant/` に Helm chart としてまとめています。`values.yaml` で `parentVolumeId`・`storageCapacityQuotaGiB`・`tenants`（PVC を作る namespace のリスト）を差し替えられるようにしてあります。
+まず動的プロビジョニング用の IAM を有効化します。CSI コントローラの既定の権限は describe のみで、`fsx:CreateVolume` 等が無いと後続の `helm upgrade` が `AccessDeniedException` で失敗します。
 
 ```bash
-ROOT_VOL=$(aws fsx describe-file-systems --file-system-ids "$ZFS_FS_ID" \
-  --query 'FileSystems[0].OpenZFSConfiguration.RootVolumeId' --output text)
+terraform apply -var openzfs_dynamic_provisioning_enabled=true
+```
+
+`ParentVolumeId` には Basic02 で作った OpenZFS ファイルシステムのルートボリュームを指定します。`terraform output` の `shared_storage.fsx_openzfs.root_volume_id` から取得できます（別途 `aws fsx describe-file-systems` を叩く必要はありません）。`StorageCapacityQuotaGiB` が per-PVC の容量クォータになります。
+
+StorageClass と、テナントごとの PVC はどちらも同じパラメータ（quota やクライアント制限）を共有するため、本文に heredoc の YAML を並べるのではなく、リポジトリの `charts/openzfs-multitenant/` に Helm chart としてまとめています。`values.yaml` で `parentVolumeId`・`storageCapacityQuotaGiB`・`tenants`（PVC を作る namespace のリスト）を差し替えられるようにしてあります。`tenants` は配列なので `--set tenants[0]=...` は使わず、values ファイルで渡します（zsh では `[0]` がグロブ展開と衝突します）。
+
+```bash
+ROOT_VOL=$(terraform output -json shared_storage | jq -r '.fsx_openzfs.root_volume_id')
 
 for ns in tenant-a tenant-b; do
   k create namespace $ns --dry-run=client -o yaml | k apply -f -
 done
 
-helm upgrade --install openzfs-multitenant charts/openzfs-multitenant \
-  --set parentVolumeId="$ROOT_VOL" \
-  --set storageCapacityQuotaGiB=10 \
-  --set tenants[0]=tenant-a \
-  --set tenants[1]=tenant-b
+cat > /tmp/openzfs-mt.yaml <<EOF
+parentVolumeId: $ROOT_VOL
+storageCapacityQuotaGiB: 10
+tenants: [tenant-a, tenant-b]
+EOF
+helm upgrade --install openzfs-multitenant charts/openzfs-multitenant -f /tmp/openzfs-mt.yaml
 
 k wait --for=jsonpath='{.status.phase}'=Bound pvc/cache -n tenant-a --timeout=180s
 k wait --for=jsonpath='{.status.phase}'=Bound pvc/cache -n tenant-b --timeout=180s
@@ -240,7 +246,7 @@ provisioner: fsx.openzfs.csi.aws.com
 parameters:
   ResourceType: "volume"
   ParentVolumeId: '"{{ .Values.parentVolumeId }}"'
-  NfsExports: '[{"ClientConfigurations": [{"Clients": "*", "Options": ["rw","crossmnt"]}]}]'
+  NfsExports: '[{"ClientConfigurations": [{"Clients": "{{ .Values.nfsExportClients }}", "Options": ["rw"]}]}]'
   StorageCapacityQuotaGiB: '{{ .Values.storageCapacityQuotaGiB }}'
   OptionsOnDeletion: '["DELETE_CHILD_VOLUMES_AND_SNAPSHOTS"]'
 reclaimPolicy: Delete
@@ -251,14 +257,14 @@ mountOptions: [ "nfsvers=4.1", "rsize=1048576", "wsize=1048576", "timeo=600" ]
 # charts/openzfs-multitenant/templates/pvc.yaml (要点、tenants でループ)
 apiVersion: v1
 kind: PersistentVolumeClaim
-metadata: { name: cache, namespace: "{{ .tenant }}" }
+metadata: { name: cache, namespace: "{{ . }}" }
 spec:
   accessModes: ["ReadWriteMany"]
   storageClassName: openzfs-sc
   resources: { requests: { storage: 1Gi } }
 ```
 
-動的プロビジョニングでは PVC の要求容量は無視され、実際のクォータは StorageClass の `StorageCapacityQuotaGiB` が使われるため、PVC 側の要求は `1Gi` に固定しています。
+FSx for OpenZFS CSI ドライバ（v1.2.0）の `ResourceType: volume` は、PVC の要求容量が `1Gi` 以外だと `InvalidArgument: resourceType Volume expects storage capacity to be 1Gi` で拒否します。実際の per-PVC クォータは StorageClass の `StorageCapacityQuotaGiB` で決まるため、PVC 側の要求は `1Gi` に固定しています。
 ::::
 
 親ファイルシステムの配下に、PVC ごとの子ボリュームが 2 つ作られています。
@@ -284,26 +290,42 @@ k logs r -n tenant-b
 
 `tenant-b` のログに `a.txt` が現れず `NOT-VISIBLE` が出れば、PVC ごとに別々の子ボリュームへ分離できています。パス分離（手順 2）が相互可視だったのと対照的です。前述のとおり、この分離の強制力はテナントに PV 作成権限を与えない RBAC と `NfsExports` の絞り込みに依存する点を忘れないでください。
 
-後片付けをします。`reclaimPolicy: Delete` と `OptionsOnDeletion` により、PVC を消すと子ボリュームも削除されます。CSI ロールに削除権限がないと PV が `Released` で残り、FSx にも子ボリュームが残って課金が続くため、実際に消えたことまで確認します。
+後片付けをします。`reclaimPolicy: Delete` と `OptionsOnDeletion` により、PVC を消すと子ボリュームも削除されます。CSI ロールに削除権限がないと PV が `Released` で残り、FSx にも子ボリュームが残って課金が続くため、削除は非同期であることを踏まえ、子ボリュームが 0 になるまで待って確認します。
 
 ```bash
 k delete namespace tenant-a tenant-b
-k get pv | grep pvc- || echo "no dynamic PV remaining"
-aws fsx describe-volumes --filters Name=file-system-id,Values="$ZFS_FS_ID" \
-  --query 'Volumes[?OpenZFSConfiguration.ParentVolumeId==`'"$ROOT_VOL"'`].Name' --output text
+until [ "$(aws fsx describe-volumes --filters Name=file-system-id,Values="$ZFS_FS_ID" \
+  --query 'length(Volumes[?OpenZFSConfiguration.ParentVolumeId==`'"$ROOT_VOL"'`])' --output text)" = "0" ]; do
+  echo "waiting for child volumes to delete..."; sleep 15
+done
 helm uninstall openzfs-multitenant
+```
+
+動的 PV が残ったまま IAM トグルを OFF に戻すと、CSI の `DeleteVolume` が `AccessDenied` になり PV が `Released` のまま子ボリュームが課金され続けます。上記で子ボリュームが 0 になったことを確認してから戻します。
+
+```bash
+terraform apply -var openzfs_dynamic_provisioning_enabled=false
 ```
 
 ## 4. コールドデータ退避
 
 ### FSx for Lustre を DRA で S3 に同期する
 
-Lustre のパスと S3 バケットを関連付けます。まず退避先の S3 バケットを用意します（既存のバケットがあればそれを使います）。`AutoImportPolicy` と `AutoExportPolicy` で双方向に自動同期します。
+Lustre のパスと S3 バケットを関連付けます。DRA は PERSISTENT_2 デプロイタイプが前提です。異なる場合はこの節を実行できません。
 
 ```bash
-# 本章専用の新規バケット(S3 バケット名はグローバル一意)
-BUCKET=fsx-cold-$(aws sts get-caller-identity --query Account --output text)
-aws s3 mb s3://$BUCKET
+aws fsx describe-file-systems --file-system-ids "$LUSTRE_FS_ID" \
+  --query 'FileSystems[0].LustreConfiguration.DeploymentType' --output text   # PERSISTENT_2
+```
+
+退避先の S3 バケットを用意します（既存のバケットがあればそれを使います）。`AutoImportPolicy` と `AutoExportPolicy` で双方向に自動同期します。
+
+```bash
+# 本章専用の新規バケット(S3 バケット名はグローバル一意なのでリージョンも含める)
+REGION=$(terraform output -raw region 2>/dev/null || echo us-east-2)
+BUCKET=fsx-cold-$(aws sts get-caller-identity --query Account --output text)-$REGION
+aws s3api create-bucket --bucket "$BUCKET" --region "$REGION" \
+  --create-bucket-configuration LocationConstraint="$REGION"
 
 # DRA は s3://$BUCKET/lustre 以下に紐付ける(ZFS 退避が使う openzfs-cold/ を巻き込まないため)
 aws fsx create-data-repository-association \
@@ -380,15 +402,24 @@ Amazon FSx for OpenZFS には Lustre の DRA のような S3 ネイティブ連�
 
 ### 定期退避を CronJob 化する
 
-ワークショップの手順は 1 回限りの手動実行ですが、実運用では手動で都度実行するのではなく、`scripts/fsx-openzfs-s3-sync.sh` の内容を Kubernetes の CronJob として定期実行し、さらに Terraform 側のトグル変数で有効・無効を切り替えられるようにします。トグルを立てると、CronJob 本体と、それが使う ServiceAccount・Pod Identity の association までを Terraform が一括でデプロイし、決めたスケジュールで自動的に差分を S3 へ送ります。トグルを倒せば CronJob が削除され、余計な同期が走らなくなります。
+ワークショップの手順は 1 回限りの手動実行ですが、実運用では手動で都度実行するのではなく、`scripts/fsx-openzfs-s3-sync.sh` の内容を Kubernetes の CronJob として定期実行し、さらに Terraform 側のトグル変数で有効・無効を切り替えられるようにします。トグルを立てると、専用の退避バケット・専用 ServiceAccount・Pod Identity の association・CronJob 本体までを Terraform（`openzfs-s3-backup.tf`）が一括でデプロイし、決めたスケジュールで自動的に差分を S3 へ送ります。トグルを倒せば CronJob・SA・association が削除され、余計な同期が走らなくなります。退避バケットは退避データの正（source of truth）として `force_destroy` を付けていないため、中身が残っている限りトグルを倒す・destroy する操作は失敗します（意図的な安全策で、空にするまで黙って消えません）。
 
 ```bash
 terraform apply -var enable_fsx_openzfs_s3_backup=true
+BACKUP_BUCKET=$(terraform output -raw openzfs_s3_backup_bucket)
+```
+
+1 回試すには、CronJob から手動で Job を起こせば定期実行を待たずに確認できます。
+
+```bash
+k -n distai create job s3sync-now --from=cronjob/fsx-openzfs-s3-sync
+k -n distai wait --for=condition=complete job/s3sync-now --timeout=300s
+aws s3 ls s3://$BACKUP_BUCKET/openzfs-cold/
 ```
 
 ::::details CronJob の要点（参考）
 ```yaml
-# manifests/advanced01/openzfs-s3-sync-cronjob.yaml (要点)
+# openzfs-s3-backup.tf の kubectl_manifest.openzfs_backup_cronjob (要点)
 apiVersion: batch/v1
 kind: CronJob
 metadata: { name: fsx-openzfs-s3-sync, namespace: distai }
@@ -398,16 +429,24 @@ spec:
     spec:
       template:
         spec:
+          serviceAccountName: fsx-openzfs-s3-backup   # Pod Identity で退避バケットの prefix にのみ put/get
+          restartPolicy: Never
+          securityContext: { runAsNonRoot: true, runAsUser: 1000, fsGroup: 1000 }
           containers:
             - name: sync
               image: public.ecr.aws/aws-cli/aws-cli
-              command: ["aws", "s3", "sync", "/shared", "s3://BUCKET/openzfs-cold/"]
+              command: ["aws", "s3", "sync", "/shared", "s3://BACKUP_BUCKET/openzfs-cold/"]
+              env: [{ name: AWS_REGION, value: "<region>" }, { name: HOME, value: /tmp }]
+              securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } }
               volumeMounts:
-                - { name: zfs, mountPath: /shared }
+                - { name: vol, mountPath: /shared, readOnly: true }
+                - { name: tmp, mountPath: /tmp }
           volumes:
-            - { name: zfs, persistentVolumeClaim: { claimName: shared-claim } }
-          restartPolicy: OnFailure
+            - { name: vol, persistentVolumeClaim: { claimName: shared-claim } }
+            - { name: tmp, emptyDir: {} }
 ```
+
+専用の ServiceAccount と Pod Identity を使うのは、Basic10 で作った `default` ServiceAccount の権限をそのまま流用しないためです。IAM は退避バケットの `openzfs-cold/` prefix に対する put/get のみで、delete も他 prefix の list もできません。
 ::::
 
 ### 本章で作ったリソースの後片付け
@@ -436,6 +475,13 @@ aws fsx delete-snapshot --snapshot-id "$SNAP_ID"
 aws s3 rm s3://$BUCKET --recursive && aws s3 rb s3://$BUCKET
 ```
 
+CronJob 化のトグルを立てた場合は、退避バケットを空にしてからトグルを倒します。退避バケットは `force_destroy` を付けていないため、中身が残っていると `terraform apply` がエラーで止まります（黙ってデータを消さないための意図的な安全策です）。
+
+```bash
+aws s3 rm s3://$BACKUP_BUCKET --recursive
+terraform apply -var enable_fsx_openzfs_s3_backup=false
+```
+
 :::message alert
 動的子ボリューム・DRA・スナップショット・S3 に退避したオブジェクトはいずれも FSx / S3 の課金に直結します。テナントのセルフサービスで PVC を作らせる運用では、`reclaimPolicy` と `OptionsOnDeletion` の組み合わせ次第で PVC 削除がそのままデータ削除になる点にも注意してください。削除漏れも誤削除もどちらもリスクです。
 :::
@@ -451,3 +497,4 @@ aws s3 rm s3://$BUCKET --recursive && aws s3 rb s3://$BUCKET
 - [aws-fsx-openzfs-csi-driver の動的プロビジョニング](https://github.com/kubernetes-sigs/aws-fsx-openzfs-csi-driver)
 - [Amazon FSx for Lustre のデータリポジトリ連携（DRA）](https://docs.aws.amazon.com/fsx/latest/LustreGuide/create-dra-linked-data-repo.html)
 - [Amazon FSx for Lustre のストレージクォータ（user/group/project）](https://docs.aws.amazon.com/fsx/latest/LustreGuide/lustre-quotas.html)
+- [littlemex/distributed-ai](https://github.com/littlemex/distributed-ai) - `infra/eks` の openzfs 動的 IAM・`charts/openzfs-multitenant`・`manifests/advanced01`・`scripts/fsx-openzfs-s3-sync.sh`・`openzfs-s3-backup.tf` の実装
