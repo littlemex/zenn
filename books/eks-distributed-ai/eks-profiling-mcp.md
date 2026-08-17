@@ -44,13 +44,13 @@ flowchart LR
 cd infra/data-layer
 terraform init -backend-config=backend.hcl
 terraform apply -var s3files_enabled=true -var mlflow_enabled=true
-# 以降で使う値を個別に取り出す
-terraform output -raw s3files_file_system_id   # クラスタ側 apply の -var s3files_file_system_id に渡す
-terraform output -raw s3files_volume_handle    # mcp-host の values に渡す
-terraform output -raw mlflow_app_arn           # 分析 MCP の MCP_MLFLOW_TRACKING_URI に渡す
-terraform output -raw mcp_reader_role_arn      # クラスタ側 apply の -var mcp_reader_role_arn に渡す
-terraform output -raw producer_role_arn        # クラスタ側 apply の -var mcp_producer_role_arn に渡す
-terraform output trace_buckets                 # リージョン別バケット名 (map)
+# 以降の手順で使う値を環境変数に取り出す (同じシェルで手順 3 以降まで続ける)
+export S3FILES_FS_ID=$(terraform output -raw s3files_file_system_id)       # 手順 3 のクラスタ apply で使う
+export S3FILES_VOLUME_HANDLE=$(terraform output -raw s3files_volume_handle) # 手順 5 の mcp-host values で使う
+export MLFLOW_APP_ARN=$(terraform output -raw mlflow_app_arn)              # 分析 MCP の MCP_MLFLOW_TRACKING_URI で使う
+export MCP_READER_ARN=$(terraform output -raw mcp_reader_role_arn)         # 手順 3 のクラスタ apply で使う
+export MCP_PRODUCER_ARN=$(terraform output -raw producer_role_arn)         # 手順 3 のクラスタ apply で使う
+terraform output trace_buckets                                             # リージョン別バケット名 (map、参照用)
 ```
 
 このデータ層の apply が、S3 Files のファイルシステムとアクセスポイントを AWS Cloud Control API 経由で作成します。アクセスポイントは `volumeHandle` に必須ですが、手で `aws s3files create-access-point` を叩く必要はありません。
@@ -62,10 +62,10 @@ terraform output trace_buckets                 # リージョン別バケット�
 ```bash
 cd infra/eks
 terraform apply \
-  -var s3files_enabled=true -var s3files_file_system_id=<FS_ID> \
+  -var s3files_enabled=true -var s3files_file_system_id=$S3FILES_FS_ID \
   -var analysis_mcp_enabled=true \
-  -var mcp_reader_role_arn=<MCP_READER_ARN> \
-  -var mcp_producer_role_arn=<PRODUCER_ARN>
+  -var mcp_reader_role_arn=$MCP_READER_ARN \
+  -var mcp_producer_role_arn=$MCP_PRODUCER_ARN
 ```
 
 S3 Files を初めて有効化したこの apply の直後に、EFS CSI driver の node プラグイン (DaemonSet) を一度再起動します。マウントを担う node プラグインは Pod 生成時にしか Pod Identity の資格情報を受け取らないため、これをしないと既存 node 上の Pod は古い node インスタンスロールを使い続け、S3 Files のマウントが `mount.nfs4: access denied by server` になります。
@@ -83,7 +83,8 @@ kubectl rollout status  ds/efs-csi-node -n kube-system
 
 ```bash
 helm dependency build infra/eks/charts/experiments   # 初回のみ
-export ECR=<account-id>.dkr.ecr.<region>.amazonaws.com   # 自分の ECR レジストリ URI に置き換える
+export REGION=us-east-2   # 演習を行うリージョンに合わせる
+export ECR=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$REGION.amazonaws.com
 # (1) ベースイメージを accelprof:v1 としてビルド
 kubectl -n image-builder create configmap base-ctx \
   --from-file=Dockerfile=infra/eks/images/Dockerfile.accelprof-analysis

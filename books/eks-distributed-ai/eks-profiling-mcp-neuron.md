@@ -118,8 +118,10 @@ Advanced02 でデータ層・マウント・`mcp-reader`・GPU 用 analysis は�
 analysis MCP のベースイメージ (accelprof を固定バージョンで入れた薄いイメージ) に、`neuron-explorer` を含む `aws-neuronx-tools` を積んだ変種を作ります。GPU 用に `nsys` を積んだイメージと同じ考え方です。Dockerfile は `infra/eks/images/Dockerfile.accelprof-analysis-neuron` に置き、Advanced02 と同じくクラスタ内 BuildKit でビルドして ECR に push します。
 
 ```bash
-export ECR=<account-id>.dkr.ecr.<region>.amazonaws.com   # 自分の ECR レジストリ URI に置き換える
-export BASE=$ECR/accelprof@sha256:<base-digest>          # Advanced02 でビルドした base の digest
+export REGION=us-east-2   # 演習を行うリージョンに合わせる
+export ECR=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$REGION.amazonaws.com
+export BASE=$ECR/accelprof@$(aws ecr describe-images --repository-name accelprof \
+  --image-ids imageTag=v1 --query 'imageDetails[0].imageDigest' --output text)   # Advanced02 の base
 kubectl -n image-builder create configmap analysis-neuron-ctx \
   --from-file=Dockerfile=infra/eks/images/Dockerfile.accelprof-analysis-neuron
 helm template exp infra/eks/charts/experiments -s templates/image-build-custom.yaml \
@@ -139,19 +141,26 @@ aws ecr describe-images --repository-name accelprof \
 
 ## 2. mcp-host に Neuron analysis のエントリを足す
 
-`mcp-host` の values に analysis のエントリをもう 1 つ足します。GPU 用 analysis との違いは、指すイメージが Neuron 版 (`neuron-explorer` を積んだもの) であることだけです。`neuron-summary` はパッケージの組み込みアナライザで、イメージに `neuron-explorer` バイナリがあれば自動で有効になるため、`MCP_ANALYZERS` を書く必要はありません (`MCP_ANALYZERS` は独自アナライザを足すときだけ使う JSON マップです)。`mcp-reader` サービスアカウント・マネージド MLflow の ARN・S3 Files の `volumeHandle` は Advanced02 と同じ値を使い回します。
+`mcp-host` の values に analysis のエントリをもう 1 つ足します。GPU 用 analysis との違いは、指すイメージが Neuron 版 (`neuron-explorer` を積んだもの) であることだけです。`neuron-summary` はパッケージの組み込みアナライザで、イメージに `neuron-explorer` バイナリがあれば自動で有効になるため、`MCP_ANALYZERS` を書く必要はありません (`MCP_ANALYZERS` は独自アナライザを足すときだけ使う JSON マップです)。`mcp-reader` サービスアカウント・マネージド MLflow の ARN・S3 Files の `volumeHandle` は Advanced02 と同じ値を使い回します。マネージド MLflow の ARN は Advanced02 と同じくデータ層の出力から受け、Neuron イメージの digest とあわせて環境変数に取ります。
 
-```yaml
-# my-values.yaml に追記するイメージ (抜粋)
-mcps:
+```bash
+export MLFLOW_APP_ARN=$(terraform -chdir=infra/data-layer output -raw mlflow_app_arn)
+export NEURON_DIGEST=$(aws ecr describe-images --repository-name accelprof \
+  --image-ids imageTag=v1-neuron --query 'imageDetails[0].imageDigest' --output text)
+```
+
+次を実行すると、値が展開された analysis-neuron エントリが出力されるので、それを `my-values.yaml` の `mcps:` に追記します (S3 Files の PV / マウント・trace バケット・リージョンは GPU 用 analysis と同じ定義を使います)。
+
+```bash
+cat <<EOF
   analysis-neuron:
     image:
-      repository: <ECR>/accelprof
-      digest: "sha256:<v1-neuron の digest>"
+      repository: $ECR/accelprof
+      digest: "$NEURON_DIGEST"
     serviceAccount: mcp-reader          # GPU 用 analysis と共用
     env:
-      MCP_MLFLOW_TRACKING_URI: "<マネージド MLflow の ARN>"
-    # S3 Files の PV / マウント・trace バケット・リージョンは GPU 用 analysis と同じ定義を使う
+      MCP_MLFLOW_TRACKING_URI: "$MLFLOW_APP_ARN"
+EOF
 ```
 
 ```bash
@@ -237,7 +246,10 @@ playbook は英語のコーパスなので、検索も英語キーワード (dma
 Neuron の producer Pod は Trainium ノードを占有するので、確認後に削除します。analysis のエントリは values から Neuron 分を外して `helm upgrade` すれば戻せます。データ層とクラスタ側のマウントは Advanced02 の後片付け手順で撤去します (撤去順は `infra/eks` を先、`infra/data-layer` を後)。
 
 ```bash
-kubectl delete pod <producer-pod> -n <ns>
+# 手順 3 で producer Pod を作った名前と namespace に合わせる
+export PRODUCER_POD=neuron-producer
+export NS=distai
+kubectl delete pod "$PRODUCER_POD" -n "$NS"
 # values から analysis-neuron エントリを外して再適用
 helm upgrade --install mcp infra/eks/charts/mcp-host -n mcp -f my-values.yaml
 ```
