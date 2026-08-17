@@ -71,8 +71,8 @@ terraform apply \
 S3 Files を初めて有効化したこの apply の直後に、EFS CSI driver の node プラグイン (DaemonSet) を一度再起動します。マウントを担う node プラグインは Pod 生成時にしか Pod Identity の資格情報を受け取らないため、これをしないと既存 node 上の Pod は古い node インスタンスロールを使い続け、S3 Files のマウントが `mount.nfs4: access denied by server` になります。
 
 ```bash
-kubectl rollout restart ds/efs-csi-node -n kube-system
-kubectl rollout status  ds/efs-csi-node -n kube-system
+k rollout restart ds/efs-csi-node -n kube-system
+k rollout status  ds/efs-csi-node -n kube-system
 ```
 
 ## 4. イメージをクラスタ内 BuildKit でビルドする
@@ -86,38 +86,38 @@ helm dependency build infra/eks/charts/experiments   # 初回のみ
 export REGION=us-east-2   # 演習を行うリージョンに合わせる
 export ECR=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$REGION.amazonaws.com
 # (1) ベースイメージを accelprof:v1 としてビルド
-kubectl -n image-builder create configmap base-ctx \
+k -n image-builder create configmap base-ctx \
   --from-file=Dockerfile=infra/eks/images/Dockerfile.accelprof-analysis
 helm template exp infra/eks/charts/experiments -s templates/image-build-custom.yaml \
   --set imageBuild.enabled=true --set imageBuild.jobName=build-base \
   --set imageBuild.repository=$ECR/accelprof --set imageBuild.tag=v1 \
   --set imageBuild.contextSource=configMap --set imageBuild.contextConfigMap=base-ctx \
-  | kubectl apply -f -
+  | k apply -f -
 export BASE=$ECR/accelprof@$(aws ecr describe-images --repository-name accelprof \
   --image-ids imageTag=v1 --query 'imageDetails[0].imageDigest' --output text)
 ```
 
 ```bash
 # (2) ベースに nsys を積んだ分析イメージを accelprof:v1-nsys としてビルド (BASE は digest 固定)
-kubectl -n image-builder create configmap nsys-ctx \
+k -n image-builder create configmap nsys-ctx \
   --from-file=Dockerfile=infra/eks/images/Dockerfile.accelprof-analysis-nsys
 helm template exp infra/eks/charts/experiments -s templates/image-build-custom.yaml \
   --set imageBuild.enabled=true --set imageBuild.jobName=build-nsys \
   --set imageBuild.repository=$ECR/accelprof --set imageBuild.tag=v1-nsys \
   --set imageBuild.buildArgs.BASE=$BASE \
   --set imageBuild.contextSource=configMap --set imageBuild.contextConfigMap=nsys-ctx \
-  | kubectl apply -f -
+  | k apply -f -
 ```
 
 ```bash
 # (3) knowledge MCP イメージを accelprof-knowledge:v1 としてビルド
-kubectl -n image-builder create configmap knowledge-ctx \
+k -n image-builder create configmap knowledge-ctx \
   --from-file=Dockerfile=infra/eks/images/Dockerfile.accelprof-knowledge
 helm template exp infra/eks/charts/experiments -s templates/image-build-custom.yaml \
   --set imageBuild.enabled=true --set imageBuild.jobName=build-knowledge \
   --set imageBuild.repository=$ECR/accelprof-knowledge --set imageBuild.tag=v1 \
   --set imageBuild.contextSource=configMap --set imageBuild.contextConfigMap=knowledge-ctx \
-  | kubectl apply -f -
+  | k apply -f -
 ```
 
 push 後、values にはタグではなく digest を渡すため、それぞれの digest を控えます (`:latest` と未指定は `mcp-host` チャートがエラーにします)。
@@ -145,9 +145,9 @@ helm upgrade --install mcp infra/eks/charts/mcp-host -n mcp -f my-values.yaml
 producer を動かす namespace (手順 3 の `mcp_producer_namespace`、既定 `distai`) に `mcp-producer` ServiceAccount を作ります。手順 3 の Pod Identity 紐付けはこの `(namespace, mcp-producer)` を対象にしているので、この SA を持つ Pod が trace バケットへの書き込みと MLflow への記録の権限を得ます。
 
 ```bash
-export NS=distai   # 手順 3 の mcp_producer_namespace と一致させる
-kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
-kubectl create serviceaccount mcp-producer -n "$NS" --dry-run=client -o yaml | kubectl apply -f -
+export NAMESPACE=distai   # 手順 3 の mcp_producer_namespace と一致させる
+k create namespace "$NAMESPACE" --dry-run=client -o yaml | k apply -f -
+k create serviceaccount mcp-producer -n "$NAMESPACE" --dry-run=client -o yaml | k apply -f -
 ```
 
 producer を動かす Pod で `spec.serviceAccountName: mcp-producer` を指定します。紐付けより前から動いている Pod には資格情報が注入されないので、既存 Pod を使う場合は作成し直してください。
@@ -167,8 +167,8 @@ print(run_id)   # 動作確認で使う
 `mcp-host` は各 MCP エントリ名の Service を `mcp` 名前空間に作る (ポート 8080) ので、それぞれ port-forward して MCP クライアントから接続します。
 
 ```bash
-kubectl port-forward svc/knowledge -n mcp 8081:8080 &
-kubectl port-forward svc/analysis  -n mcp 8080:8080 &
+k port-forward svc/knowledge -n mcp 8081:8080 &
+k port-forward svc/analysis  -n mcp 8080:8080 &
 ```
 
 まず analysis MCP に先ほどの `run_id` を渡し、`stage_run` で成果物を読める状態にしてから `analyze` を走らせます。`analyze(run_id, "nsys-stats")` は S3 Files 上の `.nsys-rep` を読んで実測サマリを返します (下は検証で取った小さなトレースの抜粋)。
@@ -198,7 +198,7 @@ kubectl port-forward svc/analysis  -n mcp 8080:8080 &
 ```bash
 helm uninstall mcp -n mcp
 # producer ワークロードが作った SA を掃除 (infra は SA を管理しないため手動)
-kubectl delete serviceaccount mcp-producer -n "$NS" --ignore-not-found
+k delete serviceaccount mcp-producer -n "$NAMESPACE" --ignore-not-found
 # infra/eks 側のマウント・mcp-reader・producer 紐付けを無効化して apply
 # (mcp_producer_role_arn を渡さない = 既定の空になり producer の Pod Identity 紐付けが破棄される)
 cd "$(git rev-parse --show-toplevel)"/infra/eks
