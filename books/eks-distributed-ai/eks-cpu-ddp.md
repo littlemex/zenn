@@ -67,7 +67,7 @@ TrainJob 側は台数（`numNodes`）とノードあたりのプロセス数（`
 
 複数ノードの TrainJob では、各 rank が別ノードの別 Pod で動き、同じデータセット置き場を読み、rank 0 が成果物を書きます。rank 0 がどのノードに配置されても同じ場所に成果物が集まるよう、全ノードから同一パスを読み書きできる共有ストレージ（ReadWriteMany）が要ります。共有ファイルシステム上での同時書き込みによる破損を避けるため、スナップショットの書き込みは rank 0 だけが行います。MNIST のダウンロードは全 rank が実行します（`download=True` は冪等で、既にファイルが揃っていれば torchvision 側が再取得をスキップします）。
 
-保存先は Helm の `sharedStorage.backend` で切り替えられます。既定の `openzfs` のほかに、`fsx`（FSx for Lustre）、リージョン規模のマルチ AZ 共有が要るときは `efs` を選べます。3 つのバックエンドはいずれも Terraform 側で静的 PV が用意される設計で、選んだバックエンドの `var.<x>_enabled` が有効になっている必要があります。既定で `openzfs` と `fsx` は有効、`efs` は無効（ドライバのみ常設）です。
+保存先は Helm の `sharedStorage.backend` で切り替えられます。既定の `openzfs` のほかに `fsx`（FSx for Lustre）と `efs`（Amazon EFS）を選べます。3 つのバックエンドはいずれも Terraform 側で静的 PV が用意される設計で、選んだバックエンドの `var.<x>_enabled` が有効になっている必要があります。既定で `openzfs` と `fsx` は有効、`efs` は無効（ドライバのみ常設）です。`efs` を使う場合は `terraform.tfvars` で `efs_enabled = true` にして apply すると、ファイルシステム・private subnet ごとのマウントターゲット・静的 PV が作られ、Karpenter がノードを別 AZ に入れ替えても同じキャッシュを読み続けられます。どのバックエンドをどの用途に使い分けるかは Advanced01「共有ストレージをマルチテナントで扱う」で扱います。
 
 ## 学習用イメージをクラスタ内でビルドする
 
