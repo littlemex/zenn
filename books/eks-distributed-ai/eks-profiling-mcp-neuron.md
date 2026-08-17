@@ -122,14 +122,14 @@ export REGION=us-east-2   # 演習を行うリージョンに合わせる
 export ECR=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$REGION.amazonaws.com
 export BASE=$ECR/accelprof@$(aws ecr describe-images --repository-name accelprof \
   --image-ids imageTag=v1 --query 'imageDetails[0].imageDigest' --output text)   # Advanced02 の base
-kubectl -n image-builder create configmap analysis-neuron-ctx \
+k -n image-builder create configmap analysis-neuron-ctx \
   --from-file=Dockerfile=infra/eks/images/Dockerfile.accelprof-analysis-neuron
 helm template exp infra/eks/charts/experiments -s templates/image-build-custom.yaml \
   --set imageBuild.enabled=true --set imageBuild.jobName=build-analysis-neuron \
   --set imageBuild.repository=$ECR/accelprof --set imageBuild.tag=v1-neuron \
   --set imageBuild.buildArgs.BASE=$BASE \
   --set imageBuild.contextSource=configMap --set imageBuild.contextConfigMap=analysis-neuron-ctx \
-  | kubectl apply -f -
+  | k apply -f -
 ```
 
 push 後、Advanced02 と同様に digest を控え、values にはタグではなくこの digest を渡します。
@@ -210,7 +210,7 @@ print(run_id)   # 動作確認で使う
 Advanced02 と同じく port-forward して MCP クライアントから接続します。今回足した Neuron 用 analysis はエントリ名 `analysis-neuron` の Service として `mcp` 名前空間に作られます。
 
 ```bash
-kubectl port-forward svc/analysis-neuron -n mcp 8080:8080 &
+k port-forward svc/analysis-neuron -n mcp 8080:8080 &
 ```
 
 先ほどの `run_id` を analysis MCP に渡し、`stage_run` で成果物をマウント上で読める状態にしてから、`neuron-summary` アナライザを走らせます。
@@ -248,8 +248,8 @@ Neuron の producer Pod は Trainium ノードを占有するので、確認後�
 ```bash
 # 手順 3 で producer Pod を作った名前と namespace に合わせる
 export PRODUCER_POD=neuron-producer
-export NS=distai
-kubectl delete pod "$PRODUCER_POD" -n "$NS"
+export NAMESPACE=distai
+k delete pod "$PRODUCER_POD" -n "$NAMESPACE"
 # values から analysis-neuron エントリを外して再適用
 helm upgrade --install mcp infra/eks/charts/mcp-host -n mcp -f my-values.yaml
 ```
