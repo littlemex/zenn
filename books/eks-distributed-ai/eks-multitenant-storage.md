@@ -141,47 +141,50 @@ CAP=$(k get pv "$FSX_PV" -o jsonpath='{.spec.capacity.storage}')
 k create namespace team-b --dry-run=client -o yaml | k apply -f -
 ```
 
-PV と PVC のマニフェストは、本文に heredoc で埋め込むのではなく、リポジトリの `manifests/advanced01/pv-team-b.yaml.tmpl` と `manifests/advanced01/pvc-team-b.yaml.tmpl` にテンプレートとして管理します。`${DNS}` / `${MOUNT}` / `${HANDLE}` / `${CAP}` を環境変数として export し、`envsubst` で値を埋め込んで `kubectl apply -f -` に渡します。
+PV と PVC のマニフェストは、本文に heredoc で埋め込むのではなく、リポジトリの汎用テンプレート `manifests/fsx-lustre-shared-pv/pv.yaml.tmpl` と `manifests/fsx-lustre-shared-pv/pvc.yaml.tmpl` を使います（パスは手順 1 で `cd` した `infra/eks` からの相対）。テナント（`TENANT`）・PV 名（`PV_NAME`）・PVC 名（`CLAIM`）と、既存 PV から取った `${DNS}` / `${MOUNT}` / `${HANDLE}` / `${CAP}` を環境変数として export し、`envsubst` で埋め込んで `kubectl apply -f -` に渡します。namespace はテンプレート内（PVC の `metadata.namespace`）に含め、PV はクラスタスコープなので、`apply` に `-n` は要りません（`k get` / `k wait` などの参照系には `-n $TENANT` が要ります）。
 
 ```bash
+export TENANT=team-b PV_NAME=fsx-shared-team-b CLAIM=fsx-claim
 export DNS MOUNT HANDLE CAP
-envsubst < manifests/advanced01/pv-team-b.yaml.tmpl | k apply -f -
-envsubst < manifests/advanced01/pvc-team-b.yaml.tmpl | k apply -n team-b -f -
-k wait --for=jsonpath='{.status.phase}'=Bound pvc/fsx-claim -n team-b --timeout=60s
+: "${DNS:?}" "${MOUNT:?}" "${HANDLE:?}" "${CAP:?}"   # いずれかが空ならテンプレートを適用しない
+envsubst < manifests/fsx-lustre-shared-pv/pv.yaml.tmpl  | k apply -f -
+envsubst < manifests/fsx-lustre-shared-pv/pvc.yaml.tmpl | k apply -f -
+k wait --for=jsonpath='{.status.phase}'=Bound pvc/$CLAIM -n $TENANT --timeout=60s
 ```
 
 ::::details テンプレートの内容（参考）
 ```yaml
-# manifests/advanced01/pv-team-b.yaml.tmpl
+# manifests/fsx-lustre-shared-pv/pv.yaml.tmpl
 apiVersion: v1
 kind: PersistentVolume
 metadata:
-  name: fsx-training-team-b
+  name: ${PV_NAME}
 spec:
   capacity: { storage: ${CAP} }
   accessModes: ["ReadWriteMany"]
   persistentVolumeReclaimPolicy: Retain
   storageClassName: ""
   mountOptions: ["flock"]
-  claimRef: { namespace: team-b, name: fsx-claim }
+  claimRef: { namespace: ${TENANT}, name: ${CLAIM} }
   csi:
     driver: fsx.csi.aws.com
-    volumeHandle: ${HANDLE}-team-b
+    volumeHandle: ${HANDLE}-${TENANT}
     volumeAttributes:
       dnsname: ${DNS}
       mountname: ${MOUNT}
 ```
 
 ```yaml
-# manifests/advanced01/pvc-team-b.yaml.tmpl
+# manifests/fsx-lustre-shared-pv/pvc.yaml.tmpl
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: fsx-claim
+  name: ${CLAIM}
+  namespace: ${TENANT}
 spec:
   accessModes: ["ReadWriteMany"]
   storageClassName: ""
-  volumeName: fsx-training-team-b
+  volumeName: ${PV_NAME}
   resources:
     requests:
       storage: ${CAP}
@@ -213,7 +216,7 @@ k wait --for=jsonpath='{.status.phase}'=Succeeded pod/cleaner -n team-b --timeou
 k delete pod reader -n distai --ignore-not-found
 k delete pod writer cleaner -n team-b --ignore-not-found
 k delete pvc fsx-claim -n team-b --ignore-not-found
-k delete pv fsx-training-team-b --ignore-not-found
+k delete pv fsx-shared-team-b --ignore-not-found
 k delete namespace team-b --ignore-not-found
 ```
 
@@ -229,7 +232,7 @@ terraform apply -var openzfs_dynamic_provisioning_enabled=true
 
 `ParentVolumeId` には Basic02 で作った OpenZFS ファイルシステムのルートボリュームを指定します。`terraform output` の `shared_storage.fsx_openzfs.root_volume_id` から取得できます（別途 `aws fsx describe-file-systems` を叩く必要はありません）。`StorageCapacityQuotaGiB` が per-PVC の容量クォータになります。
 
-StorageClass と、テナントごとの PVC はどちらも同じパラメータ（quota やクライアント制限）を共有するため、本文に heredoc の YAML を並べるのではなく、リポジトリの `charts/openzfs-multitenant/` に Helm chart としてまとめています。`values.yaml` で `parentVolumeId`・`storageCapacityQuotaGiB`・`tenants`（PVC を作る namespace のリスト）を差し替えられるようにしてあります。`tenants` は配列なので `--set tenants[0]=...` は使わず、values ファイルで渡します（zsh では `[0]` がグロブ展開と衝突します）。
+StorageClass と、テナントごとの PVC はどちらも同じパラメータ（quota やクライアント制限）を共有するため、本文に heredoc の YAML を並べるのではなく、リポジトリの `charts/openzfs-multitenant/` に Helm chart としてまとめています。`values.yaml` で `parentVolumeId`・`storageCapacityQuotaGiB`・`tenants`（PVC を作る namespace のリスト）・`pvcName`（各 namespace に作る PVC 名。既定は `data`）を差し替えられます。`tenants` は配列なので `--set tenants[0]=...` は使わず、values ファイルで渡します（インデックス指定はテナントの追加・削除で壊れやすいためです）。
 
 ```bash
 ROOT_VOL=$(terraform output -json shared_storage | jq -r '.fsx_openzfs.root_volume_id')
@@ -242,6 +245,7 @@ cat > /tmp/openzfs-mt.yaml <<EOF
 parentVolumeId: $ROOT_VOL
 storageCapacityQuotaGiB: 10
 tenants: [tenant-a, tenant-b]
+pvcName: cache
 EOF
 helm upgrade --install openzfs-multitenant charts/openzfs-multitenant -f /tmp/openzfs-mt.yaml
 
@@ -265,6 +269,7 @@ parameters:
   StorageCapacityQuotaGiB: '{{ .Values.storageCapacityQuotaGiB }}'
   OptionsOnDeletion: '["DELETE_CHILD_VOLUMES_AND_SNAPSHOTS"]'
 reclaimPolicy: Delete
+volumeBindingMode: Immediate
 mountOptions: [ "nfsvers=4.1", "rsize=1048576", "wsize=1048576", "timeo=600" ]
 ```
 
@@ -272,7 +277,7 @@ mountOptions: [ "nfsvers=4.1", "rsize=1048576", "wsize=1048576", "timeo=600" ]
 # charts/openzfs-multitenant/templates/pvc.yaml (要点、tenants でループ)
 apiVersion: v1
 kind: PersistentVolumeClaim
-metadata: { name: cache, namespace: "{{ . }}" }
+metadata: { name: "{{ $.Values.pvcName }}", namespace: "{{ . }}" }
 spec:
   accessModes: ["ReadWriteMany"]
   storageClassName: openzfs-sc
@@ -514,4 +519,4 @@ terraform apply -var enable_fsx_openzfs_s3_backup=false
 - [Amazon S3 Files](https://docs.aws.amazon.com/ja_jp/AmazonS3/latest/userguide/s3-files.html)
 - [Amazon EFS CSI Driver](https://github.com/kubernetes-sigs/aws-efs-csi-driver)
 - [Amazon FSx for Lustre のストレージクォータ（user/group/project）](https://docs.aws.amazon.com/fsx/latest/LustreGuide/lustre-quotas.html)
-- [littlemex/distributed-ai](https://github.com/littlemex/distributed-ai) - `infra/eks` の openzfs 動的 IAM・`charts/openzfs-multitenant`・`manifests/advanced01`・`scripts/fsx-openzfs-s3-sync.sh`・`openzfs-s3-backup.tf` の実装
+- [littlemex/distributed-ai](https://github.com/littlemex/distributed-ai) - `infra/eks` の openzfs 動的 IAM・`charts/openzfs-multitenant`・`manifests/fsx-lustre-shared-pv`・`scripts/fsx-openzfs-s3-sync.sh`・`openzfs-s3-backup.tf` の実装
