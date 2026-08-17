@@ -120,7 +120,7 @@ cd "$(git rev-parse --show-toplevel)"/infra/eks
 export REGION=us-east-2
 export ECR=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$REGION.amazonaws.com
 export BASE=$ECR/accelprof@$(aws ecr describe-images --repository-name accelprof \
-  --image-ids imageTag=v1 --query 'imageDetails[0].imageDigest' --output text)
+  --image-ids imageTag=v1 --query 'imageDetails[0].imageDigest' --output text --region "$REGION")
 k -n image-builder create configmap analysis-neuron-ctx \
   --from-file=Dockerfile=images/Dockerfile.accelprof-analysis-neuron
 helm template exp charts/experiments -s templates/image-build-custom.yaml \
@@ -135,7 +135,7 @@ push 後、Advanced02 と同様に digest を控え、values にはタグでは�
 
 ```bash
 aws ecr describe-images --repository-name accelprof \
-  --image-ids imageTag=v1-neuron --query 'imageDetails[0].imageDigest' --output text
+  --image-ids imageTag=v1-neuron --query 'imageDetails[0].imageDigest' --output text --region "$REGION"
 ```
 
 ## 2. mcp-host に Neuron analysis のエントリを足す
@@ -143,9 +143,9 @@ aws ecr describe-images --repository-name accelprof \
 `mcp-host` の values に analysis のエントリをもう 1 つ足します。GPU 用 analysis との違いは、指すイメージが Neuron 版 (`neuron-explorer` を積んだもの) であることだけです。`neuron-summary` はパッケージの組み込みアナライザで、イメージに `neuron-explorer` バイナリがあれば自動で有効になるため、`MCP_ANALYZERS` を書く必要はありません (`MCP_ANALYZERS` は独自アナライザを足すときだけ使う JSON マップです)。`mcp-reader` サービスアカウント・マネージド MLflow の ARN・S3 Files の `volumeHandle` は Advanced02 と同じ値を使い回します。マネージド MLflow の ARN は Advanced02 と同じくデータ層の出力から受け、Neuron イメージの digest とあわせて環境変数に取ります。
 
 ```bash
-export MLFLOW_APP_ARN=$(terraform -chdir=infra/data-layer output -raw mlflow_app_arn)
+export MLFLOW_APP_ARN=$(terraform -chdir="$(git rev-parse --show-toplevel)/infra/data-layer" output -raw mlflow_app_arn)
 export NEURON_DIGEST=$(aws ecr describe-images --repository-name accelprof \
-  --image-ids imageTag=v1-neuron --query 'imageDetails[0].imageDigest' --output text)
+  --image-ids imageTag=v1-neuron --query 'imageDetails[0].imageDigest' --output text --region "$REGION")
 ```
 
 次を実行すると、値が展開された analysis-neuron エントリが出力されるので、それを `my-values.yaml` の `mcps:` に追記します (S3 Files の PV / マウント・trace バケット・リージョンは GPU 用 analysis と同じ定義を使います)。
