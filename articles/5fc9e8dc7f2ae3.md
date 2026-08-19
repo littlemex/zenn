@@ -3,7 +3,7 @@ title: "RL ポストトレーニングが静かに壊れるとき: training と 
 emoji: "🩹"
 type: "tech"
 topics: ["機械学習", "強化学習", "LLM", "GPU", "AWS"]
-published: false
+published: true
 ---
 
 # はじめに
