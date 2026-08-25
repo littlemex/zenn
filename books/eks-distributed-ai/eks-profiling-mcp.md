@@ -1,5 +1,5 @@
 ---
-title: "Advanced02 - GPU プロファイルを MCP で分析する仕組みを体験する"
+title: "Advanced02 - GPU プロファイルを MCP で分析する"
 free: true
 ---
 
@@ -9,32 +9,17 @@ free: true
 
 Basic01 から Basic11 で構築した Amazon EKS の土台の上に、GPU のプロファイルを収集し、Model Context Protocol (MCP) 経由で分析する仕組みを動かします。producer が実ワークロードにプロファイル収集を差し込んでバケットに書き、分析 MCP が MLflow で run を解決し、S3 Files マウント越しにプロファイルをその場で読んで、アナライザの結果をテキストで返します。
 
-```mermaid
-flowchart LR
-    P["producer Pod"] -->|"プロファイルを PUT"| B[("trace バケット")]
-    P -->|"run を記録"| M["マネージド MLflow"]
-    B -->|"POSIX で公開"| SF["S3 Files"]
-    SF -->|"読み取り専用マウント"| A["analysis MCP (CPU Pod)"]
-    M -->|"run を解決"| A
-    A -->|"分析結果 (テキスト)"| C["MCP クライアント"]
-    KN["knowledge MCP"] --> C
-```
-
 ## これは何をするものか
 
 設計思想と全体像、なぜこの形なのかは別記事「[プロファイリングを楽にしたい](https://zenn.dev/littlemex/articles/8ab01bc40f627a)」で解説済みです。本章はそれを読んだ前提で、実際に手を動かして GPU プロファイルの分析までを通します。予約タグや `volumeHandle` の書式、読み取り専用マウント、digest 固定といった設計上の勘所の詳細はブログに譲り、本章では手順の中で必要な箇所に絞って触れます。
 
-本章の開始状態は、クラスタが `terraform apply` 済み (Basic01 から Basic11 相当の `infra/eks` が稼働) で、かつプロファイル基盤のデータ層 (`infra/data-layer`) はまだ適用していない状態です。導入は `infra/scripts/install-profiling.sh` の 1 コマンドで、データ層の適用からクラスタ側の配線、MCP サーバのデプロイまでを行います。プロファイルを撮る側は `infra/eks/bin/kubectl-accelprof` の 1 コマンドで、自分のイメージとコマンドを渡すだけです。
+本章の開始状態は、クラスタが `terraform apply` 済み (Basic01 から Basic11 相当の `infra/eks` が稼働) で、かつプロファイル基盤のデータ層 (`infra/data-layer`) はまだ適用していない状態です。導入は `infra/scripts/install-profiling.sh` の 1 コマンドで、データ層の適用からクラスタ側の配線、MCP サーバのデプロイまでを行います。プロファイルをとる側は `infra/eks/bin/kubectl-accelprof` の 1 コマンドで、自分のイメージとコマンドを渡すだけです。
 
 :::message alert
-マネージド MLflow と S3 Files は課金リソースです。演習が終わったら本章末尾の後片付けを必ず実施してください。撤去順は必ず `infra/eks` を先、`infra/data-layer` を後にします (EFS ベースのファイルシステムはマウントターゲットが残っていると削除できないため)。
+マネージド MLflow と S3 Files は課金リソースです。演習が終わったら本章末尾の後片付けを必ず実施してください。EFS ベースのファイルシステムはマウントターゲットが残っていると削除できないため、撤去順は必ず `infra/eks` を先、`infra/data-layer` を後にします。
 :::
 
-:::message
-本章の手順を筆者が実機で確認した範囲は、導入スクリプトの冪等な再実行、分析 MCP との MCP ラウンドトリップ、そして GPU ノード (g5.2xlarge、NVIDIA A10G) 上で `nsys` を含まない素の PyTorch イメージにプロファイラを注入した producer の E2E です。以降に載せている数値はこの環境の実測値です。分散 (複数ノード) の実行と Neuron モードは未検証で、該当箇所にその旨を明記しています。
-:::
-
-## 裏で何が起きているか
+## コマンドの裏で何が起きているか
 
 1 コマンドに畳んである部分を、あとから自分の環境に合わせて変えられるように、中で何をしているかを先に押さえます。
 
