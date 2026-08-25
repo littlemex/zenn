@@ -24,7 +24,7 @@ flowchart LR
 
 設計思想と全体像、なぜこの形なのかは別記事「[プロファイリングを楽にしたい](https://zenn.dev/littlemex/articles/8ab01bc40f627a)」で解説済みです。本章はそれを読んだ前提で、実際に手を動かして GPU プロファイルの分析までを通します。予約タグや `volumeHandle` の書式、読み取り専用マウント、digest 固定といった設計上の勘所は、詳細はブログを確認してください。本章では手順の中で必要な箇所に絞って触れます。
 
-本章の開始状態は、クラスタが `terraform apply` 済み (Basic01 から Basic11 相当の `infra/eks` が稼働) で、かつプロファイル基盤のデータ層 (`infra/data-layer`) はまだ適用していない状態です。導入は `infra/install-profiling.sh` の 1 コマンドで、データ層の適用からクラスタ側の配線、MCP サーバのデプロイまでを行います。プロファイルを撮る側は `infra/eks/scripts/kubectl-profile` の 1 コマンドで、自分のイメージとコマンドを渡すだけです。
+本章の開始状態は、クラスタが `terraform apply` 済み (Basic01 から Basic11 相当の `infra/eks` が稼働) で、かつプロファイル基盤のデータ層 (`infra/data-layer`) はまだ適用していない状態です。導入は `infra/scripts/install-profiling.sh` の 1 コマンドで、データ層の適用からクラスタ側の配線、MCP サーバのデプロイまでを行います。プロファイルを撮る側は `infra/eks/bin/kubectl-accelprof` の 1 コマンドで、自分のイメージとコマンドを渡すだけです。
 
 :::message alert
 マネージド MLflow と S3 Files は課金リソースです。演習が終わったら本章末尾の後片付けを必ず実施してください。撤去順は必ず `infra/eks` を先、`infra/data-layer` を後にします (EFS ベースのファイルシステムはマウントターゲットが残っていると削除できないため)。
@@ -36,7 +36,7 @@ flowchart LR
 
 ### 導入スクリプトのフェーズ
 
-`infra/install-profiling.sh` は 7 つのフェーズを順に実行します。前提確認、データ層の適用、クラスタ側の配線、イメージの解決、MCP サーバのデプロイ、producer 契約の配布、マウント probe、受け入れ確認です。どのフェーズも冪等か「状態を見てから動く」形なので、途中で失敗しても原因を直して再実行すれば収束します。失敗時に自動でロールバックや destroy はしません。
+`infra/scripts/install-profiling.sh` は 7 つのフェーズを順に実行します。前提確認、データ層の適用、クラスタ側の配線、イメージの解決、MCP サーバのデプロイ、producer 契約の配布、マウント probe、受け入れ確認です。どのフェーズも冪等か「状態を見てから動く」形なので、途中で失敗しても原因を直して再実行すれば収束します。失敗時に自動でロールバックや destroy はしません。
 
 利用者が渡すのは 3 つだけです。クラスタ名、リージョン、そしてプロファイル収集を許可する namespace のリストです。バケット名やマネージド MLflow の ARN、ServiceAccount 名、S3 Files のマウント先 AZ、イメージの digest はすべてスクリプトが Terraform の出力や AWS API から解決します。特にマウント先 AZ を変数にしていないのは意図的で、S3 Files のマウントは単一 AZ からしか到達できないため、手で渡した値が実体とずれると PersistentVolume が到達不能になります。
 
@@ -71,7 +71,7 @@ initContainer が基盤イメージから profiler と shim を共有ボリュ�
 
 alias は MLflow の experiment 名と S3 の第 1 階層プレフィックスを兼ねます。つまり削除・保持期間・分析側から見える範囲・掃除の単位がすべて alias です。実験キャンペーンごとに 1 つの alias を `テナント名-系列名` の形で付け、キャンペーン内の反復は `workload_id` と自由なパラメータで表します。反復ごとに alias を作ると削除単位が増えていき、キャンペーンを 1 手で片付けられなくなります。
 
-Job そのものは終了から 2 日後に Kubernetes が消します。run の記録は永続で、run_id は recorder が Job の注釈に書き戻すので、Job がある間は `kubectl profile get` で引けます。消えたあとは MLflow を alias と `workload_id` で検索します。
+Job そのものは終了から 2 日後に Kubernetes が消します。run の記録は永続で、run_id は recorder が Job の注釈に書き戻すので、Job がある間は `kubectl accelprof get` で引けます。消えたあとは MLflow を alias と `workload_id` で検索します。
 
 ### なぜ controller がないか
 
@@ -83,7 +83,7 @@ Pod 内の部品では埋められない穴が 1 つだけ残ります。recorde
 
 ## 1. 前提を確認する
 
-クラスタ (Basic01 から Basic11 相当) が稼働していること、`infra/eks` の Terraform がリモート state を使っていること、`terraform` と `kubectl` と `helm` と `aws` と `python3` と `curl` が手元にあること、MCP クライアント (Claude Code など) が手元にあることを確認します。リモート state を使っていない場合は先に `infra/eks/scripts/bootstrap-remote-state.sh` を実行します。導入スクリプトはデータ層の state キーを `infra/eks/backend.hcl` から導出するので、この設定が起点になります。
+クラスタ (Basic01 から Basic11 相当) が稼働していること、`infra/eks` の Terraform がリモート state を使っていること、`terraform` と `kubectl` と `helm` と `aws` と `python3` と `curl` が手元にあること、MCP クライアント (Claude Code など) が手元にあることを確認します。リモート state を使っていない場合は先に `infra/eks/scripts/bootstrap-remote-state.sh` を実行します。導入スクリプトは state の場所を `TF_STATE_BUCKET` などで明示できますが、指定しない場合は `infra/eks/backend.hcl` から読むので、この設定が起点になります。
 
 ## 2. 基盤を導入する
 
@@ -94,7 +94,7 @@ cd "$(git rev-parse --show-toplevel)"
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2
 export PRODUCER_NAMESPACES=team-a,team-b
-./infra/install-profiling.sh
+./infra/scripts/install-profiling.sh
 ```
 
 初回はデータ層がまだ無いので、作成を明示的に許可します。誤って 2 つ目のデータ層を作ると基盤が二分されるため、既定では既存の再利用しかしません。
@@ -102,7 +102,7 @@ export PRODUCER_NAMESPACES=team-a,team-b
 ```bash
 cd "$(git rev-parse --show-toplevel)"
 export CREATE_DATA_LAYER=1
-./infra/install-profiling.sh
+./infra/scripts/install-profiling.sh
 ```
 
 最後に `acceptance OK` と接続情報が表示されれば導入完了です。何度実行しても同じ結果になるので、namespace を増やしたいときは `PRODUCER_NAMESPACES` を書き換えて再実行します。
@@ -125,13 +125,13 @@ k create serviceaccount mcp-producer -n "$NAMESPACE" --dry-run=client -o yaml | 
 
 ## 4. プロファイルを撮って記録する
 
-`kubectl-profile` を PATH に置くと `kubectl profile` として使えます。渡すのは alias と自分のイメージと、実行したいコマンドだけです。
+`kubectl-accelprof` を PATH に置くと `kubectl accelprof` として使えます。単一ファイルで自己完結しているので、コピーするだけで動きます。渡すのは alias と自分のイメージと、実行したいコマンドだけです。
 
 ```bash
-export PATH="$(git rev-parse --show-toplevel)/infra/eks/scripts:$PATH"
+export PATH="$(git rev-parse --show-toplevel)/infra/eks/bin:$PATH"
 export NAMESPACE=team-a
 export IMAGE=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$AWS_REGION.amazonaws.com/accelprof:v1-nsys
-kubectl profile run --alias teama-attn-sweep --namespace "$NAMESPACE" --image "$IMAGE" \
+kubectl accelprof run --alias teama-attn-sweep --namespace "$NAMESPACE" --image "$IMAGE" \
   --param seq_len=4096 --tag variant=flash \
   -- bash -lc 'python3 -c "print(sum(range(10**6)))"'
 ```
@@ -141,8 +141,8 @@ kubectl profile run --alias teama-attn-sweep --namespace "$NAMESPACE" --image "$
 投入は数秒で返り、`workload_id` が表示されます。記録はクラスタの中で完結するので、手元のターミナルを占有しません。長時間の学習でも投入したら閉じてよく、あとから結果を引きます。
 
 ```bash
-kubectl profile get "$WORKLOAD_ID" -n "$NAMESPACE"
-kubectl profile runs --alias teama-attn-sweep -n "$NAMESPACE"
+kubectl accelprof get "$WORKLOAD_ID" -n "$NAMESPACE"
+kubectl accelprof runs --alias teama-attn-sweep -n "$NAMESPACE"
 ```
 
 `run_id` が表示されたら記録が完了しています。metrics を残したい場合は、自分の学習スクリプトの最後にファイルを 1 つ書きます。accelprof の import は不要です。
@@ -190,11 +190,11 @@ analysis MCP に先ほどの `run_id` を渡し、`stage_run` で成果物を読
 | 変えたいこと | 触る場所 |
 | --- | --- |
 | プロファイル収集を許可する namespace | `PRODUCER_NAMESPACES` を書き換えて導入スクリプトを再実行します。リストが唯一の宣言なので、外した namespace の紐付けは取り消されます |
-| profiler のオプション | 実行ごとに `--nsys-args` で上書きします。既定値を変えるなら `infra/eks/manifests/profiling-producer.job.yaml.tmpl` の環境変数です |
-| Job の形 (ボリューム、affinity、サイドカー) | 実行ごとなら `--patch`、恒久的に変えるなら同じテンプレートです |
+| profiler のオプション | 実行ごとに `--nsys-args` で上書きします。既定値を変えるなら クライアント `infra/eks/bin/kubectl-accelprof` に埋め込まれた Job の環境変数です |
+| Job の形 (ボリューム、affinity、サイドカー) | 実行ごとなら `--patch` です。恒久的に変えるならクライアントに埋め込まれた Job を直し、`infra/eks/tests/run-render-tests.sh --update` で golden マニフェストを更新します。埋め込みにしているのは、クライアントを PATH にコピーしても動くようにするためです |
 | 撮る rank | 既定は rank0 のみです。`--profile-ranks 0,3,7` または `all` を指定します。1 rank だけを見るのはサンプリングであって代表値ではないため、遅い rank を探す実験では明示的に広げます |
-| profiler や記録の実装そのもの | `infra/eks/images/accelprof-entry.sh` と `accelprof-recorder.py` です。基盤イメージに焼き込んであるので、変更後は `infra/eks/scripts/build-profiling-images.sh` で焼き直してから導入スクリプトを再実行します |
-| Job を残す期間 | `--ttl` です。短くすると `kubectl profile get` で run_id を引ける期間も短くなります。恒久的な照会は MLflow 側です |
+| profiler や記録の実装そのもの | `infra/eks/images/accelprof/entry.sh` と `recorder.py` です。基盤イメージに焼き込んであるので、変更後は `infra/eks/scripts/build-profiling-images.sh` で焼き直してから導入スクリプトを再実行します |
+| Job を残す期間 | `--ttl` です。短くすると `kubectl accelprof get` で run_id を引ける期間も短くなります。恒久的な照会は MLflow 側です |
 | 記録のスキーマ (metrics の意味づけなど) | accelprof パッケージ側です。記録 API とファイル契約の仕様はライブラリの持ち物で、いつどこで呼ぶかが基盤の持ち物という切り分けです |
 
 ## 7. 後片付け
@@ -228,6 +228,6 @@ aws sagemaker stop-mlflow-tracking-server --tracking-server-name "$TRACKING_SERV
 # 参考資料
 
 - [プロファイリングを楽にしたい](https://zenn.dev/littlemex/articles/8ab01bc40f627a) - 本基盤の設計思想を解説したブログ
-- [littlemex/distributed-ai](https://github.com/littlemex/distributed-ai) - `infra/install-profiling.sh` / `infra/data-layer` / `infra/eks` / `mcp-host` チャートの実装
+- [littlemex/distributed-ai](https://github.com/littlemex/distributed-ai) - `infra/scripts/install-profiling.sh` と `infra/eks/bin/kubectl-accelprof`、`infra/data-layer` と `infra/eks`、`mcp-host` チャートの実装
 - [accelprof](https://pypi.org/project/accelprof/) / [accelprof-knowledge](https://pypi.org/project/accelprof-knowledge/) - 分析 MCP と知識 MCP の pip パッケージ
 - [Amazon S3 Files (EFS ユーザーガイド)](https://docs.aws.amazon.com/efs/latest/ug/s3-file-systems.html) - S3 Files の公式ドキュメント
