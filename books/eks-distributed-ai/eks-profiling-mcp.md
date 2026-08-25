@@ -85,7 +85,9 @@ Job そのものは終了から 2 日後に Kubernetes が消します。run の
 
 ## 1. 前提を確認する
 
-クラスタ (Basic01 から Basic11 相当) が稼働していること、`infra/eks` の Terraform がリモート state を使っていること、`terraform` と `kubectl` と `helm` と `aws` と `python3` と `curl` が手元にあること、MCP クライアント (Claude Code など) が手元にあることを確認します。リモート state を使っていない場合は先に `infra/eks/scripts/bootstrap-remote-state.sh` を実行します。導入スクリプトは state の場所を `TF_STATE_BUCKET` などで明示できますが、指定しない場合は `infra/eks/backend.hcl` から読むので、この設定が起点になります。
+本章は基盤リポジトリのリリース `release/eks-distributed-ai/v0.0.2` を前提にしています。本文のコマンドと出力例はこのバージョンで実機確認したものです。別のバージョンでは変数名やフラグが変わることがあるので、まずはこのタグで通してください。
+
+クラスタ (Basic01 から Basic11 相当) が稼働していること、`infra/eks` の Terraform がリモート state を使っていること、`terraform` と `kubectl` と `helm` と `aws` と `python3` と `git` と `curl` が手元にあること、MCP クライアント (Claude Code など) が手元にあることを確認します。リモート state を使っていない場合は先に `infra/eks/scripts/bootstrap-remote-state.sh` を実行します。導入スクリプトは state の場所を `TF_STATE_BUCKET` などで明示できますが、指定しない場合は `infra/eks/backend.hcl` から読むので、この設定が起点になります。
 
 以降のコマンドは他の章と同じく `k` を `kubectl` の別名として使います。まだ設定していない場合はこの 1 行を実行してください。
 
@@ -112,15 +114,30 @@ done
 
 クラスタ名とリージョン、そしてプロファイル収集を許可する namespace を指定して 1 コマンドを実行します。`PRODUCER_NAMESPACES` はこれから実験を回す namespace の一覧で、そのまま「trace バケットへの書き込みと run の記録を許可した範囲」の宣言になります。ここに書かれていない namespace のワークロードは記録できません。初回はデータ層がまだ無いので、作成を `CREATE_DATA_LAYER=1` で明示的に許可します。既定では既存のデータ層の再利用しかしないので、誤って 2 つ目のデータ層を作って基盤が二分されることがありません。
 
+基盤リポジトリを手元に持っていない場合は、リリースを固定した 1 行で済みます。このスクリプトはリポジトリを固定タグで取得し、`kubectl-accelprof` を `~/.local/bin` に置き、取得したツリーの中で導入スクリプトを実行します。URL のタグとスクリプトが固定するタグは同じものなので、コピーした 1 行と入るものがずれません。
+
+```bash
+export CLUSTER_NAME=distai-eks
+export AWS_REGION=us-east-2
+export PRODUCER_NAMESPACES=team-a,team-b
+export CREATE_DATA_LAYER=1
+curl -fsSL https://raw.githubusercontent.com/littlemex/distributed-ai/refs/tags/release/eks-distributed-ai/v0.0.2/infra/scripts/get-profiling.sh | bash
+```
+
+チェックアウトは `~/distributed-ai-v0.0.2` に置かれます (`PROFILING_DIR` で変更可能)。適用前に中身を見たい場合は `RUN_INSTALL=0` を付けると、取得とプラグインの設置だけで止まります。
+
+すでにリポジトリを clone してある場合は、その中で導入スクリプトを直接実行します。
+
 ```bash
 cd "$(git rev-parse --show-toplevel)"
+git checkout release/eks-distributed-ai/v0.0.2
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2
 export PRODUCER_NAMESPACES=team-a,team-b
 CREATE_DATA_LAYER=1 ./infra/scripts/install-profiling.sh
 ```
 
-2 回目以降は `CREATE_DATA_LAYER` を外して同じコマンドを実行します。最後に `acceptance OK` と接続情報が表示されれば導入完了です。何度実行しても同じ結果になるので、あとから namespace を増やすときは、その namespace と ServiceAccount を作ってから `PRODUCER_NAMESPACES` に追記して再実行します。
+どちらの経路でも、2 回目以降は `CREATE_DATA_LAYER` を外して同じコマンドを実行します。最後に `acceptance OK` と接続情報が表示されれば導入完了です。何度実行しても同じ結果になるので、あとから namespace を増やすときは、その namespace と ServiceAccount を作ってから `PRODUCER_NAMESPACES` に追記して再実行します。
 
 データ層は MLflow と trace バケットを含む記録側の一式で、クラスタごとに 1 つ立てる必要はありません。どのデータ層を使うかは `DATA_LAYER_NAME` (既定は `mcp`) が決め、この名前が state のキーとバケット名の接頭辞になります。複数のクラスタで記録を共有するなら、2 つ目以降のクラスタでは同じ `DATA_LAYER_NAME` を渡して `CREATE_DATA_LAYER` は付けません。逆に既存のデータ層があるのに違う名前を渡すと、そのクラスタは別の記録空間を持つことになります。
 
@@ -130,10 +147,10 @@ CREATE_DATA_LAYER=1 ./infra/scripts/install-profiling.sh
 
 ## 4. プロファイルを撮って記録する
 
-`kubectl-accelprof` を PATH に置くと `kubectl accelprof` として使えます。単一ファイルで自己完結しているので、コピーするだけで動きます。渡すのは alias と自分のイメージと、実行したいコマンドだけです。まずは基盤イメージ自身を workload として 1 本流し、経路が通っていることを確認します。イメージの URI は namespace に配られた ConfigMap から引けるので、レジストリやタグを手で組み立てる必要はありません。
+`kubectl-accelprof` を PATH に置くと `kubectl accelprof` として使えます。単一ファイルで自己完結しているので、コピーするだけで動きます。1 行の導入を使った場合は `~/.local/bin` に置かれているので、下のようにそこを PATH に通します。clone から入れた場合は代わりに `infra/eks/bin` を通してください。渡すのは alias と自分のイメージと、実行したいコマンドだけです。まずは基盤イメージ自身を workload として 1 本流し、経路が通っていることを確認します。イメージの URI は namespace に配られた ConfigMap から引けるので、レジストリやタグを手で組み立てる必要はありません。
 
 ```bash
-export PATH="$(git rev-parse --show-toplevel)/infra/eks/bin:$PATH"
+export PATH="$HOME/.local/bin:$PATH"
 export NAMESPACE=team-a
 export IMAGE=$(k get configmap accelprof-config -n "$NAMESPACE" \
   -o jsonpath='{.data.ACCELPROF_PLATFORM_IMAGE}')
@@ -144,10 +161,10 @@ kubectl accelprof run --alias teama-gpu-nsys --namespace "$NAMESPACE" --image "$
 
 基盤イメージには `nsys` が入っているので、この 1 本だけは `--no-inject-nsys` で注入を省略しています。自分の学習イメージを渡すときは、このオプションを外せば initContainer が profiler を配ります。
 
-投入は数秒で返り、`workload_id` が表示されます。記録はクラスタの中で完結するので、手元のターミナルを占有しません。長時間の学習でも投入したら閉じてよく、あとから結果を引きます。表示された `workload_id` を控えて状態を見ます。
+投入は数秒で返り、`workload_id` が表示されます。記録はクラスタの中で完結するので、手元のターミナルを占有しません。長時間の学習でも投入したら閉じてよく、あとから結果を引きます。表示された `workload_id` を次の 1 行目に貼って状態を見ます。
 
 ```bash
-export WORKLOAD_ID=wl-...        # kubectl accelprof run が表示した値
+export WORKLOAD_ID=wl-260826043020-e69a3905
 kubectl accelprof get "$WORKLOAD_ID" -n "$NAMESPACE"
 kubectl accelprof runs --alias teama-gpu-nsys -n "$NAMESPACE"
 ```
@@ -371,6 +388,7 @@ terraform apply teardown.tfplan
 
 - [プロファイリングを楽にしたい](https://zenn.dev/littlemex/articles/8ab01bc40f627a) - 本基盤の設計思想を解説したブログ
 - [littlemex/distributed-ai](https://github.com/littlemex/distributed-ai) - `infra/scripts/install-profiling.sh` と `infra/eks/bin/kubectl-accelprof`、`infra/data-layer` と `infra/eks`、`mcp-host` チャートの実装
+- [release/eks-distributed-ai/v0.0.2](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.0.2) - 本章が前提にしているリリース
 - [accelprof](https://pypi.org/project/accelprof/) / [accelprof-knowledge](https://pypi.org/project/accelprof-knowledge/) - 分析 MCP と知識 MCP の pip パッケージ
 - [Nsight Systems ユーザーガイド](https://docs.nvidia.com/nsight-systems/UserGuide/index.html) - `nsys profile` のオプションと収集対象の公式ドキュメント
 - [Amazon S3 Files (EFS ユーザーガイド)](https://docs.aws.amazon.com/efs/latest/ug/s3-file-systems.html) - S3 Files の公式ドキュメント
