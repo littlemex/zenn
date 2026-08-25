@@ -19,7 +19,7 @@ free: true
 
 ## DDP
 
-分散学習の基本的な形が DDP（Distributed Data Parallel）です。DDP については参考情報がたくさんあるので調べてみてください。DDP の通信バックエンドにはいくつか種類がありますが、本章で押さえておきたいのは次の 2 つです。
+分散学習の基本的な形が DDP（Distributed Data Parallel）です。各プロセス（rank と呼びます）がモデルの完全なコピーとデータセットの異なる分割を持ち、それぞれが forward と backward で勾配を計算したあと、all-reduce で全 rank の勾配を平均して共有します。全 rank が同じ平均勾配で同じ更新をするため、モデルは学習を通じて常に一致します。プロセスの総数を world_size、各プロセスの通し番号を rank と呼び、最初にどこへ集合して通信を確立するかの待ち合わせを rendezvous と呼びます。この 3 語は本章のログを読むときの鍵になります。DDP の通信バックエンドにはいくつか種類がありますが、本章で押さえておきたいのは次の 2 つです。
 
 - **gloo**: CPU 上で動きます。GPU は不要です。
 - **nccl**: NVIDIA GPU 上で動き、GPU 間の高速な集合通信を担います。
@@ -100,6 +100,10 @@ Basic01 で current-context をこのクラスタに切り替え、既定 namesp
 ```bash
 k create namespace distai --dry-run=client -o yaml | k apply -f -
 ```
+
+:::message
+本章のコマンドは `jq` を使います。未インストールだと `terraform output` の抽出が空文字になり、PVC が `Pending` のまま止まります。あわせて `kubectl` の current namespace が `distai` を指していることを `k config view --minify -o jsonpath='{..namespace}'` で確認しておくと、以降のリソースが別 namespace に作られる事故を防げます。
+:::
 
 ## 2. 学習用イメージを用意する
 
@@ -193,7 +197,7 @@ helm template exp charts/experiments -n distai \
     --set trainjobTrain.nodeRole=cpu \
     --set trainjobTrain.numNodes=2 \
     --set trainjobTrain.nprocPerNode=1 \
-    --set trainjobTrain.totalEpochs=10 \
+    --set trainjobTrain.totalEpochs=20 \
     --set sharedStorage.existingClaimName=shared-claim \
     | k apply -f -
 ```
@@ -210,7 +214,7 @@ k get pods -o wide -l jobset.sigs.k8s.io/jobset-name=ddp-trainjob
 k get trainjob ddp-trainjob -w
 ```
 
-rank 0 が載る Pod のログを追います。Pod 名は末尾のランダム文字が変わるので、決め打ちせずラベルで選びます。rank 0 は JobSet の completion index 0 なので、`batch.kubernetes.io/job-completion-index=0` と jobset 名の 2 つのラベルで一意に選べます（この Pod ラベルは Kubernetes 1.28 以降で既定有効です）。そもそも TrainJob が展開する子 Job の名前は `ddp-trainjob-node` で、`ddp-trainjob` という名前の Job は無いため `logs job/ddp-trainjob` は該当なしになります。複数ある Pod のどれを見るかを確実に選ぶにはラベルセレクタが向いています。ログは Pod が存在する間に取ります（完了 Pod は Job/TrainJob を消すまで残るので完了後でも取れますが、`k delete` で消した後は取れません。この学習ジョブには `ttlSecondsAfterFinished` を設定していないので、消すまで自動回収はされません）。
+rank 0 が載る Pod のログを追います。Pod 名は末尾のランダム文字が変わるので、決め打ちせずラベルで選びます。rank 0 は JobSet の completion index 0 なので、`batch.kubernetes.io/job-completion-index=0` と jobset 名の 2 つのラベルで一意に選べます（この Pod ラベルは Kubernetes 1.28 以降で既定有効です）。そもそも TrainJob が展開する子 Job の名前は `ddp-trainjob-node-0` で、`ddp-trainjob` という名前の Job は無いため `logs job/ddp-trainjob` は該当なしになります。複数ある Pod のどれを見るかを確実に選ぶにはラベルセレクタが向いています。ログは Pod が存在する間に取ります（完了 Pod は Job/TrainJob を消すまで残るので完了後でも取れますが、`k delete` で消した後は取れません。この学習ジョブには `ttlSecondsAfterFinished` を設定していないので、消すまで自動回収はされません）。
 
 ```bash
 SEL="jobset.sigs.k8s.io/jobset-name=ddp-trainjob,batch.kubernetes.io/job-completion-index=0"
@@ -266,7 +270,7 @@ k logs --tail=-1 -l "jobset.sigs.k8s.io/jobset-name=ddp-trainjob,batch.kubernete
 
 ```bash
 k wait --for=condition=Complete trainjob/ddp-trainjob --timeout=30m
-k run peek --rm -it --restart=Never --image=busybox:1.36 \
+k run peek --rm -it --pod-running-timeout=5m --restart=Never --image=busybox:1.36 \
   --overrides='{"apiVersion":"v1","spec":{"containers":[{"name":"peek","image":"busybox:1.36","command":["ls","-lh","/shared/output/trainjob-cpu"],"volumeMounts":[{"name":"s","mountPath":"/shared"}]}],"volumes":[{"name":"s","persistentVolumeClaim":{"claimName":"shared-claim"}}]}}'
 ```
 
@@ -281,8 +285,9 @@ k delete trainjob ddp-trainjob
 最後に、step 3 で触れた「なぜチャートが PVC を自動生成しないのか」を実際に確かめます。ワークロード（Job/TrainJob）を消すのと同じ感覚で、共有 PVC 自体を消してみましょう。
 
 ```bash
+POOL_PV=$(terraform output -json shared_storage | jq -r '.fsx_openzfs.persistent_volume')
 k delete pvc shared-claim
-k get pv openzfs-shared
+k get pv "$POOL_PV"
 ```
 
 `STATUS` が `Released` になっているはずです。`Available`（誰にも bound されていない、次の PVC を待てる状態）ではなく `Released`（前の持ち主の後始末を待っている状態）である点に注目してください。この状態で、もう一度 `shared-claim` を作り直してみます。
@@ -302,7 +307,7 @@ PV は PVC を「名前」ではなく、bind が成立した瞬間に書き込�
 復旧するには、PV の `claimRef` のうち `uid` と `resourceVersion` だけを取り除きます。`claimRef` 全体を消すのではないことに注意してください。`name`/`namespace` を残すことで、PV は「その名前の PVC が来たら bind する」という pre-bind 状態に戻り、無関係な別の PVC に横取りされるレースを防げます。
 
 ```bash
-k patch pv openzfs-shared --type json \
+k patch pv "$POOL_PV" --type json \
   -p '[{"op":"remove","path":"/spec/claimRef/uid"},{"op":"remove","path":"/spec/claimRef/resourceVersion"}]'
 k get pvc shared-claim
 ```
@@ -311,9 +316,20 @@ k get pvc shared-claim
 
 これで step 3 で 1 回だけ手動作成した理由が実感できたはずです。PVC の生成をワークロードの `apply`/`delete` に乗せていたら、ワークロードを作り直すたびにこの `Released` を踏むことになります。基盤を用意するタイミングで 1 回だけ作り、以降のワークロードはその PVC の**名前を渡すだけ**にする、というこの章の設計はこの事故を避けるためのものです。
 
+## 6. 後片付け
+
+次章以降でこの学習イメージや共有データを使わない場合は、残ったリソースを片付けます。共有 PVC（`shared-claim`）と共有ストレージ上の MNIST データ・スナップショットは、後続の章でも使うため残して構いません。
+
+```bash
+k delete pod peek -n distai --ignore-not-found
+k delete job build-ddp-sample-v1 -n image-builder --ignore-not-found
+```
+
+ECR に push した `ddp-sample:v1` イメージは、再利用しないなら ECR コンソールから削除します。
+
 # まとめ
 
-本章では、GPU を使わずに Amazon EKS の CPU ノード上で MNIST MLP の DDP 学習を、Kubeflow Trainer v2 の TrainJob で 2 ノードにまたがって走らせました。gloo backend で動かし、loss が減少すること、そして rank 0 のみがスナップショットを共有ストレージに保存するという DDP の基本動作を確認しました。さらに、共有ストレージの PVC を意図的に削除して `Released` 状態を再現し、`claimRef` の `uid`/`resourceVersion` だけを取り除く復旧手順まで体験しました。静的プロビジョニングされた PV は PVC を名前ではなく実体（UID）で覚えるという、この基盤の共有ストレージ全体を貫く重要な性質です。
+本章では、GPU を使わずに Amazon EKS の CPU ノード上で MNIST MLP の DDP 学習を、Kubeflow Trainer v2 の TrainJob で 2 ノードにまたがって走らせました。gloo backend で動かし、loss が減少すること、そして rank 0 のみがスナップショットを共有ストレージに保存するという DDP の基本動作を確認しました。さらに、共有ストレージの PVC を意図的に削除して `Released` 状態を再現し、`claimRef` の `uid`/`resourceVersion` だけを取り除く復旧手順まで体験しました。静的プロビジョニングされた PV は PVC を名前ではなく実体（UID）で覚えます。これは静的プロビジョニングと Retain に固有の運用上の性質で、動的プロビジョニングでは PVC 削除時の挙動は StorageClass の reclaimPolicy が決めます。1 つのファイルシステムを複数の namespace で共有する方法や、Amazon EFS のアクセスポイント・Amazon FSx for OpenZFS の動的な子ボリュームによる強制分離は Basic10 で扱います。
 
 # 参考資料
 
