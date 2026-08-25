@@ -299,7 +299,7 @@ terraform apply -var s3files_enabled=false -var mlflow_enabled=false
 
 # まとめ
 
-本章では、データ層の適用から `mcp-host` でのデプロイ、producer での run 記録、そして分析 MCP と knowledge MCP を使った分析までを、実機で一通り動かしました。日々の実験では producer に数行を差し込むだけで、以降は MCP 経由でプロファイルの分析と次の一手の提示を受け取れます。設計思想の全体像は冒頭のブログにまとめてあります。Neuron のプロファイルを同じ仕組みで扱う手順は Advanced03 に続きます。
+本章では、データ層の適用から `mcp-host` でのデプロイ、producer での run 記録、そして分析 MCP と knowledge MCP を使った分析までを、実機で一通り動かしました。日々の実験では producer に数行を差し込むだけで、以降は MCP 経由でプロファイルの分析と次の一手の提示を受け取れます。設計思想の全体像は冒頭のブログにまとめてあります。
 
 # 参考資料
 
