@@ -114,19 +114,7 @@ done
 
 クラスタ名とリージョン、そしてプロファイル収集を許可する namespace を指定して 1 コマンドを実行します。`PRODUCER_NAMESPACES` はこれから実験を回す namespace の一覧で、そのまま「trace バケットへの書き込みと run の記録を許可した範囲」の宣言になります。ここに書かれていない namespace のワークロードは記録できません。初回はデータ層がまだ無いので、作成を `CREATE_DATA_LAYER=1` で明示的に許可します。既定では既存のデータ層の再利用しかしないので、誤って 2 つ目のデータ層を作って基盤が二分されることがありません。
 
-基盤リポジトリを手元に持っていない場合は、リリースを固定した 1 行で済みます。このスクリプトはリポジトリを固定タグで取得し、`kubectl-accelprof` を `~/.local/bin` に置き、取得したツリーの中で導入スクリプトを実行します。URL のタグとスクリプトが固定するタグは同じものなので、コピーした 1 行と入るものがずれません。
-
-```bash
-export CLUSTER_NAME=distai-eks
-export AWS_REGION=us-east-2
-export PRODUCER_NAMESPACES=team-a,team-b
-export CREATE_DATA_LAYER=1
-curl -fsSL https://raw.githubusercontent.com/littlemex/distributed-ai/refs/tags/release/eks-distributed-ai/v0.0.2/infra/scripts/get-profiling.sh | bash
-```
-
-チェックアウトは `~/distributed-ai-v0.0.2` に置かれます (`PROFILING_DIR` で変更可能)。適用前に中身を見たい場合は `RUN_INSTALL=0` を付けると、取得とプラグインの設置だけで止まります。
-
-すでにリポジトリを clone してある場合は、その中で導入スクリプトを直接実行します。
+導入は、そのクラスタを管理しているチェックアウトから実行します。クラスタ側の Terraform は `terraform.tfvars` と `backend.hcl` で構成されており、どちらも環境固有なのでリポジトリには含まれていません。つまりクラスタの state を触る操作は、それを持っている作業ディレクトリの仕事です。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"
@@ -137,7 +125,7 @@ export PRODUCER_NAMESPACES=team-a,team-b
 CREATE_DATA_LAYER=1 ./infra/scripts/install-profiling.sh
 ```
 
-どちらの経路でも、2 回目以降は `CREATE_DATA_LAYER` を外して同じコマンドを実行します。最後に `acceptance OK` と接続情報が表示されれば導入完了です。何度実行しても同じ結果になるので、あとから namespace を増やすときは、その namespace と ServiceAccount を作ってから `PRODUCER_NAMESPACES` に追記して再実行します。
+2 回目以降は `CREATE_DATA_LAYER` を外して同じコマンドを実行します。最後に `acceptance OK` と接続情報が表示されれば導入完了です。何度実行しても同じ結果になるので、あとから namespace を増やすときは、その namespace と ServiceAccount を作ってから `PRODUCER_NAMESPACES` に追記して再実行します。
 
 データ層は MLflow と trace バケットを含む記録側の一式で、クラスタごとに 1 つ立てる必要はありません。どのデータ層を使うかは `DATA_LAYER_NAME` (既定は `mcp`) が決め、この名前が state のキーとバケット名の接頭辞になります。複数のクラスタで記録を共有するなら、2 つ目以降のクラスタでは同じ `DATA_LAYER_NAME` を渡して `CREATE_DATA_LAYER` は付けません。逆に既存のデータ層があるのに違う名前を渡すと、そのクラスタは別の記録空間を持つことになります。
 
@@ -147,7 +135,18 @@ CREATE_DATA_LAYER=1 ./infra/scripts/install-profiling.sh
 
 ## 4. プロファイルを撮って記録する
 
-`kubectl-accelprof` を PATH に置くと `kubectl accelprof` として使えます。単一ファイルで自己完結しているので、コピーするだけで動きます。1 行の導入を使った場合は `~/.local/bin` に置かれているので、下のようにそこを PATH に通します。clone から入れた場合は代わりに `infra/eks/bin` を通してください。渡すのは alias と自分のイメージと、実行したいコマンドだけです。まずは基盤イメージ自身を workload として 1 本流し、経路が通っていることを確認します。イメージの URI は namespace に配られた ConfigMap から引けるので、レジストリやタグを手で組み立てる必要はありません。
+プロファイルを撮る側は、リポジトリも Terraform も要りません。必要なのは `kubectl-accelprof` という 1 ファイルだけで、リリースを固定した 1 行で入ります。
+
+```bash
+export CLUSTER_NAME=distai-eks
+export AWS_REGION=us-east-2
+export PRODUCER_NAMESPACES=team-a
+curl -fsSL https://raw.githubusercontent.com/littlemex/distributed-ai/refs/tags/release/eks-distributed-ai/v0.0.2/infra/scripts/get-profiling.sh | bash
+```
+
+このスクリプトはリポジトリを固定タグで `~/distributed-ai-v0.0.2` に取得し、プラグインを `~/.local/bin` に置きます。URL のタグとスクリプトが固定するタグは同じものなので、コピーした 1 行と入るものがずれません。クラスタの state を触る情報 (`TF_STATE_BUCKET` など) を渡した場合はそのまま導入まで走りますが、渡していなければプラグインの設置で止まり、導入はチェックアウトから実行するよう案内されます。プラグインを PATH に通せば `kubectl accelprof` として使えます。
+
+渡すのは alias と自分のイメージと、実行したいコマンドだけです。まずは基盤イメージ自身を workload として 1 本流し、経路が通っていることを確認します。イメージの URI は namespace に配られた ConfigMap から引けるので、レジストリやタグを手で組み立てる必要はありません。
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
