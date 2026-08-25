@@ -99,16 +99,21 @@ done
 
 クラスタ名とリージョン、そしてプロファイル収集を許可する namespace を指定して 1 コマンドを実行します。`PRODUCER_NAMESPACES` はこれから実験を回す namespace の一覧で、そのまま「trace バケットへの書き込みと run の記録を許可した範囲」の宣言になります。ここに書かれていない namespace のワークロードは記録できません。初回はデータ層がまだ無いので、作成を `CREATE_DATA_LAYER=1` で明示的に許可します。既定では既存のデータ層の再利用しかしないので、誤って 2 つ目のデータ層を作って基盤が二分されることがありません。
 
-導入は、そのクラスタを管理しているチェックアウトから実行します。クラスタ側の Terraform は `terraform.tfvars` と `backend.hcl` で構成されており、どちらも環境固有なのでリポジトリには含まれていません。つまりクラスタの state を触る操作は、それを持っている作業ディレクトリの仕事です。
+導入はリリースを固定した 1 コマンドで実行します。リポジトリを clone しておく必要はなく、渡すのは環境変数だけです。ただしクラスタ側の Terraform は `terraform.tfvars` と `backend.hcl` で構成されており、どちらも環境固有でリポジトリに含まれないため、state の場所と自分のクラスタの tfvars は指定します。
 
 ```bash
-cd "$(git rev-parse --show-toplevel)"
-git checkout release/eks-distributed-ai/v0.0.2
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2
 export PRODUCER_NAMESPACES=team-a,team-b
-CREATE_DATA_LAYER=1 ./infra/scripts/install-profiling.sh
+export TF_STATE_BUCKET=my-terraform-state
+export TF_STATE_REGION=ap-northeast-1
+export TF_STATE_KEY=eks/distai-eks/terraform.tfstate
+export EKS_TFVARS=$HOME/distributed-ai/infra/eks/terraform.tfvars
+export CREATE_DATA_LAYER=1
+curl -fsSL https://raw.githubusercontent.com/littlemex/distributed-ai/refs/tags/release/eks-distributed-ai/v0.0.2/infra/scripts/get-profiling.sh | bash
 ```
+
+このスクリプトは固定タグでリポジトリを `~/distributed-ai-v0.0.2` に取得し、`kubectl-accelprof` を `~/.local/bin` に置き、指定した tfvars を取り込んでから導入スクリプトを実行します。`TF_STATE_*` は state 置き場のバケットとリージョンとオブジェクトキーで、このリージョンはクラスタのリージョンとは別物です。`EKS_TFVARS` は自分のクラスタを作った `infra/eks/terraform.tfvars` を指します。すでにチェックアウトを持っているなら、その中で `CREATE_DATA_LAYER=1 ./infra/scripts/install-profiling.sh` を実行しても同じ結果になります。
 
 2 回目以降は `CREATE_DATA_LAYER` を外して同じコマンドを実行します。最後に `acceptance OK` と接続情報が表示されれば導入完了です。何度実行しても同じ結果になるので、あとから namespace を増やすときは、その namespace と ServiceAccount を作ってから `PRODUCER_NAMESPACES` に追記して再実行します。
 
