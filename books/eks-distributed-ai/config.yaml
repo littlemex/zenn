@@ -16,7 +16,6 @@ chapters:
   - eks-shared-storage
   - eks-teardown-and-options
   - eks-profiling-mcp
-  - eks-profiling-mcp-neuron
     #  - eks-image-cache
     #  - eks-gdrcopy
     #  - eks-gpu-fault-injection
