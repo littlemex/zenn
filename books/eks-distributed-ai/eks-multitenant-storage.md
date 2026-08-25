@@ -11,7 +11,7 @@ free: true
 
 「マルチテナント」を一括りにすると設計が破綻します。本章では次の 2 階層に分けて考えます。
 
-- **階層 1: パス分離** — namespace ごとにデータの置き場所を分けるだけの分離です。テナントごとに別のディレクトリ（サブボリューム）を割り当てますが、同じファイルシステムを共有しているため、権限を絞らなければ相互にデータが見えます。運用規約による分離であり、強制力はありません。
+- **階層 1: パス分離** — namespace ごとにデータの置き場所を分けるだけの分離です。テナントごとに別のディレクトリ（サブディレクトリ）を割り当てますが、同じファイルシステムを共有しているため、権限を絞らなければ相互にデータが見えます。運用規約による分離であり、強制力はありません。
 - **階層 2: 強制隔離** — テナントごとに独立した領域を割り当て、他テナントの領域に触れられないようにする分離です。これは「領域の分離（PVC ごとに別ボリューム、すなわち子ボリュームを払い出す）」と「ID 制御（POSIX の uid/gid をテナントごとに強制する squash）」の 2 要素からなります。本章のワークショップでは前者（Amazon FSx for OpenZFS の動的子ボリュームによる領域の強制分離）を実演し、後者の ID 制御は NFS export の squash や Pod の `securityContext` と組み合わせる追加レイヤーとして解説します。
 
 Basic02・Basic10 で作った「同一ファイルシステムを複数 namespace から使う」構成は階層 1 です。階層 2 まで踏み込むかどうかは、テナントが同じチーム内の区分なのか、互いに信頼しない別組織なのかで変わります。なお階層 2 の「強制力」は FSx 単体ではなく、誰が PV/PVC を作れるかという Kubernetes RBAC と、NFS export の絞り込みの組み合わせで担保される点に注意してください。
@@ -102,7 +102,7 @@ Amazon FSx for OpenZFS の動的プロビジョニングを使うには、CSI �
 
 学習データの正（source of truth）と最終成果物は、可用性とコストの観点から Amazon S3 に置くのが基本です。共有ファイルシステムはあくまでホット層で、そこから S3 へ退避する経路を設計します。
 
-- **FSx for OpenZFS**: per-volume スナップショットでボリューム単位の世代管理・クローン・full-copy ができます。スナップショットはファイルシステム内（`.zfs/snapshot`）に保存される点は変わりませんが、保存先や保持期間の詳細な挙動は変わり得るため、最新の[Amazon FSx for OpenZFS のスナップショット](https://docs.aws.amazon.com/fsx/latest/OpenZFSGuide/snapshots-openzfs.html)を確認してください。原則としてはファイルシステムと運命を共にする**ローカルな保護**と捉えておくのが安全です。本書執筆時点では、Lustre の DRA に相当する S3 とのネイティブ連携は OpenZFS には用意されていないため、ボリュームをマウントした Pod から `aws s3 sync` で S3 バケットへ明示的に書き出す構成をとります。スナップショットで直近の状態をローカルに世代管理しつつ、`aws s3 sync` で S3 を正とする、という二段構えにします。
+- **FSx for OpenZFS**: per-volume スナップショットでボリューム単位の世代管理・クローン・full-copy ができます。スナップショットはファイルシステム内（`.zfs/snapshot`）に保存される点は変わりませんが、保存先や保持期間の詳細な挙動は変わり得るため、最新の[Amazon FSx for OpenZFS のスナップショット](https://docs.aws.amazon.com/fsx/latest/OpenZFSGuide/snapshots-openzfs.html)を確認してください。原則としてはファイルシステムと運命を共にする**ローカルな保護**と捉えておくのが安全です。本 book 執筆時点では、Lustre の DRA に相当する S3 とのネイティブ連携は OpenZFS には用意されていないため、ボリュームをマウントした Pod から `aws s3 sync` で S3 バケットへ明示的に書き出す構成をとります。スナップショットで直近の状態をローカルに世代管理しつつ、`aws s3 sync` で S3 を正とする、という二段構えにします。
 - **FSx for Lustre**: DRA（Data Repository Association）で Lustre のパスと S3 プレフィックスを関連付け、双方向に自動同期します。S3 にあるデータは Lustre から遅延ロード（HSM）で読め、Lustre に書いたデータは S3 に自動エクスポートされます。学習データを S3 に置き、成果物を S3 に逃がす定石です。DRA は PERSISTENT_2 デプロイタイプで使えます。
 
 # ワークショップ実施
@@ -128,25 +128,49 @@ FSX_PV=$(terraform output -json shared_storage | jq -r '.fsx_lustre.persistent_v
 
 以降の手順は、この `ZFS_FS_ID` / `LUSTRE_FS_ID` / `FSX_PV` を参照します（`jq` が必要です）。
 
+Basic10 の最終手順は、検証に使った `distai` の `fsx-claim`（`fsx-training` にバインドした PVC）を明示的に削除して終わる構成になっています。`persistentVolumeReclaimPolicy: Retain` の PV は、バインド済み PVC を削除すると `Available` ではなく `Released` になり、`spec.claimRef` に旧 PVC の情報が残ります。この状態では同名の PVC を作り直しても `claimRef` の UID が一致せず再バインドされないため、`claimRef` が残っていれば先に外します。本章の手順 2・手順 4 は `fsx-claim` を使うため、無ければ Basic10 と同じ内容で作り直します。以下は `claimRef` が残っている場合だけ外すため、`fsx-training` が最初から `Available`（`claimRef` なし）でも安全に何度でも実行できます。
+
+```bash
+if [ -n "$(k get pv fsx-training -o jsonpath='{.spec.claimRef}')" ]; then
+  k patch pv fsx-training --type=json -p '[{"op":"remove","path":"/spec/claimRef"}]'
+fi
+k apply -n distai -f - <<EOF
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fsx-claim
+spec:
+  accessModes: ["ReadWriteMany"]
+  storageClassName: ""
+  volumeName: $FSX_PV
+  resources:
+    requests:
+      storage: 4800Gi
+EOF
+k wait --for=jsonpath='{.status.phase}'=Bound pvc/fsx-claim -n distai --timeout=60s
+```
+
 ## 2. パス分離（階層 1）: 1 つの Lustre を複数 namespace で共有する
 
 同じ Amazon FSx for Lustre を 2 つの namespace から使います。同一のファイルシステムを指す 2 つ目の静的 PV を、`volumeHandle` だけ一意にして作り、`claimRef` で予約します。
 
 ```bash
+cd "$(git rev-parse --show-toplevel)"/infra/eks
+export TENANT=team-b
 DNS=$(k get pv "$FSX_PV" -o jsonpath='{.spec.csi.volumeAttributes.dnsname}')
 MOUNT=$(k get pv "$FSX_PV" -o jsonpath='{.spec.csi.volumeAttributes.mountname}')
 HANDLE=$(k get pv "$FSX_PV" -o jsonpath='{.spec.csi.volumeHandle}')
 CAP=$(k get pv "$FSX_PV" -o jsonpath='{.spec.capacity.storage}')
 
-k create namespace team-b --dry-run=client -o yaml | k apply -f -
+k create namespace "$TENANT" --dry-run=client -o yaml | k apply -f -
 ```
 
-PV と PVC のマニフェストは、本文に heredoc で埋め込むのではなく、リポジトリの汎用テンプレート `manifests/fsx-lustre-shared-pv/pv.yaml.tmpl` と `manifests/fsx-lustre-shared-pv/pvc.yaml.tmpl` を使います（パスは手順 1 で `cd` した `infra/eks` からの相対）。テナント（`TENANT`）・PV 名（`PV_NAME`）・PVC 名（`CLAIM`）と、既存 PV から取った `${DNS}` / `${MOUNT}` / `${HANDLE}` / `${CAP}` を環境変数として export し、`envsubst` で埋め込んで `kubectl apply -f -` に渡します。namespace はテンプレート内（PVC の `metadata.namespace`）に含め、PV はクラスタスコープなので、`apply` に `-n` は要りません（`k get` / `k wait` などの参照系には `-n $TENANT` が要ります）。
+PV と PVC のマニフェストは、本文に heredoc で埋め込むのではなく、リポジトリの汎用テンプレート `manifests/fsx-lustre-shared-pv/pv.yaml.tmpl` と `manifests/fsx-lustre-shared-pv/pvc.yaml.tmpl` を使います（パスは手順 1 で `cd` した `infra/eks` からの相対）。テナント（`TENANT`）・PV 名（`PV_NAME`）・PVC 名（`CLAIM`）と、既存 PV から取った `${DNS}` / `${MOUNT}` / `${HANDLE}` / `${CAP}` を環境変数として export し、`envsubst` で埋め込んで `k apply -f -` に渡します。namespace はテンプレート内（PVC の `metadata.namespace`）に含め、PV はクラスタスコープなので、`apply` に `-n` は要りません（`k get` / `k wait` などの参照系には `-n $TENANT` が要ります）。`: "${DNS:?}" ...` の行は、いずれかの変数が空ならその場でエラーにしてテンプレートを適用しない安全弁です。
 
 ```bash
-export TENANT=team-b PV_NAME=fsx-shared-team-b CLAIM=fsx-claim
+export PV_NAME=fsx-shared-team-b CLAIM=fsx-claim
 export DNS MOUNT HANDLE CAP
-: "${DNS:?}" "${MOUNT:?}" "${HANDLE:?}" "${CAP:?}"   # いずれかが空ならテンプレートを適用しない
+: "${DNS:?}" "${MOUNT:?}" "${HANDLE:?}" "${CAP:?}"
 envsubst < manifests/fsx-lustre-shared-pv/pv.yaml.tmpl  | k apply -f -
 envsubst < manifests/fsx-lustre-shared-pv/pvc.yaml.tmpl | k apply -f -
 k wait --for=jsonpath='{.status.phase}'=Bound pvc/$CLAIM -n $TENANT --timeout=60s
@@ -191,7 +215,7 @@ spec:
 ```
 ::::
 
-`team-b` の Pod が自分のサブディレクトリに書き込み、既定 namespace（`distai`）の Pod から同じファイルが読めることを確認します。`distai` 側の `fsx-claim` は Basic10 の手順で作成済みの前提です。
+`team-b` の Pod が自分のサブディレクトリに書き込み、作業用 namespace（`distai`）の Pod から同じファイルが読めることを確認します。`distai` 側の `fsx-claim` は、手順 1 で（無ければ）作り直した PVC です。
 
 ```bash
 k run writer -n team-b --restart=Never --image=busybox \
@@ -224,9 +248,10 @@ k delete namespace team-b --ignore-not-found
 
 パス分離では相互にデータが見えました。Amazon FSx for OpenZFS の動的プロビジョニングを使うと、PVC ごとに独立した子ボリューム（別々のデータセット）が親ファイルシステムの配下に作られ、既定では他テナントの子ボリュームはマウントされず相互に見えません。ただしこの分離を「強制」しているのは FSx 単体ではなく、PV/PVC を作れるのは誰かという Kubernetes RBAC と NFS export の設定です。StorageClass の `NfsExports` を `Clients: "*"` のままにすると VPC 内から子ボリュームを直接マウントする経路は塞げません。本番では `Clients` をノードのサブネットに絞り、テナントに PV 作成権限を与えない RBAC と併せて初めて隔離が成立します。`crossmnt` オプションは親ボリュームの共有 PV から子ボリュームまで見せてしまう経路になるため、本章の chart では付けていません。
 
-まず動的プロビジョニング用の IAM を有効化します。CSI コントローラの既定の権限は describe のみで、`fsx:CreateVolume` 等が無いと後続の `helm upgrade` が `AccessDeniedException` で失敗します。
+まず動的プロビジョニング用の IAM を有効化します。CSI コントローラの既定の権限は describe のみで、`fsx:CreateVolume` 等が無いと、次の `helm upgrade` 自体は成功しますが、後続の PVC のプロビジョニングが非同期に `AccessDeniedException` で失敗し、PVC が `Pending` のまま進まなくなります。
 
 ```bash
+cd "$(git rev-parse --show-toplevel)"/infra/eks
 terraform apply -var openzfs_dynamic_provisioning_enabled=true
 ```
 
@@ -278,6 +303,7 @@ mountOptions: [ "nfsvers=4.1", "rsize=1048576", "wsize=1048576", "timeo=600" ]
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata: { name: "{{ $.Values.pvcName }}", namespace: "{{ . }}" }
+
 spec:
   accessModes: ["ReadWriteMany"]
   storageClassName: openzfs-sc
@@ -310,14 +336,17 @@ k logs r -n tenant-b
 
 `tenant-b` のログに `a.txt` が現れず `NOT-VISIBLE` が出れば、PVC ごとに別々の子ボリュームへ分離できています。パス分離（手順 2）が相互可視だったのと対照的です。前述のとおり、この分離の強制力はテナントに PV 作成権限を与えない RBAC と `NfsExports` の絞り込みに依存する点を忘れないでください。
 
-後片付けをします。`reclaimPolicy: Delete` と `OptionsOnDeletion` により、PVC を消すと子ボリュームも削除されます。CSI ロールに削除権限がないと PV が `Released` で残り、FSx にも子ボリュームが残って課金が続くため、削除は非同期であることを踏まえ、子ボリュームが 0 になるまで待って確認します。
+後片付けをします。`reclaimPolicy: Delete` と `OptionsOnDeletion` により、PVC を消すと子ボリュームも削除されます。CSI ロールに削除権限がないと PV が `Released` で残り、FSx にも子ボリュームが残って課金が続くため、削除は非同期であることを踏まえ、子ボリュームが 0 になるまで待って確認します。待ち合わせは 10 分でタイムアウトさせています。
 
 ```bash
-k delete namespace tenant-a tenant-b
+k delete namespace tenant-a tenant-b --ignore-not-found
+export ZFS_FS_ID ROOT_VOL
+timeout 600 bash -c '
 until [ "$(aws fsx describe-volumes --filters Name=file-system-id,Values="$ZFS_FS_ID" \
-  --query 'length(Volumes[?OpenZFSConfiguration.ParentVolumeId==`'"$ROOT_VOL"'`])' --output text)" = "0" ]; do
+  --query "length(Volumes[?OpenZFSConfiguration.ParentVolumeId==\`$ROOT_VOL\`])" --output text)" = "0" ]; do
   echo "waiting for child volumes to delete..."; sleep 15
 done
+'
 helm uninstall openzfs-multitenant
 ```
 
@@ -331,41 +360,47 @@ terraform apply -var openzfs_dynamic_provisioning_enabled=false
 
 ### FSx for Lustre を DRA で S3 に同期する
 
-Lustre のパスと S3 バケットを関連付けます。DRA は PERSISTENT_2 デプロイタイプが前提です。異なる場合はこの節を実行できません。
+Lustre のパスと S3 バケットを関連付けます。DRA は PERSISTENT_2 デプロイタイプが前提です。異なる場合はこの節を実行できません。次のコマンドの出力が `PERSISTENT_2` になっていることを確認してください。
 
 ```bash
 aws fsx describe-file-systems --file-system-ids "$LUSTRE_FS_ID" \
-  --query 'FileSystems[0].LustreConfiguration.DeploymentType' --output text   # PERSISTENT_2
+  --query 'FileSystems[0].LustreConfiguration.DeploymentType' --output text
 ```
 
-退避先の S3 バケットを用意します（既存のバケットがあればそれを使います）。`AutoImportPolicy` と `AutoExportPolicy` で双方向に自動同期します。
+退避先の S3 バケットを用意します（既存のバケットがあればそれを使います）。`AutoImportPolicy` と `AutoExportPolicy` で双方向に自動同期します。バケット名はグローバルに一意である必要があるためリージョンも含めます。`us-east-1` では `--create-bucket-configuration` 自体を付けてはいけない（付けると `InvalidLocationConstraint` になる）ので、そのリージョンで実行する場合はオプションを外してください。すでに同名バケットが存在する場合は `create-bucket` を再実行しても（同一アカウント・同一リージョンなら）エラーにはなりません。
 
 ```bash
-# 本章専用の新規バケット(S3 バケット名はグローバル一意なのでリージョンも含める)
+cd "$(git rev-parse --show-toplevel)"/infra/eks
 REGION=$(terraform output -raw region 2>/dev/null || echo us-east-2)
 BUCKET=fsx-cold-$(aws sts get-caller-identity --query Account --output text)-$REGION
 aws s3api create-bucket --bucket "$BUCKET" --region "$REGION" \
   --create-bucket-configuration LocationConstraint="$REGION"
+```
 
-# DRA は s3://$BUCKET/lustre 以下に紐付ける(ZFS 退避が使う openzfs-cold/ を巻き込まないため)
-aws fsx create-data-repository-association \
+DRA は `s3://$BUCKET/lustre` 以下に紐付けます。後述の OpenZFS 退避が使う `openzfs-cold/` プレフィックスは別の S3 バケット（Terraform 管理の退避バケット）になるため、ここで衝突する心配はありません。同じ `--file-system-path` に対して DRA を作り直したい場合は、先に既存の association を削除してから実行してください（同一パスへの重複作成はエラーになります）。
+
+```bash
+ASSOC_ID=$(aws fsx create-data-repository-association \
   --file-system-id "$LUSTRE_FS_ID" \
   --file-system-path /s3data \
   --data-repository-path s3://$BUCKET/lustre \
   --batch-import-meta-data-on-create \
-  --s3 'AutoImportPolicy={Events=[NEW,CHANGED,DELETED]},AutoExportPolicy={Events=[NEW,CHANGED,DELETED]}'
+  --s3 'AutoImportPolicy={Events=[NEW,CHANGED,DELETED]},AutoExportPolicy={Events=[NEW,CHANGED,DELETED]}' \
+  --query 'Association.AssociationId' --output text)
 ```
 
 ここではワークショップの検証を素早く行うため AWS CLI で直接作成していますが、この S3 バケットと DRA はいずれも Terraform で宣言的に作成できるリソースです。S3 バケットは aws provider の `aws_s3_bucket`、DRA は `aws_fsx_data_repository_association` に対応します。本番運用では CLI での手動作成ではなく、本 book の他のリソースと同じく Terraform 管理下に置くことを推奨します。
 
-DRA の作成には数分かかります。`AVAILABLE` になるまで待ってから確認します。
+DRA の作成には実測で 10 分程度かかることがあります（削除も同程度かかります）。`AVAILABLE` になるまで待ってから確認します。待ち合わせは 20 分でタイムアウトさせ、それを超える場合はコンソールや `describe-data-repository-associations` で `Lifecycle` を確認してください。
 
 ```bash
-ASSOC_ID=$(aws fsx describe-data-repository-associations \
-  --filters Name=file-system-id,Values="$LUSTRE_FS_ID" \
-  --query 'Associations[?FileSystemPath==`/s3data`].AssociationId | [0]' --output text)
-aws fsx describe-data-repository-associations --association-ids "$ASSOC_ID" \
-  --query 'Associations[0].Lifecycle' --output text
+export ASSOC_ID
+timeout 1200 bash -c '
+until [ "$(aws fsx describe-data-repository-associations --association-ids "$ASSOC_ID" \
+      --query "Associations[0].Lifecycle" --output text)" = "AVAILABLE" ]; do
+  echo "waiting for DRA to become available..."; sleep 15
+done
+'
 ```
 
 `AVAILABLE` になったら、Lustre をマウントした Pod（`distai` の `fsx-claim`）から双方向同期を確認します。S3 に置いたオブジェクトは `/mnt/fsx/s3data` 以下に現れ（初回アクセスで遅延ロード）、Lustre に書いたファイルは数十秒で S3 にエクスポートされます。
@@ -375,9 +410,11 @@ k run dra -n distai --restart=Never --image=busybox \
     --overrides='{"spec":{"containers":[{"name":"d","image":"busybox","command":["sh","-c","echo from-lustre > /mnt/fsx/s3data/from-lustre.txt"],"volumeMounts":[{"name":"fsx","mountPath":"/mnt/fsx"}]}],"volumes":[{"name":"fsx","persistentVolumeClaim":{"claimName":"fsx-claim"}}]}}'
 k wait --for=jsonpath='{.status.phase}'=Succeeded pod/dra -n distai --timeout=180s
 sleep 60
-aws s3 ls s3://$BUCKET/ --recursive   # from-lustre.txt が現れる
+aws s3 ls s3://$BUCKET/ --recursive
 k delete pod dra -n distai --ignore-not-found
 ```
+
+`from-lustre.txt` が一覧に現れれば、Lustre から S3 への自動エクスポートが成功しています。
 
 学習データの正を S3 に置き、DRA でホットな Lustre に取り込み、成果物を S3 に書き戻す、という往復がこれで成立します。
 
@@ -396,45 +433,26 @@ aws fsx create-snapshot --volume-id "$ROOT_VOL" --name checkpoint-snap
 :::
 
 ```bash
-# 参考(本ワークショップでは実行しない)
+export RESTORE_VOLUME_ID=fsvol-xxxxxxxx SNAPSHOT_ID=fsvolsnap-xxxxxxxx
 aws fsx restore-volume-from-snapshot \
-  --volume-id <restore-対象の-volume-id> --snapshot-id <fsvolsnap-id> \
+  --volume-id "$RESTORE_VOLUME_ID" --snapshot-id "$SNAPSHOT_ID" \
   --options DELETE_INTERMEDIATE_SNAPSHOTS
 ```
 
 スナップショットはファイルシステム内（`.zfs/snapshot`）に保存されるローカルな保護で、ファイルシステムが失われれば道連れになります。別 AZ・別リージョンにデータを残す目的には使えません。越境の退避は、次に示す S3 への同期で行います。
 
-### FSx for OpenZFS を S3 に退避する
+### FSx for OpenZFS のコールド退避を有効化する
 
-Amazon FSx for OpenZFS には Lustre の DRA のような S3 ネイティブ連携がありません。S3 へコールド退避するには、ボリュームをマウントした Pod から `aws s3 sync` で明示的に書き出します。この操作はワークショップ以外でも（検証・オンボーディング・定期退避で）繰り返し使うため、`k run` の長い overrides をその場で書くのではなく、リポジトリの `scripts/fsx-openzfs-s3-sync.sh` に切り出しています。このスクリプトは namespace・PVC 名・宛先バケット・プレフィックスを引数に取り、`aws s3 sync` を実行する 1 回限りの Pod を起動し、完了を待って結果を表示してから Pod を削除するところまでを一括で行います。
+Amazon FSx for OpenZFS には Lustre の DRA のような S3 ネイティブ連携がありません。S3 へコールド退避するには、ボリュームをマウントした Pod から `aws s3 sync` で明示的に書き出します。本 book ではこれを Terraform のトグル変数 1 つで有効化します。トグルを立てると、専用の退避バケット・専用 ServiceAccount・Pod Identity の association・定期実行用の CronJob 本体までを Terraform（`openzfs-s3-backup.tf`）が一括でデプロイし、決めたスケジュールで自動的に差分を S3 へ送ります。トグルを倒せば CronJob・SA・association が削除され、余計な同期が走らなくなります。退避バケットは退避データの正（source of truth）として `force_destroy` を付けていないため、中身が残っている限りトグルを倒す・destroy する操作は失敗します（意図的な安全策で、空にするまで黙って消えません）。
 
-ここでは Basic02 の共有 PVC（`shared-claim`、`/shared` にマウント）を対象に、DRA 節で定義した `$BUCKET` の `openzfs-cold/` プレフィックス（DRA と衝突しないパス）へ同期します。Pod の `default` ServiceAccount に S3 書き込み権限が要ります（Pod Identity の association か、ノードのインスタンスロール）。
-
-```bash
-./scripts/fsx-openzfs-s3-sync.sh \
-  --namespace distai \
-  --pvc shared-claim \
-  --bucket "$BUCKET" \
-  --prefix openzfs-cold/
-```
-
-`aws s3 sync` は差分だけを送るので、このスクリプトを CronJob 化すればホット層の成果物を継続的に S3 へ逃がせます。Lustre は DRA でこれを自動化でき、OpenZFS はこうした同期ジョブで行う、という違いです。
-
-### 定期退避を CronJob 化する
-
-ワークショップの手順は 1 回限りの手動実行ですが、実運用では手動で都度実行するのではなく、`scripts/fsx-openzfs-s3-sync.sh` の内容を Kubernetes の CronJob として定期実行し、さらに Terraform 側のトグル変数で有効・無効を切り替えられるようにします。トグルを立てると、専用の退避バケット・専用 ServiceAccount・Pod Identity の association・CronJob 本体までを Terraform（`openzfs-s3-backup.tf`）が一括でデプロイし、決めたスケジュールで自動的に差分を S3 へ送ります。トグルを倒せば CronJob・SA・association が削除され、余計な同期が走らなくなります。退避バケットは退避データの正（source of truth）として `force_destroy` を付けていないため、中身が残っている限りトグルを倒す・destroy する操作は失敗します（意図的な安全策で、空にするまで黙って消えません）。
+:::message
+`terraform apply -var X=true` の `X` はこの 1 回の apply でだけ指定されます。別の `-var` だけを指定して次の apply を実行すると、前回指定した変数は `terraform.tfvars` に書いていない限りデフォルト値に戻ろうとします。本章を手順どおり進めていれば手順 3 の後片付けで `openzfs_dynamic_provisioning_enabled` を明示的に `false` に戻しているため衝突しませんが、手順を入れ替えたり中断した場合は、必要なトグルをまとめて `-var` で指定するか `terraform.tfvars` に書いてから apply してください。
+:::
 
 ```bash
+cd "$(git rev-parse --show-toplevel)"/infra/eks
 terraform apply -var enable_fsx_openzfs_s3_backup=true
 BACKUP_BUCKET=$(terraform output -raw openzfs_s3_backup_bucket)
-```
-
-1 回試すには、CronJob から手動で Job を起こせば定期実行を待たずに確認できます。
-
-```bash
-k -n distai create job s3sync-now --from=cronjob/fsx-openzfs-s3-sync
-k -n distai wait --for=condition=complete job/s3sync-now --timeout=300s
-aws s3 ls s3://$BACKUP_BUCKET/openzfs-cold/
 ```
 
 ::::details CronJob の要点（参考）
@@ -449,7 +467,7 @@ spec:
     spec:
       template:
         spec:
-          serviceAccountName: fsx-openzfs-s3-backup   # Pod Identity で退避バケットの prefix にのみ put/get
+          serviceAccountName: fsx-openzfs-s3-backup
           restartPolicy: Never
           securityContext: { runAsNonRoot: true, runAsUser: 1000, fsGroup: 1000 }
           containers:
@@ -466,39 +484,80 @@ spec:
             - { name: tmp, emptyDir: {} }
 ```
 
-専用の ServiceAccount と Pod Identity を使うのは、Basic10 で作った `default` ServiceAccount の権限をそのまま流用しないためです。IAM は退避バケットの `openzfs-cold/` prefix に対する put/get のみで、delete も他 prefix の list もできません。
+`serviceAccountName` は Pod Identity で退避バケットの `openzfs-cold/` prefix にのみアクセスできる専用 ServiceAccount `fsx-openzfs-s3-backup` です。専用の ServiceAccount と Pod Identity を使うのは、他のワークロードが使う `default` ServiceAccount の権限をそのまま流用しないためです。IAM は退避バケットに対する put/get（`openzfs-cold/` prefix 配下のみ）と、`aws s3 sync` の差分計算に必要な list（同じ prefix に絞った条件付き `s3:ListBucket`）だけを許可し、delete も他 prefix への list もできません。
 ::::
+
+### アドホックに 1 回だけ同期する
+
+この操作はワークショップ以外でも（検証・オンボーディング・棚卸し前の退避で）繰り返し使うため、`k run` の長い overrides をその場で書くのではなく、リポジトリの `scripts/fsx-openzfs-s3-sync.sh` に切り出しています。このスクリプトは namespace・PVC 名・宛先バケット・プレフィックスを引数に取り、`aws s3 sync` を実行する 1 回限りの Pod を起動し、完了を待って結果を表示してから Pod を削除するところまでを一括で行います。スクリプトの既定 ServiceAccount は `fsx-openzfs-s3-backup`（1 つ前の手順のトグルが作ったもの）なので、この節はトグルを有効化した後に実行してください。
+
+Basic02 の共有 PVC（`shared-claim`、`/shared` にマウント）を対象に、`$BACKUP_BUCKET` の `openzfs-cold/` プレフィックスへ同期します。宛先は必ず `$BACKUP_BUCKET`（トグルが作った退避専用バケット）にしてください。トグルが作る IAM はこのバケットの `openzfs-cold/` prefix にしかスコープされていないため、DRA 節で作った `$BUCKET` など他のバケットを指定すると `s3:ListBucket` が `AccessDenied` になります。
+
+```bash
+./scripts/fsx-openzfs-s3-sync.sh \
+  --namespace distai \
+  --pvc shared-claim \
+  --bucket "$BACKUP_BUCKET" \
+  --prefix openzfs-cold/
+```
+
+`aws s3 sync` は差分だけを送ります。共有ボリュームに入っているデータ量によっては完了までに数分以上かかることがあります。
+
+### 定期実行を確認する
+
+このアドホック実行と同じ内容を、`enable_fsx_openzfs_s3_backup` が作った CronJob は毎時間自動で行います。定期実行を待たずに 1 回だけ試すには、CronJob から手動で Job を起こします。
+
+```bash
+k -n distai create job s3sync-now --from=cronjob/fsx-openzfs-s3-sync
+k -n distai wait --for=condition=complete job/s3sync-now --timeout=300s
+aws s3 ls s3://$BACKUP_BUCKET/openzfs-cold/
+```
+
+Lustre は DRA で退避を自動化でき、OpenZFS はこの CronJob で行う、という違いです。
 
 ### 本章で作ったリソースの後片付け
 
 本章の DRA・スナップショット・S3 バケット（と手順 3 の動的子ボリューム）は、消さないと課金・容量消費・S3 との同期が続きます。検証が終わったら片付けます。
 
+DRA を削除します。`--no-delete-data-in-file-system` はフラグ形式で値を取らず、Lustre のファイルシステム側（`/s3data` 配下）に取り込んだデータを残す指定です（S3 側のオブジェクトは DRA を削除しても元々変わりません）。削除は非同期で、実測で 8 分程度かかることがあるため、消えるまで待ちます。待ち合わせは 20 分でタイムアウトさせています。
+
 ```bash
-# DRA を削除(S3 側のデータは残す)。boolean はフラグ形式で値は取らない。
 aws fsx delete-data-repository-association \
   --association-id "$ASSOC_ID" --no-delete-data-in-file-system
-# DRA の削除は非同期。消えるまで待つ。
+export ASSOC_ID
+timeout 1200 bash -c '
 while aws fsx describe-data-repository-associations --association-ids "$ASSOC_ID" \
-      --query 'Associations[0].Lifecycle' --output text 2>/dev/null | grep -q DELETING; do sleep 15; done
+      --query "Associations[0].Lifecycle" --output text 2>/dev/null | grep -q DELETING; do sleep 15; done
+'
+```
 
+スナップショットを削除します。同名のスナップショットを作り直した場合に備え、複数返ってきても先頭の 1 件だけを対象にします。
+
+```bash
 SNAP_ID=$(aws fsx describe-snapshots \
   --filters Name=volume-id,Values="$ROOT_VOL" \
-  --query 'Snapshots[?Name==`checkpoint-snap`].SnapshotId' --output text)
+  --query 'Snapshots[?Name==`checkpoint-snap`].SnapshotId | [0]' --output text)
 aws fsx delete-snapshot --snapshot-id "$SNAP_ID"
 ```
 
 :::message alert
-次のバケット削除は `$BUCKET` の全オブジェクトを消します。本章で新規作成したバケット（`fsx-cold-<account>`）にのみ実行してください。既存バケットを流用した場合は実行しないでください。
+次のバケット削除は `$BUCKET`（`fsx-cold-<account>-<region>`、DRA 節で新規作成したバケット）の全オブジェクトを消します。既存バケットを流用した場合は実行しないでください。
 :::
 
 ```bash
 aws s3 rm s3://$BUCKET --recursive && aws s3 rb s3://$BUCKET
 ```
 
-CronJob 化のトグルを立てた場合は、退避バケットを空にしてからトグルを倒します。退避バケットは `force_destroy` を付けていないため、中身が残っていると `terraform apply` がエラーで止まります（黙ってデータを消さないための意図的な安全策です）。
+CronJob 化のトグルを立てた場合は、退避バケットを空にしてからトグルを倒します。退避バケットは `force_destroy` を付けていないため、中身が残っていると `terraform apply` がエラーで止まります（黙ってデータを消さないための意図的な安全策です）。このバケットはバージョニングが有効なため、`aws s3 rm --recursive` だけでは削除マーカーが積まれるだけで各バージョンの実体は残り、バケットは空になりません。すべてのバージョンと削除マーカーを列挙して削除します（`jq` が必要です）。
 
 ```bash
-aws s3 rm s3://$BACKUP_BUCKET --recursive
+aws s3api list-object-versions --bucket "$BACKUP_BUCKET" --output json \
+  | jq '{Objects: ([(.Versions // [])[], (.DeleteMarkers // [])[]] | map({Key, VersionId})), Quiet: true}' \
+  > /tmp/backup-bucket-delete.json
+if [ "$(jq '.Objects | length' /tmp/backup-bucket-delete.json)" -gt 0 ]; then
+  aws s3api delete-objects --bucket "$BACKUP_BUCKET" --delete file:///tmp/backup-bucket-delete.json
+fi
+cd "$(git rev-parse --show-toplevel)"/infra/eks
 terraform apply -var enable_fsx_openzfs_s3_backup=false
 ```
 
@@ -520,3 +579,4 @@ terraform apply -var enable_fsx_openzfs_s3_backup=false
 - [Amazon EFS CSI Driver](https://github.com/kubernetes-sigs/aws-efs-csi-driver)
 - [Amazon FSx for Lustre のストレージクォータ（user/group/project）](https://docs.aws.amazon.com/fsx/latest/LustreGuide/lustre-quotas.html)
 - [littlemex/distributed-ai](https://github.com/littlemex/distributed-ai) - `infra/eks` の openzfs 動的 IAM・`charts/openzfs-multitenant`・`manifests/fsx-lustre-shared-pv`・`scripts/fsx-openzfs-s3-sync.sh`・`openzfs-s3-backup.tf` の実装
+
