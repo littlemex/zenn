@@ -216,7 +216,7 @@ KEP-5004 は正式には「DRA: Handle extended resource requests via DRA Driver
 
 # ワークショップ実施
 
-Karpenter は Basic01 の `terraform apply` に含めて導入済みの構成です。ここでは導入結果を確認します。以降のコマンドは Basic01 で current-context をこのクラスタに切り替え、`alias k=kubectl` を設定済みの前提です（開き直した場合は Basic01 step 3 の `use-context` / `set-context` / `alias` を実行し直してください）。
+Karpenter は Basic01 の `terraform apply` に含めて導入済みの構成です。ここでは導入結果を確認します。以降のコマンドは Basic01 で current-context をこのクラスタに切り替え、`alias k=kubectl` を設定済みの前提です（開き直した場合は Basic01 step 2 のコマンドと step 3 の `use-context` / `set-context` / `alias` を実行し直してください）。
 
 ## 1. Karpenter コントローラの起動を確認する
 

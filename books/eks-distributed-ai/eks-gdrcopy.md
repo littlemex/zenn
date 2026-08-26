@@ -102,7 +102,7 @@ EOSH
 
 # ワークショップ実施
 
-ここからは実機で GDRCopy を有効にし、その効果を測る。以降のコマンドは、これまでの章と同じく `k`（`alias k=kubectl`）で記述し、current-context と既定 namespace は Basic01 で設定済みの前提である（開き直した場合は Basic01 step 3 の `use-context` / `set-context` / `alias` を実行し直す）。手順は Basic05 で確保した GPU プールをそのまま使い、プール名やインスタンスタイプは環境変数に置いて読者の環境に読み替える。本章に載せる実測値は p5.48xlarge 2 ノード（H100 × 16）で取得したものだが、p5en など他の EFA 対応 GPU でも手順は変わらない。
+ここからは実機で GDRCopy を有効にし、その効果を測る。以降のコマンドは、これまでの章と同じく `k`（`alias k=kubectl`）で記述し、current-context と既定 namespace は Basic01 で設定済みの前提である（開き直した場合は Basic01 step 2 のコマンドと step 3 の `use-context` / `set-context` / `alias` を実行し直す）。手順は Basic05 で確保した GPU プールをそのまま使い、プール名やインスタンスタイプは環境変数に置いて読者の環境に読み替える。本章に載せる実測値は p5.48xlarge 2 ノード（H100 × 16）で取得したものだが、p5en など他の EFA 対応 GPU でも手順は変わらない。
 
 ## 1. 前提を確認する
 
