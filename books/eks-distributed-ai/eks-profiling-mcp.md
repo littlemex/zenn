@@ -276,15 +276,23 @@ kubectl accelprof run --alias teama-gpu-nsys \
 
 `mcp-host` は各 MCP エントリ名の Service を `mcp` 名前空間に作ります (ポート 8080)。どちらのサーバも streamable-http を素で話すので、MCP クライアントから見ると `http://localhost:<ポート>/mcp` の 2 台です。stdio との橋渡しは要りません。
 
-トンネルは**別のターミナルを 2 つ開いて前景で**張ります。背景に回すとエラーがどこにも見えず、あとで MCP クライアント側に出る `ConnectionRefused` だけを見て原因を探すことになります。`Forwarding from 127.0.0.1:...` と出たら、そのターミナルは開いたままにします。
+トンネルは 2 本必要です。前景で張ると 1 本目が端末を占有するので、2 本目を別のターミナルで開くことになり、順に貼り付けると 2 本目が実行されないまま先に進んでしまいます。ここでは背景に置き、**張れたことをその場で確認する**形にします。
 
 ```bash
-k port-forward svc/analysis -n mcp 8080:8080
+mkdir -p ~/tmp/distai
+pkill -f 'port-forward svc/analysis'; pkill -f 'port-forward svc/knowledge'
+kubectl port-forward svc/analysis  -n mcp 8080:8080 > ~/tmp/distai/pf-analysis.log 2>&1 &
+kubectl port-forward svc/knowledge -n mcp 8081:8080 > ~/tmp/distai/pf-knowledge.log 2>&1 &
+sleep 3
+lsof -nP -iTCP:8080 -sTCP:LISTEN
+lsof -nP -iTCP:8081 -sTCP:LISTEN
 ```
 
-```bash
-k port-forward svc/knowledge -n mcp 8081:8080
-```
+最後の 2 行で両方に `kubectl ... (LISTEN)` が出れば揃っています。`k` ではなく `kubectl` を直に呼んでいるのは、`k` がシェル関数で背景実行に乗らないからです。`KUBECONFIG` は環境変数なので背景のプロセスにも継承されます。
+
+:::message
+トンネルはこの先で落ちます。Pod が入れ替わったとき、ネットワークが切れたとき、アイドルが続いたときで、いずれも普通に起きます。落ちると MCP クライアント側には `ConnectionRefused` としか見えないので、そのときは上の `lsof` で listen が残っているかを見て、`~/tmp/distai/pf-*.log` に理由を読み、同じコマンドで張り直してください。
+:::
 
 MCP クライアントには、この 2 つの URL を登録します。多くのクライアントは設定にスコープ (全体かプロジェクト単位か) を持ち、プロジェクト単位で登録した場合は**そのディレクトリでクライアントを起動しないとサーバが見えません**。
 
