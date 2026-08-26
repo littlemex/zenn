@@ -218,18 +218,19 @@ IRSA は ServiceAccount にアノテーションで IAM ロールを結び付け
 curl -fsSL https://raw.githubusercontent.com/littlemex/distributed-ai/refs/tags/release/eks-distributed-ai/v0.1.0/infra/scripts/distai-install.sh | bash
 ```
 
-後半がクラスタを作るコマンドです。渡すのはクラスタ名とリージョンだけです。
+後半がクラスタを作るコマンドです。渡すのはクラスタ名とリージョンだけで、どちらも環境変数で置きます。名前付きプロファイル (AWS SSO や assume-role) で認証している場合は `AWS_PROFILE` も置いてください。スクリプトはこれを読み取り、生成する変数ファイルにも書き込むので、以降の Terraform と CLI が同じプリンシパルで動きます。
+
+```bash
+export CLUSTER_NAME=distai-eks
+export AWS_REGION=us-east-2
+export AWS_PROFILE=my-profile
+```
+
+コマンド自体は引数を取りません。
 
 ```bash
 cd ~/distributed-ai-v0.1.0
-./infra/scripts/distai-up.sh -c distai-eks -r ap-northeast-1
-```
-
-名前付きプロファイル (AWS SSO や assume-role) で認証している場合は、そのプロファイルを環境変数に置いて渡します。この値は生成される変数ファイルにも書き込まれるので、以降の Terraform と CLI が同じプリンシパルで動きます。
-
-```bash
-export AWS_PROFILE=my-profile
-./infra/scripts/distai-up.sh -c distai-eks -r ap-northeast-1 -p "$AWS_PROFILE"
+./infra/scripts/distai-up.sh
 ```
 
 分けてあるのは、`curl` をシェルに流す形の中で課金リソースを作らせないためです。理由は 3 つあります。取得と課金を別のコマンドにしておけば、何を取得して何に課金したかを後から追えます。パイプの中では stdin をスクリプト本体が使っているので、確認を求めても読者は答えられません。そして apply の前には plan を見せて明示的に確認を取りたいからです。
