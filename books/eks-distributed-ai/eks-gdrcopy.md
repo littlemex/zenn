@@ -3,6 +3,8 @@ title: "Advanced02 - GDRCopy を有効にする"
 free: true
 ---
 
+GitHub Tag: [release/eks-distributed-ai/v0.1.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.1.0)
+
 本章では、[Basic06 - EFA でマルチノード通信を検証する](eks-efa-topology) の最後に触れた GDRCopy を実際にノードへ導入する。まず GPUDirect RDMA と GDRCopy が別物であることを整理し、EFA のマルチノード通信でそれぞれが果たす役割を押さえる。そのうえで Capacity Block の GPU AMI でなぜ GDRCopy が標準で載らないのかを見て、Terraform でノードに `gdrdrv` をロードする実装を読む。最後に GDRCopy が単体では確かに機能することを確かめたうえで、EFA のマルチノード通信でレイテンシがどう変わるのかを実機で測る。
 
 :::message
@@ -102,30 +104,32 @@ EOSH
 
 # ワークショップ実施
 
-ここからは実機で GDRCopy を有効にし、その効果を測る。以降のコマンドは、これまでの章と同じく `k`（`alias k=kubectl`）で記述し、current-context と既定 namespace は Basic01 で設定済みの前提である（開き直した場合は Basic01 step 2 のコマンドと step 3 の `use-context` / `set-context` / `alias` を実行し直す）。手順は Basic05 で確保した GPU プールをそのまま使い、プール名やインスタンスタイプは環境変数に置いて読者の環境に読み替える。本章に載せる実測値は p5.48xlarge 2 ノード（H100 × 16）で取得したものだが、p5en など他の EFA 対応 GPU でも手順は変わらない。
+ここからは実機で GDRCopy を有効にし、その効果を測る。以降のコマンドは、これまでの章と同じく `k` で記述し、向き先と既定 namespace は Basic01 step 2 の 3 行で設定済みの前提である（ターミナルを開き直した場合はその 3 行をもう一度実行する）。手順は Basic05 で確保した GPU プールをそのまま使い、プール名やインスタンスタイプは環境変数に置いて読者の環境に読み替える。本章に載せる実測値は p5.48xlarge 2 ノード（H100 × 16）で取得したものだが、p5en など他の EFA 対応 GPU でも手順は変わらない。
 
 ## 1. 前提を確認する
 
 - Basic05 で Capacity Block を確保済み（同一 AZ・2 台、EFA を複数枚持つ GPU インスタンス）。手順 5 の 2 ノード測定で必要
 - Basic04/05 で GPU プール（Basic05 の例では `gpu-p5en`）を `accelerator-pools.auto.tfvars` に定義し `terraform apply` 済み
 - Basic06 で 2 ノードの EFA 通信が動くことを確認済み。本章はその通信の一部を最適化する GDRCopy を足す章で、EFA を有効にする操作ではない
-- `k` エイリアスと current-context は Basic01 で設定済み（本章のコマンドは `k` で記述する）
+- `k` と向き先は Basic01 step 2 の 3 行で設定済み（本章のコマンドは `k` で記述する）
 
 以降は対象プールと namespace を環境変数に置いておく。`POOL` と `ITYPE` は Basic05 で定義した自分のプール名・インスタンスタイプに読み替える（例では p5.48xlarge を使うが、p5en など他の EFA 対応 GPU でも同じ手順が通る）。
 
 ```bash
 export NAMESPACE=distai
-POOL=gpu-p5          # Basic05 で定義したプール名に読み替える
-ITYPE=p5.48xlarge    # そのプールの instance_types に合わせる
+POOL=gpu-p5
+ITYPE=p5.48xlarge
 ```
 
 ## 2. GDRCopy が無い状態を確認する
 
 まず現状で GDRCopy が入っていないことを確認する。この時点ではまだノードが 1 台も起動していないので、`/dev/gdrdrv` はノードに出て行って確認する段階ではない。代わりに、GDRCopy の導入方式を決める `gdrcopy_mode` が既定の `off` であること（`gdrdrv-loader` の DaemonSet が存在しないこと）を確認する。`gdrcopy_mode` は入力変数なので `terraform output` には出ない。現在値は `terraform console` で引くか、`accelerator-pools.auto.tfvars` に書いていないこと（＝既定の `off`）で確認する。
 
+`terraform console` が `"off"` を返し、`gdrdrv-loader` の DaemonSet が居なければ既定のままである。
+
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
-echo 'var.gdrcopy_mode' | terraform console   # "off" と表示されれば既定のまま
+echo 'var.gdrcopy_mode' | terraform console
 k get ds -n kube-system gdrdrv-loader 2>/dev/null || echo "no gdrdrv-loader (= off)"
 ```
 

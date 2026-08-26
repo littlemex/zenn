@@ -3,6 +3,8 @@ title: "Advanced03 - GPU 障害を注入して検知を確かめる"
 free: true
 ---
 
+GitHub Tag: [release/eks-distributed-ai/v0.1.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.1.0)
+
 本章では、[Basic08 - Observability を導入する](eks-observability) で有効化した Node Monitoring Agent（NMA）が、GPU の障害を本当に検知できるのかを、DCGM の fault injection 機能で擬似的な障害を注入して確かめます。実際の GPU を壊さずに XID エラーを注入し、NMA が `AcceleratedHardwareReady` を `False` に反転させ、Prometheus のアラートが発火するところまでを実機で追います。あわせて、NMA が GPU ノードで健全性を読むために内部でどう動いているか、この基盤の GPU taint との相性で何が起きるかも解説します。
 
 :::message
@@ -71,7 +73,7 @@ NMA が出す NodeCondition は、Karpenter のノード自動修復（auto-repa
 ## 1. 前提を確認し、対象ノードを決める
 
 - Basic08 で NMA と kube-prometheus-stack が導入済みであること。
-- `k` エイリアスと `KUBECONFIG` / `--context` は Basic01 で設定済みであること。
+- `k` と `KUBECONFIG` は Basic01 step 2 の 3 行で設定済みであること。
 - GPU ノードが 1 台以上動いていること。Basic07 の vLLM や Basic05 の Capacity Block のいずれかを稼働させておきます。
 - 手順 4 の JSON パースに `python3` を使います。無い場合は `dnf install -y python3` などで入れておきます。
 
@@ -229,10 +231,8 @@ ip-10-0-8-26... = 0
 k rollout restart ds -n kube-system dcgm-server
 k rollout status ds -n kube-system dcgm-server
 
-# 対象ノードのエージェント本体を再起動して新しい dcgm-server に接続し直す
 k delete pod -n kube-system -l app.kubernetes.io/name=eks-node-monitoring-agent \
   --field-selector spec.nodeName="$NODE"
-# 再起動が完了する（新しい Pod が Ready になる）まで待つ
 k rollout status ds -n kube-system eks-node-monitoring-agent
 ```
 

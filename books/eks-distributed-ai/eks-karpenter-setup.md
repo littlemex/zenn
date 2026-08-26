@@ -3,6 +3,8 @@ title: "Basic03 - Karpenter を導入する"
 free: true
 ---
 
+GitHub Tag: [release/eks-distributed-ai/v0.1.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.1.0)
+
 本章では、Pod のリソース要求に応じてアクセラレーターノードを動的に起動する Karpenter を扱います。Karpenter 本体は Basic01 の `terraform apply` で導入済みなので、本章はその構成（CRD 管理・認証方式の Pod Identity・Spot 中断通知の SQS）を読み解き、動作を確認します。アクセラレーター用の NodePool は次章以降で定義します。
 
 # 解説
@@ -216,7 +218,7 @@ KEP-5004 は正式には「DRA: Handle extended resource requests via DRA Driver
 
 # ワークショップ実施
 
-Karpenter は Basic01 の `terraform apply` に含めて導入済みの構成です。ここでは導入結果を確認します。以降のコマンドは Basic01 で current-context をこのクラスタに切り替え、`alias k=kubectl` を設定済みの前提です（開き直した場合は Basic01 step 2 のコマンドと step 3 の `use-context` / `set-context` / `alias` を実行し直してください）。
+Karpenter は Basic01 の `terraform apply` に含めて導入済みの構成です。ここでは導入結果を確認します。以降のコマンドは Basic01 step 2 の 3 行を実行済みの前提です（ターミナルを開き直した場合はその 3 行をもう一度実行してください）。
 
 ## 1. Karpenter コントローラの起動を確認する
 
