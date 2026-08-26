@@ -218,7 +218,7 @@ KEP-5004 は正式には「DRA: Handle extended resource requests via DRA Driver
 
 # ワークショップ実施
 
-Karpenter は Basic01 の `terraform apply` に含めて導入済みの構成です。ここでは導入結果を確認します。以降のコマンドは Basic01 step 2 の 3 行を実行済みの前提です（ターミナルを開き直した場合はその 3 行をもう一度実行してください）。
+Karpenter は Basic01 の `terraform apply` に含めて導入済みの構成です。ここでは導入結果を確認します。以降のコマンドは Basic01 step 2 の 4 行を実行済みの前提です（ターミナルを開き直した場合はその 4 行をもう一度実行してください）。
 
 ## 1. Karpenter コントローラの起動を確認する
 

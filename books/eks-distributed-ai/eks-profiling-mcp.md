@@ -74,15 +74,23 @@ Job そのものは終了から 2 日後に Kubernetes が消します。run の
 
 本章は基盤リポジトリのリリース `release/eks-distributed-ai/v0.1.0` を前提にしています。本文のコマンドと出力例はこのバージョンで実機確認したものです。別のバージョンでは変数名やフラグが変わることがあるので、まずはこのタグで通してください。
 
-クラスタ (Basic01 から Basic11 相当) が稼働していること、`infra/eks` の Terraform がリモート state を使っていること、`terraform` と `kubectl` と `helm` と `aws` と `python3` と `git` と `curl` が手元にあること、MCP クライアント (Claude Code など) が手元にあることを確認します。リモート state は Basic01 の `distai-up.sh` が作り、その場所はレジストリに記録されているので、前提の 3 行を実行してあれば導入スクリプトはそこから解決します (`TF_STATE_BUCKET` などで明示的に上書きすることもできます)。
+クラスタ (Basic01 から Basic11 相当) が稼働していること、`infra/eks` の Terraform がリモート state を使っていること、`terraform` と `kubectl` と `helm` と `aws` と `python3` と `git` と `curl` が手元にあること、MCP クライアント (Claude Code など) が手元にあることを確認します。リモート state は Basic01 の `distai-up.sh` が作り、その場所はレジストリに記録されているので、前提の 4 行を実行してあれば導入スクリプトはそこから解決します (`TF_STATE_BUCKET` などで明示的に上書きすることもできます)。
 
 ## 2. プロファイルを撮る namespace を用意する
 
 導入スクリプトはテナントの namespace を作りません。作るのは Pod Identity の紐付けで、これは EKS コントロールプレーン上の `(namespace, ServiceAccount 名)` レコードなので、namespace や ServiceAccount の実在を要求しません。一方で ConfigMap と Role と点検は実在する namespace にしか配れないため、namespace と ServiceAccount は導入スクリプトより先に作ります。
 
+本章は作業 namespace が `distai` ではなく `team-a` なので、Basic01 step 2 の 4 行を `DISTAI_NAMESPACE` 付きで実行し直しておきます。こうすると `k` と後述のプラグインの既定がこの namespace になり、以降のコマンドに `-n` を書かずに済みます。
+
 ```bash
+cd ~/distributed-ai-v0.1.0
+export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2
-export NAMESPACE=team-a
+export DISTAI_NAMESPACE=team-a
+source infra/scripts/distai-env.sh
+```
+
+```bash
 for ns in team-a team-b; do
   k create namespace "$ns" --dry-run=client -o yaml | k apply -f -
   k create serviceaccount mcp-producer -n "$ns" --dry-run=client -o yaml | k apply -f -
@@ -120,39 +128,54 @@ export CREATE_DATA_LAYER=1
 
 ## 4. プロファイルを撮って記録する
 
-プロファイルを撮る側は、リポジトリも Terraform も要りません。必要なのは `kubectl-accelprof` という 1 ファイルだけで、リリースを固定した 1 行で入ります。
+プロファイルを撮るのに必要なのは `kubectl-accelprof` という 1 ファイルだけです。`kubectl` はこの名前のファイルを PATH 上に見つけると `kubectl accelprof` というサブコマンドとして呼べるようにします。
+
+ここまでの章を進めてきた読者はチェックアウトを持っているので、その中のプラグインを PATH に通すだけで済みます。
 
 ```bash
-export CLUSTER_NAME=<自分のクラスタ名>
-export AWS_REGION=<そのリージョン>
+export PATH="$(git rev-parse --show-toplevel)/infra/eks/bin:$PATH"
+kubectl accelprof --help >/dev/null && echo "plugin ok"
+```
+
+チェックアウトを持たない人 (プロファイルを撮るだけで基盤は触らない人) 向けの経路も 1 行あります。リポジトリを固定タグで `~/distributed-ai-v0.1.0` に取得し、プラグインを `~/.local/bin` に置きます。
+
+```bash
+export CLUSTER_NAME=distai-eks
+export AWS_REGION=us-east-2
 export PRODUCER_NAMESPACES=team-a
 curl -fsSL https://raw.githubusercontent.com/littlemex/distributed-ai/refs/tags/release/eks-distributed-ai/v0.1.0/infra/scripts/get-profiling.sh | bash
 ```
 
-こちらはチェックアウトを持たない人 (プロファイルを撮るだけの人) 向けの経路なので、クラスタ名とリージョンを直接渡します。チェックアウトがあるなら Basic01 step 2 のコマンドで解決済みなので、この 2 行は不要です。
-
-このスクリプトはリポジトリを固定タグで `~/distributed-ai-v0.1.0` に取得し、プラグインを `~/.local/bin` に置きます。URL のタグとスクリプトが固定するタグは同じものなので、コピーした 1 行と入るものがずれません。クラスタの state を触る情報 (`TF_STATE_BUCKET` など) を渡した場合はそのまま導入まで走りますが、渡していなければプラグインの設置で止まり、導入はチェックアウトから実行するよう案内されます。プラグインを PATH に通せば `kubectl accelprof` として使えます。
+URL のタグとスクリプトが固定するタグは同じものなので、コピーした 1 行と入るものがずれません。クラスタの state を触る情報 (`TF_STATE_BUCKET` など) を渡した場合はそのまま導入まで走りますが、渡していなければプラグインの設置で止まり、導入はチェックアウトから実行するよう案内されます。`~/.local/bin` が PATH に無い場合は通してください。
 
 渡すのは alias と自分のイメージと、実行したいコマンドだけです。まずは基盤イメージ自身を workload として 1 本流し、経路が通っていることを確認します。イメージの URI は namespace に配られた ConfigMap から引けるので、レジストリやタグを手で組み立てる必要はありません。
 
 ```bash
-export PATH="$HOME/.local/bin:$PATH"
-export NAMESPACE=team-a
-export IMAGE=$(k get configmap accelprof-config -n "$NAMESPACE" \
-  -o jsonpath='{.data.ACCELPROF_PLATFORM_IMAGE}')
-kubectl accelprof run --alias teama-gpu-nsys --namespace "$NAMESPACE" --image "$IMAGE" \
-  --no-inject-nsys --param steps=1 --tag phase=smoke \
+export IMAGE=$(k get configmap accelprof-config -o jsonpath='{.data.ACCELPROF_PLATFORM_IMAGE}')
+kubectl accelprof run --alias teama-smoke --image "$IMAGE" --wait \
+  --param steps=1 --tag phase=smoke \
   -- bash -lc 'python3 -c "print(sum(range(10**6)))"'
 ```
 
-基盤イメージには `nsys` が入っているので、この 1 本だけは `--no-inject-nsys` で注入を省略しています。自分の学習イメージを渡すときは、このオプションを外せば initContainer が profiler を配ります。
+指定はこれだけです。プロファイラは既定で動き、トレースまで残るので、この 1 本で投入から記録までの経路が通っていることを確認できます。基盤イメージには `nsys` が入っているので、この 1 本に限っては `--no-inject-nsys` を足して注入を省くこともできます (省いても結果は同じで、共有ボリュームへのコピーが減るだけです)。
 
-投入は数秒で返り、`workload_id` が表示されます。記録はクラスタの中で完結するので、手元のターミナルを占有しません。長時間の学習でも投入したら閉じてよく、あとから結果を引きます。表示された `workload_id` を次の 1 行目に貼って状態を見ます。
+`--wait` を付けているのは、この 1 本が数秒で終わるからです。完了まで待って `run_id` まで表示してくれるので、確認が 1 コマンドで済みます。**数分以上かかる run には付けません。**投入したら手元のターミナルは閉じてよく、記録はクラスタの中で完結します。その場合は、あとから状態と `run_id` を引きます。
 
 ```bash
-export WORKLOAD_ID=wl-260826043020-e69a3905
-kubectl accelprof get "$WORKLOAD_ID" -n "$NAMESPACE"
-kubectl accelprof runs --alias teama-gpu-nsys -n "$NAMESPACE"
+kubectl accelprof get --last --alias teama-smoke
+```
+
+引数を省いた `kubectl accelprof get` でも同じですが、その意味は「この namespace で最も新しい run」なので、複数人が同じ namespace を共有している環境では他人の run を掴みます。`--alias` を付けておけば自分のキャンペーンの中で最新を指します。どの run を見ているかは出力の 1 行目に必ず表示されます。特定の run を見たいときは `workload_id` を渡します。
+
+```bash
+kubectl accelprof get wl-260826043020-e69a3905
+kubectl accelprof runs --alias teama-smoke
+```
+
+`run_id` を次の手順にそのまま渡したい場合は、値だけを取り出せます。
+
+```bash
+export RUN_ID=$(kubectl accelprof get --last --alias teama-smoke -o run-id)
 ```
 
 `run_id` が表示されたら記録が完了しています。metrics を残したい場合は、自分の学習スクリプトの最後にファイルを 1 つ書きます。accelprof の import は不要です。
@@ -180,7 +203,7 @@ artifacts_uri    = s3://<trace バケット>/teama-gpu-nsys/<run_id>/
 pod              = profile-wl-260826043020-e69a3905-f5hdx
 ```
 
-`profiled` は「profiler の経路を通ったか」を表します。shim は `nsys` を見つけた時点でこの値を立てるので、`nsys` の起動に失敗した実行でも true になり得ます。取得できたかどうかは `status` と `exit_reason`、そして次節以降で使う `stage_run` が返すファイルの一覧まで見て判断してください。`.nsys-rep` は MLflow のアーティファクトではなく `artifacts_uri` が指す trace バケットの prefix に置かれ、分析 MCP はこのタグを使って場所を解決します。
+`chip` は**要求したデバイス**です。`--gpu` を付けた run は `gpu`、`--neuron` は `neuron`、どちらも付けなければ `cpu` になります。スケジューラがどのノードに載せたかではなく自分が要求したものが入るのは、これが run を探すときのキー (`alias` と組で run を指せる) であり、探す人の頭にあるのは自分が要求した値だからです。`profiled` は「profiler の経路を通ったか」を表します。shim は `nsys` を見つけた時点でこの値を立てるので、`nsys` の起動に失敗した実行でも true になり得ます。取得できたかどうかは `status` と `exit_reason`、そして次節以降で使う `stage_run` が返すファイルの一覧まで見て判断してください。`.nsys-rep` は MLflow のアーティファクトではなく `artifacts_uri` が指す trace バケットの prefix に置かれ、分析 MCP はこのタグを使って場所を解決します。
 
 失敗した実行も既定では記録され、`status=failed` と終了理由が残ります。遅い実行や落ちる実行こそプロファイルする価値があるという判断です。記録が不要だと分かっている試行だけ `--discard-on-fail` を付けます。
 
@@ -217,7 +240,7 @@ nsys profile -t cuda,nvtx,osrt -o /accelprof/out/traces/rank-<index> --force-ove
 profiler のオプションは `--nsys-args` で渡しますが、これは既定値への追加ではなく全置換です。`-t` を含めて必要なものを自分で並べる必要があります。
 
 ```bash
-kubectl accelprof run --alias teama-gpu-nsys --namespace "$NAMESPACE" \
+kubectl accelprof run --alias teama-gpu-nsys \
   --image <自分の学習イメージ> --gpu 1 \
   --nsys-args '-t cuda,nvtx --capture-range=cudaProfilerApi --capture-range-end=stop' \
   -- python3 train.py
@@ -225,7 +248,7 @@ kubectl accelprof run --alias teama-gpu-nsys --namespace "$NAMESPACE" \
 
 この例は `train.py` の中でウォームアップ後に `torch.cuda.profiler.start()` を呼び、撮りたい区間の終わりで `stop()` を呼んでいることが前提です。呼んでいないと、区間が始まらないまま何も記録されません。
 
-オーバーヘッドは推測せず測ります。同じ alias の中で `--profile none` の実行を 1 本残しておくと、それがプロファイルなしのベースラインになり、`metrics.json` に書いた数値の差がそのまま計測コストの実測値になります。A10G 1 枚で bf16 の 4096 角行列積を 300 回回す (ウォームアップ 20 回は区間の外) という同じワークロードで 3 通り撮ると、次のようになりました。
+オーバーヘッドは推測せず測ります。`--profile none` はプロファイラを動かさずに run だけを記録するモードで、同じ alias の中にこの実行を 1 本残しておくと、それがプロファイルなしのベースラインになり、`metrics.json` に書いた数値の差がそのまま計測コストの実測値になります。A10G 1 枚で bf16 の 4096 角行列積を 300 回回す (ウォームアップ 20 回は区間の外) という同じワークロードで 3 通り撮ると、次のようになりました。
 
 | 実行 | 実測 TFLOPS | 区間の壁時計 | トレース | 記録されたカーネル数 |
 | --- | --- | --- | --- | --- |
@@ -251,14 +274,35 @@ kubectl accelprof run --alias teama-gpu-nsys --namespace "$NAMESPACE" \
 
 ## 8. 分析する
 
-`mcp-host` は各 MCP エントリ名の Service を `mcp` 名前空間に作る (ポート 8080) ので、それぞれ port-forward して MCP クライアントから接続します。
+`mcp-host` は各 MCP エントリ名の Service を `mcp` 名前空間に作ります (ポート 8080)。どちらのサーバも streamable-http を素で話すので、MCP クライアントから見ると `http://localhost:<ポート>/mcp` の 2 台です。stdio との橋渡しは要りません。
+
+トンネルは**別のターミナルを 2 つ開いて前景で**張ります。背景に回すとエラーがどこにも見えず、あとで MCP クライアント側に出る `ConnectionRefused` だけを見て原因を探すことになります。`Forwarding from 127.0.0.1:...` と出たら、そのターミナルは開いたままにします。
 
 ```bash
-k port-forward svc/knowledge -n mcp 8081:8080 &
-k port-forward svc/analysis  -n mcp 8080:8080 &
+k port-forward svc/analysis -n mcp 8080:8080
 ```
 
-analysis MCP に先ほどの `run_id` を渡し、`stage_run` で成果物を読める状態にしてから `analyze` を走らせます。`stage_run` はマウント上のディレクトリと読めるファイルを返します。
+```bash
+k port-forward svc/knowledge -n mcp 8081:8080
+```
+
+MCP クライアントには、この 2 つの URL を登録します。多くのクライアントは設定にスコープ (全体かプロジェクト単位か) を持ち、プロジェクト単位で登録した場合は**そのディレクトリでクライアントを起動しないとサーバが見えません**。
+
+::::details Claude Code の場合
+
+`claude mcp add` は、実行したディレクトリに紐づくプロジェクト単位の設定として保存します。以降このディレクトリでセッションを開いてください。
+
+```bash
+claude mcp add --transport http accelprof-analysis  http://localhost:8080/mcp
+claude mcp add --transport http accelprof-knowledge http://localhost:8081/mcp
+claude mcp list
+```
+
+`claude mcp list` を同じディレクトリで実行して 2 台とも Connected になることを確認します。Failed になる場合はまず port-forward のターミナルを見てください。トンネルは Pod の再起動やネットワーク断で落ち、クライアント側にはつながらないことしか見えません。ツール一覧にそもそも出てこない場合は、起動したディレクトリが `claude mcp add` を実行したディレクトリと違います。ここに書いたコマンドはクライアント側の仕様に依存するので、変わっている場合はそのクライアントのドキュメントに従ってください。
+
+::::
+
+analysis MCP には 4 節で撮った自分の run の `run_id` (`$RUN_ID` に入れた値) を渡します。`stage_run` で成果物を読める状態にしてから `analyze` を走らせます。`stage_run` はマウント上のディレクトリと読めるファイルを返します。以下の例は 6 節の GPU の run のものなので、値は自分の run のものに変わります。
 
 ```json
 { "run_id": "8af3effe...", "chip": "gpu",
@@ -322,8 +366,7 @@ alias は調査キャンペーン 1 つに 1 つ付け、条件の違いは `--p
 A の場合は、tracking server の名前を ConfigMap から引いて停止します。
 
 ```bash
-export NAMESPACE=team-a
-export TRACKING_SERVER_NAME=$(k get configmap accelprof-config -n "$NAMESPACE" \
+export TRACKING_SERVER_NAME=$(k get configmap accelprof-config \
   -o jsonpath='{.data.ACCELPROF_TRACKING_URI}' | sed 's#.*/##')
 aws sagemaker stop-mlflow-tracking-server --tracking-server-name "$TRACKING_SERVER_NAME" --region "$AWS_REGION"
 ```
@@ -337,8 +380,8 @@ run のメタデータ (metrics、params、tags) は tracking server と一緒�
 まず実行中の producer Job が無いことを確認します。`ttlSecondsAfterFinished` は終了した Job だけを消すので、走り続けている Job は自動では消えません。
 
 ```bash
-kubectl accelprof runs -n "$NAMESPACE"
-k delete jobs -n "$NAMESPACE" -l app.kubernetes.io/name=profiling-producer
+kubectl accelprof runs
+k delete jobs -l app.kubernetes.io/name=profiling-producer
 ```
 
 次に `mcp-host` を削除し、実験を回した namespace に作った `mcp-producer` ServiceAccount を掃除します。そのうえで `infra/eks` 側のマウントと mcp-reader を無効化します。`mcp_producer_role_arn` を渡さないと既定の空になり、producer の Pod Identity 紐付けも破棄されます。最後にデータ層のトグルを false にして apply します (destroy ではありません)。データ層の Terraform はリモート state を使うので、導入時と同じ backend とデータ層名を渡してから apply します。backend の設定は `infra/eks/backend.hcl` をそのまま渡し、キーだけを後から上書きします (後に渡した `-backend-config` が勝ちます)。この中のリージョンは state 置き場のリージョンで、クラスタのリージョンとは別物なので、`AWS_REGION` を渡してはいけません。
@@ -350,9 +393,9 @@ k delete jobs -n "$NAMESPACE" -l app.kubernetes.io/name=profiling-producer
 :::
 
 ```bash
-export DATA_LAYER_NAME=mcp
+export DATA_LAYER_NAME=profiling
 helm uninstall mcp -n mcp
-k delete serviceaccount mcp-producer -n "$NAMESPACE" --ignore-not-found
+k delete serviceaccount mcp-producer --ignore-not-found
 cd "$(git rev-parse --show-toplevel)"/infra/eks
 terraform plan -out=teardown.tfplan -var s3files_enabled=false -var analysis_mcp_enabled=false
 terraform apply teardown.tfplan
