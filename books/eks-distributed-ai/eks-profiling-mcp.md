@@ -99,19 +99,18 @@ done
 
 前節で作った namespace に対して、プロファイル収集を許可する宣言をしながら導入します。`PRODUCER_NAMESPACES` はこれから実験を回す namespace の一覧で、そのまま「trace バケットへの書き込みと run の記録を許可した範囲」の宣言になります。ここに書かれていない namespace のワークロードは記録できません。初回はデータ層がまだ無いので、作成を `CREATE_DATA_LAYER=1` で明示的に許可します。既定では既存のデータ層の再利用しかしないので、誤って 2 つ目のデータ層を作って基盤が二分されることがありません。
 
-導入は Basic01 で作ったチェックアウトから実行します。Basic01 step 2 のコマンドを実行しておけば、リージョンも state の場所も解決済みなので、この章で渡すのは「どの namespace に許可するか」と、初回だけデータ層の名前です。
+導入は Basic01 で作ったチェックアウトから実行します。Basic01 step 2 のコマンドで自分のクラスタを解決してあれば、リージョンも state の場所も分かっているので、この章で渡すのは「どの namespace に許可するか」と、初回だけデータ層の名前です。クラスタ名をここで書き直さないのは、章ごとに書いた名前が Basic01 で解決した値を上書きして、別のクラスタを対象にしてしまうからです。
 
 ```bash
-cd "$(git rev-parse --show-toplevel)"
-export CLUSTER_NAME=distai-eks
-source infra/scripts/distai-env.sh
 export PRODUCER_NAMESPACES=team-a,team-b
-export DATA_LAYER_NAME=mcp
+export DATA_LAYER_NAME=profiling
 export CREATE_DATA_LAYER=1
 ./infra/scripts/install-profiling.sh
 ```
 
-`DATA_LAYER_NAME` はこの基盤の記録側 (trace バケット、MLflow、S3 Files) の一式に付ける名前で、初回だけ指定します。導入が成功すると、このデータ層がこのクラスタに紐づいたことがレジストリに記録されるので、2 回目以降は前提の 2 行が解決してくれます。`CREATE_DATA_LAYER=1` は新規作成の明示的な許可で、既定では既存のデータ層の再利用しかしません。誤って 2 つ目を作ると記録が二分されるからです。
+`CLUSTER_NAME` が未設定だとここで止まります。その場合は Basic01 step 2 のコマンドを自分のクラスタ名で実行してから戻ってください。
+
+`DATA_LAYER_NAME` はこの基盤の記録側 (trace バケット、MLflow、S3 Files) の一式に付ける名前で、初回だけ指定します。名前はバケット名の接頭辞になるので、既に別のデータ層がある環境では必ず別名にしてください。導入が成功すると、このデータ層がこのクラスタに紐づいたことがレジストリに記録されるので、2 回目以降は前提の 2 行が解決してくれます。`CREATE_DATA_LAYER=1` は新規作成の明示的な許可で、既定では既存のデータ層の再利用しかしません。誤って 2 つ目を作ると記録が二分されるからです。
 
 1 つのクラスタに複数のデータ層を紐づけることもできます。テナントごとに分けたい場合や保持期間を変えたい場合で、`infra/scripts/distai-attach-data-layer.sh -c <cluster> --list` で現在の一覧と既定を確認できます。
 
@@ -128,11 +127,13 @@ export CREATE_DATA_LAYER=1
 プロファイルを撮る側は、リポジトリも Terraform も要りません。必要なのは `kubectl-accelprof` という 1 ファイルだけで、リリースを固定した 1 行で入ります。
 
 ```bash
-export CLUSTER_NAME=distai-eks
-export AWS_REGION=us-east-2
+export CLUSTER_NAME=<自分のクラスタ名>
+export AWS_REGION=<そのリージョン>
 export PRODUCER_NAMESPACES=team-a
 curl -fsSL https://raw.githubusercontent.com/littlemex/distributed-ai/refs/tags/release/eks-distributed-ai/v0.1.0/infra/scripts/get-profiling.sh | bash
 ```
+
+こちらはチェックアウトを持たない人 (プロファイルを撮るだけの人) 向けの経路なので、クラスタ名とリージョンを直接渡します。チェックアウトがあるなら Basic01 step 2 のコマンドで解決済みなので、この 2 行は不要です。
 
 このスクリプトはリポジトリを固定タグで `~/distributed-ai-v0.1.0` に取得し、プラグインを `~/.local/bin` に置きます。URL のタグとスクリプトが固定するタグは同じものなので、コピーした 1 行と入るものがずれません。クラスタの state を触る情報 (`TF_STATE_BUCKET` など) を渡した場合はそのまま導入まで走りますが、渡していなければプラグインの設置で止まり、導入はチェックアウトから実行するよう案内されます。プラグインを PATH に通せば `kubectl accelprof` として使えます。
 
