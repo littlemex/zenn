@@ -70,7 +70,7 @@ Job そのものは終了から 2 日後に Kubernetes が消します。run の
 
 ## 1. 前提を確認する
 
-本章は基盤リポジトリのリリース `release/eks-distributed-ai/v0.0.2` を前提にしています。本文のコマンドと出力例はこのバージョンで実機確認したものです。別のバージョンでは変数名やフラグが変わることがあるので、まずはこのタグで通してください。
+本章は基盤リポジトリのリリース `release/eks-distributed-ai/v0.1.0` を前提にしています。本文のコマンドと出力例はこのバージョンで実機確認したものです。別のバージョンでは変数名やフラグが変わることがあるので、まずはこのタグで通してください。
 
 クラスタ (Basic01 から Basic11 相当) が稼働していること、`infra/eks` の Terraform がリモート state を使っていること、`terraform` と `kubectl` と `helm` と `aws` と `python3` と `git` と `curl` が手元にあること、MCP クライアント (Claude Code など) が手元にあることを確認します。リモート state を使っていない場合は先に `infra/eks/scripts/bootstrap-remote-state.sh` を実行します。導入スクリプトは state の場所を `TF_STATE_BUCKET` などで明示できますが、指定しない場合は `infra/eks/backend.hcl` から読むので、この設定が起点になります。
 
@@ -97,27 +97,27 @@ done
 
 ## 3. 基盤を導入する
 
-クラスタ名とリージョン、そしてプロファイル収集を許可する namespace を指定して 1 コマンドを実行します。`PRODUCER_NAMESPACES` はこれから実験を回す namespace の一覧で、そのまま「trace バケットへの書き込みと run の記録を許可した範囲」の宣言になります。ここに書かれていない namespace のワークロードは記録できません。初回はデータ層がまだ無いので、作成を `CREATE_DATA_LAYER=1` で明示的に許可します。既定では既存のデータ層の再利用しかしないので、誤って 2 つ目のデータ層を作って基盤が二分されることがありません。
+前節で作った namespace に対して、プロファイル収集を許可する宣言をしながら導入します。`PRODUCER_NAMESPACES` はこれから実験を回す namespace の一覧で、そのまま「trace バケットへの書き込みと run の記録を許可した範囲」の宣言になります。ここに書かれていない namespace のワークロードは記録できません。初回はデータ層がまだ無いので、作成を `CREATE_DATA_LAYER=1` で明示的に許可します。既定では既存のデータ層の再利用しかしないので、誤って 2 つ目のデータ層を作って基盤が二分されることがありません。
 
-導入はリリースを固定した 1 コマンドで実行します。リポジトリを clone しておく必要はなく、渡すのは環境変数だけです。ただしクラスタ側の Terraform は `terraform.tfvars` と `backend.hcl` で構成されており、どちらも環境固有でリポジトリに含まれないため、state の場所と自分のクラスタの tfvars は指定します。
+導入は Basic01 で作ったチェックアウトから実行します。Basic01 step 2 のコマンドを実行しておけば、リージョンも state の場所も解決済みなので、この章で渡すのは「どの namespace に許可するか」と、初回だけデータ層の名前です。
 
 ```bash
+cd "$(git rev-parse --show-toplevel)"
 export CLUSTER_NAME=distai-eks
-export AWS_REGION=us-east-2
+source infra/scripts/distai-env.sh
 export PRODUCER_NAMESPACES=team-a,team-b
-export TF_STATE_BUCKET=my-terraform-state
-export TF_STATE_REGION=ap-northeast-1
-export TF_STATE_KEY=eks/distai-eks/terraform.tfstate
-export EKS_TFVARS=$HOME/distributed-ai/infra/eks/terraform.tfvars
+export DATA_LAYER_NAME=mcp
 export CREATE_DATA_LAYER=1
-curl -fsSL https://raw.githubusercontent.com/littlemex/distributed-ai/refs/tags/release/eks-distributed-ai/v0.0.2/infra/scripts/get-profiling.sh | bash
+./infra/scripts/install-profiling.sh
 ```
 
-このスクリプトは固定タグでリポジトリを `~/distributed-ai-v0.0.2` に取得し、`kubectl-accelprof` を `~/.local/bin` に置き、指定した tfvars を取り込んでから導入スクリプトを実行します。`TF_STATE_*` は state 置き場のバケットとリージョンとオブジェクトキーで、このリージョンはクラスタのリージョンとは別物です。`EKS_TFVARS` は自分のクラスタを作った `infra/eks/terraform.tfvars` を指します。すでにチェックアウトを持っているなら、その中で `CREATE_DATA_LAYER=1 ./infra/scripts/install-profiling.sh` を実行しても同じ結果になります。
+`DATA_LAYER_NAME` はこの基盤の記録側 (trace バケット、MLflow、S3 Files) の一式に付ける名前で、初回だけ指定します。導入が成功すると、このデータ層がこのクラスタに紐づいたことがレジストリに記録されるので、2 回目以降は前提の 2 行が解決してくれます。`CREATE_DATA_LAYER=1` は新規作成の明示的な許可で、既定では既存のデータ層の再利用しかしません。誤って 2 つ目を作ると記録が二分されるからです。
+
+1 つのクラスタに複数のデータ層を紐づけることもできます。テナントごとに分けたい場合や保持期間を変えたい場合で、`infra/scripts/distai-attach-data-layer.sh -c <cluster> --list` で現在の一覧と既定を確認できます。
 
 2 回目以降は `CREATE_DATA_LAYER` を外して同じコマンドを実行します。最後に `acceptance OK` と接続情報が表示されれば導入完了です。何度実行しても同じ結果になるので、あとから namespace を増やすときは、その namespace と ServiceAccount を作ってから `PRODUCER_NAMESPACES` に追記して再実行します。
 
-データ層は MLflow と trace バケットを含む記録側の一式で、クラスタごとに 1 つ立てる必要はありません。どのデータ層を使うかは `DATA_LAYER_NAME` (既定は `mcp`) が決め、この名前が state のキーとバケット名の接頭辞になります。複数のクラスタで記録を共有するなら、2 つ目以降のクラスタでは同じ `DATA_LAYER_NAME` を渡して `CREATE_DATA_LAYER` は付けません。逆に既存のデータ層があるのに違う名前を渡すと、そのクラスタは別の記録空間を持つことになります。
+データ層は MLflow と trace バケットを含む記録側の一式で、クラスタごとに 1 つ立てる必要はありません。名前が state のキーとバケット名の接頭辞になり、複数のクラスタで記録を共有するなら 2 つ目以降のクラスタでは同じ名前を渡して `CREATE_DATA_LAYER` は付けません。既定値は持たせていません。以前は `mcp` という既定があり、それが別リージョンのデータ層を黙って指した結果、記録の正本を取り違える寸前まで進んだことがあります。いまは未指定ならレジストリに記録された既定を読み、それも無ければ「どのデータ層に記録するのか」を明示するよう停止します。
 
 :::message
 既存クラスタに profiling と無関係な差分が溜まっている場合、スクリプトは一覧を表示して停止します。基盤だけを収束させるなら `PROFILING_ONLY=1` を付けて再実行し、表示された差分もすべて適用してよいなら `ALLOW_UNRELATED=1` を付けます。どちらを選ぶかは、表示された差分が今このタイミングで適用してよいものかどうかで判断します。判断できない差分を `ALLOW_UNRELATED=1` で押し通すと、profiling とは関係のない構成変更 (アドオンのバージョン更新など) が同時に走ります。
@@ -131,10 +131,10 @@ curl -fsSL https://raw.githubusercontent.com/littlemex/distributed-ai/refs/tags/
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2
 export PRODUCER_NAMESPACES=team-a
-curl -fsSL https://raw.githubusercontent.com/littlemex/distributed-ai/refs/tags/release/eks-distributed-ai/v0.0.2/infra/scripts/get-profiling.sh | bash
+curl -fsSL https://raw.githubusercontent.com/littlemex/distributed-ai/refs/tags/release/eks-distributed-ai/v0.1.0/infra/scripts/get-profiling.sh | bash
 ```
 
-このスクリプトはリポジトリを固定タグで `~/distributed-ai-v0.0.2` に取得し、プラグインを `~/.local/bin` に置きます。URL のタグとスクリプトが固定するタグは同じものなので、コピーした 1 行と入るものがずれません。クラスタの state を触る情報 (`TF_STATE_BUCKET` など) を渡した場合はそのまま導入まで走りますが、渡していなければプラグインの設置で止まり、導入はチェックアウトから実行するよう案内されます。プラグインを PATH に通せば `kubectl accelprof` として使えます。
+このスクリプトはリポジトリを固定タグで `~/distributed-ai-v0.1.0` に取得し、プラグインを `~/.local/bin` に置きます。URL のタグとスクリプトが固定するタグは同じものなので、コピーした 1 行と入るものがずれません。クラスタの state を触る情報 (`TF_STATE_BUCKET` など) を渡した場合はそのまま導入まで走りますが、渡していなければプラグインの設置で止まり、導入はチェックアウトから実行するよう案内されます。プラグインを PATH に通せば `kubectl accelprof` として使えます。
 
 渡すのは alias と自分のイメージと、実行したいコマンドだけです。まずは基盤イメージ自身を workload として 1 本流し、経路が通っていることを確認します。イメージの URI は namespace に配られた ConfigMap から引けるので、レジストリやタグを手で組み立てる必要はありません。
 
@@ -377,7 +377,7 @@ terraform apply teardown.tfplan
 
 - [プロファイリングを楽にしたい](https://zenn.dev/littlemex/articles/8ab01bc40f627a) - 本基盤の設計思想を解説したブログ
 - [littlemex/distributed-ai](https://github.com/littlemex/distributed-ai) - `infra/scripts/install-profiling.sh` と `infra/eks/bin/kubectl-accelprof`、`infra/data-layer` と `infra/eks`、`mcp-host` チャートの実装
-- [release/eks-distributed-ai/v0.0.2](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.0.2) - 本章が前提にしているリリース
+- [release/eks-distributed-ai/v0.1.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.1.0) - 本章が前提にしているリリース
 - [accelprof](https://pypi.org/project/accelprof/) / [accelprof-knowledge](https://pypi.org/project/accelprof-knowledge/) - 分析 MCP と知識 MCP の pip パッケージ
 - [Nsight Systems ユーザーガイド](https://docs.nvidia.com/nsight-systems/UserGuide/index.html) - `nsys profile` のオプションと収集対象の公式ドキュメント
 - [Amazon S3 Files (EFS ユーザーガイド)](https://docs.aws.amazon.com/efs/latest/ug/s3-file-systems.html) - S3 Files の公式ドキュメント

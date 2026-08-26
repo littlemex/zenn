@@ -210,50 +210,66 @@ IRSA は ServiceAccount にアノテーションで IAM ロールを結び付け
 
 # ワークショップ実施
 
-## 1. リポジトリを clone して tfvars を準備する
+## 1. 2 段階で導入する
 
-まず、この book が対象とするリポジトリを clone します。以降の章もこの作業ディレクトリを前提に進めます。
-
-```bash
-git clone --depth 1 --branch release/eks-distributed-ai/v0.0.1 \
-  --filter=blob:none --sparse \
-  https://github.com/littlemex/distributed-ai.git
-cd distributed-ai
-git sparse-checkout set infra
-cd infra/eks
-```
-
-続いて `terraform.tfvars.example` を `terraform.tfvars` にコピーし、`region` と `cluster_name` を自分の環境に合わせて設定します。AZ もサブネット CIDR も `region` から自動導出されるので、この段階で書くのはこの 2 つだけです。`accelerator_pools` も空のままで構いません。名前付き profile（AWS SSO や assume-role）で認証している場合は、****`aws_profile` にその profile 名も設定**します。この値を設定しておくと、Terraform が aws/helm/kubectl の各 provider と CLI ヘルパーすべてに同じ profile を渡すため、以降の操作が同一プリンシパルで実行されます。あわせて `expected_account_id` にデプロイ先の 12 桁のアカウント ID を設定しておくことを強く推奨します。この値を設定すると、認証情報が別のアカウントを指したまま apply しようとしたときに plan の段階で停止するため、profile の取り違えでクラスタを別アカウントに作ってしまう事故を未然に防げます。自分のアカウント ID は `aws sts get-caller-identity --query Account --output text` で確認できます。
+導入は 2 段階です。前半はリポジトリをリリース固定で取得するだけで、AWS には何も作りません。
 
 ```bash
-cp terraform.tfvars.example terraform.tfvars
-# terraform.tfvars を編集: region, cluster_name, expected_account_id
-# （名前付き profile なら aws_profile も）
+curl -fsSL https://raw.githubusercontent.com/littlemex/distributed-ai/refs/tags/release/eks-distributed-ai/v0.1.0/infra/scripts/distai-install.sh | bash
 ```
 
-:::message
-既定では AZ もサブネット CIDR も `region` と `vpc_cidr` から自動導出されるため、通常は tfvars で AZ やサブネットに手を加える必要はありません。AZ や CIDR を明示指定して上書きする場合だけ、解決後の AZ ごとにちょうど 1 つずつ CIDR を与えてください。長さが食い違うとサブネットを持たない AZ が生まれ、そこにアクセラレータプールを割り当てると Pod が永久に `Pending` になります。この不整合は `az.tf` の precondition（サブネット数と AZ 数の一致、各プールの解決後 AZ が VPC の AZ に含まれること、など）が plan 時に検出して apply を止めます。
-:::
-
-## 2. apply する
-
-apply の前に、Terraform が実際にどのプリンシパルで認証するかを必ず確認します。ここを取り違えると、同じ `cluster_name` でも意図しないアカウントに二重にクラスタを作りかけたり、既存クラスタの一部リソースを作り直そうとして `EntityAlreadyExists` で apply が途中失敗したりします。tfvars に `aws_profile` を設定した場合、Terraform は環境変数 `AWS_PROFILE` より tfvars の値を優先するため、確認コマンドにも同じ profile を明示的に渡します。
+後半がクラスタを作るコマンドです。渡すのはクラスタ名とリージョンだけです。
 
 ```bash
-# tfvars の aws_profile と同じ profile を明示して、Terraform が使うプリンシパルを確認します
-aws sts get-caller-identity --profile <tfvars と同じ profile>   # Account と ARN が意図どおりか確認
-terraform init
-terraform apply
+cd ~/distributed-ai-v0.1.0
+./infra/scripts/distai-up.sh -c distai-eks -r ap-northeast-1
 ```
+
+名前付きプロファイル (AWS SSO や assume-role) で認証している場合は、そのプロファイルを環境変数に置いて渡します。この値は生成される変数ファイルにも書き込まれるので、以降の Terraform と CLI が同じプリンシパルで動きます。
+
+```bash
+export AWS_PROFILE=my-profile
+./infra/scripts/distai-up.sh -c distai-eks -r ap-northeast-1 -p "$AWS_PROFILE"
+```
+
+分けてあるのは、`curl` をシェルに流す形の中で課金リソースを作らせないためです。理由は 3 つあります。取得と課金を別のコマンドにしておけば、何を取得して何に課金したかを後から追えます。パイプの中では stdin をスクリプト本体が使っているので、確認を求めても読者は答えられません。そして apply の前には plan を見せて明示的に確認を取りたいからです。
+
+`distai-up.sh` は 5 つのフェーズを順に実行します。前提確認、同意ゲート、state の作成とレジストリへの記録、変数ファイルの生成、そして plan の表示と apply です。同意ゲートでは、対象のアカウント・呼び出し元・リージョン・クラスタ名を表示したうえで**クラスタ名の入力**を求めます。y の 1 文字では、上に何が表示されていても押せてしまうからです。
+
+変数ファイル (`infra/eks/terraform.tfvars`) はここで生成されます。中身はリージョン、クラスタ名、profile、そして `expected_account_id` です。最後のものは認証情報が別のアカウントを指したまま apply しようとしたときに plan の段階で停止させるための歯止めで、アカウント ID はこの時点で判っているので自動で埋まります。生成後のファイルはあなたのものなので、AZ や CIDR を明示指定したいときはここに書き足します。
+
+```bash
+cat infra/eks/terraform.tfvars
+```
+
+アクセラレーターノードのプールは生成されません。GPU や Capacity Block は課金が重いので、必要になった章で `accelerator-pools.tfvars.example` をコピーして明示的に opt-in します。共有ストレージ (FSx for Lustre と OpenZFS) は既定で有効です。学習サンプルが `/shared` をマウントするためですが、アイドル時の課金として最も大きいので、まず土台だけ見たい場合は `DISTAI_SHARED_STORAGE=off` を付けて実行してください。あとから有効にするときは、生成された `infra/eks/terraform.tfvars` の `fsx_enabled` と `openzfs_enabled` を `true` に直して `distai-up.sh` を再実行します。
 
 :::message alert
-`terraform apply` は state に記録されたリソースだけを管理し、state に無いリソースが AWS 側に存在するかどうかは確認しません。このため profile の取り違え方によって 2 種類の事故が起きます。1 つ目は、state が空（またはそのリソースを未追跡）のまま、既にリソースが存在するアカウントに profile が向くケースです。IAM ロール・KMS エイリアス・CloudWatch ロググループのように名前に一意制約があるリソースは作成時のエラー（IAM なら `EntityAlreadyExists`、KMS エイリアスなら `AlreadyExistsException`、CloudWatch Logs なら `ResourceAlreadyExistsException`）で失敗し、FSx ファイルシステムのように名前の一意制約が無いリソースはエラーにならず二重作成されて課金が始まります（apply が途中で失敗しても、並行して作成が始まった FSx はそのまま完成まで走り切ります）。2 つ目は、state にリソースが記録済みのまま別アカウントに profile が向くケースで、この場合は Terraform が「管理下のリソースがすべて消えた」と判断し、エラーも出さずに丸ごと作り直します。後者はエラーで止まらないぶん気づきにくく、より危険です。重複作成された FSx はコンソールで `fs-` から始まる ID を確認して手動で削除しない限り課金が続くため、apply の前に必ず `aws sts get-caller-identity` で Account と ARN を確認してください。step 1 で `expected_account_id` を設定しておけば、認証情報が別アカウントを指したまま apply しようとしても plan の段階で停止するので、この事故そのものを起こさせない歯止めになります。
+`terraform apply` は state に記録されたリソースだけを管理し、state に無いリソースが AWS 側に存在するかどうかは確認しません。このため profile を取り違えると、名前に一意制約があるリソース (IAM ロール、KMS エイリアス、CloudWatch ロググループ) は作成時のエラーで失敗し、FSx ファイルシステムのように一意制約が無いものはエラーにならず二重作成されて課金が始まります。より危険なのは state にリソースが記録済みのまま別アカウントに profile が向くケースで、Terraform は「管理下のリソースがすべて消えた」と判断してエラーも出さずに丸ごと作り直します。`distai-up.sh` は実行前にアカウントと呼び出し元 ARN を表示し、生成する tfvars に `expected_account_id` を書き込むので、この事故は plan の段階で止まります。それでも表示されたアカウントが意図どおりかは自分の目で確かめてください。
 :::
 
-`terraform apply` は、Amazon VPC・AZ ごとの NAT ゲートウェイ・Amazon EKS コントロールプレーン・System ノードグループに加えて、その上で動く Karpenter コントローラ・各 CSI ドライバ・Kubeflow Trainer・共有ストレージ（既定の FSx）まで、クラスタスコープの基盤を一度に作ります。アクセラレーターノードだけはまだ立ちません。所要時間が大きいのはコントロールプレーンの起動と FSx ファイルシステム（特に FSx for Lustre）の作成で、いずれも単独で 10〜15 分級です。両者は VPC さえできれば並行して作られるため単純な足し算にはなりませんが、それでも全体では 20〜30 分程度を見ておくと安全です。
+apply には 20〜30 分程度かかります。時間がかかるのはコントロールプレーンの起動と FSx ファイルシステムの作成で、いずれも単独で 10〜15 分級です。両者は VPC さえできれば並行して作られるので、単純な足し算にはなりません。
+
+## 2. 以降の章の前提はこの 3 行
+
+apply が終わると、このクラスタの state がどこにあるかがレジストリ (AWS Systems Manager のパラメータストア) に記録されます。以降の章はクラスタ名だけを与えれば、残りをそこから解決できます。
+
+```bash
+cd ~/distributed-ai-v0.1.0
+export CLUSTER_NAME=distai-eks
+source infra/scripts/distai-env.sh
+```
+
+1 行目でチェックアウトに移動しているのは、この後の章が `terraform output` を使うためと、リポジトリの外で実行すると別のリポジトリを掴みうるからです。別の場所に clone した場合はそのディレクトリに読み替えてください。
+
+これが解決するのは、リージョン、アカウント ID、state のバケットとキーとロックテーブルと暗号化キー、クラスタを作ったときのリリースタグと最後に適用したリリースタグ、そして紐づいているデータ層の一覧と既定です。バケット名や state のキーを章に書く必要がなくなり、別のマシンで clone し直した場合でも `backend.hcl` がその場で再生成されるので、`terraform output` がそのまま使えます。
+
+リージョンは `AWS_REGION` が設定されていればそれを、なければ AWS CLI の設定を使います。どちらも無い場合は、リージョンなしにクラスタ名だけでは対象が一意に決まらないため停止します。作成時と最後の適用のリリースタグを別に持っているのは、古いチェックアウトで新しいクラスタを触ろうとしている状況を検出するためです。
+
+レジストリに置いているのは、state を開く前に必要な情報と、クラスタの外側にある関連付けだけです。state は自分自身の住所を記録できませんし、`backend.hcl` は環境固有なのでリポジトリに含まれません。この 2 つの事情が「クラスタ名から始められない」原因だったので、そこを外に出しています。エンドポイントもサブネット ID も MLflow の ARN も入れていません。これらは `terraform output` で引けるので、二重に持つと「どちらが正しいか」という問いが生まれるからです。
 
 :::message
-`terraform apply` は 20〜30 分ほどかかります。コントロールプレーンが `ACTIVE` になり、FSx ファイルシステムが `AVAILABLE` になるまで待ちましょう。
+実行すると、対象のクラスタ・リージョン・アカウント・リリースタグが 1 行で表示されます。apply が途中で失敗した場合、レジストリには state の座標までが記録されていてリリースタグがまだ無い状態になります。この状態でも解決自体は通り、リリースタグは「未記録」と表示されます。認証情報のアカウントがレジストリの記録と食い違う場合は、その場で停止します。クラスタ名は (アカウント, リージョン, 名前) の 3 つ組で初めて一意になるので、名前だけで別のクラスタを掴まないための確認です。
 :::
 
 ## 3. kubeconfig を設定してノードを確認する
