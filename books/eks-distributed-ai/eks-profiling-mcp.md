@@ -3,6 +3,8 @@ title: "Advanced02 - GPU プロファイルを MCP で分析する"
 free: true
 ---
 
+GitHub Tag: [release/eks-distributed-ai/v0.1.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.1.0)
+
 # 解説
 
 ## 全体構成
@@ -72,13 +74,7 @@ Job そのものは終了から 2 日後に Kubernetes が消します。run の
 
 本章は基盤リポジトリのリリース `release/eks-distributed-ai/v0.1.0` を前提にしています。本文のコマンドと出力例はこのバージョンで実機確認したものです。別のバージョンでは変数名やフラグが変わることがあるので、まずはこのタグで通してください。
 
-クラスタ (Basic01 から Basic11 相当) が稼働していること、`infra/eks` の Terraform がリモート state を使っていること、`terraform` と `kubectl` と `helm` と `aws` と `python3` と `git` と `curl` が手元にあること、MCP クライアント (Claude Code など) が手元にあることを確認します。リモート state を使っていない場合は先に `infra/eks/scripts/bootstrap-remote-state.sh` を実行します。導入スクリプトは state の場所を `TF_STATE_BUCKET` などで明示できますが、指定しない場合は `infra/eks/backend.hcl` から読むので、この設定が起点になります。
-
-以降のコマンドは他の章と同じく `k` を `kubectl` の別名として使います。まだ設定していない場合はこの 1 行を実行してください。
-
-```bash
-alias k=kubectl
-```
+クラスタ (Basic01 から Basic11 相当) が稼働していること、`infra/eks` の Terraform がリモート state を使っていること、`terraform` と `kubectl` と `helm` と `aws` と `python3` と `git` と `curl` が手元にあること、MCP クライアント (Claude Code など) が手元にあることを確認します。リモート state は Basic01 の `distai-up.sh` が作り、その場所はレジストリに記録されているので、前提の 3 行を実行してあれば導入スクリプトはそこから解決します (`TF_STATE_BUCKET` などで明示的に上書きすることもできます)。
 
 ## 2. プロファイルを撮る namespace を用意する
 

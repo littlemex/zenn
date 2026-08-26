@@ -3,6 +3,8 @@ title: "Basic09 - vLLM Neuron で推論を動かす"
 free: true
 ---
 
+GitHub Tag: [release/eks-distributed-ai/v0.1.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.1.0)
+
 本章では、Basic07 で GPU 向けに vLLM 推論サーバーを立ち上げましたが、この章では vLLM と vLLM Neuron Plugin というものを使って AWS Trainium チップの上で LLM 推論を動かします。大きな違いは 2 点で、1 つはランタイム、もう 1 つはハードウェアの確保方法です。ランタイムは、Neuron が CUDA ではなく Neuron ランタイムで動くため、vLLM 本体に Neuron 対応を足す [vLLM Neuron plugin](https://github.com/aws-neuron/upstreaming-to-vllm) を同梱した Deep Learning Container（DLC）を使います。モデルはマルチモーダル（画像とテキスト）の `Qwen/Qwen3-VL-4B-Instruct` を使います。
 
 :::message
@@ -49,7 +51,7 @@ GPU 版（Basic07）との対応関係は次のとおりです。
 
 - Basic05 の手順で trn2.3xlarge の Capacity Block をメルボルンリージョンで確保ずみ
 - Basic05 の手順で `terraform apply` で NodePool 作成済み
-- `k` エイリアスと `--context` は設定済み
+- `k` と `KUBECONFIG` は Basic01 step 2 の 3 行で設定済み
 
 trn2 ノードと Neuron リソースを確認します。
 
@@ -114,7 +116,6 @@ trn2 ノードは Trainium デバイスが 1 個しかないため、Deployment 
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
-# チャートはサブチャート image-builder-lib を依存に持つため、初回だけローカル依存を取得します。
 helm dependency build charts/experiments
 helm template exp charts/experiments -n "$NAMESPACE" \
     --set neuronVllmPlugin.enabled=true \

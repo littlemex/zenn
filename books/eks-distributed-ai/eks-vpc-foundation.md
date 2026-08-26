@@ -3,6 +3,8 @@ title: "Basic01 - Amazon EKS 基盤を立てる"
 free: true
 ---
 
+GitHub Tag: [release/eks-distributed-ai/v0.1.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.1.0)
+
 本章では、分散学習・推論の実験を回すための土台として Amazon EKS クラスタを構築します。
 
 Terraform で Amazon VPC・Amazon EKS コントロールプレーン・Karpenter を動かすための System ノードグループをデプロイし、`kubectl` でノードが見えるところまでを扱います。
@@ -261,9 +263,11 @@ export CLUSTER_NAME=distai-eks
 source infra/scripts/distai-env.sh
 ```
 
-1 行目でチェックアウトに移動しているのは、この後の章が `terraform output` を使うためと、リポジトリの外で実行すると別のリポジトリを掴みうるからです。別の場所に clone した場合はそのディレクトリに読み替えてください。
+1 行目でチェックアウトに移動しているのは、この後の章が `terraform output` を使うためと、リポジトリの外で実行すると別のリポジトリを掴みうるからです。別の場所に clone した場合はそのディレクトリに読み替えてください。名前付き profile で認証している場合は、`export AWS_PROFILE=my-profile` もこの 3 行の前に置きます。
 
 これが解決するのは、リージョン、アカウント ID、state のバケットとキーとロックテーブルと暗号化キー、クラスタを作ったときのリリースタグと最後に適用したリリースタグ、そして紐づいているデータ層の一覧と既定です。バケット名や state のキーを章に書く必要がなくなり、別のマシンで clone し直した場合でも `backend.hcl` がその場で再生成されるので、`terraform output` がそのまま使えます。
+
+あわせて `kubectl` もこのクラスタに向けます。`aws eks update-kubeconfig` の実行、context の選択、既定 namespace の設定、`kubectl` を `k` と打つための定義が、この `source` に含まれています。章ごとにこれらを打ち直す必要はありません。実行内容は step 3 で確認します。
 
 リージョンは `AWS_REGION` が設定されていればそれを、なければ AWS CLI の設定を使います。どちらも無い場合は、リージョンなしにクラスタ名だけでは対象が一意に決まらないため停止します。作成時と最後の適用のリリースタグを別に持っているのは、古いチェックアウトで新しいクラスタを触ろうとしている状況を検出するためです。
 
@@ -273,84 +277,71 @@ source infra/scripts/distai-env.sh
 実行すると、対象のクラスタ・リージョン・アカウント・リリースタグが 1 行で表示されます。apply が途中で失敗した場合、レジストリには state の座標までが記録されていてリリースタグがまだ無い状態になります。この状態でも解決自体は通り、リリースタグは「未記録」と表示されます。認証情報のアカウントがレジストリの記録と食い違う場合は、その場で停止します。クラスタ名は (アカウント, リージョン, 名前) の 3 つ組で初めて一意になるので、名前だけで別のクラスタを掴まないための確認です。
 :::
 
-## 3. kubeconfig を設定してノードを確認する
+## 3. ノードを確認する
 
-```bash
-# 自分の環境に合わせて設定してください
-export REGION=xxx
-export PROFILE=xxx
+`kubectl` の設定は step 2 で済んでいます。3 行を `source` したときに `aws eks update-kubeconfig` が実行され、context がこのクラスタに、その context の既定 namespace が `distai` に設定され、`kubectl` を `k` と打てるようになっています。表示された次の 2 行がその結果です。
 
-# --alias で kubeconfig の context 名を短い固定名（ここでは ws）にします。
-# これを付けないと context 名がクラスタ ARN 全体になり、毎回打つのが長くなります。
-# terraform.tfvars に aws_profile を設定した場合は、同じ profile をここでも渡します
-# （または事前に export AWS_PROFILE=<name>）。素の [default] で認証している場合は
-# --profile を省略します。
-aws eks update-kubeconfig --name "$(terraform output -raw cluster_name)" \
-  --region $REGION --profile $PROFILE --alias ws
+```text
+distai-env: kubectl: context distai-eks, namespace distai at https://XXXXXXXX.gr7.us-east-2.eks.amazonaws.com (the namespace does not exist yet)
+distai-env: k is kubectl --context distai-eks; KUBECONFIG is /home/ubuntu/.kube/distai/distai-eks.distai.yaml
 ```
 
-続いて、以降のコマンドが常にこのクラスタと作業用 namespace に向くよう、current-context をこのクラスタに切り替え、その context の既定 namespace を `distai` にします。こうしておくと、`--context` も `-n` も付けずに、常にこのクラスタの `distai` namespace を対象にできます。あわせて、以降は打鍵を減らすため `kubectl` を `k` と打てるようにエイリアスを張っておきます（context も namespace も kubeconfig 側に設定済みなので、エイリアスには何も埋め込みません）。
+この 1 行目は kubeconfig を読み上げただけの表示ではなく、実際に API サーバーへ 1 回問い合わせた結果です。endpoint が出ていれば到達性と認証まで確認できたことになります。末尾の `(the namespace does not exist yet)` は step 4 で作る `distai` namespace がまだ無いという意味なので、この時点では正常です。
 
-```bash
-kubectl config use-context ws
-kubectl config set-context --current --namespace=distai
-alias k=kubectl
-```
-
-これで `k get po` は「ws クラスタの distai namespace の Pod」を対象にします（別の namespace を見たいときだけ `-n <name>` を明示します）。
+kubeconfig は既定の `~/.kube/config` ではなく、クラスタと namespace ごとの専用ファイルに書きます。既定の kubeconfig の current-context を書き換えると、別のターミナルで他のクラスタを触っている作業まで巻き込むためです。設定が効くのは `source` したシェルの中だけなので、ターミナルを開き直したら step 2 の 3 行をもう一度実行します。`k` は `--context` を常に付けて `kubectl` を呼ぶ関数なので、後から current-context が変わっても向き先はずれません。
 
 ```bash
 k get nodes
+```
 
-# インスタンスタイプまで見たい場合
+インスタンスタイプまで見たい場合は列を指定します。
+
+```bash
 k get nodes -o custom-columns='NAME:.metadata.name,TYPE:.metadata.labels.node\.kubernetes\.io/instance-type,ROLE:.metadata.labels.node-role,CAP:.metadata.labels.karpenter\.sh/capacity-type'
 ```
 
 `k get nodes` で m5 系のノードが 2 台 `Ready` 状態で表示されれば、System ノードグループの起動は成功です。
 
 :::message alert
-`kubectl` が `Unauthorized`（`error: You must be logged in to the server`）で弾かれる場合、原因はほぼ 2 つです。1 つ目は、`terraform apply` を実行したプリンシパルと `kubectl` を実行するプリンシパルが食い違っているケースです。`enable_cluster_creator_admin_permissions = true` はクラスタを作成したプリンシパルにだけ管理者権限を与えるため、`apply` を名前付き profile（AWS SSO や assume-role）で実行したのに `update-kubeconfig` を素の `[default]` で叩くと、両者が別プリンシパルになり弾かれます。`aws sts get-caller-identity` で両者のプリンシパルを確認します。assume-role の場合はセッション名部分が違っていても問題なく、`assumed-role/<ロール名>` までが一致していれば認証は通ります（アクセスエントリは基底の IAM ロール ARN 単位でマッチするためです）。一致していなければ `update-kubeconfig` に `apply` と同じ `--profile` を渡す（または `export AWS_PROFILE`）と解消します。自分のロールが登録済みかは `aws eks list-access-entries --cluster-name <name>` でも確認できます。2 つ目は、`apply` 直後にアクセスエントリがまだ認証レイヤに伝播していないケースで、この場合は 1〜2 分待って再実行すれば通ります。
+`kubectl` が `Unauthorized`（`error: You must be logged in to the server`）で弾かれる場合、原因はほぼ 2 つです。1 つ目は、`terraform apply` を実行したプリンシパルと `kubectl` を実行するプリンシパルが食い違っているケースです。`enable_cluster_creator_admin_permissions = true` はクラスタを作成したプリンシパルにだけ管理者権限を与えるため、`distai-up.sh` を名前付き profile（AWS SSO や assume-role）で実行したのに、`source` するシェルで `AWS_PROFILE` を設定し忘れて素の `[default]` で認証していると、両者が別プリンシパルになり弾かれます。`source` は `AWS_PROFILE` をそのまま kubeconfig に書き込むので、`export AWS_PROFILE=<name>` を 3 行の前に置き、`aws sts get-caller-identity` で両者のプリンシパルを確認してください。assume-role の場合はセッション名部分が違っていても問題なく、`assumed-role/<ロール名>` までが一致していれば認証は通ります（アクセスエントリは基底の IAM ロール ARN 単位でマッチするためです）。自分のロールが登録済みかは `aws eks list-access-entries --cluster-name <name>` でも確認できます。2 つ目は、`apply` 直後にアクセスエントリがまだ認証レイヤに伝播していないケースで、この場合は 1〜2 分待って再実行すれば通ります。
 :::
 
 ## 4. 作業用の namespace を作る
 
 この book のワークショップでは、学習 Job や推論サーバーなどのワークロードを `default` ではなく専用の namespace に作ります。あとで「この namespace ごと消せば実験の後片付けが済む」ようにするためです。本 book では作業用 namespace を `distai` に統一して進めます。
 
-namespace の作成は `--dry-run` 経由の `apply` にしています。すでに存在していてもエラーにならないようにするためです。step 3 で既定 namespace を `distai` にしたので、ここで作る namespace 名も `distai` で揃えます。
+namespace の作成は `--dry-run` 経由の `apply` にしています。すでに存在していてもエラーにならないようにするためです。step 2 で既定 namespace が `distai` になっているので、ここで作る namespace 名も `distai` で揃えます。
 
 ```bash
 k create namespace distai --dry-run=client -o yaml | k apply -f -
 ```
 
-`namespace/distai created`（初回）または `namespace/distai unchanged`（2 回目以降）と表示されれば準備完了です。本 book では最後まで同じ `distai` を使います。
+`namespace/distai created`（初回）または `namespace/distai unchanged`（2 回目以降）と表示されれば準備完了です。本 book では最後まで同じ `distai` を使います。作成後に step 2 の 3 行をもう一度実行すると、先ほどの `(the namespace does not exist yet)` が消えます。
 
-## 5. context を確認する習慣をつける
+## 5. 向き先を確認する習慣をつける
 
-step 3 で current-context を切り替えたので、以降の `k`（`kubectl`）はすべてこのクラスタの `distai` namespace を対象にします。操作対象のクラスタやリソースが増える後続の章では、current-context を切り替えたまま元のつもりで操作してしまう事故が起きやすいため、破壊的な操作の前には現在の向き先を確認する習慣をつけておきます。
+操作対象のクラスタやリソースが増える後続の章では、別のクラスタを向いたまま元のつもりで操作してしまう事故が起きやすいため、破壊的な操作の前には現在の向き先を確認する習慣をつけておきます。`source` したときに表示される 2 行と同じ内容を、いつでも自分で確認できます。
 
 ```bash
-# 現在の current-context（=どのクラスタを向いているか）
 k config current-context
 
-# その context の既定 namespace と、叩きに行く API サーバー
 k config view --minify -o 'jsonpath={.contexts[0].context.namespace} @ {.clusters[0].cluster.server}{"\n"}'
 ```
 
-別のクラスタに切り替えたくなったら `k config use-context <名前>` で戻せます。
+別のクラスタに切り替えたいときは、`CLUSTER_NAME` を変えて step 2 の 3 行をもう一度実行します。クラスタごとに kubeconfig が分かれているので、`k config use-context` で切り替える相手はこのファイルの中には居ません。`distai` 以外の namespace を既定にしたい章では、`source` の前に `export DISTAI_NAMESPACE=<name>` を置くか、コマンド側で `-n <name>` を明示します。
 
 ## 6. (任意) スモークテストで動作確認する
 
 リポジトリの [`infra/eks/tests/`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/tests) にインフラ層のスモークテストが用意されています。実行は任意ですが、初回構築後やモジュール変更後に回すと「apply は通ったが何かが壊れている」を早期に検出できます。基盤テストは GPU ノードを起動せず約 1 分で完了します。
 
+基盤テストが見るのは control-plane、system-nodes、karpenter、trainer、csi-drivers、device-plugins、storage-mount (FSx の読み書き) の 7 項目です。
+
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks/tests
-
-# 基盤テスト: control-plane / system-nodes / karpenter / trainer /
-#            csi-drivers / device-plugins / storage-mount (FSx read/write)
-./run-tests.sh --profile $PROFILE
+./run-tests.sh
 ```
 
-クラスタ名とリージョンは `terraform output` から自動で解決されるので指定は不要です（`--cluster-name` / `--region` で明示的に上書きすることもできます）。実機出力は次のようになります。
+クラスタ名とリージョンは kubectl の向き先と `terraform output` から自動で解決され、認証は `AWS_PROFILE` をそのまま使うので、引数は不要です（`--cluster-name` / `--region` / `--profile` で明示的に上書きすることもできます）。実機出力は次のようになります。
 
 ```text
 ==============================

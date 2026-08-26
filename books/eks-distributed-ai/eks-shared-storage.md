@@ -3,6 +3,8 @@ title: "Basic10 - Amazon FSx for Lustre を導入する"
 free: true
 ---
 
+GitHub Tag: [release/eks-distributed-ai/v0.1.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.1.0)
+
 本章では、Basic01 から Basic04 で構築した Amazon VPC・Amazon EKS コントロールプレーン・アクセラレータノードの土台の上に、Karpenter がノードを入れ替えても失われないデータ層として Amazon FSx for Lustre を構成します。Amazon FSx for Lustre は単一 AZ の高スループットなスクラッチおよびチェックポイント領域で、Terraform で 1 度作成すれば以降の Karpenter によるノード入れ替えの影響を受けません。
 
 :::message
@@ -104,7 +106,7 @@ GPU 分散学習では NCCL の集合通信も EFA を使います。Amazon FSx 
 ## 1. 前提を確認する
 
 - `terraform apply` 実行ずみ
-- `k` エイリアスと `KUBECONFIG` / `--context` 設定済み
+- `k` と `KUBECONFIG` は Basic01 step 2 の 3 行で設定済み
 
 ```bash
 export NAMESPACE=distai
@@ -163,9 +165,10 @@ openzfs-shared   256Gi      RWX            Retain           Available           
 :::message
 ここで注意したいのが、`kubectl get pv` で `STATUS=Available` に見えても、`CLAIM` 欄に別 namespace の PVC 名が残っていると、その PV は「その PVC 専用に予約された」状態で、別 namespace の PVC はバインドできず `Pending` のままになる点です。静的 PV は `Retain` なので、一度どれかの PVC がバインドすると `spec.claimRef` が残り続けるためです。この解放は手順を 1 つでも誤ると PVC を掴んだ Pod のファイナライザやテナントの ValidatingAdmissionPolicy でハマりやすいので、確実に済ませたい場合は次のスクリプトを使えます。
 
+`--storage` には `fsx` と `openzfs` と `efs` のいずれかを指定します。対象の PV を確実に `Available` へ戻します。
+
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks/scripts
-# fsx / openzfs / efs のいずれかを指定。PV を確実に Available に戻す
 ./05-release-pv.sh --storage fsx
 ```
 
@@ -179,16 +182,24 @@ PV=fsx-training
 PVC_NS=$(k get pv "$PV" -o jsonpath='{.spec.claimRef.namespace}')
 PVC_NAME=$(k get pv "$PV" -o jsonpath='{.spec.claimRef.name}')
 echo "この PV を掴んでいる PVC: ${PVC_NS}/${PVC_NAME}"
+```
 
-# 状態が Bound の場合: 掴んでいる PVC を消す。reclaimPolicy=Retain なので PV は消えず Released になる
+状態が `Bound` の場合は、掴んでいる PVC を消します。`reclaimPolicy=Retain` なので PV は消えず `Released` になります。
+
+```bash
 k delete pvc "$PVC_NAME" -n "$PVC_NS"
+```
 
-# 同じ namespace で同名の PVC を再作成して使い続ける場合: claimRef の uid/resourceVersion だけ外す
+同じ namespace で同名の PVC を再作成して使い続ける場合は、`claimRef` の `uid` と `resourceVersion` だけを外します。
+
+```bash
 k patch pv "$PV" --type=json \
   -p '[{"op":"remove","path":"/spec/claimRef/uid"},{"op":"remove","path":"/spec/claimRef/resourceVersion"}]'
+```
 
-# 別の namespace の PVC で使いたい場合: claimRef 全体を外して完全な Available に戻す
-# (uid だけ外しても claimRef の namespace/name が残っていると別 namespace の PVC は弾かれる)
+別の namespace の PVC で使いたい場合は、`claimRef` 全体を外して完全な `Available` に戻します。`uid` だけ外しても `claimRef` の namespace と name が残っていると、別 namespace の PVC は弾かれます。
+
+```bash
 k patch pv "$PV" --type=json -p '[{"op":"remove","path":"/spec/claimRef"}]'
 ```
 

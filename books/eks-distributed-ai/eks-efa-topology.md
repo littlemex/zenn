@@ -3,6 +3,8 @@ title: "Basic06 - EFA でマルチノード通信を検証する"
 free: true
 ---
 
+GitHub Tag: [release/eks-distributed-ai/v0.1.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.1.0)
+
 本章では、Karpenter が起動するノードで EFA が正しく構成され、実際にノード間で帯域が出ていることまでを確認します。Basic05 で確保した Capacity Block のノード 2 台で NCCL の帯域を測ります。
 
 :::message
@@ -38,13 +40,12 @@ Karpenter（karpenter-provider-aws v1.11 以降）の EC2NodeClass は、`spec.n
 
 ## EFA トポロジを EC2 API から動的に取得する
 
-EFA のカード枚数はインスタンスタイプごとに物理的に決まっていますが、命名規則からは導出できません。同じ g6e ファミリでも g6e.4xlarge 以下は EFA 非対応で g6e.8xlarge 以上は EFA 対応、同じ p5 系でも p5 は 32 カード・p5en は 16 カードというように、境界も枚数も型ごとに異なります。この境界はドキュメント改訂で変わり得るため、手元の型で確認したい場合は次のコマンドを実行してください。
+EFA のカード枚数はインスタンスタイプごとに物理的に決まっていますが、命名規則からは導出できません。同じ g6e ファミリでも g6e.4xlarge 以下は EFA 非対応で g6e.8xlarge 以上は EFA 対応、同じ p5 系でも p5 は 32 カード・p5en は 16 カードというように、境界も枚数も型ごとに異なります。この境界はドキュメント改訂で変わり得るため、手元の型で確認したい場合は次のコマンドを実行してください。`--region` には、そのインスタンスタイプが提供されているリージョンを指定します。提供されていないリージョンを指定すると結果が空になるため、ここでは p5en を提供している `us-west-2` を例にしています。
 
 ```bash
-export REGION=us-west-2
 export INSTANCE_TYPE=p5en.48xlarge
 aws ec2 describe-instance-types --instance-types $INSTANCE_TYPE \
-  --query 'InstanceTypes[0].NetworkInfo.{EFA:EfaSupported,MaxEfa:EfaInfo.MaximumEfaInterfaces}' --region $REGION
+  --query 'InstanceTypes[0].NetworkInfo.{EFA:EfaSupported,MaxEfa:EfaInfo.MaximumEfaInterfaces}' --region us-west-2
 ```
 
 ```
@@ -166,7 +167,7 @@ env:
 
 - Basic05 で EFA 対応インスタンスの Capacity Block を確保済み。
 - Basic02 で用意した NCCL 測定用 TrainJob チャート（`charts/experiments` の `ncclTrainjob`）
-- `k` エイリアスと `KUBECONFIG`／`--context` は Basic01 で設定済み
+- `k` と `KUBECONFIG` は Basic01 step 2 の 3 行で設定済み
 
 EFA 関連のアドオン（EC2NodeClass の `networkInterfaces` 自動生成、EFA 用セキュリティグループ、`aws-efa-k8s-device-plugin`）は、EFA 対応プールが 1 つ以上あることを条件に前章までの `terraform apply` で導入済みです。本章はそれらが正しく効いているかを確認する章なので、新しくインフラを足す操作はありません。
 
@@ -187,13 +188,12 @@ Basic04 の `gpu-ddp` プールだけを定義した状態での出力:
 }
 ```
 
-0 になるのは、`gpu-ddp` が並べている g6.2xlarge / g5.2xlarge が EFA 非対応だからです。これは推測ではなく EC2 API が返す事実で、次のコマンドで直接確認できます（`$REGION` は本章冒頭で設定した検証リージョンです。インスタンスタイプの EFA 情報自体はリージョンによらずほぼ同じですが、クラスタと同じリージョンを指定しておくと以降の手順と揃います）。
+0 になるのは、`gpu-ddp` が並べている g6.2xlarge / g5.2xlarge が EFA 非対応だからです。これは推測ではなく EC2 API が返す事実で、次のコマンドで直接確認できます（`$AWS_REGION` は Basic01 step 2 の 3 行で解決済みのクラスタのリージョンです。インスタンスタイプの EFA 情報自体はリージョンによらずほぼ同じですが、クラスタと同じリージョンを指定しておくと以降の手順と揃います）。
 
 ```bash
-export REGION=us-east-2
 aws ec2 describe-instance-types --instance-types g6.2xlarge g5.2xlarge g6e.12xlarge \
   --query 'InstanceTypes[].{Type:InstanceType,EFA:NetworkInfo.EfaSupported,MaxEfa:NetworkInfo.EfaInfo.MaximumEfaInterfaces}' \
-  --output table --region "$REGION"
+  --output table --region "$AWS_REGION"
 ```
 
 ```text
@@ -221,13 +221,13 @@ export NAMESPACE=distai
 k create namespace "$NAMESPACE" --dry-run=client -o yaml | k apply -f -
 
 POOL=gpu-p4d
-ITYPE=p4d.24xlarge   # 対象プールの instance_types に合わせる
+ITYPE=p4d.24xlarge
 GPU=$(aws ec2 describe-instance-types --instance-types "$ITYPE" \
-  --query 'InstanceTypes[0].GpuInfo.Gpus[0].Count' --output text --region $REGION)
+  --query 'InstanceTypes[0].GpuInfo.Gpus[0].Count' --output text --region "$AWS_REGION")
 
-cd "$(git rev-parse --show-toplevel)"   # リポジトリルートへ（helm の charts/experiments 相対パスの基点）
+cd "$(git rev-parse --show-toplevel)"
 EFA=$(cd "$(git rev-parse --show-toplevel)"/infra/eks && terraform output -json accelerator_pool_efa_schedulable | jq -r ".\"$POOL\"")
-echo "gpu=$GPU efa=$EFA"   # p4d.24xlarge では gpu=8 efa=3
+echo "gpu=$GPU efa=$EFA"
 
 helm template exp charts/experiments -n "$NAMESPACE" \
   --set namespace="$NAMESPACE" \
@@ -286,8 +286,10 @@ aws ecr describe-images --registry-id 763104351884 --repository-name pytorch-tra
 
 手順 4 でノードが起動したら、手順 2 の値が実際にノードへ反映されているかを確認します。ノードが `Ready` になっていれば、測定 Pod の `Running` を待たずにこの allocatable 確認を実行できます（測定 Pod は DLC イメージの pull で `ContainerCreating` に留まっていることがありますが、ノードの EFA allocatable はその前から確認できます）。
 
+`POOL` は対象プール名に置き換えます。
+
 ```bash
-POOL=gpu-p4d   # 対象プール名に置き換える
+POOL=gpu-p4d
 k get nodes -l node-role=$POOL \
   -o jsonpath="{range .items[*]}{.metadata.name}{'\t'}{.status.allocatable['vpc\.amazonaws\.com/efa']}{'\n'}{end}"
 ```

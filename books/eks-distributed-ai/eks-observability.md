@@ -3,6 +3,8 @@ title: "Basic08 - Observability を導入する"
 free: true
 ---
 
+GitHub Tag: [release/eks-distributed-ai/v0.1.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.1.0)
+
 本章では、Basic07 で動かした GPU ワークロードを観測します。kube-prometheus-stack（Prometheus + Grafana）で、NVIDIA GPU Operator に同梱される DCGM exporter が公開する GPU メトリクス（使用率・温度・メモリなど）を Grafana の UI で確認し、あわせてノード障害の検知も見ていきます。
 
 :::message
@@ -96,7 +98,7 @@ NMA を GPU ノードで正しく動かすための設定、実際に GPU 障害
 
 - `terraform apply` を実行済みであること
 - Basic04 で NVIDIA GPU Operator 導入済み、vLLM サーバー起動済みであること
-- `k` エイリアスと `KUBECONFIG` / `--context` が設定済みであること
+- `k` と `KUBECONFIG` が Basic01 step 2 の 3 行で設定済みであること
 - `jq` 導入済み
 
 ## 2. 監視スタックが動いていることを確認する
@@ -183,7 +185,7 @@ Grafana の admin パスワードは Terraform が自動生成し、Secret に�
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
-terraform output -raw grafana_admin_password    # パスワードを表示
+terraform output -raw grafana_admin_password
 
 k port-forward -n monitoring svc/kps-grafana 3000:80 &
 for i in $(seq 1 30); do curl -sf http://localhost:3000/api/health >/dev/null && break; sleep 1; done

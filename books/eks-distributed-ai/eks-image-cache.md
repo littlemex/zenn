@@ -3,6 +3,8 @@ title: "Advanced01 - イメージキャッシュ戦略を恒久基盤に組み�
 free: true
 ---
 
+GitHub Tag: [release/eks-distributed-ai/v0.1.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.1.0)
+
 本章では、変化し続けるコンテナイメージをノードを跨いで賢くキャッシュし、かつ破綻しないためのイメージキャッシュ層を、この分散 AI 基盤に恒久的に組み込む考え方を扱います。特定の 1 イメージを速くする小手先の話ではなく、「キャッシュが無くて毎回コールド pull で待たされるのも、キャッシュが詰まってノードが起動不能になるのも、どちらも困る」という要求に対して、退屈だが壊れない設計を選ぶ判断を示します。
 
 # 解説
@@ -243,10 +245,9 @@ kubelet に pull させる形なら、これらは 1 つも要りません。ECR
 
 参照実装では Helm chart 側のテンプレートとして持っています。イメージの一覧はワークロードのライフサイクルに属する（vLLM のバージョンを上げれば温める対象も変わる）ので、`terraform apply` ではなく `helm` の値で更新できる場所に置いています。
 
+温める対象はタグではなく digest で固定します。`imageTags` で絞るのは、失敗ビルドの残骸や中間イメージのような untagged な digest を拾わないためです。単に最後の push を取ると、それらや他人の push を掴むことがあります。
+
 ```bash
-# 温める digest を取得する（タグではなく digest で固定する）
-# imageTags で絞るのは、失敗ビルドの残骸や中間イメージのような untagged な digest を
-# 拾わないため。単に最後の push を取ると、それらや他人の push を掴むことがある
 DIGEST=$(aws ecr describe-images \
   --repository-name "$(terraform output -raw ddp_sample_ecr_url | cut -d/ -f2-)" \
   --query 'sort_by(imageDetails[?imageTags],&imagePushedAt)[-1].imageDigest' --output text)
@@ -358,12 +359,12 @@ layer7: application/vnd.oci.image.layer.v1.tar+zstd  16 bytes
 ```bash
 kubectl -n "$NAMESPACE" patch daemonset image-prewarm-gpu-ddp \
   -p '{"spec":{"template":{"spec":{"nodeSelector":{"prewarm-disabled":"true"}}}}}'
-# DESIRED が 0 になり Pod が消えたことを確認する
 kubectl -n "$NAMESPACE" get ds image-prewarm-gpu-ddp
+```
 
-# 新規ノードを誘発し、prewarm を経由しない pod が Running になることを確認する
+`DESIRED` が 0 になり Pod が消えたことを確認します。そのうえで新規ノードを誘発し、prewarm を経由しない Pod が `Running` になることを確認します。検証が終わったら `nodeSelector` のパッチを外して元に戻します。
 
-# 検証後は nodeSelector のパッチを外して元に戻す
+```bash
 kubectl -n "$NAMESPACE" patch daemonset image-prewarm-gpu-ddp \
   --type json -p '[{"op":"remove","path":"/spec/template/spec/nodeSelector/prewarm-disabled"}]'
 ```

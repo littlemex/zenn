@@ -3,6 +3,8 @@ title: "Basic04 - GPU で分散学習を体験する"
 free: true
 ---
 
+GitHub Tag: [release/eks-distributed-ai/v0.1.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.1.0)
+
 本章では、Basic02 で CPU だけだった分散学習(DDP)を GPU に載せ替えます。ここでは Karpenter の混在確保の実験も兼ねて、g5 と g6 を混ぜた spot+on-demand フォールバック構成で 2 ノード GPU DDP を実行してみます。なお spot を混ぜた DDP は本来、バッチ推論やデータ前処理に向くもので、大規模な分散学習では中断のたびに全 rank が巻き戻るため実用的ではありません。本章はあくまで「すでに動かした DDP を GPU に載せ、Karpenter の混在確保を確かめる」実験としての位置づけです。
 
 # 解説
@@ -84,10 +86,11 @@ NVIDIA GPU Operator は Basic03 の時点では入っていません。`accelera
 
 リポジトリにはコメント付きの雛形 `accelerator-pools.tfvars.example` があります。初回はこれをコピーして自分用のファイルを作ります。コピー直後は全プール例がコメントアウトされた空の map（`accelerator_pools = {}`）なので、そのままでも apply は通ります。
 
+雛形をコピーせずに、下に示すテンプレートを自分で書き起こしても構いません。
+
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
-# 以下のテンプレートを手動で書き換えても構いません
-# cp accelerator-pools.tfvars.example accelerator-pools.auto.tfvars
+cp accelerator-pools.tfvars.example accelerator-pools.auto.tfvars
 ```
 
 本章ではこのファイルの中身を次の内容にします。
@@ -108,8 +111,9 @@ EOF
 
 書き込めたら apply します。
 
+`infra/eks` ディレクトリで apply します。
+
 ```bash
-# infra/eks ディレクトリで
 terraform apply
 ```
 
@@ -119,11 +123,11 @@ Kubeflow Trainer v2 の TrainJob は、Pod への `nodeSelector` や `toleration
 
 Basic02 と同じ `ddp.py`(CUDA が見えれば nccl backend を自動選択するコード)を、同じ `ddp-sample` イメージ(CUDA ベース)で動かすので、学習コード・イメージのどちらも変更不要です。変わるのは Helm に渡す値(`nodeRole`、`gpu.enabled`、`gpu.count`)だけです。
 
+既存の TrainJob が残っていると spec が同一のため apply しても再実行されないので、作り直す前に削除します。イメージは Basic02 で push した `ddp-sample` で、`ECR_URL` の導出も Basic02 と同じです。
+
 ```bash
-# 既存の TrainJob が残っていると、spec が同一のため apply しても再実行されない。作り直す前に削除する
 k delete trainjob ddp-trainjob --ignore-not-found
 
-# Basic02 で push した ddp-sample イメージ(ECR_URL は Basic02 と同じ導出)
 ECR_URL=$(terraform output -raw ddp_sample_ecr_url)
 IMAGE=${ECR_URL}:v1
 
@@ -194,13 +198,9 @@ k logs -f --tail=-1 -l "$SEL"
 
 Basic01 で紹介したインフラ層のスモークテストには、GPU ノードを実際に起動して確認する `--with-gpu` モードがあります。アクセラレータプールを定義した本章の段階で初めて実行できます。Basic01 の基盤テストと違い、Karpenter が GPU ノードを起動するため 5〜10 分かかります。
 
-`$PROFILE` は Basic01 で設定した AWS プロファイル名です（未設定なら `export PROFILE=<your-aws-profile>`、素の `[default]` なら `--profile` ごと省略します）。
-
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks/tests
-
-# Karpenter が GPU ノードを起動するため 5-10 分かかります
-./run-tests.sh --with-gpu --profile $PROFILE --gpu-count 1
+./run-tests.sh --with-gpu --gpu-count 1
 ```
 
 ```text

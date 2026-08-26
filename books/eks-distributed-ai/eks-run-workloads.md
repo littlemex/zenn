@@ -3,6 +3,8 @@ title: "Basic07 - 軽量 vLLM で推論を動かす"
 free: true
 ---
 
+GitHub Tag: [release/eks-distributed-ai/v0.1.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.1.0)
+
 本章では、Basic04 で用意した Karpenter・アクセラレータプールの上に、vLLM の OpenAI 互換サーバーをデプロイし、軽量な言語モデルで推論を動かします。高額な Capacity Block は使わず、g5 / g6 系の GPU を spot 優先（取れなければ on-demand にフォールバック）で使う、比較的試しやすい構成です。
 
 :::message
@@ -32,17 +34,16 @@ free: true
 ## 1. 前提を確認する
 
 - Basic04 で `gpu-ddp` プールを定義・apply 済みであること
-- `k` エイリアスと `KUBECONFIG` / `--context` は Basic01 で設定済みであること
+- `k` と `KUBECONFIG` は Basic01 step 2 の 3 行で設定済みであること
 - NVIDIA GPU Operator は Basic04 の apply で導入済みであること
 
 本章は既存のプールと GPU Operator の上に vLLM の Deployment を載せるだけなので、新しくインフラを足す操作はありません。
 
+`gpu-ddp` プールと GPU Operator の有無を確認します。
+
 ```bash
 POOL=gpu-ddp
-
-# gpu-ddp の有無を確認
 k get nodes -l karpenter.sh/nodepool=$POOL
-# GPU Operator の有無を確認
 k get pods -n gpu-operator
 ```
 
@@ -105,9 +106,8 @@ CPU リクエストの既定値は `2` なので g6.2xlarge / g5.2xlarge（8 vCP
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
-# チャートはサブチャート image-builder-lib を依存に持つため、初回だけローカル依存を取得します（冪等）。
 helm dependency build charts/experiments
-MODEL=Qwen/Qwen2.5-0.5B-Instruct     # ゲートなし・小型
+MODEL=Qwen/Qwen2.5-0.5B-Instruct
 helm template exp charts/experiments -n "$NAMESPACE" \
     --set gpuServingVllm.enabled=true \
     --set gpuServingVllm.model="$MODEL" \

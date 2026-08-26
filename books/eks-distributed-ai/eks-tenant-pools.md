@@ -3,6 +3,8 @@ title: "Experiment01 - karpenter-tenant-pools でプールをセルフサービ�
 free: true
 ---
 
+GitHub Tag: [release/eks-distributed-ai/v0.1.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.1.0)
+
 本章では、Basic04 と Basic05 で Terraform の `accelerator_pools` 変数として定義していた GPU プール（g5 の On-Demand と p5 の Capacity Block）を、`karpenter-tenant-pools` という OSS の operator を使って namespace 単位の CRD から立ち上げます。プールの定義を Terraform の共有変数から切り離し、チームが自分の namespace のなかだけで自己完結してプールを作れるようにするのが狙いです。
 
 :::message

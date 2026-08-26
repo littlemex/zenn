@@ -3,6 +3,8 @@ title: "Basic02 - 分散学習を体験する"
 free: true
 ---
 
+GitHub Tag: [release/eks-distributed-ai/v0.1.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.1.0)
+
 本章では、GPU を一切使わずに、Amazon EKS の CPU ノード上で PyTorch の分散学習（DDP）を、Kubeflow Trainer v2 の TrainJob で複数ノードにまたがって動かします。高額な GPU/Capacity Block に進む前に、「複数プロセスが協調して 1 つのモデルを学習する」という分散学習の最小の成功体験を、GPU に比べればごくわずかなコストで得ることが目的です。
 
 :::message
@@ -95,7 +97,7 @@ TrainJob 側は台数（`numNodes`）とノードあたりのプロセス数（`
 
 以降のコマンドは Basic01 で clone したリポジトリのルート（`infra/eks` の親）で実行する前提です。`kubectl` が Basic01 のクラスタを指していること、MNIST データセットを取得するためのアウトバウンド通信やノードの ECR pull 権限は、いずれも Basic01 の構築で用意済みです。
 
-Basic01 で current-context をこのクラスタに切り替え、既定 namespace を `distai` に設定済みの前提です（ターミナルを開き直した場合は Basic01 step 2 のコマンドと step 3 の `use-context` / `set-context` / `alias k=kubectl` を実行し直してください）。作業用 namespace を冪等に用意しておきます（すでに存在していてもエラーになりません）。
+Basic01 step 2 の 3 行を実行済みで、`k` がこのクラスタの `distai` namespace を向いている前提です（ターミナルを開き直した場合はその 3 行をもう一度実行してください）。作業用 namespace を冪等に用意しておきます（すでに存在していてもエラーになりません）。
 
 ```bash
 k create namespace distai --dry-run=client -o yaml | k apply -f -
@@ -116,12 +118,8 @@ cd "$(git rev-parse --show-toplevel)"/infra/eks
 ECR_URL=$(terraform output -raw ddp_sample_ecr_url)
 IMAGE=${ECR_URL}:v1
 
-# 同名のビルド Job が残っていると apply が "unchanged" でスキップされる（Job の spec は作成後に変更できない）。
-# 同じタグで作り直すときは先に削除する。初回は存在しなくても --ignore-not-found で安全。
-# （別解: タグを v2 に上げると Job 名も変わるので削除不要。latest 固定のキャッシュ事故も避けられる。）
 k delete job build-ddp-sample-v1 -n image-builder --ignore-not-found
 
-# クラスタ内で BuildKit ビルド Job を起動
 helm template exp charts/experiments -n distai \
     --set imageBuild.enabled=true \
     --set imageBuild.repository="$ECR_URL" \
@@ -129,18 +127,24 @@ helm template exp charts/experiments -n distai \
     -s templates/image-build-ddp-sample.yaml \
     | k apply -f -
 
-# ビルド完了を待つ（初回は CPU ノード起動とベースイメージ pull で 10 分ほどかかります）
 k -n image-builder wait --for=condition=complete \
     job/build-ddp-sample-v1 --timeout=30m
 ```
 
+先頭の `delete job` は、同名のビルド Job が残っていると apply が `unchanged` でスキップされるためです。Job の spec は作成後に変更できないので、同じタグで作り直すときは先に削除します。初回は存在しなくても `--ignore-not-found` で安全に通ります。タグを v2 に上げれば Job 名も変わるので削除は要らず、`latest` 固定によるキャッシュ事故も避けられます。最後の `wait` はビルド完了を待つもので、初回は CPU ノードの起動とベースイメージの pull で 10 分ほどかかります。
+
 なお、この Job を `kubectl apply` すると `Warning: would violate PodSecurity "baseline" ... seccompProfile` という警告が表示されます。これは rootless BuildKit が `seccompProfile: Unconfined` を必要とするための意図した設計上の警告で、ビルドは正常に進みます。
 
-進捗やエラーはビルド Job のログで確認できます。既定では BuildKit 本体（ビルドと push）のログが出ます。ECR 認証を用意する initContainer が失敗した場合は `-c ecr-login` でそちらのログを見ます。
+進捗やエラーはビルド Job のログで確認できます。既定では BuildKit 本体（ビルドと push）のログが出ます。
 
 ```bash
-k -n image-builder logs -f job/build-ddp-sample-v1              # BuildKit 本体
-k -n image-builder logs job/build-ddp-sample-v1 -c ecr-login    # 認証 init が失敗したとき
+k -n image-builder logs -f job/build-ddp-sample-v1
+```
+
+ECR 認証を用意する initContainer が失敗した場合は、`-c ecr-login` でそちらのログを見ます。
+
+```bash
+k -n image-builder logs job/build-ddp-sample-v1 -c ecr-login
 ```
 ::::details 補足
 :::message
@@ -163,8 +167,9 @@ k get pods -n kubeflow-system
 
 本章のワークロード（`trainjobTrain`）は共有ストレージへの書き込みが要りますが、そのための PVC はチャートが作りません。ここで 1 回だけ、自分で `kubectl apply` して作ります。
 
+`infra/eks` にいる前提です。
+
 ```bash
-# infra/eks にいる前提です
 POOL_PV=$(terraform output -json shared_storage | jq -r '.fsx_openzfs.persistent_volume')
 sed "s/__VOLUME_NAME__/${POOL_PV}/" manifests/shared-pvc.yaml | k apply -f -
 k get pvc shared-claim
@@ -182,13 +187,10 @@ k get pvc shared-claim
 
 `numNodes=2` がノード数、`nprocPerNode=1` が各ノード内のプロセス数です（Helm の `nprocPerNode` は TrainJob の `numProcPerNode` に対応します）。本 book がクラスタに用意した Runtime（[`torch-distributed-eks`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/clustertrainingruntime-eks.yaml)）に `topologyKey: kubernetes.io/hostname` の podAntiAffinity が入っているので、2 つの Pod は必ず別ノードに分かれて配置されます。PVC は step 3 で作った `shared-claim` を使います。
 
+同名の TrainJob が残っていると変更箇所によっては apply が拒否されるので、作り直すときは先に削除します（初回は存在しなくても `--ignore-not-found` で安全です）。
+
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
-# ターミナルを変えた場合は変数も再取得します:
-# ECR_URL=$(terraform output -raw ddp_sample_ecr_url); IMAGE=${ECR_URL}:v1
-
-# 同名の TrainJob が残っていると、変更箇所によっては apply が拒否される。作り直しは削除が確実。
-# 作り直すときは先に削除する（初回は存在しなくても --ignore-not-found で安全）。
 k delete trainjob ddp-trainjob --ignore-not-found
 
 helm template exp charts/experiments -n distai \
