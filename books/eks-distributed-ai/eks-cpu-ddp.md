@@ -97,7 +97,7 @@ TrainJob 側は台数（`numNodes`）とノードあたりのプロセス数（`
 
 以降のコマンドは Basic01 で clone したリポジトリのルート（`infra/eks` の親）で実行する前提です。`kubectl` が Basic01 のクラスタを指していること、MNIST データセットを取得するためのアウトバウンド通信やノードの ECR pull 権限は、いずれも Basic01 の構築で用意済みです。
 
-Basic01 step 2 の 3 行を実行済みで、`k` がこのクラスタの `distai` namespace を向いている前提です（ターミナルを開き直した場合はその 3 行をもう一度実行してください）。作業用 namespace を冪等に用意しておきます（すでに存在していてもエラーになりません）。
+Basic01 step 2 の 4 行を実行済みで、`k` がこのクラスタの `distai` namespace を向いている前提です（ターミナルを開き直した場合はその 4 行をもう一度実行してください）。作業用 namespace を冪等に用意しておきます（すでに存在していてもエラーになりません）。
 
 ```bash
 k create namespace distai --dry-run=client -o yaml | k apply -f -

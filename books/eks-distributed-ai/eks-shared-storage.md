@@ -106,7 +106,7 @@ GPU 分散学習では NCCL の集合通信も EFA を使います。Amazon FSx 
 ## 1. 前提を確認する
 
 - `terraform apply` 実行ずみ
-- `k` と `KUBECONFIG` は Basic01 step 2 の 3 行で設定済み
+- `k` と `KUBECONFIG` は Basic01 step 2 の 4 行で設定済み
 
 ```bash
 export NAMESPACE=distai

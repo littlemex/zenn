@@ -35,6 +35,7 @@ GitHub Tag: [release/eks-distributed-ai/v0.1.0](https://github.com/littlemex/dis
 ```bash
 cd ~/distributed-ai-v0.1.0
 export CLUSTER_NAME=distai-eks
+export AWS_REGION=us-east-2
 source infra/scripts/distai-env.sh
 ```
 

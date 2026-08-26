@@ -51,7 +51,7 @@ GPU 版（Basic07）との対応関係は次のとおりです。
 
 - Basic05 の手順で trn2.3xlarge の Capacity Block をメルボルンリージョンで確保ずみ
 - Basic05 の手順で `terraform apply` で NodePool 作成済み
-- `k` と `KUBECONFIG` は Basic01 step 2 の 3 行で設定済み
+- `k` と `KUBECONFIG` は Basic01 step 2 の 4 行で設定済み
 
 trn2 ノードと Neuron リソースを確認します。
 

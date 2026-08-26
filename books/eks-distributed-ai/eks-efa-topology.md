@@ -167,7 +167,7 @@ env:
 
 - Basic05 で EFA 対応インスタンスの Capacity Block を確保済み。
 - Basic02 で用意した NCCL 測定用 TrainJob チャート（`charts/experiments` の `ncclTrainjob`）
-- `k` と `KUBECONFIG` は Basic01 step 2 の 3 行で設定済み
+- `k` と `KUBECONFIG` は Basic01 step 2 の 4 行で設定済み
 
 EFA 関連のアドオン（EC2NodeClass の `networkInterfaces` 自動生成、EFA 用セキュリティグループ、`aws-efa-k8s-device-plugin`）は、EFA 対応プールが 1 つ以上あることを条件に前章までの `terraform apply` で導入済みです。本章はそれらが正しく効いているかを確認する章なので、新しくインフラを足す操作はありません。
 
@@ -188,7 +188,7 @@ Basic04 の `gpu-ddp` プールだけを定義した状態での出力:
 }
 ```
 
-0 になるのは、`gpu-ddp` が並べている g6.2xlarge / g5.2xlarge が EFA 非対応だからです。これは推測ではなく EC2 API が返す事実で、次のコマンドで直接確認できます（`$AWS_REGION` は Basic01 step 2 の 3 行で解決済みのクラスタのリージョンです。インスタンスタイプの EFA 情報自体はリージョンによらずほぼ同じですが、クラスタと同じリージョンを指定しておくと以降の手順と揃います）。
+0 になるのは、`gpu-ddp` が並べている g6.2xlarge / g5.2xlarge が EFA 非対応だからです。これは推測ではなく EC2 API が返す事実で、次のコマンドで直接確認できます（`$AWS_REGION` は Basic01 step 2 の 4 行で解決済みのクラスタのリージョンです。インスタンスタイプの EFA 情報自体はリージョンによらずほぼ同じですが、クラスタと同じリージョンを指定しておくと以降の手順と揃います）。
 
 ```bash
 aws ec2 describe-instance-types --instance-types g6.2xlarge g5.2xlarge g6e.12xlarge \
