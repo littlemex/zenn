@@ -3,7 +3,7 @@ title: "Basic01 - Amazon EKS 基盤を立てる"
 free: true
 ---
 
-GitHub Tag: [release/eks-distributed-ai/v0.1.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.1.0)
+GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0)
 
 本章では、分散学習・推論の実験を回すための土台として Amazon EKS クラスタを構築します。
 
@@ -217,7 +217,7 @@ IRSA は ServiceAccount にアノテーションで IAM ロールを結び付け
 導入は 2 段階です。前半はリポジトリをリリース固定で取得するだけで、AWS には何も作りません。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/littlemex/distributed-ai/refs/tags/release/eks-distributed-ai/v0.1.0/infra/scripts/distai-install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/littlemex/distributed-ai/refs/tags/release/eks-distributed-ai/v0.2.0/infra/scripts/distai-install.sh | bash
 ```
 
 後半がクラスタを作るコマンドです。渡すのはクラスタ名とリージョンだけで、どちらも環境変数で置きます。名前付きプロファイル (AWS SSO や assume-role) で認証している場合は `AWS_PROFILE` も置いてください。スクリプトはこれを読み取り、生成する変数ファイルにも書き込むので、以降の Terraform と CLI が同じプリンシパルで動きます。
@@ -231,7 +231,7 @@ export AWS_PROFILE=my-profile
 コマンド自体は引数を取りません。
 
 ```bash
-cd ~/distributed-ai-v0.1.0
+cd ~/distributed-ai-v0.2.0
 ./infra/scripts/distai-up.sh
 ```
 
@@ -258,7 +258,7 @@ apply には 20〜30 分程度かかります。時間がかかるのはコン�
 apply が終わると、このクラスタの state がどこにあるかがレジストリ (AWS Systems Manager のパラメータストア) に記録されます。以降の章は、どのクラスタかを名前とリージョンで指すだけで、残りをそこから解決できます。
 
 ```bash
-cd ~/distributed-ai-v0.1.0
+cd ~/distributed-ai-v0.2.0
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2
 source infra/scripts/distai-env.sh

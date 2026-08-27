@@ -3,7 +3,7 @@ title: "Advanced02 - GPU プロファイルを MCP で分析する"
 free: true
 ---
 
-GitHub Tag: [release/eks-distributed-ai/v0.1.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.1.0)
+GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0)
 
 # 解説
 
@@ -72,7 +72,7 @@ Job そのものは終了から 2 日後に Kubernetes が消します。run の
 
 ## 1. 前提を確認する
 
-本章は基盤リポジトリのリリース `release/eks-distributed-ai/v0.1.0` を前提にしています。本文のコマンドと出力例はこのバージョンで実機確認したものです。別のバージョンでは変数名やフラグが変わることがあるので、まずはこのタグで通してください。
+本章は基盤リポジトリのリリース `release/eks-distributed-ai/v0.2.0` を前提にしています。本文のコマンドと出力例はこのバージョンで実機確認したものです。別のバージョンでは変数名やフラグが変わることがあるので、まずはこのタグで通してください。
 
 クラスタ (Basic01 から Basic11 相当) が稼働していること、`infra/eks` の Terraform がリモート state を使っていること、`terraform` と `kubectl` と `helm` と `aws` と `python3` と `git` と `curl` が手元にあること、MCP クライアント (Claude Code など) が手元にあることを確認します。リモート state は Basic01 の `distai-up.sh` が作り、その場所はレジストリに記録されているので、前提の 4 行を実行してあれば導入スクリプトはそこから解決します (`TF_STATE_BUCKET` などで明示的に上書きすることもできます)。
 
@@ -83,7 +83,7 @@ Job そのものは終了から 2 日後に Kubernetes が消します。run の
 本章は作業 namespace が `distai` ではなく `team-a` なので、Basic01 step 2 の 4 行を `DISTAI_NAMESPACE` 付きで実行し直しておきます。こうすると `k` と後述のプラグインの既定がこの namespace になり、以降のコマンドに `-n` を書かずに済みます。
 
 ```bash
-cd ~/distributed-ai-v0.1.0
+cd ~/distributed-ai-v0.2.0
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2
 export DISTAI_NAMESPACE=team-a
@@ -144,13 +144,13 @@ export PATH="$(git rev-parse --show-toplevel)/infra/eks/bin:$PATH"
 kubectl accelprof --help >/dev/null && echo "plugin ok"
 ```
 
-チェックアウトを持たない人 (プロファイルを撮るだけで基盤は触らない人) 向けの経路も 1 行あります。リポジトリを固定タグで `~/distributed-ai-v0.1.0` に取得し、プラグインを `~/.local/bin` に置きます。
+チェックアウトを持たない人 (プロファイルを撮るだけで基盤は触らない人) 向けの経路も 1 行あります。リポジトリを固定タグで `~/distributed-ai-v0.2.0` に取得し、プラグインを `~/.local/bin` に置きます。
 
 ```bash
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2
 export PRODUCER_NAMESPACES=team-a
-curl -fsSL https://raw.githubusercontent.com/littlemex/distributed-ai/refs/tags/release/eks-distributed-ai/v0.1.0/infra/scripts/get-profiling.sh | bash
+curl -fsSL https://raw.githubusercontent.com/littlemex/distributed-ai/refs/tags/release/eks-distributed-ai/v0.2.0/infra/scripts/get-profiling.sh | bash
 ```
 
 URL のタグとスクリプトが固定するタグは同じものなので、コピーした 1 行と入るものがずれません。クラスタの state を触る情報 (`TF_STATE_BUCKET` など) を渡した場合はそのまま導入まで走りますが、渡していなければプラグインの設置で止まり、導入はチェックアウトから実行するよう案内されます。`~/.local/bin` が PATH に無い場合は通してください。
@@ -434,7 +434,7 @@ terraform apply teardown.tfplan
 
 - [プロファイリングを楽にしたい](https://zenn.dev/littlemex/articles/8ab01bc40f627a) - 本基盤の設計思想を解説したブログ
 - [littlemex/distributed-ai](https://github.com/littlemex/distributed-ai) - `infra/scripts/install-profiling.sh` と `infra/eks/bin/kubectl-accelprof`、`infra/data-layer` と `infra/eks`、`mcp-host` チャートの実装
-- [release/eks-distributed-ai/v0.1.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.1.0) - 本章が前提にしているリリース
+- [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0) - 本章が前提にしているリリース
 - [accelprof](https://pypi.org/project/accelprof/) / [accelprof-knowledge](https://pypi.org/project/accelprof-knowledge/) - 分析 MCP と知識 MCP の pip パッケージ
 - [Nsight Systems ユーザーガイド](https://docs.nvidia.com/nsight-systems/UserGuide/index.html) - `nsys profile` のオプションと収集対象の公式ドキュメント
 - [Amazon S3 Files (EFS ユーザーガイド)](https://docs.aws.amazon.com/efs/latest/ug/s3-file-systems.html) - S3 Files の公式ドキュメント
