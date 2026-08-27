@@ -3,7 +3,7 @@ title: "Basic05 - Capacity Block を利用する"
 free: true
 ---
 
-GitHub Tag: [release/eks-distributed-ai/v0.1.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.1.0)
+GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0)
 
 本章では、Basic04 で `accelerator_pools` に用意しておいた `capacity_type = "reserved"` という選択肢を実際に使い、Capacity Block(CB) で確保したリソースを Amazon EKS クラスタに組み込みます。予約の検索・購入から `accelerator-pools.auto.tfvars` への反映、ノードが起動するところまでの確認、期限管理までを扱います。確保したノードで実際にマルチノード通信が出ているかの検証は、次章の Basic06 で行います。
 

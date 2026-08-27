@@ -3,7 +3,7 @@ title: "Advanced03 - GPU 障害を注入して検知を確かめる"
 free: true
 ---
 
-GitHub Tag: [release/eks-distributed-ai/v0.1.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.1.0)
+GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0)
 
 本章では、[Basic08 - Observability を導入する](eks-observability) で有効化した Node Monitoring Agent（NMA）が、GPU の障害を本当に検知できるのかを、DCGM の fault injection 機能で擬似的な障害を注入して確かめます。実際の GPU を壊さずに XID エラーを注入し、NMA が `AcceleratedHardwareReady` を `False` に反転させ、Prometheus のアラートが発火するところまでを実機で追います。あわせて、NMA が GPU ノードで健全性を読むために内部でどう動いているか、この基盤の GPU taint との相性で何が起きるかも解説します。
 

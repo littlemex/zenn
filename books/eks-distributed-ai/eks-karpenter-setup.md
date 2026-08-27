@@ -3,7 +3,7 @@ title: "Basic03 - Karpenter を導入する"
 free: true
 ---
 
-GitHub Tag: [release/eks-distributed-ai/v0.1.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.1.0)
+GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0)
 
 本章では、Pod のリソース要求に応じてアクセラレーターノードを動的に起動する Karpenter を扱います。Karpenter 本体は Basic01 の `terraform apply` で導入済みなので、本章はその構成（CRD 管理・認証方式の Pod Identity・Spot 中断通知の SQS）を読み解き、動作を確認します。アクセラレーター用の NodePool は次章以降で定義します。
 

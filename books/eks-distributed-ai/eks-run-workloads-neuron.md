@@ -3,7 +3,7 @@ title: "Basic09 - vLLM Neuron で推論を動かす"
 free: true
 ---
 
-GitHub Tag: [release/eks-distributed-ai/v0.1.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.1.0)
+GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0)
 
 本章では、Basic07 で GPU 向けに vLLM 推論サーバーを立ち上げましたが、この章では vLLM と vLLM Neuron Plugin というものを使って AWS Trainium チップの上で LLM 推論を動かします。大きな違いは 2 点で、1 つはランタイム、もう 1 つはハードウェアの確保方法です。ランタイムは、Neuron が CUDA ではなく Neuron ランタイムで動くため、vLLM 本体に Neuron 対応を足す [vLLM Neuron plugin](https://github.com/aws-neuron/upstreaming-to-vllm) を同梱した Deep Learning Container（DLC）を使います。モデルはマルチモーダル（画像とテキスト）の `Qwen/Qwen3-VL-4B-Instruct` を使います。
 
