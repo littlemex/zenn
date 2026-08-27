@@ -113,7 +113,7 @@ xargs -n 10 aws ssm delete-parameters --names < /tmp/distai-registry-params.txt
 ```
 
 :::message alert
-Advanced02 のプロファイリング基盤を導入した場合、そのデータ層 (MLflow の tracking server、trace バケット、S3 Files) はクラスタとは別の Terraform state にあるため、本章の破棄では消えず課金が続きます。データ層は記録の正本なのでクラスタの寿命とは切り離してあります。不要になったら Advanced02 の後片付けの手順で明示的に畳んでください。
+Advanced02 のプロファイリング基盤を導入した場合、そのデータ層 (SageMaker MLflow、trace バケット、S3 Files) はクラスタとは別の Terraform state にあるため、本章の破棄では消えず課金が続きます。データ層は記録の正本なのでクラスタの寿命とは切り離してあります。不要になったら Advanced02 の後片付けの手順で明示的に畳んでください。
 :::
 
 # まとめ
