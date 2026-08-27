@@ -3,7 +3,7 @@ title: "Advanced02 - GPU プロファイルを MCP で分析する"
 free: true
 ---
 
-GitHub Tag: [release/eks-distributed-ai/v0.1.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.1.0)
+GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0)
 
 # 解説
 
@@ -33,7 +33,7 @@ Basic01 から Basic11 で構築した Amazon EKS の土台の上に、GPU の�
 
 ### apply の前に必ず plan を分類する
 
-このスクリプトは `terraform apply` を無条件に実行しません。まず plan を作り、変更を 3 つに分類します。1 つ目が「記録の正本」で、trace バケット、MLflow アーティファクトバケット、tracking server、KMS キー、S3 Files のファイルシステムとアクセスポイントです。これらを削除する plan は上書き手段なしで拒否し、作成しようとする plan も拒否します。すでに存在するリソースを作成しようとしているなら、それは state がそのリソースを見失った状態を意味し、そのまま適用すると名前の衝突か、state が把握していないリソースの再設定になるからです。2 つ目が profiling 基盤自身の変更で、これは適用します。3 つ目がそれ以外で、停止して一覧を表示します。長く運用したクラスタには profiling と無関係な差分が溜まるので、それを黙って適用しないための線引きです。基盤だけ収束させたいときは `PROFILING_ONLY=1`、すべて受け入れるときは `ALLOW_UNRELATED=1` を渡します。
+このスクリプトは `terraform apply` を無条件に実行しません。まず plan を作り、変更を 3 つに分類します。1 つ目が「記録の正本」で、trace バケット、MLflow アーティファクトバケット、SageMaker MLflow 本体、KMS キー、S3 Files のファイルシステムとアクセスポイントです。これらを削除する plan は上書き手段なしで拒否し、作成しようとする plan も拒否します。すでに存在するリソースを作成しようとしているなら、それは state がそのリソースを見失った状態を意味し、そのまま適用すると名前の衝突か、state が把握していないリソースの再設定になるからです。2 つ目が profiling 基盤自身の変更で、これは適用します。3 つ目がそれ以外で、停止して一覧を表示します。長く運用したクラスタには profiling と無関係な差分が溜まるので、それを黙って適用しないための線引きです。基盤だけ収束させたいときは `PROFILING_ONLY=1`、すべて受け入れるときは `ALLOW_UNRELATED=1` を渡します。
 
 ### producer Job の中身
 
@@ -56,7 +56,7 @@ initContainer が基盤イメージから profiler と shim を共有ボリュ�
 
 ### namespace ごとに配られる契約
 
-導入スクリプトは、許可した namespace のそれぞれに 3 つを配ります。リージョン・trace バケット・tracking server・基盤イメージの digest を持つ ConfigMap、recorder が自分の Pod の状態を読んで自分の Job に注釈を書くための Role、そして記録されずに終わった Job を報告する時間ごとの点検です。プロファイルを撮る人が基盤の値を 1 つも知らなくて済むのは、この ConfigMap があるからです。namespace がまだ存在しない場合、そこには何も配られず警告だけが出るので、後述のとおり namespace は導入スクリプトより先に作ります。
+導入スクリプトは、許可した namespace のそれぞれに 3 つを配ります。リージョン・trace バケット・MLflow の ARN・MLflow の UI の URL・基盤イメージの digest を持つ ConfigMap、recorder が自分の Pod の状態を読んで自分の Job に注釈を書くための Role、そして記録されずに終わった Job を報告する時間ごとの点検です。プロファイルを撮る人が基盤の値を 1 つも知らなくて済むのは、この ConfigMap があるからです。namespace がまだ存在しない場合、そこには何も配られず警告だけが出るので、後述のとおり namespace は導入スクリプトより先に作ります。
 
 ### 記録の単位と後片付けの単位
 
@@ -72,7 +72,7 @@ Job そのものは終了から 2 日後に Kubernetes が消します。run の
 
 ## 1. 前提を確認する
 
-本章は基盤リポジトリのリリース `release/eks-distributed-ai/v0.1.0` を前提にしています。本文のコマンドと出力例はこのバージョンで実機確認したものです。別のバージョンでは変数名やフラグが変わることがあるので、まずはこのタグで通してください。
+本章は基盤リポジトリのリリース `release/eks-distributed-ai/v0.2.0` を前提にしています。本文のコマンドと出力例はこのバージョンで実機確認したものです。別のバージョンでは変数名やフラグが変わることがあるので、まずはこのタグで通してください。
 
 クラスタ (Basic01 から Basic11 相当) が稼働していること、`infra/eks` の Terraform がリモート state を使っていること、`terraform` と `kubectl` と `helm` と `aws` と `python3` と `git` と `curl` が手元にあること、MCP クライアント (Claude Code など) が手元にあることを確認します。リモート state は Basic01 の `distai-up.sh` が作り、その場所はレジストリに記録されているので、前提の 4 行を実行してあれば導入スクリプトはそこから解決します (`TF_STATE_BUCKET` などで明示的に上書きすることもできます)。
 
@@ -83,7 +83,7 @@ Job そのものは終了から 2 日後に Kubernetes が消します。run の
 本章は作業 namespace が `distai` ではなく `team-a` なので、Basic01 step 2 の 4 行を `DISTAI_NAMESPACE` 付きで実行し直しておきます。こうすると `k` と後述のプラグインの既定がこの namespace になり、以降のコマンドに `-n` を書かずに済みます。
 
 ```bash
-cd ~/distributed-ai-v0.1.0
+cd ~/distributed-ai-v0.2.0
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2
 export DISTAI_NAMESPACE=team-a
@@ -109,10 +109,17 @@ done
 export PRODUCER_NAMESPACES=team-a,team-b
 export DATA_LAYER_NAME=profiling
 export CREATE_DATA_LAYER=1
+export MLFLOW_BACKEND=app
 ./infra/scripts/install-profiling.sh
 ```
 
 `CLUSTER_NAME` が未設定だとここで止まります。その場合は Basic01 step 2 のコマンドを自分のクラスタ名で実行してから戻ってください。
+
+`MLFLOW_BACKEND` は記録を受ける SageMaker MLflow の種類で、初回だけ意味を持ちます。`app` は serverless で、止めるという概念がなく、使っていない期間はバケット以外の課金要素を持ちません。`server` は managed な tracking server で、存在している時間だけ課金され、停止して課金を止めることができます。既定は `app` です。
+
+この選択はあとから変更できません。データ層が記録している MLflow を切り替える plan は、いま存在する MLflow を破棄して空の MLflow を作る plan なので、run のメタデータがまとめて消えます。導入スクリプトは既存のデータ層が記録している側を優先し、違う側を要求されたら停止します。変えたい場合は別のデータ層を作ってください。
+
+種類によって 1 つだけ機能差があります。tracking server は「記録はできるが削除はできない」という粒度の IAM を書けますが、app のデータプレーンは `sagemaker:CallMlflowAppApi` という 1 つのアクションが REST API 全体を覆うため、MLflow を読めるロールは同時に削除もできてしまいます。分析側の reader はこれを受け入れる必要がありますが、削除を仕事にする janitor には app では MLflow の権限を一切与えていません。そのため app では孤児 trace の自動回収が働かず、保持はバケットのライフサイクルルールに委ねられます。
 
 `DATA_LAYER_NAME` はこの基盤の記録側 (trace バケット、MLflow、S3 Files) の一式に付ける名前で、初回だけ指定します。名前はバケット名の接頭辞になるので、既に別のデータ層がある環境では必ず別名にしてください。導入が成功すると、このデータ層がこのクラスタに紐づいたことがレジストリに記録されるので、2 回目以降は前提の 2 行が解決してくれます。`CREATE_DATA_LAYER=1` は新規作成の明示的な許可で、既定では既存のデータ層の再利用しかしません。誤って 2 つ目を作ると記録が二分されるからです。
 
@@ -137,13 +144,13 @@ export PATH="$(git rev-parse --show-toplevel)/infra/eks/bin:$PATH"
 kubectl accelprof --help >/dev/null && echo "plugin ok"
 ```
 
-チェックアウトを持たない人 (プロファイルを撮るだけで基盤は触らない人) 向けの経路も 1 行あります。リポジトリを固定タグで `~/distributed-ai-v0.1.0` に取得し、プラグインを `~/.local/bin` に置きます。
+チェックアウトを持たない人 (プロファイルを撮るだけで基盤は触らない人) 向けの経路も 1 行あります。リポジトリを固定タグで `~/distributed-ai-v0.2.0` に取得し、プラグインを `~/.local/bin` に置きます。
 
 ```bash
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2
 export PRODUCER_NAMESPACES=team-a
-curl -fsSL https://raw.githubusercontent.com/littlemex/distributed-ai/refs/tags/release/eks-distributed-ai/v0.1.0/infra/scripts/get-profiling.sh | bash
+curl -fsSL https://raw.githubusercontent.com/littlemex/distributed-ai/refs/tags/release/eks-distributed-ai/v0.2.0/infra/scripts/get-profiling.sh | bash
 ```
 
 URL のタグとスクリプトが固定するタグは同じものなので、コピーした 1 行と入るものがずれません。クラスタの state を触る情報 (`TF_STATE_BUCKET` など) を渡した場合はそのまま導入まで走りますが、渡していなければプラグインの設置で止まり、導入はチェックアウトから実行するよう案内されます。`~/.local/bin` が PATH に無い場合は通してください。
@@ -351,7 +358,7 @@ alias は調査キャンペーン 1 つに 1 つ付け、条件の違いは `--p
 
 失敗した run は既定で残るので、調査が終わったら `status=failed` で検索して整理します。記録されずに終わった Job (退避やノード排出で recorder が走らなかった Job) は、namespace ごとの `accelprof-orphan-check` が 1 時間ごとに点検し、見つかった場合に失敗として報告します。ここで報告が出たら取り逃しがあるということです。逆に CronJob 自体が起動できずに失敗している場合は、取り逃しの有無が分からない状態なので、まず点検が動く状態に戻します。
 
-課金の主因は 3 つです。tracking server は起動している間課金されるので、使わない期間は後片付けの手順で停止します (停止は記録を保持します)。trace バケットは `.nsys-rep` の蓄積で単調に増えるので、終わったキャンペーンは alias 単位で掃除します。そして GPU ノードそのものが最も高いので、プロファイル用の Job は短く保ちます。掃除のときに MLflow の experiment だけ、あるいは S3 のプレフィックスだけを消すと、片方だけが残って参照できない run ができます。必ず alias を単位にして両方を消します。
+課金の主因は 3 つです。MLflow が tracking server の場合は起動している間課金されるので、使わない期間は後片付けの手順で停止します (停止は記録を保持します)。app の場合は停止という概念がなく、放置しても課金要素はバケットだけです。trace バケットは `.nsys-rep` の蓄積で単調に増えるので、終わったキャンペーンは alias 単位で掃除します。そして GPU ノードそのものが最も高いので、プロファイル用の Job は短く保ちます。掃除のときに MLflow の experiment だけ、あるいは S3 のプレフィックスだけを消すと、片方だけが残って参照できない run ができます。必ず alias を単位にして両方を消します。
 
 ## 10. 自分の環境に合わせて変えるときに触る場所
 
@@ -369,7 +376,9 @@ alias は調査キャンペーン 1 つに 1 つ付け、条件の違いは `--p
 
 ## 11. 後片付け
 
-最初に選ぶのは、しばらく使わないだけなのか (A: 一時停止)、完全に撤去するのか (B: 完全撤去) です。A なら tracking server を停止するだけで課金が止まり、記録は保持されます。B は Terraform のトグルを戻して基盤を畳みます。B を実行すると tracking server ごと消えるので、あとから A に戻ることはできません。迷ったら A を選んでください。
+最初に選ぶのは、しばらく使わないだけなのか (A: 一時停止)、完全に撤去するのか (B: 完全撤去) です。A なら tracking server を停止するだけで課金が止まり、記録は保持されます。B は Terraform のトグルを戻して基盤を畳みます。B を実行すると MLflow ごと消えるので、あとから A に戻ることはできません。迷ったら A を選んでください。
+
+MLflow が app の場合、A に相当する操作はありません。API に app の起動と停止がなく、置いておくこと自体に課金要素がないためです。この場合は何もせずに放置するのが A で、撤去したいときだけ B に進みます。
 
 A の場合は、tracking server の名前を ConfigMap から引いて停止します。
 
@@ -379,10 +388,10 @@ export TRACKING_SERVER_NAME=$(k get configmap accelprof-config \
 aws sagemaker stop-mlflow-tracking-server --tracking-server-name "$TRACKING_SERVER_NAME" --region "$AWS_REGION"
 ```
 
-B の場合は以下に進みます。データ層は `terraform destroy` ではなく、トグルを `false` にした `terraform apply` で畳みます。trace バケットと MLflow アーティファクトのバケットには「記録の正本」を守るために `prevent_destroy` が付いており、`terraform destroy` は plan 段階でこのバケット破棄を検出して操作全体を中断してしまうため、tracking server や S3 Files ファイルシステムまで実際には消えないからです。トグルを false にした apply なら、バケット (と中の成果物ファイル) は残したまま、tracking server と S3 Files ファイルシステムだけを破棄できます。
+B の場合は以下に進みます。データ層は `terraform destroy` ではなく、トグルを `false` にした `terraform apply` で畳みます。trace バケットと MLflow アーティファクトのバケットには「記録の正本」を守るために `prevent_destroy` が付いており、`terraform destroy` は plan 段階でこのバケット破棄を検出して操作全体を中断してしまうため、MLflow や S3 Files ファイルシステムまで実際には消えないからです。トグルを false にした apply なら、バケット (と中の成果物ファイル) は残したまま、MLflow と S3 Files ファイルシステムだけを破棄できます。
 
 :::message alert
-run のメタデータ (metrics、params、tags) は tracking server と一緒に消えます。成果物ファイルはバケットに残りますが、それがどの条件の実験だったかという情報は失われるので、残したい記録があれば先に取り出してください。
+run のメタデータ (metrics、params、tags) は MLflow と一緒に消えます。成果物ファイルはバケットに残りますが、それがどの条件の実験だったかという情報は失われるので、残したい記録があれば先に取り出してください。
 :::
 
 まず実行中の producer Job が無いことを確認します。`ttlSecondsAfterFinished` は終了した Job だけを消すので、走り続けている Job は自動では消えません。
@@ -394,7 +403,7 @@ k delete jobs -l app.kubernetes.io/name=profiling-producer
 
 次に `mcp-host` を削除し、実験を回した namespace に作った `mcp-producer` ServiceAccount を掃除します。そのうえで `infra/eks` 側のマウントと mcp-reader を無効化します。`mcp_producer_role_arn` を渡さないと既定の空になり、producer の Pod Identity 紐付けも破棄されます。最後にデータ層のトグルを false にして apply します (destroy ではありません)。データ層の Terraform はリモート state を使うので、導入時と同じ backend とデータ層名を渡してから apply します。backend の設定は `infra/eks/backend.hcl` をそのまま渡し、キーだけを後から上書きします (後に渡した `-backend-config` が勝ちます)。この中のリージョンは state 置き場のリージョンで、クラスタのリージョンとは別物なので、`AWS_REGION` を渡してはいけません。
 
-変数の指定にも注意が必要です。データ層の apply には、導入時と同じ `trace_regions` と `s3files_trace_region` も渡します。これを省くと変数の既定値が使われ、いま使っている trace バケットが「不要なリソース」と判定されて破棄対象に入ります。実際に省いて plan を作ると、us-east-2 の trace バケットを破棄して別リージョンのバケットを作る計画になりました (`prevent_destroy` があるので apply は中断しますが、そこで手が止まります)。正しく渡した場合の plan は、S3 Files のファイルシステムとアクセスポイントと IAM ロール、そして tracking server の 5 つを破棄するだけで、バケットには触りません。
+変数の指定にも注意が必要です。データ層の apply には、導入時と同じ `trace_regions` と `s3files_trace_region` も渡します。これを省くと変数の既定値が使われ、いま使っている trace バケットが「不要なリソース」と判定されて破棄対象に入ります。実際に省いて plan を作ると、us-east-2 の trace バケットを破棄して別リージョンのバケットを作る計画になりました (`prevent_destroy` があるので apply は中断しますが、そこで手が止まります)。正しく渡した場合の plan は、S3 Files のファイルシステムとアクセスポイントと IAM ロール、そしてデータ層が記録していた MLflow を破棄するだけで、バケットには触りません。
 
 :::message alert
 この 2 つの apply は導入スクリプトを通らないので、plan の分類も効きません。クラスタに溜まった profiling と無関係な差分も一緒に適用されます。そのため下では plan をファイルに保存し、内容を読んでからそのファイルを適用する形にしています。想定外の変更が出たら適用せず、`-target` で範囲を絞るか差分の出どころを解消してからやり直してください。
@@ -425,7 +434,7 @@ terraform apply teardown.tfplan
 
 - [プロファイリングを楽にしたい](https://zenn.dev/littlemex/articles/8ab01bc40f627a) - 本基盤の設計思想を解説したブログ
 - [littlemex/distributed-ai](https://github.com/littlemex/distributed-ai) - `infra/scripts/install-profiling.sh` と `infra/eks/bin/kubectl-accelprof`、`infra/data-layer` と `infra/eks`、`mcp-host` チャートの実装
-- [release/eks-distributed-ai/v0.1.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.1.0) - 本章が前提にしているリリース
+- [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0) - 本章が前提にしているリリース
 - [accelprof](https://pypi.org/project/accelprof/) / [accelprof-knowledge](https://pypi.org/project/accelprof-knowledge/) - 分析 MCP と知識 MCP の pip パッケージ
 - [Nsight Systems ユーザーガイド](https://docs.nvidia.com/nsight-systems/UserGuide/index.html) - `nsys profile` のオプションと収集対象の公式ドキュメント
 - [Amazon S3 Files (EFS ユーザーガイド)](https://docs.aws.amazon.com/efs/latest/ug/s3-file-systems.html) - S3 Files の公式ドキュメント

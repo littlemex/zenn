@@ -3,7 +3,7 @@ title: "Basic11 - 安全に破棄する"
 free: true
 ---
 
-GitHub Tag: [release/eks-distributed-ai/v0.1.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.1.0)
+GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0)
 
 本章では、これまで積み上げてきた Amazon EKS 基盤を安全に破棄します。この章の目的はシンプルで、立てたリソースをすべて綺麗に消し、消えたことを確認することです。アクセラレータノードは時間単価が高いため、ワークショップ向けに試した後に破棄し損ねて課金だけが残る事故を防ぐことが狙いです。
 
@@ -33,7 +33,7 @@ GitHub Tag: [release/eks-distributed-ai/v0.1.0](https://github.com/littlemex/dis
 共有クラスタでは、破棄の前に必ず操作対象のクラスタを確認します。この章の操作はクラスタ全体に影響する破壊的操作なので、意図しないクラスタへの誤操作を避けます。
 
 ```bash
-cd ~/distributed-ai-v0.1.0
+cd ~/distributed-ai-v0.2.0
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2
 source infra/scripts/distai-env.sh
