@@ -53,7 +53,7 @@ accelerator_pools = {
 |---|---|---|
 | instance_types | g6.2xlarge, g5.2xlarge, g6.xlarge, g5.xlarge | 4 種のうちキャパシティがあるものを Karpenter が選択 |
 | capacity_types | ["spot", "on-demand"] | spot 優先、取れなければ on-demand にフォールバック |
-| zones | 未指定(`local.azs[0]` に自動導出) | 将来 Basic05 で追加する Capacity Block プールと同じ AZ に配置し、共有ストレージ接続に備える |
+| zones | 未指定(`local.azs[0]` に自動導出) | 共有ストレージと同じ AZ に寄せる。Basic05 の Capacity Block プールの AZ は予約から導出されるため、同じ AZ になるとは限らない |
 | efa_interface_count | 0 | 小型 GPU に EFA なし(NCCL は TCP ソケット経由で通信) |
 | labels | workload=ddp-basic04 | 追加のラベル。Pod からプールを選ぶ第一級の手段は、プール名(map のキー)がそのまま Karpenter のノードラベル `node-role=<プール名>` になる仕組みで、`labels` はさらに細かくルーティングしたいときの補助です |
 
@@ -84,13 +84,13 @@ NVIDIA GPU Operator は Basic03 の時点では入っていません。`accelera
 
 プール定義は `terraform.tfvars` に直接書かず、専用ファイル `accelerator-pools.auto.tfvars` に置きます。`accelerator_pools` は単一の map 変数なので、`terraform.tfvars` にも書くと重複代入エラーになります。定義箇所をこの 1 ファイルに集約し、`terraform.tfvars` 側には `accelerator_pools` を書かないのがポイントです（変数の `default = {}` があるので、ファイルが無い章でも apply は通ります）。`*.auto.tfvars` は Terraform が自動で読み込むため、`-var-file` の指定も要りません。
 
-リポジトリにはコメント付きの雛形 `accelerator-pools.tfvars.example` があります。初回はこれをコピーして自分用のファイルを作ります。コピー直後は全プール例がコメントアウトされた空の map（`accelerator_pools = {}`）なので、そのままでも apply は通ります。
+リポジトリにはコメント付きの雛形 `accelerator-pools.tfvars.example` があります。どんなプールが書けるかはこれを読むと分かるので、まず中身を眺めます。雛形は全プール例がコメントアウトされた空の map (`accelerator_pools = {}`) なので、これをそのままコピーして apply しても何も作られません。
 
-雛形をコピーせずに、下に示すテンプレートを自分で書き起こしても構いません。
+本章で作るファイルは次の手順の heredoc で作成するため、雛形のコピーは不要です。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
-cp accelerator-pools.tfvars.example accelerator-pools.auto.tfvars
+cat accelerator-pools.tfvars.example
 ```
 
 本章ではこのファイルの中身を次の内容にします。
@@ -225,6 +225,19 @@ PASS: 11  FAIL: 0  SKIP: 0  TOTAL: 11
 ```
 
 対象の NodePool は cpu 以外の NodePool から自動選択されます（`--gpu-nodepool` で明示指定も可能）。`--gpu-count` には検証したい GPU 枚数を渡します（g6.2xlarge なら 1、g6e.12xlarge なら 4、p4d.24xlarge なら 8）。GPU テストで ICE（InsufficientInstanceCapacity）により起動できない場合は AWS 側のキャパシティ問題であり、インフラの不具合ではありません。
+
+## 5. 後片付け
+
+本章で起動する GPU ノードは、この book で最初に触れる高額なリソースです。確認が済んだら TrainJob を削除して、ノードが回収されることまで見届けてください。
+
+```bash
+k delete trainjob ddp-trainjob -n "$NAMESPACE"
+k get nodeclaims -w
+```
+
+Pod が消えると NodePool の `consolidationPolicy` に従って Karpenter がノードを回収します。`k get nodeclaims` が空になれば GPU の課金は止まります。回収は非同期で数分かかるので、空になるまで待ってから次章に進みます。ここで NodeClaim が残り続ける場合は、まだ Pod が残っているか、Pod に `karpenter.sh/do-not-disrupt` が付いたままかのどちらかなので、`k get pods -n "$NAMESPACE"` で確認します。
+
+NodePool 自体は残しておいてかまいません。Karpenter は要求があってからノードを起こすので、プールが存在するだけでは課金されません。Basic07 と Basic08 はこの `gpu-ddp` プールをそのまま使います。
 
 # 今の仕組みの限界
 

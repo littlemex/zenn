@@ -23,15 +23,15 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 
 ## これは何をするものか
 
-https://zenn.dev/tosshi/articles/976e375fd47726
+[AWS Neuron と Trainium の入門](https://zenn.dev/tosshi/articles/976e375fd47726)
 
-https://zenn.dev/tosshi/articles/545d60be7314cb
+[AWS Neuron の開発フロー](https://zenn.dev/tosshi/articles/545d60be7314cb)
 
 詳細は割愛しますが AWS Neuron や Trainium については上記の記事などを確認してください。
 
-https://zenn.dev/tosshi/articles/be22d1ace136a5
+[vLLM Neuron plugin の解説](https://zenn.dev/tosshi/articles/be22d1ace136a5)
 
-vLLM Neuron plugin については上記の記事にまとめてあります。この plugin を同梱した [AWS 公式 DLC][`public.ecr.aws/neuron/pytorch-inference-vllm-neuronx`] を Kubernetes の Deployment として trn2 ノードに載せ、Qwen3-VL モデルをサービングします。
+vLLM Neuron plugin については上記の記事にまとめてあります。この plugin を同梱した AWS 公式 DLC (`public.ecr.aws/neuron/pytorch-inference-vllm-neuronx`) を Kubernetes の Deployment として trn2 ノードに載せ、Qwen3-VL モデルをサービングします。
 
 GPU 版（Basic07）との対応関係は次のとおりです。
 
@@ -53,7 +53,7 @@ GPU 版（Basic07）との対応関係は次のとおりです。
 - Basic05 の手順で `terraform apply` で NodePool 作成済み
 - `k` と `KUBECONFIG` は Basic01 step 2 の 4 行で設定済み
 
-trn2 ノードと Neuron リソースを確認します。
+trn2 の NodePool と、すでにノードが起動している場合の Neuron リソースを確認します。Karpenter は要求があってからノードを起こすので、手順 3 の Deployment を投入する前は `k get nodes` が空になるのが正常です。空だった場合は `k get nodepool` で NodePool の存在だけを確かめて手順 3 に進んでください。
 
 ```bash
 k get nodes -l node.kubernetes.io/instance-type=trn2.3xlarge \

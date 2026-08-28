@@ -90,7 +90,7 @@ Prometheus は PVC を持つ常駐の stateful なコンポーネントで、GPU
 
 NMA は障害を「検知して知らせる」だけで、Karpenter によるノードの自動修復（auto-repair、不健全なノードを自動で terminate して置き換える機能）は意図的に無効にしています。高価な GPU ノードを止める・置き換えるという不可逆な判断は、人間やジョブ層に委ねる方針です。
 
-NMA を GPU ノードで正しく動かすための設定、実際に GPU 障害を注入して検知が働くことをどう確かめるか、auto-repair を無効にした詳しい理由といった踏み込んだ話は、Advanced03「GPU 障害を注入して検知を確かめる」でまとめて扱います。本章のワークショップでは、監視スタックと NMA がすでに動いていることの確認までを行います。
+NMA を GPU ノードで正しく動かすための設定、実際に GPU 障害を注入して検知が働くことをどう確かめるか、auto-repair を無効にした詳しい理由といった踏み込んだ話は、本 book では扱いません。本章のワークショップでは、監視スタックと NMA がすでに動いていることの確認までを行います。
 
 # ワークショップ実施
 
@@ -137,7 +137,7 @@ k get nodes -L node-role | grep monitoring
 k get ds -n kube-system eks-node-monitoring-agent dcgm-server
 ```
 
-エージェント本体（`eks-node-monitoring-agent`）が全ノード分、GPU 健全性を読む `dcgm-server` が GPU ノード分だけ `READY` になっていれば、GPU 障害の検知経路が立ち上がっています。`dcgm-server` の `DESIRED` が 0 のときは、まず `k get nodes -L node-role` で GPU ノードが存在するかを確認してください。GPU ノードが無ければ 0 は正常です。GPU ノードがあるのに 0 のままなら、GPU ノードの taint への toleration が効いていない可能性があり、その原因と対処は Advanced03 で扱います。
+エージェント本体（`eks-node-monitoring-agent`）が全ノード分、GPU 健全性を読む `dcgm-server` が GPU ノード分だけ `READY` になっていれば、GPU 障害の検知経路が立ち上がっています。`dcgm-server` の `DESIRED` が 0 のときは、まず `k get nodes -L node-role` で GPU ノードが存在するかを確認してください。GPU ノードが無ければ 0 は正常です。GPU ノードがあるのに 0 のままなら、GPU ノードの taint への toleration が効いていない可能性があります。`k describe daemonset dcgm-server -n kube-system` の Events と、GPU ノードの taint を `k get nodes -o json` で突き合わせてください。
 
 ## 3. GPU メトリクスが収集されているか確認する
 
@@ -223,7 +223,7 @@ enable_observability = false
 この状態で `terraform apply` すると、kube-prometheus-stack・専用 NodePool・gp3 StorageClass・自前 DCGM ServiceMonitor・アラートルールといった observability 関連リソースがまとめて削除されます。NMA は別の変数で制御しているため、これを止めるには `enable_node_monitoring_agent = false` も併せて設定します。GPU Operator 側の DCGM ServiceMonitor はもともと無効（`dcgmExporter.serviceMonitor.enabled = false`）のままで、こちらの変更は不要です。
 
 :::message alert
-Advanced03 は本章の NMA とアラートルールが動いていることを前提にします。Advanced03 を実施する予定があるなら、この無効化は行わないでください。
+GPU 障害の検知を自分で試す予定があるなら、本章の NMA とアラートルールが動いていることが前提になるので、この無効化は行わないでください。
 :::
 
 # まとめ

@@ -39,10 +39,11 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 
 本章は既存のプールと GPU Operator の上に vLLM の Deployment を載せるだけなので、新しくインフラを足す操作はありません。
 
-`gpu-ddp` プールと GPU Operator の有無を確認します。
+`gpu-ddp` プールと GPU Operator の有無を確認します。確認したいのは NodePool の存在です。Karpenter は要求があってからノードを起こすので、Basic04 のワークロードを消してあれば `k get nodes` が 0 台なのは正常で、本章の Deployment を投入した時点で起動します。
 
 ```bash
 POOL=gpu-ddp
+k get nodepool $POOL
 k get nodes -l karpenter.sh/nodepool=$POOL
 k get pods -n gpu-operator
 ```

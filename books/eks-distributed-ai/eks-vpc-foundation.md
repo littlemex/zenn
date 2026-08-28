@@ -225,8 +225,9 @@ curl -fsSL https://raw.githubusercontent.com/littlemex/distributed-ai/refs/tags/
 ```bash
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2
-export AWS_PROFILE=my-profile
 ```
+
+名前付きプロファイルを使っている場合は、あわせて `export AWS_PROFILE=<自分のプロファイル名>` も置きます。素の `[default]` で認証している場合は不要です。存在しない名前を設定すると `The config profile could not be found` で停止します。
 
 コマンド自体は引数を取りません。
 

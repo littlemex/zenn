@@ -245,7 +245,7 @@ k label namespace "$PVC_NS" tenantpools.dev/excluded-
 PersistentVolume と PersistentVolumeClaim の namespace の考え方を整理しておきます。PV はクラスタスコープのリソースで namespace を持ちません。namespace を持つのは PVC のほうで、Pod は自分と同じ namespace の PVC しか参照できません。つまり「PVC と、それをマウントする Pod は必ず同じ namespace に置く」「PV はどの namespace の PVC からでも `volumeName` でバインドできる共通の存在」と理解しておくと混乱しません。本 book は作業用 namespace を `distai` に統一しているので、PVC も Pod も `distai` に作ります。`default` などにうっかり作ると、Basic11 の `04-teardown.sh --namespace distai` が対象にせず消し漏らし、Bound な PV が残って `terraform destroy` を止める原因になります。
 :::
 
-## 4. Amazon FSx for Lustre に書き込み、ノードを跨いでデータが残ることを確認する
+## 4. Amazon FSx for Lustre に書き込み、Pod を作り直してもデータが残ることを確認する
 
 PV は Terraform で作られていますが、PVC は手動で作ります。静的 PV に名前でバインドするため `volumeName` に PV 名を、`storageClassName` に空文字を指定します。
 
