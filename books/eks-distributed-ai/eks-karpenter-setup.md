@@ -33,7 +33,7 @@ Karpenter は、スケジュールできずに `Pending` のままになって�
 
 3 つ目は Spot 中断への対応です。Karpenter は SQS の interruption queue を経由して、Spot インスタンスの中断通知や AWS のヘルスイベント（スケジュールされた変更）などを受け、対象ノード上の Pod を強制終了ではなく graceful に drain してから終了させます。なお rebalance recommendation もこの queue に届きますが、Karpenter はこれを能動的なノード置換のトリガーにはしません（drain の対象は Spot 中断警告・スケジュール変更ヘルスイベント・インスタンス停止/終了です）。この queue と、通知を queue に流す Amazon EventBridge ルールの作成も、Karpenter 導入の一部として行います。
 
-drain で退去した Pod は削除され、それを管理する上位コントローラ（Deployment や Job／TrainJob など）が代替の Pod を作成します。その代替 Pod が `Pending` になり、これを Karpenter のプロビジョニングが検知して、要求を満たす新しいノードを自動で起動します（上位コントローラを持たない素の Pod は再作成されず、Job 系も restart 設定しだいでは代替が作られない点に注意します）。中断ハンドリング（消す側）とプロビジョニング（立てる側）は別々に動くため、明示的な再取得の指示は要りません。次にどの購入オプションで取り直すかは NodePool の `karpenter.sh/capacity-type` に許可した値しだいで、`spot` だけなら在庫があれば再び Spot を、`spot` と `on-demand` を併記していれば Spot が取れないときは on-demand にフォールバックして台数を満たします。ただし立ち上がるのは元と同じインスタンスではなく別ノードなので、途中結果は共有ストレージ上のスナップショットから resume する前提で組みます（Basic02 の resume がこれにあたります）。中断そのものを避けたい長時間ジョブには、Spot のような突発的中断が起きない Capacity Block を選ぶ、という使い分けになります（Capacity Block も予約終了の 30 分前からインスタンスの回収が始まるため、終了処理やチェックポイントはそれを見込んで設計します）。
+drain で退去した Pod は削除され、それを管理する上位コントローラ（Deployment や Job／TrainJob など）が代替の Pod を作成します。その代替 Pod が `Pending` になり、これを Karpenter のプロビジョニングが検知して、要求を満たす新しいノードを自動で起動します（上位コントローラを持たない素の Pod は再作成されず、Job 系も restart 設定しだいでは代替が作られない点に注意します）。中断ハンドリング（消す側）とプロビジョニング（立てる側）は別々に動くため、明示的な再取得の指示は要りません。次にどの購入オプションで取り直すかは NodePool の `karpenter.sh/capacity-type` に許可した値しだいで、`spot` だけなら在庫があれば再び Spot を、`spot` と `on-demand` を併記していれば Spot が取れないときは on-demand にフォールバックして台数を満たします。ただし立ち上がるのは元と同じインスタンスではなく別ノードなので、途中結果は共有ストレージ上のスナップショットから resume する前提で組みます。Basic02 で `/shared/output/trainjob-cpu/snapshot.pt` に保存したものがこれにあたり、同じ TrainJob を作り直すと `ddp.py` が起動時にそのファイルを見つけて途中のエポックから再開します（Basic02 では保存されたことの確認までで、再開そのものを試す手順は置いていません）。中断そのものを避けたい長時間ジョブには、Spot のような突発的中断が起きない Capacity Block を選ぶ、という使い分けになります（Capacity Block も予約終了の 30 分前からインスタンスの回収が始まるため、終了処理やチェックポイントはそれを見込んで設計します）。
 
 以降で実際の Terraform コードを引用しながら、なぜその値・その書き方にしているのかを見ていきます。対象ファイルは [`karpenter.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/karpenter.tf) と [`iam.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/iam.tf) です。
 
@@ -170,7 +170,7 @@ module "karpenter" {
 
 **`enable_spot_termination = true` が SQS queue と Amazon EventBridge ルールを両方作る。** この 1 行が、Spot 中断通知を受け取る interruption queue と、その queue に Spot 中断イベント・AWS ヘルスイベント・リバランス推奨を流す Amazon EventBridge ルールをまとめて作成します。上の Helm values で参照した `module.karpenter.queue_name` は、この行がなければ存在しません。
 
-**`node_iam_role_use_name_prefix = false` でノードロール名を固定する。** ノード用 IAM ロール名を `${var.cluster_name}-karpenter-node`（`locals.tf` の `karpenter_node_role_name`）に固定しています。デフォルトではモジュールがランダムな suffix を付けた名前を生成します（この suffix はリソース作成時に一度だけ決まり、以後の apply では変わりませんが、名前が予測不能になります）。ロール名を固定するとインスタンスプロファイル名も確定的になり、以降の章で紹介する `EC2NodeClass` から決め打ちの名前で参照できます。
+**`node_iam_role_use_name_prefix = false` でノードロール名を固定する。** ノード用 IAM ロール名を `${var.cluster_name}-karpenter-node`（`locals.tf` の `karpenter_node_role_name`）に固定しています。デフォルトではモジュールがランダムな suffix を付けた名前を生成します（この suffix はリソース作成時に一度だけ決まり、以後の apply では変わりませんが、名前が予測不能になります）。`EC2NodeClass` が参照するインスタンスプロファイル名は Terraform のモジュール出力から渡しているので、動作上は名前が固定である必要はありません。それでも固定するのは、IAM コンソールや CloudTrail でロールを見たときにどのクラスタのノードロールか一目で分かるようにするためです。
 
 **`node_iam_role_additional_policies` で 2 つのポリシーを足す。** Session Manager 経由でノードにログインする、アカウント ID で始まる名前の Amazon S3 バケット（実験データ用の命名規則）への読み書きをノードに許可します。
 
@@ -203,6 +203,8 @@ data "aws_iam_policy_document" "karpenter_node_s3" {
 **なぜこれが要るのか。** `kubectl_manifest` は `NodePool` / `NodeClaim` の削除を Kubernetes API が受理した瞬間に「完了」として報告しますが、実際のノード drain・Amazon EC2 インスタンス終了・ENI 解放は Karpenter コントローラが非同期に行う後処理です。GPU ノードが起動中に `terraform destroy` で Karpenter やその関連コントローラ（EFA デバイスプラグイン、Amazon EFS/Amazon FSx for Lustre CSI ドライバなど）を先に消してしまうと、その Amazon EC2 インスタンスは誰にも終了されずに課金され続ける「孤児」インスタンスになります。
 
 ## Dynamic Resource Allocation（DRA）とは何か
+
+次章から GPU や Trainium のノードを扱いますが、そのときアクセラレータを Pod に割り当てる方式として本 book は device plugin を使います。なぜ新しい DRA ではないのかを先に押さえておきます。
 
 ここまで扱ってきた `nvidia.com/gpu` や `vpc.amazonaws.com/efa` のような拡張リソースは、GPU/Neuron や EFA インターフェースをノード上の device plugin が数量として Kubernetes API サーバーに登録し、Pod 側は `resources.limits` に個数を書いて要求する、という枠組みです。device plugin はノードごとに動く DaemonSet で、デバイスを単純な整数カウントとして表現するため、Pod 側はリソース要求の枠組みの中では「何個欲しいか」しか指定できず、GPU の世代やメモリ容量、トポロジといった属性はリソース要求そのものでは選べないため、ノードラベルに対する `nodeSelector` や `nodeAffinity` で機種を選び分けます。
 
@@ -260,14 +262,14 @@ k get nodepool
 k get nodes
 ```
 
-`k get nodepool` には `cpu` が 1 つ表示されます。これは `cpu_nodepool_enabled`（既定 `true`）によって Basic01 の apply で作られたもので、Basic02 の CPU DDP がこのプールにノードを起こしていました。アクセラレータ用の NodePool は `accelerator_pools` が空のままなのでまだ存在せず、次章で定義します。
+`k get nodepool` には `cpu` が表示されます。これは `cpu_nodepool_enabled`（既定 `true`）によって Basic01 の apply で作られたもので、Basic02 の CPU DDP がこのプールにノードを起こしていました。監視スタックを既定のまま有効にしている場合は、これに加えて `monitoring` も表示されるので 2 つになります。アクセラレータ用の NodePool は `accelerator_pools` が空のままなのでまだ存在せず、次章で定義します。
 
 ```text
 NAME   NODECLASS   NODES   READY   AGE
 cpu    cpu         0       True    2d
 ```
 
-一方 `kubectl get nodes` に見えるのは Basic01 の System ノードだけです（Basic02 で起きた cpu ノードは、ワークロードが終わったあと `consolidateAfter` で回収されています）。NodePool が存在しても、それを要求する Pod がなければノードは立ちません。これが demand-driven なプロビジョニングの動作確認になります。
+一方 `kubectl get nodes` から `cpu` プールのノードは消えています（Basic02 で起きた cpu ノードは、ワークロードが終わったあと `consolidateAfter` で回収されています）。残っているのは Basic01 の System ノードと、監視スタックを有効にしている場合は監視 Pod を載せた `monitoring` プールのノードです。後者は Pod が常駐するため回収されません。NodePool が存在しても、それを要求する Pod がなければノードは立ちません。これが demand-driven なプロビジョニングの動作確認になります。
 
 `NODES` 列が 0 であることと、`READY` が `True`（= Karpenter がこの NodePool を受理して起動待機している）ことの両方を確認してください。
 

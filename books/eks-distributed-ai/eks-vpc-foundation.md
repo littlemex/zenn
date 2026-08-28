@@ -63,7 +63,7 @@ module "vpc" {
 
 ここで `azs` / `private_subnets` / `public_subnets` に渡している 3 つの `local.*` が、この構成の設計上の肝です。いずれも [`az.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/az.tf) で `var.region` と `var.vpc_cidr` から自動導出しており、通常のデプロイでは AZ もサブネット CIDR も一切手書きしません。tfvars に書くのは `region` とプールのインスタンスタイプだけで済みます。
 
-**AZ とサブネット CIDR の自動導出**: `local.azs` は `var.azs` が `null`（既定）ならそのリージョンの標準 AZ を `sort` して全件返します。サブネット CIDR も `var.private_subnet_cidrs` / `var.public_subnet_cidrs` が `null`（既定）なら `var.vpc_cidr` から AZ ごとに 1 つずつ切り出します。デフォルトではうまく AZ を適切な CIDR で切ってくれていると思っていただければ大丈夫です。
+**AZ とサブネット CIDR の自動導出**: `local.azs` は `var.azs` が `null`（既定）ならそのリージョンの標準 AZ を `sort` して全件返します。サブネット CIDR も `var.private_subnet_cidrs` / `var.public_subnet_cidrs` が `null`（既定）なら `var.vpc_cidr` から AZ ごとに 1 つずつ切り出します。デフォルトではうまく AZ を適切な CIDR で切ってくれていると思っていただければ大丈夫です。ただし全 AZ を返すという性質上、EKS のコントロールプレーンや新しいインスタンスタイプに対応していない制約付きの AZ (us-east-1e など) を含むリージョンでは、そのままだと apply が失敗することがあります。その場合は `terraform.tfvars` に `azs = ["...", "..."]` で使いたい AZ を明示します。
 
 **`one_nat_gateway_per_az = true` の意味**: NAT ゲートウェイを AZ ごとに 1 つ置き、各 AZ のプライベートルートテーブルはその AZ 自身の NAT を向きます。VPC は `local.azs` の全 AZ にまたがるので、2 AZ なら NAT も 2 つ、3 AZ なら 3 つ作られます。既定では `local.azs` がリージョンの全標準 AZ を返すため、AZ 数が多いリージョン（us-east-1 は標準 AZ が 6 つ）では NAT ゲートウェイと Elastic IP がその数だけ作られます。Elastic IP のデフォルトのクォータはリージョンあたり 5 つなので、AZ 数の多いリージョンに読み替える場合は、クォータの引き上げか `var.azs` での AZ 数の絞り込みが必要になることがあります。
 
@@ -240,7 +240,7 @@ cd ~/distributed-ai-v0.2.0
 
 `distai-up.sh` は 5 つのフェーズを順に実行します。前提確認、同意ゲート、state の作成とレジストリへの記録、変数ファイルの生成、そして plan の表示と apply です。同意ゲートでは、対象のアカウント・呼び出し元・リージョン・クラスタ名を表示したうえで**クラスタ名の入力**を求めます。y の 1 文字では、上に何が表示されていても押せてしまうからです。
 
-変数ファイル (`infra/eks/terraform.tfvars`) はここで生成されます。中身はリージョン、クラスタ名、profile、そして `expected_account_id` です。最後のものは認証情報が別のアカウントを指したまま apply しようとしたときに plan の段階で停止させるための歯止めで、アカウント ID はこの時点で判っているので自動で埋まります。生成後のファイルはあなたのものなので、AZ や CIDR を明示指定したいときはここに書き足します。
+変数ファイル (`infra/eks/terraform.tfvars`) はここで生成されます。中身はリージョン、クラスタ名、`expected_account_id`、そして `AWS_PROFILE` を設定している場合だけ `aws_profile` です (設定していなければこの行は書かれません)。最後のものは認証情報が別のアカウントを指したまま apply しようとしたときに plan の段階で停止させるための歯止めで、アカウント ID はこの時点で判っているので自動で埋まります。生成後のファイルはあなたのものなので、AZ や CIDR を明示指定したいときはここに書き足します。
 
 ```bash
 cat infra/eks/terraform.tfvars
@@ -267,7 +267,7 @@ source infra/scripts/distai-env.sh
 
 1 行目でチェックアウトに移動しているのは、この後の章が `terraform output` を使うためと、リポジトリの外で実行すると別のリポジトリを掴みうるからです。別の場所に clone した場合はそのディレクトリに読み替えてください。名前付き profile で認証している場合は、`export AWS_PROFILE=my-profile` もこの 4 行の前に置きます。
 
-これが解決するのは、リージョン、アカウント ID、state のバケットとキーとロックテーブルと暗号化キー、クラスタを作ったときのリリースタグと最後に適用したリリースタグ、そして紐づいているデータ層の一覧と既定です。バケット名や state のキーを章に書く必要がなくなり、別のマシンで clone し直した場合でも `backend.hcl` がその場で再生成されるので、`terraform output` がそのまま使えます。
+これが解決するのは、リージョン、アカウント ID、state のバケットとキーとロックテーブルと暗号化キー、クラスタを作ったときのリリースタグと最後に適用したリリースタグ、そして紐づいているデータ層の一覧と既定です。ただしデータ層はプロファイリング基盤を導入したときに初めて紐づくので、Basic01 の時点ではこの項目は空です。バケット名や state のキーを章に書く必要がなくなり、別のマシンで clone し直した場合でも `backend.hcl` がその場で再生成されるので、`terraform output` がそのまま使えます。
 
 あわせて `kubectl` もこのクラスタに向けます。`aws eks update-kubeconfig` の実行、context の選択、既定 namespace の設定、`kubectl` を `k` と打つための定義が、この `source` に含まれています。章ごとにこれらを打ち直す必要はありません。実行内容は step 3 で確認します。
 
@@ -302,7 +302,7 @@ k get nodes
 k get nodes -o custom-columns='NAME:.metadata.name,TYPE:.metadata.labels.node\.kubernetes\.io/instance-type,ROLE:.metadata.labels.node-role,CAP:.metadata.labels.karpenter\.sh/capacity-type'
 ```
 
-`k get nodes` で m5 系のノードが 2 台 `Ready` 状態で表示されれば、System ノードグループの起動は成功です。
+`k get nodes` で m5 系のノードが 2 台 `Ready` 状態で表示されれば、System ノードグループの起動は成功です。監視スタックを既定のまま有効にしている場合は、これに加えて監視専用 NodePool のノードが 1 台見えるので、合計 3 台になります。
 
 :::message alert
 `kubectl` が `Unauthorized`（`error: You must be logged in to the server`）で弾かれる場合、原因はほぼ 2 つです。1 つ目は、`terraform apply` を実行したプリンシパルと `kubectl` を実行するプリンシパルが食い違っているケースです。`enable_cluster_creator_admin_permissions = true` はクラスタを作成したプリンシパルにだけ管理者権限を与えるため、`distai-up.sh` を名前付き profile（AWS SSO や assume-role）で実行したのに、`source` するシェルで `AWS_PROFILE` を設定し忘れて素の `[default]` で認証していると、両者が別プリンシパルになり弾かれます。`source` は `AWS_PROFILE` をそのまま kubeconfig に書き込むので、`export AWS_PROFILE=<name>` を 4 行の前に置き、`aws sts get-caller-identity` で両者のプリンシパルを確認してください。assume-role の場合はセッション名部分が違っていても問題なく、`assumed-role/<ロール名>` までが一致していれば認証は通ります（アクセスエントリは基底の IAM ロール ARN 単位でマッチするためです）。自分のロールが登録済みかは `aws eks list-access-entries --cluster-name <name>` でも確認できます。2 つ目は、`apply` 直後にアクセスエントリがまだ認証レイヤに伝播していないケースで、この場合は 1〜2 分待って再実行すれば通ります。

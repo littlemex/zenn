@@ -118,13 +118,13 @@ helm template exp charts/experiments -n "$NAMESPACE" \
     | k apply -f -
 ```
 
-`memory=8Gi` は、Qwen2.5-0.5B の重み（約 1 GiB）とランタイムのロードに十分な余裕を持たせた値です。`shmSize=2Gi` は、単一 GPU で `/dev/shm` の使用量がわずかであることを踏まえた値です。両方を小さく保つことで、最小タイプの allocatable 約 12.3 GiB に、DaemonSet の先客を差し引いても確実に収めています。
+`memory=8Gi` は、Qwen2.5-0.5B の重み（約 1 GiB）とランタイムのロードに十分な余裕を持たせた値です。`shmSize=2Gi` は、単一 GPU で `/dev/shm` の使用量がわずかであることを踏まえた値です。両方を小さく保つことで、最小タイプの allocatable 約 12.3 GiB に、DaemonSet の先客を差し引いても収まることを実機で確認しています。DaemonSet が確保する量は GPU Operator や CNI、AMI、Kubernetes のバージョンで変わるので、まずこの値から始めて、`Pending` になったら `k describe pod` の Events で不足しているリソースを確かめてください。
 
 ### shmSize はスケジューリングに計上されないという罠
 
 もう 1 つ、`memory` と `shmSize` の関係で踏みやすい罠があります。`shmSize` はノードの RAM を実際に消費するにもかかわらず、**帳簿上の要求（`memory`）と、実際の RAM 消費（`memory` + `/dev/shm` 使用量）が乖離します**。この乖離が事故の源です。
 
-実消費の側では、`/dev/shm` の使用量は同じコンテナの `memory` リミットに対して計上されます。本チャートは `limits.memory` を `requests.memory` と同じ値に設定するため、`/dev/shm` の使用量とプロセスの使用量の合計がこのリミットを超えると、コンテナは OOMKill されます。加えて `/dev/shm` 自体が `shmSize` を超えた場合は、クラスタの kubelet 設定に応じて `/dev/shm` への書き込みが失敗するか Pod が退避されます。実務上は、**帳簿ではなく実消費で考え、`memory` と `shmSize` の合計を最小タイプの allocatable 未満に収める**のが安全です。たとえば `memory=12Gi` を指定して `shmSize` を既定の `8Gi` に残した場合、帳簿上の要求 `12Gi` は物理 16 GiB のノードの allocatable（約 12.3 GiB）ぎりぎりで、GPU Operator や CNI の DaemonSet が先に確保する分を引くと収まらないため `Pending` になり、物理 32 GiB のタイプに載ったとしても、`/dev/shm` を含む実使用が `12Gi` のリミットを超えれば OOMKill されます。帳簿と実消費のどちらの側でも破綻し得るということです。
+実消費の側では、`/dev/shm` の使用量は同じコンテナの `memory` リミットに対して計上されます。本チャートは `limits.memory` を `requests.memory` と同じ値に設定するため、`/dev/shm` の使用量とプロセスの使用量の合計がこのリミットを超えると、コンテナは OOMKill されます。加えて `/dev/shm` 自体が `shmSize` を超えた場合は、その tmpfs への書き込みが容量不足で失敗します。`Evicted` を探すのではなく、コンテナのログに出る書き込みエラーと、直前に述べた OOMKill を見てください。実務上は、**帳簿ではなく実消費で考え、`memory` と `shmSize` の合計を最小タイプの allocatable 未満に収める**のが安全です。たとえば `memory=12Gi` を指定して `shmSize` を既定の `8Gi` に残した場合、帳簿上の要求 `12Gi` は物理 16 GiB のノードの allocatable（約 12.3 GiB）ぎりぎりで、GPU Operator や CNI の DaemonSet が先に確保する分を引くと収まらないため `Pending` になり、物理 32 GiB のタイプに載ったとしても、`/dev/shm` を含む実使用が `12Gi` のリミットを超えれば OOMKill されます。帳簿と実消費のどちらの側でも破綻し得るということです。
 
 さらに厄介なのが、この乖離が Karpenter の起動ループを誘発する点です。
 

@@ -86,7 +86,7 @@ Prometheus は PVC を持つ常駐の stateful なコンポーネントで、GPU
 
 ## ノード障害を検知する
 
-メトリクスの可視化とあわせて、この基盤には EKS の Node Monitoring Agent（NMA）も組み込んであります。NMA は各ノードの GPU・カーネル・ネットワークなどの健全性を監視し、NodeCondition 結果を書き込むエージェントです。この NodeCondition は kube-state-metrics 経由で Prometheus に流れるので、GPU 障害を検知して、これまでと同じ Prometheus/Grafana の仕組みでアラートにできます。[`observability.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/observability.tf) には、そのためのアラートルールもあらかじめ入れてあります。
+メトリクスの可視化とあわせて、この基盤には EKS の Node Monitoring Agent（NMA）も組み込んであります。NMA は各ノードの GPU・カーネル・ネットワークなどの健全性を監視し、NodeCondition 結果を書き込むエージェントです。この NodeCondition は kube-state-metrics 経由で Prometheus に流れるので、GPU 障害を検知して、これまでと同じ Prometheus/Grafana の仕組みでアラート条件として扱えます。ただしこの基盤は Alertmanager を無効にしてあります（通知先を決めずに有効化しても通知を捨てるだけなので）。発火は Prometheus UI の Alerts で見える状態までで、Slack やメールへ飛ぶわけではありません。通知が必要になったら Alertmanager を有効にして通知先を設定します。[`observability.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/observability.tf) には、そのためのアラートルールもあらかじめ入れてあります。
 
 NMA は障害を「検知して知らせる」だけで、Karpenter によるノードの自動修復（auto-repair、不健全なノードを自動で terminate して置き換える機能）は意図的に無効にしています。高価な GPU ノードを止める・置き換えるという不可逆な判断は、人間やジョブ層に委ねる方針です。
 
@@ -166,7 +166,7 @@ for s in r[:8]:
   tenant=(none)  node=ip-10-0-8-26.us-east-2.compute.internal  gpu=0
 ```
 
-各系列に `node` ラベルが付いており、これは前掲の `__meta_kubernetes_node_name` を `node` に変換する relabeling が効いていることを示します。一方 `tenant` ラベルは、そのノードが Experiment01 のテナントプールで起動された場合にだけ namespace 名が入ります。Basic04/Basic07 で使う通常の GPU プール（`gpu-ddp`）のノードにはテナントラベルが無いため `(none)` になります。したがって tenant relabeling が実際に値を刻む様子と「GPU Utilization by Tenant」ダッシュボードでのテナント絞り込みは、Experiment01 のテナントプールでノードを起動して初めて確認できます。本手順の環境では tenant は `(none)` のみになる点に注意してください。
+各系列に `node` ラベルが付いており、これは前掲の `__meta_kubernetes_node_name` を `node` に変換する relabeling が効いていることを示します。一方 `tenant` ラベルは、そのノードがテナント単位の NodePool で起動された場合にだけ namespace 名が入ります（先に触れた `karpenter-tenant-pools` を使ってテナントごとにプールを切る構成のことで、本 book では Experiment01 として扱います）。Basic04/Basic07 で使う通常の GPU プール（`gpu-ddp`）のノードにはテナントラベルが無いため `(none)` になります。したがって tenant relabeling が実際に値を刻む様子と「GPU Utilization by Tenant」ダッシュボードでのテナント絞り込みは、Experiment01 のテナントプールでノードを起動して初めて確認できます。本手順の環境では tenant は `(none)` のみになる点に注意してください。
 
 系列数は、クラスタに存在する GPU 総数（dcgm-exporter が動く GPU ノード上の GPU 枚数）と一致します。使用していない GPU も値 0 の系列として出ます。GPU ノードが 1 台も無ければ 0 系列になるので、その場合は `k get nodes -L node-role` で GPU ノードの有無を先に確認してください。なお GPU ノードが立った直後は、GPU Operator の dcgm-exporter が起動して初回 scrape が回るまで数分かかり、その間は 0 系列に見えることがあります。
 
@@ -181,7 +181,7 @@ curl -s "http://localhost:9090/api/v1/targets" \
 
 ## 4. Grafana の UI にアクセスする
 
-Grafana の admin パスワードは Terraform が自動生成し、Secret に保存しています。平文でどこかに書く必要はなく、`terraform output` で取り出します。
+Grafana の admin パスワードは Terraform が自動生成し、Secret に保存しています。読者が値を手で書く場所はどこにもなく、`terraform output` で取り出します。ただし Terraform が生成した値なので tfstate には平文で入ります。Basic01 で state を S3 に置き、暗号化した状態で扱っているのはこのためです。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
@@ -220,7 +220,7 @@ observability が不要なクラスタでは、`terraform.tfvars` で無効化�
 enable_observability = false
 ```
 
-この状態で `terraform apply` すると、kube-prometheus-stack・専用 NodePool・gp3 StorageClass・自前 DCGM ServiceMonitor・アラートルールといった observability 関連リソースがまとめて削除されます。NMA は別の変数で制御しているため、これを止めるには `enable_node_monitoring_agent = false` も併せて設定します。GPU Operator 側の DCGM ServiceMonitor はもともと無効（`dcgmExporter.serviceMonitor.enabled = false`）のままで、こちらの変更は不要です。
+この状態で `terraform apply` すると、kube-prometheus-stack・専用 NodePool・自前 DCGM ServiceMonitor・アラートルール・`monitoring` namespace （その中身ごと）といった observability 関連リソースがまとめて削除されます。`gp3` StorageClass は `observability_storage_class_create` が `true` のとき（既定）だけ削除対象で、既存のクラスを流用する設定にしていれば Terraform の管理外なので残ります。逆に、この構成が作った `gp3` を他のワークロードが使い始めていた場合、observability の無効化でそのクラスも消える点には注意してください。クラス名がクラスタ共通の名前なので起きうる巻き込みです。NMA は別の変数で制御しているため、これを止めるには `enable_node_monitoring_agent = false` も併せて設定します。GPU Operator 側の DCGM ServiceMonitor はもともと無効（`dcgmExporter.serviceMonitor.enabled = false`）のままで、こちらの変更は不要です。
 
 :::message alert
 GPU 障害の検知を自分で試す予定があるなら、本章の NMA とアラートルールが動いていることが前提になるので、この無効化は行わないでください。
