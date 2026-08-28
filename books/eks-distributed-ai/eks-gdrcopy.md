@@ -21,7 +21,7 @@ RDMA（Remote Direct Memory Access）は、リモートホストのメモリに 
 
 GPUDirect RDMA は、その RDMA の転送先・転送元をホストメモリではなく GPU メモリに置き換えたものである。NIC（EFA）が PCI Express 経由で GPU メモリへ直接 DMA する。RDMA という土台の上で DMA 対象を GPU まで伸ばした拡張であり、大きなテンソルを転送する分散学習の集合通信は、この GPUDirect RDMA が帯域の本体を担う。
 
-GDRCopy は、この二つとは別のライブラリである。GPU の BAR1 領域を CPU のアドレス空間にマッピングし、CPU が memcpy で GPU メモリを読み書きできるようにする。NIC が直接 DMA する GPUDirect RDMA とは対照的に、CPU が主導するコピー手段であり、主に小さなメッセージの受信コピーや制御パスのレイテンシ削減に使われる。
+GDRCopy は、この二つとは別のライブラリである。GPU の BAR1 領域 (GPU メモリの一部を PCIe 経由で CPU から直接見えるようにする窓) を CPU のアドレス空間にマッピングし、CPU が memcpy で GPU メモリを読み書きできるようにする。NIC が直接 DMA する GPUDirect RDMA とは対照的に、CPU が主導するコピー手段であり、主に小さなメッセージの受信コピーや制御パスのレイテンシ削減に使われる。
 
 三者の関係を図にまとめると次のようになる。
 
@@ -37,7 +37,7 @@ libfabric の EFA プロバイダは、受信したデータを GPU メモリへ
 
 このワークショップのクラスタは、NVIDIA ドライバが AMI にプリインストールされた Capacity Block の GPU AMI を使う。そのため NVIDIA GPU Operator は `driver.enabled=false`（ドライバを Operator が管理しない）で動かしている。[Basic04](eks-accelerator-pools) で導入したこの構成が、GDRCopy にそのまま響く。
 
-GPU Operator にも GDRCopy を有効化する `gdrcopy.enabled` というオプションがある。しかしこの GDRCopy コンポーネントは、Operator が管理するドライバ用 DaemonSet の中のサイドカーコンテナとして実装されている。ドライバを Operator が管理しない構成では、そのドライバ DaemonSet 自体が存在しないため、GDRCopy のサイドカーも起動しない。`gdrcopy.enabled=true` にしても何も起きない。この挙動は執筆時点で検証した GPU Operator のバージョンでのもので、将来変わる可能性はあるが、サイドカーがドライバ DaemonSet に同居する構造そのものは NVIDIA が [GPU Operator のドキュメント](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/) で説明している。
+GPU Operator にも GDRCopy を有効化する `gdrcopy.enabled` というオプションがある。しかしこの GDRCopy コンポーネントは、Operator が管理するドライバ用 DaemonSet の中のサイドカーコンテナとして実装されている。ドライバを Operator が管理しない構成では、そのドライバ DaemonSet 自体が存在しないため、GDRCopy のサイドカーも起動しない。つまりこのフラグは効かない。しかも構成によっては、単に効かないだけで済まない。`gdrdrv` が無い状態で Operator の gdrcopy 検証が走ると、その検証が終わらず device plugin が GPU を advertise しなくなる。GPU がクラスタから見えなくなるので、影響は「GDRCopy が入らない」ではなく「GPU が使えない」になる。この基盤がこのフラグを既定で無効にしているのはそのためである。この挙動は執筆時点で検証した GPU Operator のバージョンでのもので、将来変わる可能性はあるが、サイドカーがドライバ DaemonSet に同居する構造そのものは NVIDIA が [GPU Operator のドキュメント](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/) で説明している。
 
 つまり AMI プリインストールドライバの構成では、GDRCopy はノード側で別途ロードするしかない。これが本章で扱う実装の出発点である。
 
@@ -53,7 +53,7 @@ GPUDirect RDMA（バルク転送の本体）は `gdrdrv` とは無関係に動�
 
 ## AL2023 は gdrdrv をパッケージで提供する
 
-`gdrdrv` を載せる方法として、NVIDIA の GDRCopy ソースを取得してカーネルモジュールをビルドする道もあるが、Amazon Linux 2023 ではもっと簡単な経路がある。AL2023 の標準リポジトリが `gdrcopy-kmod` という DKMS パッケージを提供しており、`dnf install -y gdrcopy-kmod` するだけでモジュールがビルドされる。しかもこのパッケージは `gdrcopy.service` という systemd ユニットを同梱していて、インストール時に自動で有効化される。このユニットは NVIDIA モジュールがロードされたあとに `gdrdrv` をロードし、`/dev/gdrdrv` を作り直す処理を毎回のブートで実行する。
+`gdrdrv` を載せる方法として、NVIDIA の GDRCopy ソースを取得してカーネルモジュールをビルドする道もあるが、Amazon Linux 2023 ではもっと簡単な経路がある。AL2023 の標準リポジトリが `gdrcopy-kmod` という DKMS パッケージを提供しており、`dnf install -y gdrcopy-kmod` するだけでモジュールがビルドされる。しかもこのパッケージは `gdrcopy.service` という systemd ユニットを同梱していて、インストール時に自動で有効化される。このユニットは NVIDIA モジュールがロードされたあとに `gdrdrv` をロードし、`/dev/gdrdrv` を作り直す処理を毎回のブートで実行する。ただし稼働中のノードに後から入れる場合は、インストールだけでその場のロードまで済むとは限らない。手で復旧するときは `dnf install` のあとに `/usr/libexec/gdrcopy/gdrcopy start` を実行し、`lsmod | grep gdrdrv` と `test -e /dev/gdrdrv` の両方で確かめる。後述の DaemonSet 方式がこの順で実行しているのはそのためである。
 
 この事実が実装を大きく単純化する。ノードに一度 `dnf install -y gdrcopy-kmod` を実行しさえすれば、モジュールのロードと再起動をまたいだ永続化は同梱の systemd ユニットが引き受ける。カーネルソースを自前でビルドする必要も、独自の modules-load 設定を書く必要もない。
 
@@ -94,7 +94,7 @@ EOSH
 
 ## 方式 2: DaemonSet で入れる（稼働中ノード向けの代替）
 
-ノードをすでに起動していて再作成できない場合の代替として、`daemonset` 方式も用意している。特権を持つ initContainer がホストに `chroot` して `dnf install` と `modprobe` を実行し、`gdrdrv` をロードしたら終了する。常駐するメインコンテナは非特権の待機プロセスにしてあり、ホストのファイルシステムもマウントしない。特権とホストルートマウントを一度きりの initContainer に閉じ込めることで、常時開いたままの攻撃面を小さくしている。
+ノードをすでに起動していて再作成できない場合の代替として、`daemonset` 方式も用意している。特権を持つ initContainer がホストに `chroot` して `dnf install` を実行し、続いてパッケージ同梱の `/usr/libexec/gdrcopy/gdrcopy start` を呼ぶ。`modprobe` を直に叩かないのは、このスクリプトが `modprobe` に加えて `/dev/gdrdrv` の作成まで行うためである。切り分けのときは「モジュールはロードされているのにデバイスノードが無い」という状態があり得ることを覚えておくとよい。initContainer は `lsmod` と `/dev/gdrdrv` の両方を確認してから終了する。常駐するメインコンテナは非特権で、ホストのファイルシステムもマウントしない待機プロセスである (`pause` という名前だが、使っているイメージは initContainer と同じローダーイメージで、その中で `sleep` し続けるだけである)。特権とホストルートマウントを一度きりの initContainer に閉じ込めることで、常時開いたままの攻撃面を小さくしている。
 
 なお、この二つの方式と GPU Operator の GDRCopy サイドカーが同時に `gdrdrv` をロードしようとすると競合するため、`gdrcopy_mode` が `off` でないのに GPU Operator 側でもドライバ管理と GDRCopy を有効にした構成は、plan 時にエラーで弾くようにしている。
 
@@ -123,7 +123,7 @@ ITYPE=p5.48xlarge
 
 ## 2. GDRCopy が無い状態を確認する
 
-まず現状で GDRCopy が入っていないことを確認する。この時点ではまだノードが 1 台も起動していないので、`/dev/gdrdrv` はノードに出て行って確認する段階ではない。代わりに、GDRCopy の導入方式を決める `gdrcopy_mode` が既定の `off` であること（`gdrdrv-loader` の DaemonSet が存在しないこと）を確認する。`gdrcopy_mode` は入力変数なので `terraform output` には出ない。現在値は `terraform console` で引くか、`accelerator-pools.auto.tfvars` に書いていないこと（＝既定の `off`）で確認する。
+まず現状で GDRCopy が入っていないことを確認する。この時点ではまだノードが 1 台も起動していないので、`/dev/gdrdrv` はノードに出て行って確認する段階ではない。代わりに、GDRCopy の導入方式を決める `gdrcopy_mode` が既定の `off` であること（`gdrdrv-loader` の DaemonSet が存在しないこと）を確認する。`gdrcopy_mode` は入力変数なので `terraform output` には出ない。現在値は `terraform console` で引くのが確実である。`gdrdrv-loader` の DaemonSet の不在は補助的な手がかりにとどまる。この DaemonSet は `gdrcopy_mode` が `daemonset` かつ GPU プールが定義済みのときだけ作られるので、GPU プールを定義していなければ `daemonset` を選んでいても存在しない。
 
 `terraform console` が `"off"` を返し、`gdrdrv-loader` の DaemonSet が居なければ既定のままである。
 
@@ -154,10 +154,10 @@ terraform apply -var gdrcopy_mode=daemonset
 
 ```bash
 k -n kube-system logs -l app=gdrdrv-loader -c load-gdrdrv --tail=-1 \
-  | grep -E "verified|already loaded"
+  | grep -E "verified|retrying"
 ```
 
-各ノードで `verified: gdrdrv loaded, /dev/gdrdrv present`（または `already loaded`）が出れば成功である。
+各ノードで `verified: gdrdrv loaded, /dev/gdrdrv present` が出れば成功である。すでにロード済みのノードでも同じメッセージに合流するので、出るのはこの 1 種類だけである。失敗した場合は `gdrdrv not loaded or /dev/gdrdrv missing; retrying` が出て initContainer が終了し、kubelet が繰り返し起動し直す。ロードできるまで進ませない fail-closed の作りなので、grep が空振りするときは Pod が `Init:CrashLoopBackOff` になっていないかを `k -n kube-system get pods -l app=gdrdrv-loader` で確認する。
 
 :::message
 Basic06 では hugepages を要求しない warmup Pod で先にノードを起こしていたが、本章で使う GPU Pod（手順 4 の `copylat` プローブと手順 5 の torchrun 測定）はどちらも hugepages を要求しないので、warmup を挟まずそのままノードを起こせる。hugepages を要求する `ncclSshd` などを使う場合に warmup が要る理由と段取りは、Basic06 の details にまとめてある。
@@ -165,7 +165,7 @@ Basic06 では hugepages を要求しない warmup Pod で先にノードを起�
 
 ## 4. GDRCopy が単体で機能することを確認する（ポジティブコントロール）
 
-効果を測る前に、GDRCopy そのものが正しく動いていることを確かめておく。これをやらないと、後の比較で差が出なかったときに「効かない」のか「そもそも GDRCopy が動いていない」のかを区別できない。GDRCopy に付属する `copylat` は、CPU が BAR1 マッピング経由で GPU メモリへ書き込むレイテンシを測る。GPU 向けの DLC イメージにはこのツールが含まれるので、`/dev/gdrdrv` をマウントした GPU Pod を 1 つ立てて実行する。
+効果を測る前に、GDRCopy そのものが正しく動いていることを確かめておく。これをやらないと、後の比較で差が出なかったときに「効かない」のか「そもそも GDRCopy が動いていない」のかを区別できない。GDRCopy に付属する `copylat` は、CPU が BAR1 マッピング経由で GPU メモリへ書き込むレイテンシを測る。本章で使った GPU 向けの DLC イメージにはこのツールが入っていたので、`/dev/gdrdrv` をマウントした GPU Pod を 1 つ立てて実行する。
 
 ```bash
 cat <<EOF | k apply -f -
@@ -196,7 +196,7 @@ k wait --for=condition=ready pod/gdrcopy-probe -n "$NAMESPACE" --timeout=10m
 k exec gdrcopy-probe -n "$NAMESPACE" -- copylat
 ```
 
-`image` は Basic06 の NCCL 測定で使った DLC に読み替える（レジストリのアカウント ID は同じで、リージョンとタグのバージョンサフィックスは自分の環境に合わせる。ここでは `copylat` を実行できればよいので、`pytorch-training` 系であればタグの細部は問わない）。`hostPath` でマウントしたキャラクタデバイス `/dev/gdrdrv` にコンテナ内からアクセスするため `privileged: true` を与えている点に注意する。実機出力は次のとおり。
+`image` は Basic06 の NCCL 測定で使った DLC に読み替える（レジストリのアカウント ID は同じで、リージョンとタグのバージョンサフィックスは自分の環境に合わせる。ここでは `copylat` を実行できればよい。本章で使ったタグには含まれていたが、DLC のバージョンによって同梱の有無や PATH は変わりうるので、`copylat: command not found` になる場合は [NVIDIA/gdrcopy](https://github.com/NVIDIA/gdrcopy) からビルドして持ち込む）。`hostPath` でマウントしたキャラクタデバイス `/dev/gdrdrv` にコンテナ内からアクセスするため `privileged: true` を与えている点に注意する。実機出力は次のとおり。
 
 ```text
 Test                    Size(B)   Avg.Time(us)
