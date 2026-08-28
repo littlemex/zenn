@@ -33,7 +33,9 @@ Basic01 から Basic11 で構築した Amazon EKS の土台の上に、GPU の�
 
 ### apply の前に必ず plan を分類する
 
-このスクリプトは `terraform apply` を無条件に実行しません。まず plan を作り、変更を 3 つに分類します。1 つ目が「記録の正本」で、trace バケット、MLflow アーティファクトバケット、SageMaker MLflow 本体、KMS キー、S3 Files のファイルシステムとアクセスポイントです。これらを削除する plan は上書き手段なしで拒否します。置き換えも削除を含むので同じ扱いです。変更する plan は `ALLOW_RECORD_UPDATES=1` を渡さない限り停止します。保持期間の短縮やポリシーの絞り込みは削除ではなく更新として現れますが、それでも記録済みのものを失い得るからです。一方で作成は拒否しません。plan は「state に一度も無かった」と「state が見失った」を区別できず、初回導入と失敗した導入の再開が同じ形の差分として現れるためです。すでに存在するリソースを作ろうとした場合は AWS 側がエラーで止めるので、データが失われることもありません。2 つ目が profiling 基盤自身の変更で、これは適用します。3 つ目がそれ以外で、停止して一覧を表示します。長く運用したクラスタには profiling と無関係な差分が溜まるので、それを黙って適用しないための線引きです。基盤だけ収束させたいときは `PROFILING_ONLY=1`、すべて受け入れるときは `ALLOW_UNRELATED=1` を渡します。
+このスクリプトは `terraform apply` を無条件に実行しません。まず plan を作り、変更を 4 つに分類します。1 つ目が「記録の正本の削除」で、対象は trace バケット、MLflow アーティファクトバケット、SageMaker MLflow 本体 (tracking server と app の両方)、KMS キー、S3 Files のファイルシステムとアクセスポイント、そしてそれらのバージョニング・ライフサイクル・暗号化の設定です。設定を含めているのは、保持期間や暗号化の変更だけでも記録済みのものを失い得るからです。これらの削除は上書き手段なしで拒否します。置き換えも削除を含むので同じ扱いです。2 つ目が同じ記録の正本に対する**変更**で、これは `ALLOW_RECORD_UPDATES=1` を渡さない限り停止します。削除ではないので 1 つ目とは分けていますが、保持期間の短縮やポリシーの絞り込みは更新として現れ、それでも記録済みのものを失い得るからです。データ層のライフサイクル設定に差分がある状態で再実行するとこのエラーに当たるので、plan を読んで意図した変更であることを確かめてからこのフラグを付けます。
+
+一方で作成は拒否しません。plan は「state に一度も無かった」と「state が見失った」を区別できず、初回導入と失敗した導入の再開が同じ形の差分として現れるためです。state が見失っただけの既存リソースは、plan を作る前に import して state に取り込む (adoption) ので、そもそも作成として現れません。3 つ目が profiling 基盤自身の変更で、これは適用します。4 つ目がそれ以外で、停止して一覧を表示します。長く運用したクラスタには profiling と無関係な差分が溜まるので、それを黙って適用しないための線引きです。基盤だけ収束させたいときは `PROFILING_ONLY=1`、すべて受け入れるときは `ALLOW_UNRELATED=1` を渡します。
 
 ### producer Job の中身
 
@@ -74,7 +76,7 @@ Job そのものは終了から 2 日後に Kubernetes が消します。run の
 
 本章は基盤リポジトリのリリース `release/eks-distributed-ai/v0.2.0` を前提にしています。本文のコマンドと出力例はこのバージョンで実機確認したものです。別のバージョンでは変数名やフラグが変わることがあるので、まずはこのタグで通してください。
 
-クラスタ (Basic01 から Basic11 相当) が稼働していること、`infra/eks` の Terraform がリモート state を使っていること、`terraform` と `kubectl` と `helm` と `aws` と `python3` と `git` と `curl` が手元にあること、MCP クライアント (Claude Code など) が手元にあることを確認します。リモート state は Basic01 の `distai-up.sh` が作り、その場所はレジストリに記録されているので、前提の 4 行を実行してあれば導入スクリプトはそこから解決します (`TF_STATE_BUCKET` などで明示的に上書きすることもできます)。
+クラスタ (Basic01 から Basic11 相当) が稼働していること、`infra/eks` の Terraform がリモート state を使っていること、`terraform` と `kubectl` と `helm` と `aws` と `python3` と `git` と `curl` が手元にあること (後半の手順でトンネルの listen を確認するのに `lsof` も使います)、MCP クライアント (Claude Code など) が手元にあることを確認します。リモート state は Basic01 の `distai-up.sh` が作り、その場所はレジストリに記録されています。前提の 4 行はレジストリから `infra/eks/backend.hcl` を書き出すので、導入スクリプトはそれを読んで解決します。チェックアウトの外から実行する場合や fresh clone で `backend.hcl` が無い場合は、`TF_STATE_BUCKET` などで明示的に渡します。
 
 ## 2. プロファイルを撮る namespace を用意する
 
@@ -210,7 +212,7 @@ artifacts_uri    = s3://<trace バケット>/teama-gpu-nsys/<run_id>/
 pod              = profile-wl-260826043020-e69a3905-f5hdx
 ```
 
-`chip` は**要求したデバイス**です。`--gpu` を付けた run は `gpu`、`--neuron` は `neuron`、どちらも付けなければ `cpu` になります。スケジューラがどのノードに載せたかではなく自分が要求したものが入るのは、これが run を探すときのキー (`alias` と組で run を指せる) であり、探す人の頭にあるのは自分が要求した値だからです。`profiled` は「profiler の経路を通ったか」を表します。shim は `nsys` を見つけた時点でこの値を立てるので、`nsys` の起動に失敗した実行でも true になり得ます。取得できたかどうかは `status` と `exit_reason`、そして次節以降で使う `stage_run` が返すファイルの一覧まで見て判断してください。`.nsys-rep` は MLflow のアーティファクトではなく `artifacts_uri` が指す trace バケットの prefix に置かれ、分析 MCP はこのタグを使って場所を解決します。
+`chip` は**要求したデバイス**です。`--gpu` を付けた run は `gpu`、`--neuron` を付けた run と `--profile neuron` を指定した run は `neuron`、いずれも付けなければ `cpu` になります (Neuron の profiler を要求することは Neuron を要求することと同じだからです)。スケジューラがどのノードに載せたかではなく自分が要求したものが入るのは、これが run を探すときのキー (`alias` と組で run を指せる) であり、探す人の頭にあるのは自分が要求した値だからです。`profiled` は「profiler の経路を通ったか」を表します。shim は `nsys` を見つけた時点でこの値を立てるので、`nsys` の起動に失敗した実行でも true になり得ます。取得できたかどうかは `status` と `exit_reason`、そして次節以降で使う `stage_run` が返すファイルの一覧まで見て判断してください。`.nsys-rep` は MLflow のアーティファクトではなく `artifacts_uri` が指す trace バケットの prefix に置かれ、分析 MCP はこのタグを使って場所を解決します。
 
 失敗した実行も既定では記録され、`status=failed` と終了理由が残ります。遅い実行や落ちる実行こそプロファイルする価値があるという判断です。記録が不要だと分かっている試行だけ `--discard-on-fail` を付けます。
 
@@ -269,7 +271,7 @@ kubectl accelprof run --alias teama-gpu-nsys \
 
 ここから引ける実務の結論は 2 つです。区間を絞る目的はトレースを小さく的確にすることであって、速く走らせることではありません。そして絞り方によっては計測値そのものが歪むので、`--profile none` のベースラインを必ず同じ alias に置き、性能の数値はベースラインから、カーネルの内訳はプロファイル付きの run から取る、と使い分けてください。
 
-物理的な置き場所も意識します。トレースは Pod の `emptyDir` に書かれてから recorder が S3 に上げるので、大きな区間を撮るとノードのエフェメラルストレージを消費します。大きく撮るときは `--patch` で `emptyDir` に `sizeLimit` を付けるか、そもそも区間を絞ります。また recorder がワークロードを待つ上限は既定で 1 日です。これを超える実行では `--recorder-timeout` を伸ばさないと、ワークロードの終了前に、その時点のファイルだけが `status=failed` と `exit_reason=recorder-timeout` で記録されてしまいます。
+物理的な置き場所も意識します。トレースは Pod の `emptyDir` に書かれてから recorder が S3 に上げるので、大きな区間を撮るとノードのエフェメラルストレージを消費します。大きく撮るときは `--patch` で `emptyDir` に `sizeLimit` を付けるか、そもそも区間を絞ります。また recorder がワークロードを待つ上限は既定で 1 日です。これを超える実行では `--recorder-timeout` を伸ばさないと、ワークロードの終了前に、その時点のファイルだけが `status=unknown` で記録されてしまいます (ワークロードが成功したのか失敗したのかを recorder が知らないまま打ち切るので、`failed` ではありません)。`status=failed` で探しても見つからないので注意してください。
 
 ## 7. 分散ジョブでどの rank を撮るか
 
@@ -398,10 +400,21 @@ run のメタデータ (metrics、params、tags) は MLflow と一緒に消え�
 
 ```bash
 kubectl accelprof runs
-k delete jobs -l app.kubernetes.io/name=profiling-producer
 ```
 
-次に `mcp-host` を削除し、実験を回した namespace に作った `mcp-producer` ServiceAccount を掃除します。そのうえで `infra/eks` 側のマウントと mcp-reader を無効化します。`mcp_producer_role_arn` を渡さないと既定の空になり、producer の Pod Identity 紐付けも破棄されます。最後にデータ層のトグルを false にして apply します (destroy ではありません)。データ層の Terraform はリモート state を使うので、導入時と同じ backend とデータ層名を渡してから apply します。backend の設定は `infra/eks/backend.hcl` をそのまま渡し、キーだけを後から上書きします (後に渡した `-backend-config` が勝ちます)。この中のリージョンは state 置き場のリージョンで、クラスタのリージョンとは別物なので、`AWS_REGION` を渡してはいけません。
+Job と、導入スクリプトが namespace ごとに配った 4 つ (ConfigMap、Role、RoleBinding、点検 CronJob) を、`PRODUCER_NAMESPACES` に渡した namespace すべてから消します。`k` は既定 namespace にしか効かないので、namespace は明示します。特に `accelprof-orphan-check` CronJob は基盤イメージを参照したまま 1 時間ごとに起動し続けるので、基盤を撤去したあとに残すと失敗し続ける残骸になります。
+
+```bash
+for ns in team-a team-b; do
+  kubectl -n "$ns" delete jobs -l app.kubernetes.io/name=profiling-producer --ignore-not-found
+  kubectl -n "$ns" delete cronjob accelprof-orphan-check --ignore-not-found
+  kubectl -n "$ns" delete configmap accelprof-config --ignore-not-found
+  kubectl -n "$ns" delete rolebinding accelprof-producer --ignore-not-found
+  kubectl -n "$ns" delete role accelprof-producer --ignore-not-found
+done
+```
+
+次に `mcp-host` を削除し、実験を回した namespace すべてに作った `mcp-producer` ServiceAccount を掃除します (こちらも `kubectl -n <ns> delete serviceaccount mcp-producer` を namespace ごとに実行します)。そのうえで `infra/eks` 側のマウントと mcp-reader を無効化します。`mcp_producer_role_arn` を渡さないと既定の空になり、producer の Pod Identity 紐付けも破棄されます。最後にデータ層のトグルを false にして apply します (destroy ではありません)。データ層の Terraform はリモート state を使うので、導入時と同じ backend とデータ層名を渡してから apply します。backend の設定は `infra/eks/backend.hcl` をそのまま渡し、キーだけを後から上書きします (後に渡した `-backend-config` が勝ちます)。この中のリージョンは state 置き場のリージョンで、クラスタのリージョンとは別物なので、`AWS_REGION` を渡してはいけません。
 
 変数の指定にも注意が必要です。データ層の apply には、導入時と同じ `trace_regions` と `s3files_trace_region` も渡します。これを省くと変数の既定値が使われ、いま使っている trace バケットが「不要なリソース」と判定されて破棄対象に入ります。実際に省いて plan を作ると、us-east-2 の trace バケットを破棄して別リージョンのバケットを作る計画になりました (`prevent_destroy` があるので apply は中断しますが、そこで手が止まります)。正しく渡した場合の plan は、S3 Files のファイルシステムとアクセスポイントと IAM ロール、そしてデータ層が記録していた MLflow の 5 つを破棄し、バケットには触りません。あわせて in-place の更新が 3 つ出ます。producer と mcp-reader のポリシーから MLflow の statement が落ちるためで、指す先が無くなった権限を残さない挙動です。
 

@@ -28,7 +28,7 @@ NMA は二つの DaemonSet で構成されます。エージェント本体で�
 ここで、Basic04 で導入した GPU Operator の dcgm-exporter との関係が問題になります。dcgm-exporter は使用率などの連続的なメトリクスを Prometheus に出すためのもので、既定では埋め込み（embedded）モードで動き、自分の中に DCGM を抱えてポート 9400 でメトリクスを公開します。NMA の `dcgm-server`（ポート 5555）とは別のポート・別の役割なので、両者は同じ GPU ノードで問題なく共存します。
 
 :::message alert
-GPU Operator には standalone DCGM を立てるオプション（`dcgm.enabled=true`）もありますが、この基盤では有効化していません。standalone DCGM を `dcgm.hostNetwork=true` と組み合わせてホストネットワークで動かすと、その `nv-hostengine` がホストのポート 5555 を占有します。すると NMA の `dcgm-server` が同じ 5555 を要求できず、後から起動した方が `Pending` のまま立ち上がれずに GPU 健全性検知が沈黙します。GPU 健全性を読む役目は NMA の `dcgm-server` に任せれば十分なので、この基盤では [`gpu-addons.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/gpu-addons.tf) で standalone DCGM を無効のままにし、メトリクスは埋め込みモードの dcgm-exporter に任せています。
+GPU Operator には standalone DCGM を立てるオプション（`dcgm.enabled=true`）もありますが、この基盤では有効化していません。standalone DCGM の DaemonSet はホストのポート 5555 を `hostPort` で確保します。NMA の `dcgm-server` も同じ 5555 を要求するので、両者は同じポートを取り合い、後から起動した方が `Pending` のまま立ち上がれずに GPU 健全性検知が沈黙します (実機で確認しています)。そもそも AWS のドキュメントは、既存の DCGM 導入と NMA の併用はできないとしています。GPU 健全性を読む役目は NMA の `dcgm-server` に任せれば十分なので、この基盤では [`gpu-addons.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/gpu-addons.tf) で standalone DCGM を無効のままにし、メトリクスは埋め込みモードの dcgm-exporter に任せています。
 :::
 
 ## GPU taint と dcgm-server の相性
@@ -37,7 +37,7 @@ GPU Operator には standalone DCGM を立てるオプション（`dcgm.enabled=
 
 NMA を導入すると、エージェント本体はすべての taint を tolerate するので GPU ノードに載りますが、同梱の `dcgm-server` DaemonSet は tolerations が空のまま出荷されます。その結果、taint を持つ GPU ノードに `dcgm-server` が載れず、GPU があるノードでこそ GPU 健全性を読めない、という状態になります。
 
-そこでこの基盤では、NMA を EKS アドオンとして導入したうえで、アドオンの設定値（`configuration_values`）に `dcgmAgent.tolerations` を渡して GPU taint への toleration を与えています。この項目は NMA アドオンの v1.3.0 以降で設定スキーマに用意されています。これで `dcgm-server` が GPU ノードに載り、GPU 健全性検知が機能します。この設定は [`observability.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/observability.tf) にあります。
+そこでこの基盤では、NMA を EKS アドオンとして導入したうえで、アドオンの設定値（`configuration_values`）に `dcgmAgent.tolerations` を渡して GPU taint への toleration を与えています。渡すのは `nvidia.com/gpu` だけでは足りません。Capacity Block のノードは `capacity-reservation` taint も持つので、これを落とすと、前払いしている CB の GPU ノードにこそ `dcgm-server` が載らず `Pending` のままになります。この基盤は `nvidia.com/gpu` と `capacity-reservation` に加えて、利用者が `accelerator_pools` で定義した taint の分も渡しています。なお `dcgmAgent.tolerations` は NMA アドオンの v1.3.0 以降のスキーマにある項目です。この基盤はアドオンのバージョンを固定せず EKS の既定に任せているので、`aws eks describe-addon` でバージョンを確かめておくと確実です。これで `dcgm-server` が GPU ノードに載り、GPU 健全性検知が機能します。この設定は [`observability.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/observability.tf) にあります。
 
 ```hcl
 resource "aws_eks_addon" "node_monitoring_agent" {
@@ -46,15 +46,13 @@ resource "aws_eks_addon" "node_monitoring_agent" {
 
   configuration_values = jsonencode({
     dcgmAgent = {
-      tolerations = [{
-        key      = "nvidia.com/gpu"
-        operator = "Exists"
-        effect   = "NoSchedule"
-      }]
+      tolerations = local.dcgm_server_tolerations
     }
   })
 }
 ```
+
+渡している `local.dcgm_server_tolerations` は、`nvidia.com/gpu` と `capacity-reservation` に、利用者が `accelerator_pools` で定義した taint の分を足したものです。GPU ノードに付く taint の台帳と同じ場所で組み立てているので、プールに新しい taint を足したときに片方だけ更新されることがありません。ここを `nvidia.com/gpu` だけにすると、前払いしている Capacity Block の GPU ノードにこそ `dcgm-server` が載らず `Pending` のままになり、そのノードの `AcceleratedHardwareReady` が `False` に張り付いて延々とアラートが鳴ります。無条件の `Exists` にはせず対象を並べているのは、無関係な taint 付きノードにまで載らないようにするためです。
 
 エージェント本体はデフォルトで全 taint を tolerate するため、明示的に与えるのは `dcgm-server` の toleration だけに絞っています。これは NMA 側の設計上の見落とし（エージェント本体は全 taint を許容するのに `dcgm-server` だけ許容しない）と考えられ、将来 upstream の既定が修正されればこの `configuration_values` は不要になります。
 
@@ -67,7 +65,7 @@ NMA が出す NodeCondition は、Karpenter のノード自動修復（auto-repa
 # ワークショップ実施
 
 :::message
-手順 1 から 5 は連続して実施してください。注入した値は DCGM のキャッシュに残り、手順 5 でクリアするまで保持されますが、途中で長時間中断すると `dcgm-server` の再起動などで状態が変わることがあります。また、本章で注入する GPU 障害でノードが Unhealthy になっても、Karpenter のノード自動修復は無効にしてあるため、ノードが勝手に terminate されることはありません。この判断の理由は後述の「なぜ auto-repair を有効にしないか」で説明します。
+手順 1 から 5 は連続して実施してください。注入した値は DCGM のキャッシュに残り、手順 5 でクリアするまで保持されますが、途中で長時間中断すると `dcgm-server` の再起動などで状態が変わることがあります。また、本章で注入する GPU 障害でノードが Unhealthy になっても、Karpenter のノード自動修復は無効にしてあるため、ノードが勝手に terminate されることはありません。この判断の理由は、解説パートの「なぜ auto-repair を有効にしないか」で説明しています。
 :::
 
 ## 1. 前提を確認し、対象ノードを決める
