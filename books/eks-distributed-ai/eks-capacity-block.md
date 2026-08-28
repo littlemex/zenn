@@ -170,14 +170,14 @@ gpu-p4d = {
   device_plugin     = "nvidia"
   capacity_type     = "reserved"
   cb_reservation_id = "cr-023f18e20d3829f4e"          # zone と終了時刻はこの予約から導出
-  cb_end_date       = "2026-08-03T11:30:00+00:00"   # 省略可、予約から自動導出される値の緊急上書き用
+  cb_end_date       = "2026-08-03T11:30:00Z"        # 省略可、予約から自動導出される値の緊急上書き用
   volume_size       = "500Gi"
 }
 ```
 
 `device_plugin` はインスタンスタイプのファミリから決まります。`trn` または `inf` で始まれば `neuron`、それ以外は `nvidia` が入るので、Trainium/Inferentia の CB を買った場合も同じスクリプトがそのまま使えます（Neuron の場合は Neuron 用 AMI を指す `ami_ssm_parameter` の行も併せて出力されます）。
 
-`zone` は含まれません。前述のとおり `reserved` プールの AZ は予約から導出されるため、スクリプトは `zone` 行を出しません。特定の AZ に固定したい場合だけ、貼り付け後に自分で `zone = "<az>"` を足します。`cb_end_date` は予約が返す実際の終了時刻を自動で埋めていますが、`capacity-block.tf` は tfvars に `cb_end_date` が無くても予約 ID から終了時刻を導出するため、この行を消してもアラートは機能します。書いておくとその値が予約側の `EndDate` より優先される緊急上書きとして働くので、予約を更新したら `cb_end_date` も併せて更新してください（更新し忘れるとアラートが古い時刻のまま固定されます）。出力されたブロックを `accelerator-pools.auto.tfvars` の `accelerator_pools` に貼り付けます。同じファイルを `cat >` で完全形に上書きするのが冪等で確実ですが、ここでいう完全形とは **Basic04 で定義した `gpu-ddp` も含めた全プール** です。CB のプールだけを書いて上書きすると、次の `apply` で `gpu-ddp` の NodePool が destroy され、それを前提にしている Basic07 と Basic08 が進められなくなります。
+`zone` は含まれません。前述のとおり `reserved` プールの AZ は予約から導出されるため、スクリプトは `zone` 行を出しません。特定の AZ に固定したい場合だけ、貼り付け後に自分で `zone = "<az>"` を足します。`cb_end_date` は末尾が `Z` の UTC 表記でなければ `variables.tf` の validation が plan を落とします (`+00:00` のようなオフセット表記は EventBridge のスケジュールで UTC と誤解されるため)。スクリプトは予約が返す時刻をこの形式に正規化して出力するので、貼り付けたままなら問題ありません。この値は予約が返す実際の終了時刻を自動で埋めていますが、`capacity-block.tf` は tfvars に `cb_end_date` が無くても予約 ID から終了時刻を導出するため、この行を消してもアラートは機能します。書いておくとその値が予約側の `EndDate` より優先される緊急上書きとして働くので、予約を更新したら `cb_end_date` も併せて更新してください（更新し忘れるとアラートが古い時刻のまま固定されます）。出力されたブロックを `accelerator-pools.auto.tfvars` の `accelerator_pools` に貼り付けます。同じファイルを `cat >` で完全形に上書きするのが冪等で確実ですが、ここでいう完全形とは **Basic04 で定義した `gpu-ddp` も含めた全プール** です。CB のプールだけを書いて上書きすると、次の `apply` で `gpu-ddp` の NodePool が destroy され、それを前提にしている Basic07 と Basic08 が進められなくなります。
 
 ## 4. apply して NodePool を確認する
 

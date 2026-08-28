@@ -15,7 +15,7 @@ Basic01 から Basic11 で構築した Amazon EKS の土台の上に、GPU の�
 
 設計思想と全体像、なぜこの形なのかは別記事「[プロファイリングを楽にしたい](https://zenn.dev/littlemex/articles/8ab01bc40f627a)」で解説済みです。本章はそれを読んだ前提で、実際に手を動かして GPU プロファイルの分析までを通します。予約タグや `volumeHandle` の書式、読み取り専用マウント、digest 固定といった設計上の勘所の詳細はブログに譲り、本章では手順の中で必要な箇所に絞って触れます。
 
-本章の開始状態は、クラスタが `terraform apply` 済み (Basic01 から Basic11 相当の `infra/eks` が稼働) で、かつプロファイル基盤のデータ層 (`infra/data-layer`) はまだ適用していない状態です。導入は `infra/scripts/install-profiling.sh` の 1 コマンドで、データ層の適用からクラスタ側の配線、MCP サーバのデプロイまでを行います。プロファイルをとる側は `infra/eks/bin/kubectl-accelprof` の 1 コマンドで、自分のイメージとコマンドを渡すだけです。
+本章の開始状態は、クラスタが `terraform apply` 済み (Basic01 から Basic10 まで進めた `infra/eks` が稼働中) で、かつプロファイル基盤のデータ層 (`infra/data-layer`) はまだ適用していない状態です。導入は `infra/scripts/install-profiling.sh` の 1 コマンドで、データ層の適用からクラスタ側の配線、MCP サーバのデプロイまでを行います。ただし MCP サーバのイメージは自分の ECR から digest で引くので、初回は `DEV_BUILD=1` を付けてクラスタ内でビルドします (付けないと `no analysis image digest available` で停止します)。プロファイルをとる側は `infra/eks/bin/kubectl-accelprof` の 1 コマンドで、自分のイメージとコマンドを渡すだけです。
 
 :::message alert
 マネージド MLflow と S3 Files は課金リソースです。演習が終わったら本章末尾の後片付けを必ず実施してください。EFS ベースのファイルシステムはマウントターゲットが残っていると削除できないため、撤去順は必ず `infra/eks` を先、`infra/data-layer` を後にします。
