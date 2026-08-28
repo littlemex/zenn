@@ -151,11 +151,21 @@ env:
     value: "^lo,docker,veth"
   - name: FI_PROVIDER
     value: "efa"
+  - name: FI_EFA_USE_DEVICE_RDMA
+    value: "1"
+  - name: FI_EFA_FORK_SAFE
+    value: "1"
+  - name: NCCL_DEBUG
+    value: "INFO"
+  - name: NCCL_DEBUG_SUBSYS
+    value: "INIT,NET"
 ```
+
+後半の 4 つは測定のための設定です。`FI_EFA_USE_DEVICE_RDMA` は EFA デバイスの RDMA 経路を使わせ、`FI_EFA_FORK_SAFE` はプロセスが fork したときに libfabric が登録済みメモリを壊さないようにします。`NCCL_DEBUG` を `INFO` にしているのは、EFA が実際に選ばれた証拠となる `NET/OFI Selected provider is efa` の行がこのレベルでしか出ないためで、`NCCL_DEBUG_SUBSYS` でその判断に必要な範囲までログ量を絞っています。
 
 要点は `NCCL_SOCKET_IFNAME` を `^` で始まる除外パターンで書くことです。`efa0,efa1,...` のような許可リスト方式で名指しすると bootstrap に失敗します。NCCL は起動時の rank 間ランデブーを TCP ソケットで行いますが、`efa-only` インターフェースは IP を持たないため、これらを名指しすると bootstrap 用の到達可能なインターフェースが見つからず接続できません。除外パターンで `lo` やコンテナ仮想 NIC（`docker`／`veth`）を外し、ノードの IP を持つインターフェースを NCCL に選ばせるのが正しい書き方です。
 
-この値は本書のチャートでは 1 か所（`infra/eks/charts/experiments/values.yaml`）にデフォルトとして持たせ、そこから各測定ワークロードの Pod に環境変数として差し込んでいます。デフォルトは `values.yaml` の [`socketIfname`](https://github.com/littlemex/distributed-ai/blob/9d3f5031ed217c4a90666e5cd39e18dab1f15357/infra/eks/charts/experiments/values.yaml#L274) で定義し、本章で使う TrainJob では [`nccl-trainjob.yaml`](https://github.com/littlemex/distributed-ai/blob/9d3f5031ed217c4a90666e5cd39e18dab1f15357/infra/eks/charts/experiments/templates/nccl-trainjob.yaml#L208) が `NCCL_SOCKET_IFNAME` としてコンテナに渡します。単ノードの sanity 用 [`nccl-probe.yaml`](https://github.com/littlemex/distributed-ai/blob/9d3f5031ed217c4a90666e5cd39e18dab1f15357/infra/eks/charts/experiments/templates/nccl-probe.yaml#L50) と `mpirun` 方式の [`nccl-sshd.yaml`](https://github.com/littlemex/distributed-ai/blob/9d3f5031ed217c4a90666e5cd39e18dab1f15357/infra/eks/charts/experiments/templates/nccl-sshd.yaml#L100) も同じ値を渡しています。自分でワークロードを書く場合も、Pod の `env` にこの 1 行を同じ形で入れます。
+この値は本書のチャートでは 1 か所、[`values.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/values.yaml) の `ncclSocketIfname` にデフォルトとして持たせています。本章で使う TrainJob の [`nccl-trainjob.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/nccl-trainjob.yaml)、単ノードの sanity 用 [`nccl-probe.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/nccl-probe.yaml)、`mpirun` 方式の [`nccl-sshd.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/nccl-sshd.yaml) の 3 つが、いずれもそこから `NCCL_SOCKET_IFNAME` としてコンテナに渡します。特定のワークロードだけ別のパターンにしたい場合は `--set ncclProbe.socketIfname=...` のように個別に上書きできます。自分でワークロードを書く場合も、Pod の `env` にこの 1 行を同じ形で入れます。
 
 なお、AWS の [awsome-distributed-ai リポジトリの EFA Cheatsheet](https://github.com/awslabs/awsome-distributed-ai/blob/main/1.architectures/efa-cheatsheet.md) に、`NCCL_SOCKET_IFNAME` を含む EFA/NCCL 環境変数の推奨値がまとまっています。バージョンごとの推奨が変わるので、あわせて参照すると良いでしょう。
 
@@ -167,7 +177,8 @@ env:
 
 - Basic05 で EFA 対応インスタンスの Capacity Block を確保済み。
 - リポジトリ同梱の NCCL 測定用 TrainJob チャート（`infra/eks/charts/experiments` の `ncclTrainjob`）
-- Basic02 で作った共有 PVC `shared-claim` が対象 namespace にあること (`ncclTrainjob` は `/shared` をマウントするため、無いとレンダリング時に停止します)
+- Capacity Block のノードは予約の AZ に立つので、共有ストレージ (単一 AZ の FSx for OpenZFS) と別の AZ になることがあります。NFS は AZ を跨いでもマウントできるため本手順は動きますが、`/shared` への読み書きに AZ 間のデータ転送料金と余分なレイテンシがかかります。本章が `/shared` に置くのは数 KB の測定スクリプトだけなので測定結果には影響しません
+- Basic02 で作った共有 PVC `shared-claim` が対象 namespace にあること (`ncclTrainjob` は `/shared` をマウントします。チャートが検査するのは PVC 名を渡したかどうかだけなので、PVC が実在しなくてもレンダリングと `kubectl apply` は通り、Pod が `Pending` のまま止まります。`k get pvc -n $NAMESPACE shared-claim` で `Bound` を先に確かめてください)
 - `k` と `KUBECONFIG` は Basic01 step 2 の 4 行で設定済み
 
 EFA 関連のアドオン（EC2NodeClass の `networkInterfaces` 自動生成、EFA 用セキュリティグループ、`aws-efa-k8s-device-plugin`）は、EFA 対応プールが 1 つ以上あることを条件に前章までの `terraform apply` で導入済みです。本章はそれらが正しく効いているかを確認する章なので、新しくインフラを足す操作はありません。
@@ -236,7 +247,7 @@ helm template exp charts/experiments -n "$NAMESPACE" \
   --set ncclTrainjob.nodeRole=$POOL \
   --set ncclTrainjob.gpuCount=$GPU \
   --set ncclTrainjob.efaCount=$EFA \
-  --set ncclTrainjob.image=763104351884.dkr.ecr.us-west-2.amazonaws.com/pytorch-training:2.10.0-gpu-py313-cu130-ubuntu22.04-ec2-v1.11 \
+  --set ncclTrainjob.image=763104351884.dkr.ecr.$AWS_REGION.amazonaws.com/pytorch-training:2.10.0-gpu-py313-cu130-ubuntu22.04-ec2-v1.11 \
   --set sharedStorage.existingClaimName=shared-claim \
   | k apply -f -
 ```
@@ -278,7 +289,7 @@ Karpenter が起動時に付ける `node-role=<プール名>` を使えば、ノ
 `torchrun` と EFA プラグインの両方を持つイメージとして、AWS Deep Learning Containers があります。利用可能なタグは次のように調べられます。
 
 ```bash
-aws ecr describe-images --registry-id 763104351884 --repository-name pytorch-training \
+aws ecr describe-images --region "$AWS_REGION" --registry-id 763104351884 --repository-name pytorch-training \
   --query 'sort_by(imageDetails,&imagePushedAt)[-20:].imageTags[]' --output text | tr '\t' '\n'
 ```
 
@@ -286,7 +297,9 @@ aws ecr describe-images --registry-id 763104351884 --repository-name pytorch-tra
 
 ## 4. ノード上の EFA リソースを確認する
 
-手順 3 でノードが起動したら、手順 2 の値が実際にノードへ反映されているかを確認します。ノードが `Ready` になっていれば、測定 Pod の `Running` を待たずにこの allocatable 確認を実行できます（測定 Pod は DLC イメージの pull で `ContainerCreating` に留まっていることがありますが、ノードの EFA allocatable はその前から確認できます）。
+手順 3 でノードが起動したら、手順 2 の値が実際にノードへ反映されているかを確認します。
+
+なお手順 3 のレンダリングは、測定用の TrainJob だけでなく `nccl-trainjob-stage` という Job も作ります。測定スクリプト `bench.py` は ConfigMap として渡されますが、TrainJob の Runtime がマウントするのは `/shared` だけで ConfigMap ではないため、この Job が CPU プール上で ConfigMap の内容を `/shared/nccl-bench/bench.py` にコピーします。TrainJob はそのパスを `torchrun` に渡すので、Job が `Completed` になっていることが測定の前提です。`k get pods -n $NAMESPACE` に busybox の Pod が現れるのはこのためで、測定 Pod が「スクリプトが無い」で落ちる場合はまずこの Job の状態を見てください。ノードが `Ready` になっていれば、測定 Pod の `Running` を待たずにこの allocatable 確認を実行できます（測定 Pod は DLC イメージの pull で `ContainerCreating` に留まっていることがありますが、ノードの EFA allocatable はその前から確認できます）。
 
 `POOL` は Basic05 で `accelerator-pools.auto.tfvars` に貼り付けたプール名に置き換えます。
 

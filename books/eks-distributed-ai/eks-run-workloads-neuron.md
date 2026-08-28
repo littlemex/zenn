@@ -8,14 +8,14 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 本章では、Basic07 で GPU 向けに vLLM 推論サーバーを立ち上げましたが、この章では vLLM と vLLM Neuron Plugin というものを使って AWS Trainium チップの上で LLM 推論を動かします。大きな違いは 2 点で、1 つはランタイム、もう 1 つはハードウェアの確保方法です。ランタイムは、Neuron が CUDA ではなく Neuron ランタイムで動くため、vLLM 本体に Neuron 対応を足す [vLLM Neuron plugin](https://github.com/aws-neuron/upstreaming-to-vllm) を同梱した Deep Learning Container（DLC）を使います。モデルはマルチモーダル（画像とテキスト）の `Qwen/Qwen3-VL-4B-Instruct` を使います。
 
 :::message
-本章は Capacity Block を使います。trn2.3xlarge はメルボルンリージョンなどで spot を使うこともできます。Basic05 の手順で確保した trn2 の Capacity Block ノードが前提なのでクラスターと合わせて trn2 対応のリージョンでクラスター作成から準備してください。今回はマルチノードや EFA は使いません。
+本章は Basic05 の手順で確保した trn2 の Capacity Block ノードを前提にします。クラスタと Capacity Block は同じリージョンに無いといけないので、これまでの章と違うリージョンで trn2 を確保する場合は、Basic01 に戻ってそのリージョンにクラスタを作るところからやり直すことになります。作業量が大きいので、リージョンは Basic01 の時点で決めておくのが楽です。なお trn2.3xlarge は一部のリージョンで Spot も選べますが、本章では扱いません。今回はマルチノードや EFA も使いません。
 :::
 
 # 解説
 
 ## 全体構成
 
-本章は、Capacity Block で確保した Trainium ノード 1 台に、vLLM Neuron plugin の推論サーバーの Pod を載せる構成です。
+本章は、Capacity Block で確保した Trainium ノード 1 台に、vLLM Neuron plugin の推論サーバーの Pod を載せる構成です。Pod をそこに載せているのは `aws.amazon.com/neuron` というデバイス要求で、Capacity Block のノードそのものを名指しで指定しているわけではありません。同じクラスタに on-demand や Spot の Neuron プールも置いている場合は、`--set neuronVllmPlugin.nodeRole=<プール名>` でどのプールに載せるかを明示してください。
 
 ![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 
@@ -70,7 +70,7 @@ ip-10-0-21-164.ap-southeast-4.compute.internal   1        4
 `trn2.3xlarge` は Trainium2 デバイスを 1 個持ち、device plugin はそれを「デバイス 1 個」（`aws.amazon.com/neuron: 1`）かつ「NeuronCore 4 個」（`aws.amazon.com/neuroncore: 4`）として同時に advertise します。この 2 つの単位の違いが、手順 3 のチャート投入時に効いてきます。
 
 :::message
-`CORE` が `4` になるのは、このノードが論理 NeuronCore 設定 LNC=2（環境変数 `NEURON_LOGICAL_NC_CONFIG=2` 相当）で動作しているためです。もし環境によって `CORE` が `8`（LNC=1）と表示された場合は、後述の `--tensor-parallel-size` を advertise されたコア数（この例なら 8）に合わせてください。
+`CORE` が `4` になるのは、このノードが論理 NeuronCore 設定 LNC=2（環境変数 `NEURON_LOGICAL_NC_CONFIG=2` 相当）で動作しているためです。もし環境によって `CORE` が `8`（LNC=1）と表示された場合は、テンソル並列数を advertise されたコア数（この例なら 8）に合わせます。チャートの既定は 4 なので、手順 3 のコマンドに `--set neuronVllmPlugin.tpSize=8` を足してください（この値がコンテナの `--tensor-parallel-size` になります）。
 :::
 
 ## 2. 作業用 namespace を用意する
@@ -105,7 +105,7 @@ trn2 ノードは Trainium デバイスが 1 個しかないため、Deployment 
 
 ### 初回コンパイルとキャッシュ（VLLM_CACHE_ROOT）
 
-前述のとおり Neuron は初回起動時にモデルを NEFF へコンパイルします。`VLLM_CACHE_ROOT` にコンパイル成果物の置き場を指定すると、次回以降はキャッシュから読み込まれ、コンパイルを飛ばして起動します。ここで注意したいのは、`VLLM_CACHE_ROOT` がキャッシュするのは NEFF 成果物であって、HuggingFace から取得するモデル本体（数 GB）ではない点です。本章ではどちらも Pod 内の一時ボリューム（`emptyDir`）に置くため、Pod を作り直すと「モデルの再ダウンロード」と「NEFF の再コンパイル」の両方が発生します。Recreate 戦略のもとでは、Deployment を更新するたびにこの両方が走ります。永続ストレージにキャッシュを置けば、Pod やノードを跨いで NEFF を再利用できます。
+前述のとおり Neuron は初回起動時にモデルを NEFF へコンパイルします。`VLLM_CACHE_ROOT` にコンパイル成果物の置き場を指定すると、次回以降はキャッシュから読み込まれ、コンパイルを飛ばして起動します。ここで注意したいのは、`VLLM_CACHE_ROOT` がキャッシュするのは NEFF 成果物であって、HuggingFace から取得するモデル本体（数 GB）ではない点です。本章のチャートが `emptyDir` に載せているのは `VLLM_CACHE_ROOT`、つまり NEFF の側だけです。モデル本体のダウンロード先（HuggingFace のキャッシュ）は指定していないので、コンテナの書き込みレイヤに落ちます。どちらも Pod と一緒に消えるため、Pod を作り直すと「モデルの再ダウンロード」と「NEFF の再コンパイル」の両方が発生します。Recreate 戦略のもとでは、Deployment を更新するたびにこの両方が走ります。永続ストレージにキャッシュを置けば、Pod やノードを跨いで NEFF を再利用できます。
 
 ### 環境変数と権限、初回のデプロイ期限
 

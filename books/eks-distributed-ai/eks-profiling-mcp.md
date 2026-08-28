@@ -33,7 +33,7 @@ Basic01 から Basic11 で構築した Amazon EKS の土台の上に、GPU の�
 
 ### apply の前に必ず plan を分類する
 
-このスクリプトは `terraform apply` を無条件に実行しません。まず plan を作り、変更を 3 つに分類します。1 つ目が「記録の正本」で、trace バケット、MLflow アーティファクトバケット、SageMaker MLflow 本体、KMS キー、S3 Files のファイルシステムとアクセスポイントです。これらを削除する plan は上書き手段なしで拒否し、作成しようとする plan も拒否します。すでに存在するリソースを作成しようとしているなら、それは state がそのリソースを見失った状態を意味し、そのまま適用すると名前の衝突か、state が把握していないリソースの再設定になるからです。2 つ目が profiling 基盤自身の変更で、これは適用します。3 つ目がそれ以外で、停止して一覧を表示します。長く運用したクラスタには profiling と無関係な差分が溜まるので、それを黙って適用しないための線引きです。基盤だけ収束させたいときは `PROFILING_ONLY=1`、すべて受け入れるときは `ALLOW_UNRELATED=1` を渡します。
+このスクリプトは `terraform apply` を無条件に実行しません。まず plan を作り、変更を 3 つに分類します。1 つ目が「記録の正本」で、trace バケット、MLflow アーティファクトバケット、SageMaker MLflow 本体、KMS キー、S3 Files のファイルシステムとアクセスポイントです。これらを削除する plan は上書き手段なしで拒否します。置き換えも削除を含むので同じ扱いです。変更する plan は `ALLOW_RECORD_UPDATES=1` を渡さない限り停止します。保持期間の短縮やポリシーの絞り込みは削除ではなく更新として現れますが、それでも記録済みのものを失い得るからです。一方で作成は拒否しません。plan は「state に一度も無かった」と「state が見失った」を区別できず、初回導入と失敗した導入の再開が同じ形の差分として現れるためです。すでに存在するリソースを作ろうとした場合は AWS 側がエラーで止めるので、データが失われることもありません。2 つ目が profiling 基盤自身の変更で、これは適用します。3 つ目がそれ以外で、停止して一覧を表示します。長く運用したクラスタには profiling と無関係な差分が溜まるので、それを黙って適用しないための線引きです。基盤だけ収束させたいときは `PROFILING_ONLY=1`、すべて受け入れるときは `ALLOW_UNRELATED=1` を渡します。
 
 ### producer Job の中身
 
@@ -56,11 +56,11 @@ initContainer が基盤イメージから profiler と shim を共有ボリュ�
 
 ### namespace ごとに配られる契約
 
-導入スクリプトは、許可した namespace のそれぞれに 3 つを配ります。リージョン・trace バケット・MLflow の ARN・MLflow の UI の URL・基盤イメージの digest を持つ ConfigMap、recorder が自分の Pod の状態を読んで自分の Job に注釈を書くための Role、そして記録されずに終わった Job を報告する時間ごとの点検です。プロファイルを撮る人が基盤の値を 1 つも知らなくて済むのは、この ConfigMap があるからです。namespace がまだ存在しない場合、そこには何も配られず警告だけが出るので、後述のとおり namespace は導入スクリプトより先に作ります。
+導入スクリプトは、許可した namespace のそれぞれに 3 つを配ります。リージョン・trace バケット・MLflow の ARN・MLflow の UI の URL・基盤イメージの digest を持つ ConfigMap、recorder が自分の Pod の状態を読み、Job に run id の注釈を書くための Role (Kubernetes の RBAC はリソース名を絞らない限り種類単位なので、実際の権限はその namespace の Pod の参照と Job の参照・更新になります。共有 namespace で使う場合はこの範囲を前提に判断してください)、そして記録されずに終わった Job を報告する時間ごとの点検です。プロファイルを撮る人が基盤の値を 1 つも知らなくて済むのは、この ConfigMap があるからです。namespace がまだ存在しない場合、そこには何も配られず警告だけが出るので、後述のとおり namespace は導入スクリプトより先に作ります。
 
 ### 記録の単位と後片付けの単位
 
-alias は MLflow の experiment 名と S3 の第 1 階層プレフィックスを兼ねます。つまり削除・保持期間・分析側から見える範囲・掃除の単位がすべて alias です。実験キャンペーンごとに 1 つの alias を `テナント名-系列名` の形で付け、キャンペーン内の反復は `workload_id` と自由なパラメータで表します。反復ごとに alias を作ると削除単位が増えていき、キャンペーンを 1 手で片付けられなくなります。
+alias は MLflow の experiment 名と S3 の第 1 階層プレフィックスを兼ねます。つまり分析側から見える範囲と、掃除するときに人が数える単位が alias です。ただし alias 単位の削除や保持期間を実行してくれるコマンドは同梱していません。`kubectl accelprof` にあるのは `run` と `get` と `runs` だけで、S3 のライフサイクル (`trace_glacier_after_days` と `trace_expire_after_days`) もバケット全体にかかります。alias 単位の掃除は、MLflow の experiment 削除と `aws s3 rm --recursive s3://<trace バケット>/<alias>/` を人が対で実行する運用になります。実験キャンペーンごとに 1 つの alias を `テナント名-系列名` の形で付け、キャンペーン内の反復は `workload_id` と自由なパラメータで表します。反復ごとに alias を作ると削除単位が増えていき、キャンペーンを 1 手で片付けられなくなります。
 
 Job そのものは終了から 2 日後に Kubernetes が消します。run の記録は Job の寿命とは独立で、明示的に消すか保持ポリシーの対象になるまで残ります。run_id は recorder が Job の注釈に書き戻すので、Job がある間は `kubectl accelprof get` で引けます。消えたあとは MLflow を alias と `workload_id` で検索します。
 
@@ -144,7 +144,7 @@ export PATH="$(git rev-parse --show-toplevel)/infra/eks/bin:$PATH"
 kubectl accelprof --help >/dev/null && echo "plugin ok"
 ```
 
-チェックアウトを持たない人 (プロファイルを撮るだけで基盤は触らない人) 向けの経路も 1 行あります。リポジトリを固定タグで `~/distributed-ai-v0.2.0` に取得し、プラグインを `~/.local/bin` に置きます。
+チェックアウトを持たない人 (プロファイルを撮るだけで基盤は触らない人) 向けの経路も 1 行あります。リポジトリを固定タグで `~/distributed-ai-v0.2.0` に取得し、プラグインを `~/.local/bin` に置きます。この経路も冒頭で `git`、`terraform`、`kubectl`、`helm`、`aws`、`python3`、`curl` の存在を確認し、欠けていればそこで止まります。プラグインの設置だけが目的でも `terraform` と `helm` は入れておいてください。
 
 ```bash
 export CLUSTER_NAME=distai-eks
@@ -222,7 +222,7 @@ shim (`infra/eks/images/accelprof/entry.sh`) が実行しているのは、次�
 nsys profile -t cuda,nvtx,osrt -o /accelprof/out/traces/rank-<index> --force-overwrite true <あなたのコマンド>
 ```
 
-`-t` で指定した 3 系統が収集対象です。`cuda` は CUDA API の呼び出しと GPU 上のカーネル実行やメモリ転送で、CUPTI 経由で収集されます。`nvtx` はコード側で付けた NVTX の区間とマーカーなので、付けていなければ何も出ません。`osrt` はファイル I/O や同期などの OS ランタイム呼び出しです。実際にこの既定で撮ったトレースを `nsys-stats` にかけると、NVTX Range Summary、OS Runtime Summary、CUDA API Summary、CUDA GPU Kernel Summary の 4 つが返ります。基盤イメージに入っている `nsys` のバージョンは執筆時点で 2026.4.1 で、検証したノードの NVIDIA ドライバは 580.178.04、ワークロード側の CUDA は 12.4 でした。
+`-t` で指定した 3 系統が収集対象です。`cuda` は CUDA API の呼び出しと GPU 上のカーネル実行やメモリ転送で、CUPTI 経由で収集されます。`nvtx` はコード側で付けた NVTX の区間とマーカーなので、付けていなければ何も出ません。`osrt` はファイル I/O や同期などの OS ランタイム呼び出しです。実際にこの既定で撮ったトレースを `nsys-stats` にかけると、NVTX Range Summary、OS Runtime Summary、CUDA API Summary、CUDA GPU Kernel Summary の 4 つが返ります。基盤イメージに入っている `nsys` のバージョンは、公開イメージを digest 指定で使う場合は 2026.4.1 です。`DEV_BUILD=1` で自分でビルドする場合は Dockerfile が `nsight-systems-cli` をバージョン固定せずに取得するため、ビルドした時期によって別のバージョンが入ります。以下の実測値はこのバージョンでのものです。検証したノードの NVIDIA ドライバは 580.178.04、ワークロード側の CUDA は 12.4 でした。
 
 既定で取れないものも押さえておきます。第一に GPU のハードウェアメトリクス (SM の稼働率、Tensor Core の利用率、DRAM 帯域) は含まれません。これらは `--gpu-metrics-devices` の指定が必要で、さらに NVIDIA ドライバの性能カウンタ制限に触れるため、ノード側の設定か追加の権限が要ります。本基盤ではこの経路は未検証です。第二にカーネル単位の詳細 (occupancy の内訳、命令ミックス、メモリ階層のヒット率) は nsys の守備範囲外で、Nsight Compute (`ncu`) の領分です。nsys で支配的なカーネルを特定し、そのカーネルを `ncu` で深掘りするのが定石です。第三に NCCL の通信は集合通信カーネルとしてカーネルの列には現れますが、どの集合操作がどのメッセージサイズで走ったかという意味づけは既定では付きません。
 
@@ -358,7 +358,7 @@ alias は調査キャンペーン 1 つに 1 つ付け、条件の違いは `--p
 
 失敗した run は既定で残るので、調査が終わったら `status=failed` で検索して整理します。記録されずに終わった Job (退避やノード排出で recorder が走らなかった Job) は、namespace ごとの `accelprof-orphan-check` が 1 時間ごとに点検し、見つかった場合に失敗として報告します。ここで報告が出たら取り逃しがあるということです。逆に CronJob 自体が起動できずに失敗している場合は、取り逃しの有無が分からない状態なので、まず点検が動く状態に戻します。
 
-課金の主因は 3 つです。MLflow が tracking server の場合は起動している間課金されるので、使わない期間は後片付けの手順で停止します (停止は記録を保持します)。app の場合は停止という概念がなく、放置しても課金要素はバケットだけです。trace バケットは `.nsys-rep` の蓄積で単調に増えるので、終わったキャンペーンは alias 単位で掃除します。そして GPU ノードそのものが最も高いので、プロファイル用の Job は短く保ちます。掃除のときに MLflow の experiment だけ、あるいは S3 のプレフィックスだけを消すと、片方だけが残って参照できない run ができます。必ず alias を単位にして両方を消します。
+課金の主因は 3 つです。MLflow が tracking server の場合は起動している間課金されるので、使わない期間は後片付けの手順で停止します (停止は記録を保持します)。app の場合は停止という概念がなく、放置しても課金要素はバケットだけです。trace バケットは `.nsys-rep` の蓄積で単調に増えるので、終わったキャンペーンは alias 単位で掃除します。前述のとおりこれは自動では起きないので、MLflow の experiment 削除と S3 プレフィックスの削除を手で行います。そして GPU ノードそのものが最も高いので、プロファイル用の Job は短く保ちます。掃除のときに MLflow の experiment だけ、あるいは S3 のプレフィックスだけを消すと、片方だけが残って参照できない run ができます。必ず alias を単位にして両方を消します。
 
 ## 10. 自分の環境に合わせて変えるときに触る場所
 

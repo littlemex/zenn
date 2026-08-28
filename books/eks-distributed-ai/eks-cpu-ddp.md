@@ -69,7 +69,7 @@ TrainJob 側は台数（`numNodes`）とノードあたりのプロセス数（`
 
 複数ノードの TrainJob では、各 rank が別ノードの別 Pod で動き、同じデータセット置き場を読み、rank 0 が成果物を書きます。rank 0 がどのノードに配置されても同じ場所に成果物が集まるよう、全ノードから同一パスを読み書きできる共有ストレージ（ReadWriteMany）が要ります。共有ファイルシステム上での同時書き込みによる破損を避けるため、スナップショットの書き込みは rank 0 だけが行います。MNIST のダウンロードは全 rank が実行します（`download=True` は冪等で、既にファイルが揃っていれば torchvision 側が再取得をスキップします）。
 
-保存先は Helm の `sharedStorage.backend` で切り替えられます。既定の `openzfs` のほかに、`fsx`（FSx for Lustre）、リージョン規模のマルチ AZ 共有が要るときは `efs` を選べます。3 つのバックエンドはいずれも Terraform 側で静的 PV が用意される設計で、選んだバックエンドの `var.<x>_enabled` が有効になっている必要があります。既定で `openzfs` と `fsx` は有効、`efs` は無効（ドライバのみ常設）です。
+保存先を変えたい場合に効くのは Helm の値ではなく、`shared-claim` がどの PV に結びついているかです。Terraform は `openzfs`（FSx for OpenZFS）、`fsx`（FSx for Lustre）、`efs` の 3 つについてそれぞれ静的 PV を用意する設計で、既定では `openzfs` と `fsx` が有効、`efs` は無効（ドライバのみ常設）です。後述の手順 3 で `shared-claim` を作るときに、どの PV 名を埋め込むかで保存先が決まります。ワークロードに渡す `--set sharedStorage.existingClaimName=shared-claim` は「どの PVC を使うか」だけを伝える値なので、これを変えずに保存先を切り替えることはできません。なお `values.yaml` には `sharedStorage.backend` という項目が残っていますが、これは PV 名を思い出すための注記で、現在どのテンプレートからも読まれていません。
 
 ## 学習用イメージをクラスタ内でビルドする
 
@@ -89,7 +89,7 @@ TrainJob 側は台数（`numNodes`）とノードあたりのプロセス数（`
 
 ## 実行時の注意点
 
-**CPU ノードは Karpenter の consolidation で消えることがあります。** 本章の CPU ノードは Karpenter の CPU NodePool が起動するもので、`consolidationPolicy: WhenEmptyOrUnderutilized` はアイドルなノードを早めに回収します。学習 Pod が単独で載っているノードが「余剰」と判断されて学習中に evict される事故を避けるため、Pod には `karpenter.sh/do-not-disrupt: "true"` アノテーションが必要です。これは本 book がクラスタに用意した Runtime (`torch-distributed-eks`) が全 Pod に自動で付けるので、読者が手で足す操作はありません。Karpenter そのものは Basic03 で扱うので、ここでは「アイドルに見えるノードを自動で回収する仕組みがある」とだけ捉えてください。
+**CPU ノードは Karpenter に置き換えられることがあります。** 本章の CPU ノードは Karpenter の CPU NodePool が起動するもので、`consolidationPolicy` は `WhenEmpty` です。Pod が 1 つでも載っているノードは consolidation の対象にならないので、学習中のノードが「余剰」と判断されて消されることはありません。ただし Karpenter v1 の drift は consolidation とは独立に動き、ノードの AMI に新しいリリースが出ると稼働中のノードでも置き換えの対象になります。学習の途中でこれが起きると成果物を失うため、Pod には `karpenter.sh/do-not-disrupt: "true"` アノテーションが必要です。これは本 book がクラスタに用意した Runtime (`torch-distributed-eks`) が全 Pod に自動で付けるので、読者が手で足す操作はありません。Karpenter そのものは Basic03 で扱うので、ここでは「アイドルに見えるノードを自動で回収する仕組みがある」とだけ捉えてください。
 
 # ワークショップ実施
 
@@ -266,7 +266,9 @@ k logs --tail=-1 -l "jobset.sigs.k8s.io/jobset-name=ddp-trainjob,batch.kubernete
 [rank 1/2] done
 ```
 
-`WORLD_SIZE=2` の 2 プロセスが別々のノードで起動し、両 rank の loss がエポックを追って単調に下がっていることから、2 つのノードが勾配を all-reduce しながら 1 つのモデルを学習できていることが分かります（各 rank はデータセットの異なる分割を担当するので、loss は完全に同一ではなく近い値で推移します）。最後に TrainJob が `Complete` になり、rank 0 がスナップショットを共有ストレージ上の `/shared/output/trainjob-cpu/snapshot.pt` に保存します。
+`WORLD_SIZE=2` の 2 プロセスが別々のノードで起動し、両 rank の loss がエポックを追って下がっていることから、2 つのノードが勾配を all-reduce しながら 1 つのモデルを学習できていることが分かります（各 rank はデータセットの異なる分割を担当するので、loss は完全に同一ではなく近い値で推移します）。見るのは全体の低下傾向で、あるエポックだけ前より少し上がることは通常の学習でも起こります。1 回の上下で all-reduce が壊れていると判断する必要はありません。最後に TrainJob が `Complete` になり、rank 0 がスナップショットを共有ストレージ上の `/shared/output/trainjob-cpu/snapshot.pt` に保存します。
+
+このスナップショットがあると、`ddp.py` は次回起動時にそれを読んで途中のエポックから再開します。つまり同じ TrainJob をもう一度作り直すと、2 回目は保存済みのエポックから始まるため、ログが数行だけ出てすぐ `Complete` になります。上に載せた epoch 0 から始まるログとは一致しませんが、これは壊れているのではなく resume が働いた結果です。最初からやり直したい場合は、`--set trainjobTrain.outputSubdir=<別の名前>` で保存先を変えるか、`/shared/output/trainjob-cpu/snapshot.pt` を消してから投入してください。
 
 ログを追い損ねても、TrainJob が `Complete` になったことと、共有ストレージ上のスナップショットで完了を確認できます。`kubectl wait` の `--for=condition=Complete` が完了を待つ確実な方法です。
 

@@ -165,7 +165,7 @@ openzfs-shared   256Gi      RWX            Retain           Available           
 :::message
 ここで注意したいのが、`kubectl get pv` で `STATUS=Available` に見えても、`CLAIM` 欄に別 namespace の PVC 名が残っていると、その PV は「その PVC 専用に予約された」状態で、別 namespace の PVC はバインドできず `Pending` のままになる点です。静的 PV は `Retain` なので、一度どれかの PVC がバインドすると `spec.claimRef` が残り続けるためです。この解放は手順を 1 つでも誤ると PVC を掴んだ Pod のファイナライザやテナントの ValidatingAdmissionPolicy でハマりやすいので、確実に済ませたい場合は次のスクリプトを使えます。
 
-`--storage` には `fsx` と `openzfs` と `efs` のいずれかを指定します。対象の PV を確実に `Available` へ戻します。
+`--storage` には `fsx` と `openzfs` と `efs` のいずれかを指定します。解放できる状態であれば対象の PV を `Available` へ戻します。ただしその PV を待っている PVC が別にいる場合は `Available` を経ずにそちらへ再バインドし、それも成功として終わります (使われている状態に戻っただけなので、意図どおりです)。逆に、PVC を掴んでいる Pod が Deployment などのコントローラ管理下にある場合は、消しても作り直されて同じ PVC を掴み直すため、`--force` を付けても停止します。そのコントローラを先に止めてから再実行してください。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks/scripts
