@@ -63,7 +63,7 @@ TrainJob 側は台数（`numNodes`）とノードあたりのプロセス数（`
 
 ## 学習結果の保存先と共有ストレージ
 
-本章のワークロード（`trainjobTrain`）は、MNIST のデータと学習スナップショットを共有ストレージに保存します。既定の保存先は単一 AZ の **Amazon FSx for OpenZFS** です。ストレージの詳細は後続の章で扱いますが、`openzfs_enabled` が既定で有効なため、`terraform apply` の時点でファイルシステムと静的 PersistentVolume（`openzfs-shared`）はすでに作られています。
+本章のワークロード（`trainjobTrain`）は、MNIST のデータと学習スナップショットを共有ストレージに保存します。既定の保存先は単一 AZ の **Amazon FSx for OpenZFS** です。Basic01 で `DISTAI_SHARED_STORAGE=off` を付けて実行した場合はファイルシステムが作られていないため、先に `infra/eks/terraform.tfvars` の `fsx_enabled` と `openzfs_enabled` を `true` に直して `distai-up.sh` を実行し直してください。そのままでは後述の `terraform output -json shared_storage` が PV 名を返さず、`shared-claim` が `Bound` になりません。ストレージの詳細は後続の章で扱いますが、`openzfs_enabled` が既定で有効なため、`terraform apply` の時点でファイルシステムと静的 PersistentVolume（`openzfs-shared`）はすでに作られています。
 
 この PV を掴む PersistentVolumeClaim（`shared-claim`）は、Helm チャートは作りません。読者が `kubectl apply` で 1 回だけ作り、その名前を `--set sharedStorage.existingClaimName=shared-claim` で各ワークロードに渡します。なぜチャートに作らせないのかは、この後の「共有 PVC を用意する」ステップと、章末の「共有 PVC を消してみる」ステップで実際に手を動かしながら説明します。要点だけ先に言うと、静的 PV は同時に 1 つの PVC としか結びつきません。PVC の生成をワークロードのレンダリングに乗せると、PVC の寿命がその都度の `apply`/`delete` に引きずられてしまい、PV 側の寿命（Terraform が管理する、基盤が続く限り存在するもの）とズレてしまいます。PVC の作成を「基盤を用意する」タイミングに切り離し、以降は何度ワークロードを消して作り直しても同じ PVC を使い続けられるようにするのが、ここで一度だけ手動で作る理由です。
 
@@ -89,7 +89,7 @@ TrainJob 側は台数（`numNodes`）とノードあたりのプロセス数（`
 
 ## 実行時の注意点
 
-**CPU ノードは Karpenter の consolidation で消えることがあります。** 本章の CPU ノードは Karpenter の CPU NodePool が起動するもので、`consolidationPolicy: WhenEmptyOrUnderutilized` はアイドルなノードを早めに回収します。学習 Pod が単独で載っているノードが「余剰」と判断されて学習中に evict される事故を避けるため、Pod には `karpenter.sh/do-not-disrupt: "true"` アノテーションを付けます。
+**CPU ノードは Karpenter の consolidation で消えることがあります。** 本章の CPU ノードは Karpenter の CPU NodePool が起動するもので、`consolidationPolicy: WhenEmptyOrUnderutilized` はアイドルなノードを早めに回収します。学習 Pod が単独で載っているノードが「余剰」と判断されて学習中に evict される事故を避けるため、Pod には `karpenter.sh/do-not-disrupt: "true"` アノテーションが必要です。これは本 book がクラスタに用意した Runtime (`torch-distributed-eks`) が全 Pod に自動で付けるので、読者が手で足す操作はありません。Karpenter そのものは Basic03 で扱うので、ここでは「アイドルに見えるノードを自動で回収する仕組みがある」とだけ捉えてください。
 
 # ワークショップ実施
 
@@ -195,7 +195,7 @@ k delete trainjob ddp-trainjob --ignore-not-found
 
 helm template exp charts/experiments -n distai \
     --set trainjobTrain.enabled=true \
-    --set trainjobTrain.image="$IMAGE" \
+    --set trainjobTrain.image="${IMAGE:-$(terraform output -raw ddp_sample_ecr_url):v1}" \
     --set trainjobTrain.nodeRole=cpu \
     --set trainjobTrain.numNodes=2 \
     --set trainjobTrain.nprocPerNode=1 \

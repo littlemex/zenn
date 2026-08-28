@@ -39,7 +39,7 @@ Slurm が劣っているという話ではありません。Slurm ベースの�
 
 以下は、AWS 公式が提供する Amazon SageMaker Hyperpod のガイドです。非常に参考になるので本 book と合わせて、もしくは先にこちらを実施しても良いと思います。
 
-https://awslabs.github.io/ai-on-sagemaker-hyperpod/
+[AI on SageMaker HyperPod](https://awslabs.github.io/ai-on-sagemaker-hyperpod/)
 
 # インフラ層とアプリ層の境界
 

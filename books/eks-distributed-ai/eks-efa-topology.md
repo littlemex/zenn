@@ -25,7 +25,7 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 
 EFA（Elastic Fabric Adapter）は AWS の高帯域・低遅延ネットワークインターフェースで、OS-bypass による SRD（Scalable Reliable Datagram）プロトコルを使います。GPU/Neuron のマルチノード集合通信（NCCL）で必要な帯域を確保するために不可欠な存在です。
 
-通常の ENI（Elastic Network Interface）と異なり、EFA はカーネルを経由せずにユーザ空間から直接データを送受信します。これにより低遅延・高スループットを実現しますが、ネットワーク上のトラフィック特性が通常の IP と異なるため、セキュリティグループの設定にも独自の要件があります。
+EFA は通常の ENI としての IP 通信も担いますが、それに加えて libfabric 経由の OS バイパス経路を持ち、そこではカーネルを経由せずにユーザ空間から直接データを送受信します。これにより低遅延・高スループットを実現しますが、ネットワーク上のトラフィック特性が通常の IP と異なるため、セキュリティグループの設定にも独自の要件があります。
 
 ![EFA によるマルチノード NCCL 通信](/images/books/eks-distributed-ai/arch-efa-detail.png)
 
@@ -155,7 +155,7 @@ env:
 
 要点は `NCCL_SOCKET_IFNAME` を `^` で始まる除外パターンで書くことです。`efa0,efa1,...` のような許可リスト方式で名指しすると bootstrap に失敗します。NCCL は起動時の rank 間ランデブーを TCP ソケットで行いますが、`efa-only` インターフェースは IP を持たないため、これらを名指しすると bootstrap 用の到達可能なインターフェースが見つからず接続できません。除外パターンで `lo` やコンテナ仮想 NIC（`docker`／`veth`）を外し、ノードの IP を持つインターフェースを NCCL に選ばせるのが正しい書き方です。
 
-この値は本書のチャートでは 1 か所（`charts/experiments/values.yaml`）にデフォルトとして持たせ、そこから各測定ワークロードの Pod に環境変数として差し込んでいます。デフォルトは `values.yaml` の [`socketIfname`](https://github.com/littlemex/distributed-ai/blob/9d3f5031ed217c4a90666e5cd39e18dab1f15357/infra/eks/charts/experiments/values.yaml#L274) で定義し、本章で使う TrainJob では [`nccl-trainjob.yaml`](https://github.com/littlemex/distributed-ai/blob/9d3f5031ed217c4a90666e5cd39e18dab1f15357/infra/eks/charts/experiments/templates/nccl-trainjob.yaml#L208) が `NCCL_SOCKET_IFNAME` としてコンテナに渡します。単ノードの sanity 用 [`nccl-probe.yaml`](https://github.com/littlemex/distributed-ai/blob/9d3f5031ed217c4a90666e5cd39e18dab1f15357/infra/eks/charts/experiments/templates/nccl-probe.yaml#L50) と `mpirun` 方式の [`nccl-sshd.yaml`](https://github.com/littlemex/distributed-ai/blob/9d3f5031ed217c4a90666e5cd39e18dab1f15357/infra/eks/charts/experiments/templates/nccl-sshd.yaml#L100) も同じ値を渡しています。自分でワークロードを書く場合も、Pod の `env` にこの 1 行を同じ形で入れます。
+この値は本書のチャートでは 1 か所（`infra/eks/charts/experiments/values.yaml`）にデフォルトとして持たせ、そこから各測定ワークロードの Pod に環境変数として差し込んでいます。デフォルトは `values.yaml` の [`socketIfname`](https://github.com/littlemex/distributed-ai/blob/9d3f5031ed217c4a90666e5cd39e18dab1f15357/infra/eks/charts/experiments/values.yaml#L274) で定義し、本章で使う TrainJob では [`nccl-trainjob.yaml`](https://github.com/littlemex/distributed-ai/blob/9d3f5031ed217c4a90666e5cd39e18dab1f15357/infra/eks/charts/experiments/templates/nccl-trainjob.yaml#L208) が `NCCL_SOCKET_IFNAME` としてコンテナに渡します。単ノードの sanity 用 [`nccl-probe.yaml`](https://github.com/littlemex/distributed-ai/blob/9d3f5031ed217c4a90666e5cd39e18dab1f15357/infra/eks/charts/experiments/templates/nccl-probe.yaml#L50) と `mpirun` 方式の [`nccl-sshd.yaml`](https://github.com/littlemex/distributed-ai/blob/9d3f5031ed217c4a90666e5cd39e18dab1f15357/infra/eks/charts/experiments/templates/nccl-sshd.yaml#L100) も同じ値を渡しています。自分でワークロードを書く場合も、Pod の `env` にこの 1 行を同じ形で入れます。
 
 なお、AWS の [awsome-distributed-ai リポジトリの EFA Cheatsheet](https://github.com/awslabs/awsome-distributed-ai/blob/main/1.architectures/efa-cheatsheet.md) に、`NCCL_SOCKET_IFNAME` を含む EFA/NCCL 環境変数の推奨値がまとまっています。バージョンごとの推奨が変わるので、あわせて参照すると良いでしょう。
 
@@ -166,7 +166,7 @@ env:
 ## 1. 前提を確認する
 
 - Basic05 で EFA 対応インスタンスの Capacity Block を確保済み。
-- Basic02 で用意した NCCL 測定用 TrainJob チャート（`charts/experiments` の `ncclTrainjob`）
+- リポジトリ同梱の NCCL 測定用 TrainJob チャート（`infra/eks/charts/experiments` の `ncclTrainjob`）
 - `k` と `KUBECONFIG` は Basic01 step 2 の 4 行で設定済み
 
 EFA 関連のアドオン（EC2NodeClass の `networkInterfaces` 自動生成、EFA 用セキュリティグループ、`aws-efa-k8s-device-plugin`）は、EFA 対応プールが 1 つ以上あることを条件に前章までの `terraform apply` で導入済みです。本章はそれらが正しく効いているかを確認する章なので、新しくインフラを足す操作はありません。
@@ -225,8 +225,8 @@ ITYPE=p4d.24xlarge
 GPU=$(aws ec2 describe-instance-types --instance-types "$ITYPE" \
   --query 'InstanceTypes[0].GpuInfo.Gpus[0].Count' --output text --region "$AWS_REGION")
 
-cd "$(git rev-parse --show-toplevel)"
-EFA=$(cd "$(git rev-parse --show-toplevel)"/infra/eks && terraform output -json accelerator_pool_efa_schedulable | jq -r ".\"$POOL\"")
+cd "$(git rev-parse --show-toplevel)"/infra/eks
+EFA=$(terraform output -json accelerator_pool_efa_schedulable | jq -r ".\"$POOL\"")
 echo "gpu=$GPU efa=$EFA"
 
 helm template exp charts/experiments -n "$NAMESPACE" \
@@ -284,9 +284,9 @@ aws ecr describe-images --registry-id 763104351884 --repository-name pytorch-tra
 
 ## 5. ノード上の EFA リソースを確認する
 
-手順 4 でノードが起動したら、手順 2 の値が実際にノードへ反映されているかを確認します。ノードが `Ready` になっていれば、測定 Pod の `Running` を待たずにこの allocatable 確認を実行できます（測定 Pod は DLC イメージの pull で `ContainerCreating` に留まっていることがありますが、ノードの EFA allocatable はその前から確認できます）。
+手順 3 でノードが起動したら、手順 2 の値が実際にノードへ反映されているかを確認します。ノードが `Ready` になっていれば、測定 Pod の `Running` を待たずにこの allocatable 確認を実行できます（測定 Pod は DLC イメージの pull で `ContainerCreating` に留まっていることがありますが、ノードの EFA allocatable はその前から確認できます）。
 
-`POOL` は対象プール名に置き換えます。
+`POOL` は Basic05 で `accelerator-pools.auto.tfvars` に貼り付けたプール名に置き換えます。
 
 ```bash
 POOL=gpu-p4d
@@ -301,7 +301,7 @@ ip-10-0-a-b.us-west-2.compute.internal	3
 ip-10-0-c-d.us-west-2.compute.internal	3
 ```
 
-`terraform output` が示した 3 と、ノードが実際に広告している 3 が一致しました。物理カード 4 枚に対して 3 であることが、card 0 が EFA として使えないことの実証です。
+`terraform output` が示した 3 と、ノードが実際に広告している 3 が一致しました。物理カード 4 枚に対して 3 になるのは、この構成が card 0 を IP を持つ通常の ENI に割り当て、残り 3 枚を EFA-only にしているためです。card 0 のハードウェアが EFA に使えないという意味ではなく、`networkInterfaces` の宣言の帰結です。
 
 `k describe node` でも同じ数字が Capacity と Allocatable の両方に現れます。ただしスクリプトから読む場合は上の `.status.allocatable` を直接引く形のほうが確実です。
 
@@ -410,7 +410,7 @@ NET/OFI Failed to initialize GDRCopy: Failed to open gdr handle
 
 これはエラーではなく、GDRCopy という補助機構が使えなかったという通知です。EFA がノード間で GPU メモリのデータをやり取りするとき、NIC が GPU メモリへ直接データを読み書きする経路が二段構えになっています。大きなメッセージのバルク転送は GPUDirect RDMA が NIC から GPU メモリへ直接 DMA するので、この経路は GDRCopy とは無関係に動きます。一方で受信側の小さなメッセージのコピーには GDRCopy を使う道があり、これが無い場合は libfabric の EFA プロバイダが EFA デバイス経由のループバック read という代替経路でホストのバウンスバッファ越しにコピーします。つまり GDRCopy はマルチノード通信の小さなメッセージのレイテンシを詰めるための補助であって、EFA/NCCL がノード間で帯域を出すこと自体には必須ではありません。上の警告が出ていても、`Selected provider is efa` と高い `busbw` が出ていれば EFA は正しく効いています。
 
-GDRCopy を実際に有効にするには、ノードのカーネルに `gdrdrv` というモジュールをロードして `/dev/gdrdrv` を用意する必要があります。AMI にこれが標準で載っていない場合、載せる仕組みを別途用意することになります。その仕組みと、GDRCopy を有効にしたときにマルチノード通信のレイテンシが実際にどうなるのかの実測は、[Advanced02 - GDRCopy を有効にする](eks-gdrcopy) で扱います。
+GDRCopy を実際に有効にするには、ノードのカーネルに `gdrdrv` というモジュールをロードして `/dev/gdrdrv` を用意する必要があります。AMI にこれが標準で載っていない場合、載せる仕組みを別途用意することになります。その仕組みと、GDRCopy を有効にしたときにマルチノード通信のレイテンシが実際にどうなるのかの実測は、本 book では扱いません。上の警告が出ていても EFA の帯域が出ていれば、本章の検証としては合格です。
 
 ## 8. teardown する
 

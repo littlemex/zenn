@@ -7,7 +7,7 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 
 本章では、Basic04 で `accelerator_pools` に用意しておいた `capacity_type = "reserved"` という選択肢を実際に使い、Capacity Block(CB) で確保したリソースを Amazon EKS クラスタに組み込みます。予約の検索・購入から `accelerator-pools.auto.tfvars` への反映、ノードが起動するところまでの確認、期限管理までを扱います。確保したノードで実際にマルチノード通信が出ているかの検証は、次章の Basic06 で行います。
 
-本章がこの位置にあるのは、次章で EFA のマルチノード通信を検証するために、EFA を複数枚持つインスタンスが 2 台以上必要になるためです。この規模のインスタンスは On-Demand ではなかなか確保できず、しかも EFA/RDMA は AZ をまたげないので同一 AZ かつ、同一プレイスメントグループに揃える必要もあります。Capacity Block はこれらを満たす現実的な手段です。
+本章がこの位置にあるのは、次章で EFA のマルチノード通信を検証するために、EFA を複数枚持つインスタンスが 2 台以上必要になるためです。この規模のインスタンスは On-Demand ではなかなか確保できず、しかも EFA の OS バイパス通信は同一サブネットに限られるので、2 台を同じ AZ に揃える必要があります (クラスタプレイスメントグループはレイテンシを詰めるための推奨で、EFA の必須条件ではありません)。Capacity Block はこれらを満たす現実的な手段です。
 
 :::message alert
 Capacity Block は開始時刻と終了時刻が固定で、期間が過ぎれば容量は強制的に回収されます。リソース利用が開始されたら、間を置かずに Basic06 の検証まで進めてください。本章と次章を別の日に分けると、確保した時間を待機に費やすことになります。
@@ -100,13 +100,15 @@ check "capacity_block_ready" {
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks/scripts
 ./00-check-cb-offerings.sh \
-  --region us-west-2 \
+  --region "$AWS_REGION" \
   --instance-types p4d.24xlarge \
   --instance-count 2 \
   --duration-hours 24
 ```
 
 `describe-capacity-block-offerings` を叩き、インスタンスタイプ・AZ・開始/終了時刻・upfront fee の一覧を表示するだけの read-only スクリプトです。この時点ではまだ何も購入していないので、何度実行してもコストは発生しません。
+
+検索は必ずクラスタと同じリージョン (`$AWS_REGION`) で行います。オファリング ID はリージョンごとに固有なので、別のリージョンで検索した ID は購入時に見つかりません。以降の実機出力は `us-west-2` で採取したものなので、AZ 名やインスタンス ID は自分のリージョンの値に読み替えてください。
 
 実機出力（p4d.24xlarge x2、24 時間）:
 
@@ -154,7 +156,7 @@ aws ec2 describe-capacity-reservations \
 CR ID を指定して tfvars に貼り付ける設定を出力します。
 
 ```bash
-export POOL=gpu-p4dn
+export POOL=gpu-p4d
 ./02-post-purchase.sh \
   --cr-id cr-023f18e20d3829f4e \
   --pool $POOL
@@ -163,19 +165,19 @@ export POOL=gpu-p4dn
 必須の引数は `--cr-id` だけです。インスタンスタイプ・AZ・終了時刻は、スクリプトが `describe-capacity-reservations` で予約 ID から自動で解決するため、手で渡す必要はありません（`--pool` は貼り付け先のプール名で、省略すると `gpu-cb` になります）。
 
 ```hcl
-gpu-p5en = {
-  instance_types    = ["p4dn.24xlarge"]
+gpu-p4d = {
+  instance_types    = ["p4d.24xlarge"]
   device_plugin     = "nvidia"
   capacity_type     = "reserved"
   cb_reservation_id = "cr-023f18e20d3829f4e"          # zone と終了時刻はこの予約から導出
-  cb_end_date       = "2026-08-09T11:30:00+00:00"   # 省略可、予約から自動導出される値の緊急上書き用
+  cb_end_date       = "2026-08-03T11:30:00+00:00"   # 省略可、予約から自動導出される値の緊急上書き用
   volume_size       = "500Gi"
 }
 ```
 
 `device_plugin` はインスタンスタイプのファミリから決まります。`trn` または `inf` で始まれば `neuron`、それ以外は `nvidia` が入るので、Trainium/Inferentia の CB を買った場合も同じスクリプトがそのまま使えます（Neuron の場合は Neuron 用 AMI を指す `ami_ssm_parameter` の行も併せて出力されます）。
 
-`zone` は含まれません。前述のとおり `reserved` プールの AZ は予約から導出されるため、スクリプトは `zone` 行を出しません。特定の AZ に固定したい場合だけ、貼り付け後に自分で `zone = "<az>"` を足します。`cb_end_date` は予約が返す実際の終了時刻を自動で埋めていますが、`capacity-block.tf` は tfvars に `cb_end_date` が無くても予約 ID から終了時刻を導出するため、この行を消してもアラートは機能します。書いておくとその値が予約側の `EndDate` より優先される緊急上書きとして働くので、予約を更新したら `cb_end_date` も併せて更新してください（更新し忘れるとアラートが古い時刻のまま固定されます）。出力されたブロックを `accelerator-pools.auto.tfvars` の `accelerator_pools` に貼り付けます(Basic04 で作った同じファイルを、CB ID を含む完全形で `cat >` 上書きするのが冪等で確実です)。
+`zone` は含まれません。前述のとおり `reserved` プールの AZ は予約から導出されるため、スクリプトは `zone` 行を出しません。特定の AZ に固定したい場合だけ、貼り付け後に自分で `zone = "<az>"` を足します。`cb_end_date` は予約が返す実際の終了時刻を自動で埋めていますが、`capacity-block.tf` は tfvars に `cb_end_date` が無くても予約 ID から終了時刻を導出するため、この行を消してもアラートは機能します。書いておくとその値が予約側の `EndDate` より優先される緊急上書きとして働くので、予約を更新したら `cb_end_date` も併せて更新してください（更新し忘れるとアラートが古い時刻のまま固定されます）。出力されたブロックを `accelerator-pools.auto.tfvars` の `accelerator_pools` に貼り付けます。同じファイルを `cat >` で完全形に上書きするのが冪等で確実ですが、ここでいう完全形とは **Basic04 で定義した `gpu-ddp` も含めた全プール** です。CB のプールだけを書いて上書きすると、次の `apply` で `gpu-ddp` の NodePool が destroy され、それを前提にしている Basic07 と Basic08 が進められなくなります。
 
 ## 4. apply して NodePool を確認する
 
