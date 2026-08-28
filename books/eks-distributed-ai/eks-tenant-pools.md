@@ -62,7 +62,7 @@ operator は Karpenter 本体・device plugin・Capacity Block の購入には�
 operator は Karpenter v1 が入っているクラスタで動きます。既定で有効な VAP は Kubernetes 1.30 以上を要求するので、クラスタのバージョンも確認します。
 
 ```bash
-k version -o jsonpath='{.serverVersion.gitVersion}{"\n"}'
+k version -o json | jq -r .serverVersion.gitVersion
 ```
 
 Capacity Block を Reserved プールで使う場合は、Karpenter コントローラの `ReservedCapacity` フィーチャゲートが有効である必要があります（このフィーチャゲートを前提に、Capacity Block は Karpenter v1.6 以降、ODCR は v1.3 以降で使えます）。

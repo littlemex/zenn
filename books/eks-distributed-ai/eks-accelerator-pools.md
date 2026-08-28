@@ -231,11 +231,11 @@ PASS: 11  FAIL: 0  SKIP: 0  TOTAL: 11
 本章で起動する GPU ノードは、この book で最初に触れる高額なリソースです。確認が済んだら TrainJob を削除して、ノードが回収されることまで見届けてください。
 
 ```bash
-k delete trainjob ddp-trainjob -n "$NAMESPACE"
+k delete trainjob ddp-trainjob
 k get nodeclaims -w
 ```
 
-Pod が消えると NodePool の `consolidationPolicy` に従って Karpenter がノードを回収します。`k get nodeclaims` が空になれば GPU の課金は止まります。回収は非同期で数分かかるので、空になるまで待ってから次章に進みます。ここで NodeClaim が残り続ける場合は、まだ Pod が残っているか、Pod に `karpenter.sh/do-not-disrupt` が付いたままかのどちらかなので、`k get pods -n "$NAMESPACE"` で確認します。
+Pod が消えると NodePool の `consolidationPolicy` に従って Karpenter がノードを回収します。`k get nodeclaims` が空になれば GPU の課金は止まります。回収は非同期で数分かかるので、空になるまで待ってから次章に進みます。ここで NodeClaim が残り続ける場合は、まだ Pod が残っているか、Pod に `karpenter.sh/do-not-disrupt` が付いたままかのどちらかなので、`k get pods` で確認します (`k` の既定 namespace は Basic01 step 2 の 4 行で `distai` に設定済みです)。
 
 NodePool 自体は残しておいてかまいません。Karpenter は要求があってからノードを起こすので、プールが存在するだけでは課金されません。Basic07 と Basic08 はこの `gpu-ddp` プールをそのまま使います。
 

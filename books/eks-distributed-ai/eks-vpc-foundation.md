@@ -246,7 +246,7 @@ cd ~/distributed-ai-v0.2.0
 cat infra/eks/terraform.tfvars
 ```
 
-アクセラレーターノードのプールは生成されません。GPU や Capacity Block は課金が重いので、必要になった章で `accelerator-pools.tfvars.example` をコピーして明示的に opt-in します。共有ストレージ (FSx for Lustre と OpenZFS) は既定で有効です。学習サンプルが `/shared` をマウントするためですが、アイドル時の課金として最も大きいので、まず土台だけ見たい場合は `DISTAI_SHARED_STORAGE=off` を付けて実行してください。あとから有効にするときは、生成された `infra/eks/terraform.tfvars` の `fsx_enabled` と `openzfs_enabled` を `true` に直して `distai-up.sh` を再実行します。
+アクセラレーターノードのプールは生成されません。GPU や Capacity Block は課金が重いので、必要になった章で `accelerator-pools.tfvars.example` をコピーして明示的に opt-in します。一方で監視スタック (`enable_observability`) は既定で有効なので、この apply の時点で監視専用の NodePool にノードが 1 台常駐し、Prometheus と Grafana の EBS も作られます。Basic08 まで監視を見ないのであれば、生成された `infra/eks/terraform.tfvars` に `enable_observability = false` を書いてから apply すると、この 1 台分を後回しにできます。共有ストレージ (FSx for Lustre と OpenZFS) は既定で有効です。学習サンプルが `/shared` をマウントするためですが、アイドル時の課金として最も大きいので、まず土台だけ見たい場合は `DISTAI_SHARED_STORAGE=off` を付けて実行してください。あとから有効にするときは、生成された `infra/eks/terraform.tfvars` の `fsx_enabled` と `openzfs_enabled` を `true` に直して `distai-up.sh` を再実行します。
 
 :::message alert
 `terraform apply` は state に記録されたリソースだけを管理し、state に無いリソースが AWS 側に存在するかどうかは確認しません。このため profile を取り違えると、名前に一意制約があるリソース (IAM ロール、KMS エイリアス、CloudWatch ロググループ) は作成時のエラーで失敗し、FSx ファイルシステムのように一意制約が無いものはエラーにならず二重作成されて課金が始まります。より危険なのは state にリソースが記録済みのまま別アカウントに profile が向くケースで、Terraform は「管理下のリソースがすべて消えた」と判断してエラーも出さずに丸ごと作り直します。`distai-up.sh` は実行前にアカウントと呼び出し元 ARN を表示し、生成する tfvars に `expected_account_id` を書き込むので、この事故は plan の段階で止まります。それでも表示されたアカウントが意図どおりかは自分の目で確かめてください。

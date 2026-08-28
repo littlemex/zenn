@@ -8,7 +8,7 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 本章では、Karpenter が起動するノードで EFA が正しく構成され、実際にノード間で帯域が出ていることまでを確認します。Basic05 で確保した Capacity Block のノード 2 台で NCCL の帯域を測ります。
 
 :::message
-本章の帯域測定は、EFA を複数枚持つインスタンスが 2 台以上、しかも同一 AZ に必要です。Basic05 で Capacity Block を確保していることを前提にしています。まだ確保していない場合でも、解説部分と、ノードを必要としない手順 2（`terraform output` による schedulable EFA 数の確認）・手順 3（環境変数の書き方）までは先に読み進められます。手順 4 以降は Basic05 で確保した Capacity Block が必要です。
+本章の帯域測定は、EFA を複数枚持つインスタンスが 2 台以上、しかも同一 AZ に必要です。Basic05 で Capacity Block を確保していることを前提にしています。まだ確保していない場合でも、解説部分と、ノードを必要としない手順 2（`terraform output` による schedulable EFA 数の確認）・手順 3（環境変数の書き方）までは先に読み進められます。手順 3 以降は Basic05 で確保した Capacity Block が必要です。
 :::
 
 # 解説
@@ -167,6 +167,7 @@ env:
 
 - Basic05 で EFA 対応インスタンスの Capacity Block を確保済み。
 - リポジトリ同梱の NCCL 測定用 TrainJob チャート（`infra/eks/charts/experiments` の `ncclTrainjob`）
+- Basic02 で作った共有 PVC `shared-claim` が対象 namespace にあること (`ncclTrainjob` は `/shared` をマウントするため、無いとレンダリング時に停止します)
 - `k` と `KUBECONFIG` は Basic01 step 2 の 4 行で設定済み
 
 EFA 関連のアドオン（EC2NodeClass の `networkInterfaces` 自動生成、EFA 用セキュリティグループ、`aws-efa-k8s-device-plugin`）は、EFA 対応プールが 1 つ以上あることを条件に前章までの `terraform apply` で導入済みです。本章はそれらが正しく効いているかを確認する章なので、新しくインフラを足す操作はありません。
@@ -236,10 +237,11 @@ helm template exp charts/experiments -n "$NAMESPACE" \
   --set ncclTrainjob.gpuCount=$GPU \
   --set ncclTrainjob.efaCount=$EFA \
   --set ncclTrainjob.image=763104351884.dkr.ecr.us-west-2.amazonaws.com/pytorch-training:2.10.0-gpu-py313-cu130-ubuntu22.04-ec2-v1.11 \
+  --set sharedStorage.existingClaimName=shared-claim \
   | k apply -f -
 ```
 
-投入後は Karpenter が 2 台を起動し、DLC イメージ（十数 GB 級）の pull に初回 10 分前後かかるため、しばらく Pod は `ContainerCreating` に留まります。これはノード起動失敗ではないので、`k get pod` の理由が `ContainerCreating` のうちは pull の完了を待ちます。起動したノードは Basic05 の `consolidateAfter: Never`（予約プールは自動で `protect` に解決）で保たれるため、TrainJob が終わっても手順 5・6 で参照できます。
+投入後は Karpenter が 2 台を起動し、DLC イメージ（十数 GB 級）の pull に初回 10 分前後かかるため、しばらく Pod は `ContainerCreating` に留まります。これはノード起動失敗ではないので、`k get pod` の理由が `ContainerCreating` のうちは pull の完了を待ちます。起動したノードは Basic05 の `consolidateAfter: Never`（予約プールは自動で `protect` に解決）で保たれるため、TrainJob が終わっても手順 4・5 で参照できます。
 
 :::details hugepages を要求する方式（`ncclSshd` / Neuron）を使う場合の注意
 `ncclTrainjob`（torchrun）は hugepages を要求しないので、上のようにそのまま投入すればノードが起動します。しかし `mpirun` 方式の `ncclSshd` や Neuron 側のプローブは hugepages を要求し、これは事情が異なります。
@@ -271,7 +273,7 @@ Karpenter が起動時に付ける `node-role=<プール名>` を使えば、ノ
 
 `nccl-tests` のイメージは Open MPI 前提で `torchrun` を持たないため、Pod が即座に `exec: "torchrun": executable file not found in $PATH` で落ちます。これは失敗が明示されるので気づけます。
 
-危険なのは Basic02 でビルドした `ddp-sample` のイメージです。`torchrun` は持ちますが素の PyTorch イメージなので EFA プラグインがありません。この場合 NCCL はエラーを出さず、自前の TCP ソケット通信に**黙って切り替えます**。ベンチマークは完走し、それらしい数値も出るので、EFA を測ったつもりで実際には TCP を測っていたという結果になります。帯域の数値だけでは区別できないため、手順 7 で説明するログ行の確認が必須です。
+危険なのは Basic02 でビルドした `ddp-sample` のイメージです。`torchrun` は持ちますが素の PyTorch イメージなので EFA プラグインがありません。この場合 NCCL はエラーを出さず、自前の TCP ソケット通信に**黙って切り替えます**。ベンチマークは完走し、それらしい数値も出るので、EFA を測ったつもりで実際には TCP を測っていたという結果になります。帯域の数値だけでは区別できないため、手順 6 で説明するログ行の確認が必須です。
 
 `torchrun` と EFA プラグインの両方を持つイメージとして、AWS Deep Learning Containers があります。利用可能なタグは次のように調べられます。
 
@@ -282,7 +284,7 @@ aws ecr describe-images --registry-id 763104351884 --repository-name pytorch-tra
 
 :::
 
-## 5. ノード上の EFA リソースを確認する
+## 4. ノード上の EFA リソースを確認する
 
 手順 3 でノードが起動したら、手順 2 の値が実際にノードへ反映されているかを確認します。ノードが `Ready` になっていれば、測定 Pod の `Running` を待たずにこの allocatable 確認を実行できます（測定 Pod は DLC イメージの pull で `ContainerCreating` に留まっていることがありますが、ノードの EFA allocatable はその前から確認できます）。
 
@@ -314,7 +316,7 @@ k describe node <node-name> | grep "vpc.amazonaws.com/efa"
   vpc.amazonaws.com/efa:  3
 ```
 
-## 6. EFA device plugin の稼働を確認する
+## 5. EFA device plugin の稼働を確認する
 
 ```bash
 k get pods -n kube-system -l name=aws-efa-k8s-device-plugin
@@ -336,7 +338,7 @@ k get ds -n kube-system aws-efa-k8s-device-plugin
 
 EFA 対応ノード（p4d x2）それぞれに 1 Pod ずつ Running していれば問題ありません。
 
-## 7. マルチノードで NCCL/EFA の帯域を測る
+## 6. マルチノードで NCCL/EFA の帯域を測る
 
 TrainJob は投入した時点で走り始めるので、あらためて起動する操作はありません。進行と結果を Pod のログで確認します。
 
@@ -363,7 +365,7 @@ nccl-trainjob-node-0-0:172:172 [0] NCCL INFO NET/OFI Using Libfabric version 2.4
 nccl-trainjob-node-0-1:172:172 [0] NCCL INFO NET/OFI Selected provider is efa, fabric is efa (found 3 nics)
 ```
 
-両ノードで `efa` プロバイダが選択され、3 NIC が認識されています。この `found 3 nics` が、手順 2 で見た `terraform output accelerator_pool_efa_schedulable` の `gpu-p4d = 3`（= 4 − 1）と一致していることが重要です。カード枚数から 1 引いた値が、そのまま NCCL が掴む NIC 数になります。
+両ノードで `efa` プロバイダが選択され、3 NIC が認識されています。この `found 3 nics` が、手順 2 の `terraform output accelerator_pool_efa_schedulable` が CB プールについて返す値（p4d.24xlarge なら 3 = 4 − 1）と一致していることが重要です。手順 2 を実行した時点では `gpu-ddp` しか無いので 0 だけが出ますが、Basic05 の CB プールを apply したあとに同じコマンドを実行すると 3 が出ます。カード枚数から 1 引いた値が、そのまま NCCL が掴む NIC 数になります。
 
 帯域の実測値:
 
@@ -412,7 +414,7 @@ NET/OFI Failed to initialize GDRCopy: Failed to open gdr handle
 
 GDRCopy を実際に有効にするには、ノードのカーネルに `gdrdrv` というモジュールをロードして `/dev/gdrdrv` を用意する必要があります。AMI にこれが標準で載っていない場合、載せる仕組みを別途用意することになります。その仕組みと、GDRCopy を有効にしたときにマルチノード通信のレイテンシが実際にどうなるのかの実測は、本 book では扱いません。上の警告が出ていても EFA の帯域が出ていれば、本章の検証としては合格です。
 
-## 8. teardown する
+## 7. teardown する
 
 検証が終わったら、ワークロードを退避します。`04-teardown.sh` は Deployment/StatefulSet/Job/TrainJob/MPIJob を削除対象に含むため、本章で投入した `ncclTrainjob` もこのスクリプトで消えます。TrainJob は配下に JobSet が管理する Pod を持ちますが、スクリプトは TrainJob の削除がタイムアウトした場合に finalizer を外して確実に消すフォールバックまで備えているので、Pod が残って NodePool の drain が引っかかることはありません。単独で先に消しておきたい場合は次のコマンドを使いますが、必須ではありません。
 

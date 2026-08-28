@@ -30,6 +30,8 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 
 ## 1. 前提を確認する
 
+この章はクラスタを破棄します。Advanced02 のプロファイリング基盤など、稼働中のクラスタを前提にする章を実施する予定がある場合は、**この章より先にそちらを済ませてください**。破棄したあとに実施するには Basic01 からの再構築が必要になります。
+
 共有クラスタでは、破棄の前に必ず操作対象のクラスタを確認します。この章の操作はクラスタ全体に影響する破壊的操作なので、意図しないクラスタへの誤操作を避けます。
 
 ```bash
@@ -59,7 +61,7 @@ cd "$(git rev-parse --show-toplevel)"/infra/eks/scripts
 
 削除対象の NodePool は、アクセラレータプールの device taint（`nvidia.com/gpu` / `aws.amazon.com/neuron`）を持つものをクラスタに問い合わせて自動的に見つけます。`accelerator_pools` は読者が自分で定義するマップなので、スクリプトが特定のプール名を決め打ちすることはありません。CPU プールは Karpenter コントローラなどの実行先として残す必要があるため対象外で、次の `terraform destroy` でまとめて消えます。
 
-クラスタは残したまま namespace の PVC も片付けたい場合は `--delete-pvcs` を付けます。その namespace の PVC を storage の種類によらず一括削除し、削除が Pod で止まったときはどの Pod が掴んでいるかを表示します。PV は `Retain` なのでファイルシステムのデータは消えず、PVC のバインドだけが外れて PV は `Released` になります。クラスタごと破棄する場合はこのフラグは不要で、次の `--destroy` が PVC ごとまとめて消します。
+クラスタは残したまま namespace の PVC も片付けたい場合は `--delete-pvcs` を付けます。その namespace の PVC を storage の種類によらず一括削除し、削除が Pod で止まったときはどの Pod が掴んでいるかを表示します。本 book が用意する共有ストレージの PV は `Retain` なので、ファイルシステムのデータは消えず、PVC のバインドだけが外れて PV は `Released` になります。ただしこのフラグは namespace の PVC を種類によらず全部消すので、自分で作った動的プロビジョニングの PVC (`storageClassName: gp3` など、`reclaimPolicy: Delete` の PV を持つもの) があると、その EBS ボリュームは中身ごと削除されます。残したいものが無いかを `k get pvc -n "$NAMESPACE"` で確認してから付けてください。クラスタごと破棄する場合はこのフラグは不要で、次の `--destroy` が PVC ごとまとめて消します。
 
 対話実行なので、各ステップの前に `y/N` の確認が入ります。実行後に、device リソースを持つノードが残っていないかが表示されます。
 
@@ -101,6 +103,15 @@ NodePool 削除の直後は、そのプールの NodeClaim が `Terminating` で
 ## 5. 残るものを確認する
 
 `terraform destroy` が消すのはクラスタの Terraform state が管理しているリソースだけです。次の 3 つは意図的に残ります。
+
+0 つ目として、`monitoring` namespace の Prometheus と Grafana は StatefulSet の volumeClaimTemplate による動的 EBS を持ちます。`terraform destroy` は Helm リリースを消しますが、この経路で作られた PVC は消さないため、**EBS ボリュームだけが AWS 側に取り残されます**。実際に破棄済みのクラスタ 7 つ分で 21 本 (計 620 GiB) の孤児ボリュームが残っていた実例があるので、破棄後に必ず確認してください。
+
+```bash
+aws ec2 describe-volumes --region "$AWS_REGION" --filters "Name=status,Values=available" \
+  --query 'Volumes[].[VolumeId,Size,Tags[?Key==`Name`]|[0].Value]' --output text
+```
+
+名前に破棄したクラスタ名と `dynamic-pvc` を含むものが該当します。中身は Prometheus の時系列と Grafana の設定なので、残す必要がなければ `aws ec2 delete-volume --volume-id <id>` で消します。
 
 1 つ目は state 自身の置き場です。state のバケットとロックテーブルはアカウントとリージョンごとに 1 つで、同じアカウントの他のクラスタも同じものを使うため、クラスタの破棄では消しません。2 つ目はレジストリのパラメータで、これも残ります。同じ名前でもう一度立てるなら、そのまま `distai-up.sh` を実行すれば同じ state の場所を再利用します。3 つ目はローカルの kubeconfig (`~/.kube/distai/<クラスタ名>.<namespace>.yaml`) で、課金には関係しないので放置してかまいません。
 

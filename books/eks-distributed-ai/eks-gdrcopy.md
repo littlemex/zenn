@@ -1,5 +1,5 @@
 ---
-title: "Advanced02 - GDRCopy を有効にする"
+title: "Advanced04 - GDRCopy を有効にする"
 free: true
 ---
 
