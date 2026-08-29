@@ -29,7 +29,7 @@ Basic01 から Basic11 で構築した Amazon EKS の土台の上に、GPU の�
 
 `infra/scripts/install-profiling.sh` は 7 つのフェーズを順に実行します。前提確認 (Phase 1)、データ層の適用 (Phase 2)、クラスタ側の配線 (Phase 3、S3 Files のマウントと `mcp` namespace と Pod Identity の紐付けと ECR)、イメージの解決 (Phase 4)、MCP サーバのデプロイと producer 契約の配布 (Phase 5 と 5b)、マウント probe (Phase 6)、受け入れ確認 (Phase 7) です。どのフェーズも冪等か「状態を見てから動く」形なので、途中で失敗しても原因を直して再実行すれば収束します。失敗時に自動でロールバックや destroy はしません。
 
-利用者が渡すのは 3 つだけです。クラスタ名、リージョン、そしてプロファイル収集を許可する namespace のリストです。バケット名やマネージド MLflow の ARN、ServiceAccount 名、S3 Files のマウント先 AZ、イメージの digest はすべてスクリプトが Terraform の出力や AWS API から解決します。特にマウント先 AZ を変数にしていないのは意図的で、S3 Files のマウントは単一 AZ からしか到達できないため、手で渡した値が実体とずれると PersistentVolume が到達不能になります。
+定常運用で利用者が渡すのは 3 つだけです。クラスタ名、リージョン、そしてプロファイル収集を許可する namespace のリストです (初回だけは、どのデータ層に記録するかの名前 `DATA_LAYER_NAME` と、それを新規に作ってよいという意思表示 `CREATE_DATA_LAYER=1` も要ります。2 回目以降はレジストリから解決されます)。バケット名やマネージド MLflow の ARN、ServiceAccount 名、S3 Files のマウント先 AZ、イメージの digest はすべてスクリプトが Terraform の出力や AWS API から解決します。特にマウント先 AZ を変数にしていないのは意図的で、S3 Files のマウントは単一 AZ からしか到達できないため、手で渡した値が実体とずれると PersistentVolume が到達不能になります。
 
 ### apply の前に必ず plan を分類する
 
@@ -112,8 +112,10 @@ export PRODUCER_NAMESPACES=team-a,team-b
 export DATA_LAYER_NAME=profiling
 export CREATE_DATA_LAYER=1
 export MLFLOW_BACKEND=app
-./infra/scripts/install-profiling.sh
+DEV_BUILD=1 ./infra/scripts/install-profiling.sh
 ```
+
+`DEV_BUILD=1` は初回だけ必要です。基盤イメージは自分の ECR から digest で引く作りなので、まだ何も無い状態では `no analysis image digest available` で止まります。2 回目以降は付けなくてよく、既にあるイメージを digest で使います。
 
 `CLUSTER_NAME` が未設定だとここで止まります。その場合は Basic01 step 2 のコマンドを自分のクラスタ名で実行してから戻ってください。
 
@@ -155,7 +157,7 @@ export PRODUCER_NAMESPACES=team-a
 curl -fsSL https://raw.githubusercontent.com/littlemex/distributed-ai/refs/tags/release/eks-distributed-ai/v0.2.0/infra/scripts/get-profiling.sh | bash
 ```
 
-URL のタグとスクリプトが固定するタグは同じものなので、コピーした 1 行と入るものがずれません。クラスタの state を触る情報 (`TF_STATE_BUCKET` など) を渡した場合はそのまま導入まで走りますが、渡していなければプラグインの設置で止まり、導入はチェックアウトから実行するよう案内されます。`~/.local/bin` が PATH に無い場合は通してください。
+URL のタグとスクリプトが固定するタグは同じものなので、コピーした 1 行と入るものがずれません。そのまま導入まで走らせるには `TF_STATE_BUCKET`、`TF_STATE_REGION`、`TF_STATE_KEY` と、クラスタの `terraform.tfvars` を指す `EKS_TFVARS` の 4 つが必要です。1 つでも欠けているとプラグインの設置だけで止まり、導入はチェックアウトから実行するよう案内されます。`~/.local/bin` が PATH に無い場合は通してください。
 
 渡すのは alias と自分のイメージと、実行したいコマンドだけです。まずは基盤イメージ自身を workload として 1 本流し、経路が通っていることを確認します。イメージの URI は namespace に配られた ConfigMap から引けるので、レジストリやタグを手で組み立てる必要はありません。
 
@@ -358,7 +360,7 @@ analysis MCP には 4 節で撮った自分の run の `run_id` (`$RUN_ID` に�
 
 alias は調査キャンペーン 1 つに 1 つ付け、条件の違いは `--param`、コードや構成の違いは `--tag` で表します。S3 のプレフィックスと MLflow の experiment 名を兼ねるため、使える文字は `^[a-z0-9][a-z0-9-]{1,62}$` に制限されています。キャンペーンを始めるときは、6 節のとおり `--profile none` の run を 1 本置いてからプロファイル付きの run を回します。
 
-失敗した run は既定で残るので、調査が終わったら `status=failed` で検索して整理します。記録されずに終わった Job (退避やノード排出で recorder が走らなかった Job) は、namespace ごとの `accelprof-orphan-check` が 1 時間ごとに点検し、見つかった場合に失敗として報告します。ここで報告が出たら取り逃しがあるということです。逆に CronJob 自体が起動できずに失敗している場合は、取り逃しの有無が分からない状態なので、まず点検が動く状態に戻します。
+失敗した run は既定で残ります。`kubectl accelprof runs` は alias と namespace で絞るだけなので、状態での絞り込みは MLflow 側で行います。UI の run 検索に `tags.status = 'failed'` を入れるか、分析 MCP に同じ条件で問い合わせて、調査が終わったものを削除します。記録されずに終わった Job (退避やノード排出で recorder が走らなかった Job) は、namespace ごとの `accelprof-orphan-check` が 1 時間ごとに点検し、見つかった場合に失敗として報告します。ここで報告が出たら取り逃しがあるということです。逆に CronJob 自体が起動できずに失敗している場合は、取り逃しの有無が分からない状態なので、まず点検が動く状態に戻します。
 
 課金の主因は 3 つです。MLflow が tracking server の場合は起動している間課金されるので、使わない期間は後片付けの手順で停止します (停止は記録を保持します)。app の場合は停止という概念がなく、放置しても課金要素はバケットだけです。trace バケットは `.nsys-rep` の蓄積で単調に増えるので、終わったキャンペーンは alias 単位で掃除します。前述のとおりこれは自動では起きないので、MLflow の experiment 削除と S3 プレフィックスの削除を手で行います。そして GPU ノードそのものが最も高いので、プロファイル用の Job は短く保ちます。掃除のときに MLflow の experiment だけ、あるいは S3 のプレフィックスだけを消すと、片方だけが残って参照できない run ができます。必ず alias を単位にして両方を消します。
 
@@ -368,7 +370,7 @@ alias は調査キャンペーン 1 つに 1 つ付け、条件の違いは `--p
 
 | 変えたいこと | 触る場所 |
 | --- | --- |
-| プロファイル収集を許可する namespace | `PRODUCER_NAMESPACES` を書き換えて導入スクリプトを再実行します。リストが唯一の宣言なので、外した namespace の紐付けは取り消されます |
+| プロファイル収集を許可する namespace | `PRODUCER_NAMESPACES` を書き換えて導入スクリプトを再実行します。リストが唯一の宣言なので、外した namespace の Pod Identity の紐付けは取り消されます。ただし namespace 内に配った ConfigMap・Role・RoleBinding・点検 CronJob は残るので、外した namespace は後片付けの削除コマンドで掃除します (紐付けだけ切れた状態では `kubectl accelprof run` が通ってしまい、実行後に権限不足で記録に失敗します) |
 | profiler のオプション | 実行ごとに `--nsys-args` で指定します。既定値への追加ではなく全置換で、既定を変えるならクライアント `infra/eks/bin/kubectl-accelprof` に埋め込まれた Job の環境変数です |
 | Job の形 (ボリューム、affinity、サイドカー) | 実行ごとなら `--patch` です。恒久的に変えるならクライアントに埋め込まれた Job を直し、`infra/eks/tests/run-render-tests.sh --update` で golden マニフェストを更新します。埋め込みにしているのは、クライアントを PATH にコピーしても動くようにするためです |
 | 撮る Pod (rank) | 既定は rank 0 の Pod だけです。`--profile-ranks` で広げますが、これは Pod 単位の指定です |

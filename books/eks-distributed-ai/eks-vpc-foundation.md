@@ -37,7 +37,7 @@ module "vpc" {
   cidr = var.vpc_cidr        # 既定 10.0.0.0/16
 
   azs             = local.azs             # 既定はリージョンの全標準 AZ（az.tf で導出）
-  private_subnets = local.private_subnets # vpc_cidr の下半分を AZ 数で等分（2 AZ→/18, 4 AZ→/19）
+  private_subnets = local.private_subnets # vpc_cidr の下半分を AZ 数が収まる 2 の冪個に切り先頭から使う（2 AZ→/18, 3-4 AZ→/19）
   public_subnets  = local.public_subnets  # vpc_cidr の上半分から AZ ごとに /24 を導出
 
   enable_nat_gateway     = true
@@ -61,7 +61,7 @@ module "vpc" {
 }
 ```
 
-ここで `azs` / `private_subnets` / `public_subnets` に渡している 3 つの `local.*` が、この構成の設計上の肝です。いずれも [`az.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/az.tf) で `var.region` と `var.vpc_cidr` から自動導出しており、通常のデプロイでは AZ もサブネット CIDR も一切手書きしません。tfvars に書くのは `region` とプールのインスタンスタイプだけで済みます。
+ここで `azs` / `private_subnets` / `public_subnets` に渡している 3 つの `local.*` が、この構成の設計上の肝です。いずれも [`az.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/az.tf) で `var.region` と `var.vpc_cidr` から自動導出しており、通常のデプロイでは AZ もサブネット CIDR も一切手書きしません。AZ や CIDR を tfvars に書く必要はありません (生成される tfvars には、後述のとおりリージョンとクラスタ名とアカウント ID が入ります)。
 
 **AZ とサブネット CIDR の自動導出**: `local.azs` は `var.azs` が `null`（既定）ならそのリージョンの標準 AZ を `sort` して全件返します。サブネット CIDR も `var.private_subnet_cidrs` / `var.public_subnet_cidrs` が `null`（既定）なら `var.vpc_cidr` から AZ ごとに 1 つずつ切り出します。デフォルトではうまく AZ を適切な CIDR で切ってくれていると思っていただければ大丈夫です。ただし全 AZ を返すという性質上、EKS のコントロールプレーンや新しいインスタンスタイプに対応していない制約付きの AZ (us-east-1e など) を含むリージョンでは、そのままだと apply が失敗することがあります。その場合は `terraform.tfvars` に `azs = ["...", "..."]` で使いたい AZ を明示します。
 
@@ -220,23 +220,23 @@ IRSA は ServiceAccount にアノテーションで IAM ロールを結び付け
 curl -fsSL https://raw.githubusercontent.com/littlemex/distributed-ai/refs/tags/release/eks-distributed-ai/v0.2.0/infra/scripts/distai-install.sh | bash
 ```
 
-後半がクラスタを作るコマンドです。渡すのはクラスタ名とリージョンだけで、どちらも環境変数で置きます。名前付きプロファイル (AWS SSO や assume-role) で認証している場合は `AWS_PROFILE` も置いてください。スクリプトはこれを読み取り、生成する変数ファイルにも書き込むので、以降の Terraform と CLI が同じプリンシパルで動きます。
+後半がクラスタを作るコマンドです。渡すのはクラスタ名とリージョンだけで、どちらも環境変数で置きます。名前付きプロファイル (AWS SSO や assume-role) で認証している場合は `AWS_PROFILE` も置いてください。スクリプトはこれを読み取り、生成する変数ファイルにも書き込みます。ただし書き込む先は Terraform が読む値で、AWS CLI と `kubectl` は環境変数の `AWS_PROFILE` しか見ません。新しいシェルで export し忘れると、tfvars に profile が残っていても CLI 側は素の `[default]` で動くので、両方を揃えてください。
 
 ```bash
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2
 ```
 
-名前付きプロファイルを使っている場合は、あわせて `export AWS_PROFILE=<自分のプロファイル名>` も置きます。素の `[default]` で認証している場合は不要です。存在しない名前を設定すると `The config profile could not be found` で停止します。
+名前付きプロファイルを使っている場合は、あわせて `export AWS_PROFILE=<自分のプロファイル名>` も置きます。素の `[default]` で認証している場合は不要です。存在しない名前を設定すると、スクリプトが `no usable AWS credentials. Sign in, or set AWS_PROFILE, before running this.` で停止します。AWS CLI 側の詳細メッセージは表示されないので、`aws sts get-caller-identity` を単独で実行して原因を見てください。
 
-コマンド自体は引数を取りません。
+コマンド自体は引数なしで実行します (自動化のために確認を飛ばす `-y` と、使い方を出す `-h` は受け付けます)。
 
 ```bash
 cd ~/distributed-ai-v0.2.0
 ./infra/scripts/distai-up.sh
 ```
 
-分けてあるのは、`curl` をシェルに流す形の中で課金リソースを作らせないためです。理由は 3 つあります。取得と課金を別のコマンドにしておけば、何を取得して何に課金したかを後から追えます。パイプの中では stdin をスクリプト本体が使っているので、確認を求めても読者は答えられません。そして apply の前には plan を見せて明示的に確認を取りたいからです。
+分けてあるのは、`curl` をシェルに流す形の中で課金リソースを作らせないためです。理由は 3 つあります。取得と課金を別のコマンドにしておけば、何を取得して何に課金したかを後から追えます。パイプの中では stdin をスクリプト本体が使っているので、確認を求めても読者は答えられません。そして apply の前には plan を見せて明示的に確認を取りたいからです。ここで表示されるのは変更の件数と、変更のあるリソース名の先頭 40 件までです (作成だけでなく更新・置換・削除も同じ形で並び、40 件を超えた分は `... and N more` にまとめられます)。属性ごとの差分や置き換えの詳細は表示されないので、そこまで見たい場合は後述の 4 行を実行したうえで `infra/eks` で `terraform plan` を直に実行してください。
 
 `distai-up.sh` は 5 つのフェーズを順に実行します。前提確認、同意ゲート、state の作成とレジストリへの記録、変数ファイルの生成、そして plan の表示と apply です。同意ゲートでは、対象のアカウント・呼び出し元・リージョン・クラスタ名を表示したうえで**クラスタ名の入力**を求めます。y の 1 文字では、上に何が表示されていても押せてしまうからです。
 
@@ -276,7 +276,7 @@ source infra/scripts/distai-env.sh
 レジストリに置いているのは、state を開く前に必要な情報と、クラスタの外側にある関連付けだけです。state は自分自身の住所を記録できませんし、`backend.hcl` は環境固有なのでリポジトリに含まれません。この 2 つの事情が「クラスタ名から始められない」原因だったので、そこを外に出しています。エンドポイントもサブネット ID も MLflow の ARN も入れていません。これらは `terraform output` で引けるので、二重に持つと「どちらが正しいか」という問いが生まれるからです。
 
 :::message
-実行すると、対象のクラスタ・リージョン・アカウント・リリースタグが 1 行で表示されます。apply が途中で失敗した場合、レジストリには state の座標までが記録されていてリリースタグがまだ無い状態になります。この状態でも解決自体は通り、リリースタグは「未記録」と表示されます。認証情報のアカウントがレジストリの記録と食い違う場合は、その場で停止します。クラスタ名は (アカウント, リージョン, 名前) の 3 つ組で初めて一意になるので、名前だけで別のクラスタを掴まないための確認です。
+実行すると、対象のクラスタ・リージョン・アカウント・リリースタグが 1 行で表示されます。apply が途中で失敗した場合、レジストリには state の座標までが記録されていてリリースタグがまだ無い状態になります。この状態でも解決自体は通り、リリースタグの位置に `unrecorded` と表示されます。認証情報のアカウントがレジストリの記録と食い違う場合は、その場で停止します。クラスタ名は (アカウント, リージョン, 名前) の 3 つ組で初めて一意になるので、名前だけで別のクラスタを掴まないための確認です。
 :::
 
 ## 3. ノードを確認する
@@ -288,7 +288,7 @@ distai-env: kubectl: context distai-eks, namespace distai at https://XXXXXXXX.gr
 distai-env: k is kubectl --context distai-eks; KUBECONFIG is /home/ubuntu/.kube/distai/distai-eks.distai.yaml
 ```
 
-この 1 行目は kubeconfig を読み上げただけの表示ではなく、実際に API サーバーへ 1 回問い合わせた結果です。endpoint が出ていれば到達性と認証まで確認できたことになります。末尾の `(the namespace does not exist yet)` は step 4 で作る `distai` namespace がまだ無いという意味なので、この時点では正常です。
+この 1 行目は、kubeconfig から読んだ endpoint に加えて、実際に API サーバーへ 1 回問い合わせた結果を添えたものです。endpoint 自体は kubeconfig にあるので、問い合わせが失敗しても endpoint は表示されます。見るのは末尾で、`(unreachable: ...)` が付いていなければ到達性と認証まで確認できたことになります。末尾の `(the namespace does not exist yet)` は step 4 で作る `distai` namespace がまだ無いという意味なので、この時点では正常です。
 
 kubeconfig は既定の `~/.kube/config` ではなく、クラスタと namespace ごとの専用ファイルに書きます。既定の kubeconfig の current-context を書き換えると、別のターミナルで他のクラスタを触っている作業まで巻き込むためです。設定が効くのは `source` したシェルの中だけなので、ターミナルを開き直したら step 2 の 4 行をもう一度実行します。`k` は `--context` を常に付けて `kubectl` を呼ぶ関数なので、後から current-context が変わっても向き先はずれません。
 
@@ -318,7 +318,7 @@ namespace の作成は `--dry-run` 経由の `apply` にしています。すで
 k create namespace distai --dry-run=client -o yaml | k apply -f -
 ```
 
-`namespace/distai created`（初回）または `namespace/distai unchanged`（2 回目以降）と表示されれば準備完了です。本 book では最後まで同じ `distai` を使います。作成後に step 2 の 4 行をもう一度実行すると、先ほどの `(the namespace does not exist yet)` が消えます。
+`namespace/distai created`（初回）または `namespace/distai unchanged`（2 回目以降）と表示されれば準備完了です。本 book は既定としてこの `distai` を使います (章によって別の namespace を使いたい場合の切り替え方は次に触れます)。作成後に step 2 の 4 行をもう一度実行すると、先ほどの `(the namespace does not exist yet)` が消えます。
 
 ## 5. 向き先を確認する習慣をつける
 

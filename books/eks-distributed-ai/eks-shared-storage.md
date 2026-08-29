@@ -101,7 +101,7 @@ GPU 分散学習では NCCL の集合通信も EFA を使います。Amazon FSx 
 
 # ワークショップ実施
 
-本章の実機検証は、`terraform.tfvars` の既定値（`fsx_enabled = true` / `openzfs_enabled = true` / `efs_enabled = false` / `fsx_efa_enabled = false`）のまま実施します。以下の実機出力は `us-west-2` で採取した例で、読者が別リージョンで進める場合はリージョン名とファイルシステム ID が変わりますが、手順そのものは同じです。
+本章の実機検証は、`terraform.tfvars` の既定値（`fsx_enabled = true` / `openzfs_enabled = true` / `efs_enabled = false` / `fsx_efa_enabled = false`）のまま実施します。以下の実機出力は `us-east-2` で採取した例で、読者が別リージョンで進める場合はリージョン名とファイルシステム ID が変わりますが、手順そのものは同じです。
 
 ## 1. 前提を確認する
 
@@ -124,8 +124,16 @@ terraform output shared_storage
 
 ```text
 {
+  "efs" = {
+    "dns_name" = ""
+    "enabled" = false
+    "id" = ""
+    "mount_name" = ""
+    "persistent_volume" = "efs-neuron-workspace"
+    "storage_capacity" = ""
+  }
   "fsx_lustre" = {
-    "dns_name" = "fs-0123456789abcdef1.fsx.us-west-2.amazonaws.com"
+    "dns_name" = "fs-0123456789abcdef1.fsx.us-east-2.amazonaws.com"
     "enabled" = true
     "id" = "fs-0123456789abcdef1"
     "mount_name" = "abcd1234"
@@ -133,16 +141,18 @@ terraform output shared_storage
     "storage_capacity" = "4800"
   }
   "fsx_openzfs" = {
-    "dns_name" = "fs-0123456789abcdef2.fsx.us-west-2.amazonaws.com"
+    "dns_name" = "fs-0123456789abcdef2.fsx.us-east-2.amazonaws.com"
     "enabled" = true
     "id" = "fs-0123456789abcdef2"
+    "mount_name" = ""
     "persistent_volume" = "openzfs-shared"
+    "root_volume_id" = "fsvol-0123456789abcdef3"
     "storage_capacity" = "256"
   }
 }
 ```
 
-`enabled` がその層を使うかどうか、`persistent_volume` が静的 PV の名前です。
+`enabled` がその層を使うかどうか、`persistent_volume` が静的 PV の名前です。3 つの層は無効なものも同じ形で並ぶので、`efs` が `enabled = false` で空の値を持って出てくるのは正常です。`root_volume_id` は OpenZFS だけが持つ値で、テナントごとに子ボリュームを切るときの親を指します。
 
 ## 3. PersistentVolume を確認する
 
@@ -165,14 +175,14 @@ openzfs-shared   256Gi      RWX            Retain           Available           
 :::message
 ここで注意したいのが、`kubectl get pv` で `STATUS=Available` に見えても、`CLAIM` 欄に別 namespace の PVC 名が残っていると、その PV は「その PVC 専用に予約された」状態で、別 namespace の PVC はバインドできず `Pending` のままになる点です。静的 PV は `Retain` なので、一度どれかの PVC がバインドすると `spec.claimRef` が残り続けるためです。この解放は手順を 1 つでも誤ると PVC を掴んだ Pod のファイナライザやテナントの ValidatingAdmissionPolicy でハマりやすいので、確実に済ませたい場合は次のスクリプトを使えます。
 
-`--storage` には `fsx` と `openzfs` と `efs` のいずれかを指定します。解放できる状態であれば対象の PV を `Available` へ戻します。ただしその PV を待っている PVC が別にいる場合は `Available` を経ずにそちらへ再バインドし、それも成功として終わります (使われている状態に戻っただけなので、意図どおりです)。逆に、PVC を掴んでいる Pod が Deployment などのコントローラ管理下にある場合は、消しても作り直されて同じ PVC を掴み直すため、`--force` を付けても停止します。そのコントローラを先に止めてから再実行してください。
+`--storage` には `fsx` と `openzfs` と `efs` のいずれかを指定します。解放できる状態であれば対象の PV を `Available` へ戻します。ただしその PV を待っている PVC が別にいる場合は `Available` を経ずにそちらへ再バインドし、それも成功として終わります (使われている状態に戻っただけなので、意図どおりです)。逆に、PVC を掴んでいる Pod が Deployment・ReplicaSet・StatefulSet・Job のいずれかに管理されている場合は、消しても作り直されて同じ PVC を掴み直すため、`--force` を付けても停止します。そのコントローラを先に止めてから再実行してください。検出するのはこの 4 種類なので、それ以外のコントローラ (DaemonSet や自作の operator) が掴んでいる場合は止まらず、Pod が再作成されて後続で詰まります。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks/scripts
 ./05-release-pv.sh --storage fsx
 ```
 
-`05-release-pv.sh` は、PVC が既に消えている残骸なら claimRef を外して `Available` に戻し、PVC がまだ生きている場合は誤って壊さないよう `--force` を要求します。`reclaimPolicy` が `Retain` 以外の PV は拒否するため、データを削除してしまう事故も防げます。以下は、このスクリプトが内部で行っている手動手順です。
+`05-release-pv.sh` は、PVC が既に消えている残骸なら claimRef を外して `Available` に戻し、PVC がまだ生きている場合は誤って壊さないよう `--force` を要求します。`reclaimPolicy` が `Retain` 以外の PV は拒否するため、データを削除してしまう事故も防げます。以下は、このスクリプトが行っていることを手で行う場合の手順です。
 :::
 
 手動で行う場合は、名前を直接書かず、PV から `claimRef` を引いて変数で扱います。
@@ -190,7 +200,7 @@ echo "この PV を掴んでいる PVC: ${PVC_NS}/${PVC_NAME}"
 k delete pvc "$PVC_NAME" -n "$PVC_NS"
 ```
 
-同じ namespace で同名の PVC を再作成して使い続ける場合は、`claimRef` の `uid` と `resourceVersion` だけを外します。
+同じ namespace で同名の PVC を再作成して使い続ける場合は、`claimRef` の `uid` と `resourceVersion` だけを外す手もあります。これは手で行うときの選択肢で、`05-release-pv.sh` は常に `claimRef` 全体を外して、どの namespace の PVC でも掴める `Available` に戻します。
 
 ```bash
 k patch pv "$PV" --type=json \
@@ -285,7 +295,7 @@ k wait --for=jsonpath='{.status.phase}'=Succeeded pod/fsx-test2 -n "$NAMESPACE" 
 k logs fsx-test2 -n "$NAMESPACE"
 ```
 
-別名の Pod でも `hello-fsx` が読み出せます。Pod やノードが入れ替わっても、共有ストレージ上のデータが残り続けることが確認できます。
+別名の Pod でも `hello-fsx` が読み出せます。ここで直接確認しているのは Pod を作り直してもデータが残ることです。共有ストレージはノードの入れ替えにも耐える設計ですが、それを確かめるにはノードごと消して別ノードに載せる必要があるので、この手順には含めていません。
 
 ## 5. 検証用リソースを削除する
 
@@ -305,7 +315,7 @@ Amazon FSx for Lustre は有効な間、プロビジョニングした容量分�
 :::
 
 :::message
-マルチ AZ で ReadWriteMany のキャッシュが必要な場合は、opt-in の Amazon EFS を選べます。`terraform.tfvars` で `efs_enabled = true` にして apply すると、ファイルシステムと private subnet ごとのマウントターゲット、静的 PV が作られ、Karpenter がノードを別 AZ に入れ替えても同じキャッシュを読み続けられます。CSI ドライバ自体は既定で常設されているため、有効化するのはファイルシステム本体だけです。Amazon EFS の詳しい構成と用途は、マルチ AZ での NEFF キャッシュ共有が要点になる Neuron の章で扱います。
+マルチ AZ で ReadWriteMany のキャッシュが必要な場合は、opt-in の Amazon EFS を選べます。`terraform.tfvars` で `efs_enabled = true` にして apply すると、ファイルシステムと private subnet ごとのマウントターゲット、静的 PV が作られ、Karpenter がノードを別 AZ に入れ替えても同じキャッシュを読み続けられます。CSI ドライバ自体は既定で常設されています。有効化で追加されるのは、ファイルシステム本体とマウントターゲット、アクセスポイント、StorageClass、静的 PV です。無効に戻すとこれらも消えるので、Kubernetes 側の StorageClass や PV を参照しているものが無いか先に確かめてください。Amazon EFS の詳しい構成と用途は、マルチ AZ での NEFF キャッシュ共有が要点になる Neuron の章で扱います。
 :::
 
 # まとめ

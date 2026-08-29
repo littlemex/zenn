@@ -19,7 +19,7 @@ observability は `var.enable_observability = true`（既定で有効）で `ter
 
 ![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 
-アクセラレータノード（GPU）で動く DCGM exporter を起点に、`monitoring` namespace の Prometheus へメトリクスが流れ、Grafana がそれを可視化します。監視スタックは専用の Karpenter NodePool（`node-role=monitoring`）に常駐し、GPU ノードや system ノードとは分離しています。
+アクセラレータノード（GPU）で動く DCGM exporter を起点に、`monitoring` namespace の Prometheus へメトリクスが流れ、Grafana がそれを可視化します。監視スタックは専用の Karpenter NodePool（`node-role=monitoring`）に常駐し、GPU ノードや system ノードの上では動きません。
 
 ## これは何をするものか
 
@@ -61,7 +61,7 @@ relabelings = [
   {
     # ノードラベル tenantpools.dev/tenant を tenant メトリクスラベルへコピーする
     action       = "replace"
-    sourceLabels = ["__meta_kubernetes_node_label_tenantpools_dev_tenant"]
+    sourceLabels = [local.tenant_meta_label] # 既定なら __meta_kubernetes_node_label_tenantpools_dev_tenant
     targetLabel  = "tenant"
   },
   {
@@ -82,7 +82,7 @@ Prometheus は PVC を持つ常駐の stateful なコンポーネントで、GPU
 - **system ノードには載せない**: system の managed nodegroup は「Karpenter が落ちてもクラスタが復旧できるための最小構成（kube-system と Karpenter controller）」だけを置く聖域です。Prometheus のような重い常駐物をここに載せると、この聖域の予測可能性が崩れます
 - **GPU ノードには載せない**: GPU ノードは Capacity Block の期限やワークロード終了で消えるため、監視ごと消えてしまいます
 
-そこで [`observability.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/observability.tf) は監視専用の Karpenter NodePool（`node-role=monitoring`）を作り、監視スタックをそこに固定します。この NodePool は `consolidationPolicy: WhenEmpty` で、Pod が完全に無くなったときだけノードを回収します。
+そこで [`observability.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/observability.tf) は監視専用の Karpenter NodePool（`node-role=monitoring`）を作り、監視スタックをそこに固定します。この NodePool は `consolidationPolicy: WhenEmpty` で、Pod が完全に無くなったときだけノードを回収します。なおこのプールに taint は付けていません。`nodeSelector` は監視 Pod をこのノードに寄せる働きしかしないので、`nodeSelector` を持たない Pod がスケジューラの都合でこのノードに同居することは防げません。taint を付けない代わりに、監視スタックのリソース要求で必要分を確保する形にしています。
 
 ## ノード障害を検知する
 
