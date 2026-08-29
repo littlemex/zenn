@@ -76,7 +76,7 @@ Job そのものは終了から 2 日後に Kubernetes が消します。run の
 
 ### なぜ controller を作っていないか
 
-この基盤には自作の controller がありません。producer Job が自分で記録するので、収束させるべき状態がなく、Job そのものが Kubernetes の提供する controller です。カスタムリソースで得られる状態の書き戻しとライフサイクル管理は、それぞれ Job のアノテーションと `ttlSecondsAfterFinished` で足ります。Pod 内の部品では埋められない穴は 1 つだけで、recorder が走る前に Pod ごと消える場合 (Pod の追い出し (eviction) やノードの drain) です。これは各 namespace の1 時間ごとに動く確認用 CronJobが報告します。
+この基盤には自作の controller がありません。producer Job が自分で記録するので、収束させるべき状態がなく、Job そのものが Kubernetes の提供する controller です。カスタムリソースで得られる状態の書き戻しとライフサイクル管理は、それぞれ Job のアノテーションと `ttlSecondsAfterFinished` で足ります。Pod 内の部品では埋められない穴は 1 つだけで、recorder が走る前に Pod ごと消える場合 (Pod の追い出しやノードの drain) です。これは各 namespace の1 時間ごとに動く確認用 CronJobが報告します。
 
 # ワークショップ実施
 

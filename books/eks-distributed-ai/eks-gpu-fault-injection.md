@@ -5,19 +5,19 @@ free: true
 
 GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0)
 
-本章では、[Basic08 - Observability を導入する](eks-observability) で有効化した Node Monitoring Agent（NMA）が、GPU の障害を本当に検知できるのかを、DCGM の fault injection 機能で擬似的な障害を注入して確かめます。実際の GPU を壊さずに XID エラーを注入し、NMA が `AcceleratedHardwareReady` を `False` に反転させ、Prometheus のアラートが発火するところまでを実機で追います。あわせて、NMA が GPU ノードで健全性を読むために内部でどう動いているか、この基盤の GPU taint との相性で何が起きるかも解説します。
+本章では、[Basic08 - Observability を導入する](eks-observability) で有効化した Node Monitoring Agent（NMA）が、GPU の障害を本当に検知できるのかを、DCGM の 障害注入 機能で擬似的な障害を注入して確かめます。実際の GPU を壊さずに XID エラーを注入し、NMA が `AcceleratedHardwareReady` を `False` に反転させ、Prometheus のアラートが発火するところまでを実機で追います。あわせて、NMA が GPU ノードで健全性を読むために内部でどう動いているか、この基盤の GPU taint との相性で何が起きるかも解説します。
 
 :::message
-本章は Basic08 で NMA と kube-prometheus-stack が動いていることを前提にします。fault injection は DCGM のキャッシュに偽の障害値を書き込むだけで、実際の GPU ハードウェアには影響しません。
+本章は Basic08 で NMA と kube-prometheus-stack が動いていることを前提にします。障害注入 は DCGM のキャッシュに偽の障害値を書き込むだけで、実際の GPU ハードウェアには影響しません。
 :::
 
 # 解説
 
 ## なぜ検知の「検証」が要るのか
 
-監視は入れただけでは信用できません。とくに GPU 障害の検知は、実際に GPU が壊れる場面が滅多に来ないため、「入れたが実は動いていなかった」に最も陥りやすい領域です。分散学習では 1 枚の GPU の故障が NCCL の集合通信を全ランクでハングさせ、高価な Capacity Block の課金だけが無言で流れ続けます。その最悪シナリオを断ち切るための検知が、いざというときに本当に発火するのか。これを平常時に安全に確かめておくのが本章の目的です。
+監視は導入しただけでは信用できません。とくに GPU 障害の検知は、実際に GPU が壊れる場面が滅多に来ないため、「入れたが実は動いていなかった」に最も陥りやすい領域です。分散学習では 1 枚の GPU の故障が NCCL の集合通信を全ランクでハングさせ、高価な Capacity Block の課金だけが無言で流れ続けます。その最悪シナリオを断ち切るための検知が、いざというときに本当に発火するのか。これを平常時に安全に確かめておくのが本章の目的です。
 
-NVIDIA の DCGM には、GPU のテレメトリフィールドに任意の値を注入する fault injection 機能があります。これを使うと、実際の GPU を故障させることなく「XID 79 が起きた」「訂正不可能な ECC エラーが出た」という状態を DCGM のキャッシュ上に作り出せます。NMA はこの DCGM の値を読んで健全性を判定するため、注入した障害が NodeCondition の反転として観測できれば、検知経路が端から端まで生きていることの証明になります。
+NVIDIA の DCGM には、GPU のテレメトリフィールドに任意の値を注入する 障害注入 機能があります。これを使うと、実際の GPU を故障させることなく「XID 79 が起きた」「訂正不可能な ECC エラーが出た」という状態を DCGM のキャッシュ上に作り出せます。NMA はこの DCGM の値を読んで健全性を判定するため、注入した障害が NodeCondition の反転として観測できれば、検知経路が一連の流れが正しく機能していることの証明になります。
 
 ## NMA が GPU 健全性を読む仕組み
 
@@ -28,16 +28,16 @@ NMA は二つの DaemonSet で構成されます。エージェント本体で�
 ここで、Basic04 で導入した GPU Operator の dcgm-exporter との関係が問題になります。dcgm-exporter は使用率などの連続的なメトリクスを Prometheus に出すためのもので、既定では埋め込み（embedded）モードで動き、自分の中に DCGM を抱えてポート 9400 でメトリクスを公開します。NMA の `dcgm-server`（ポート 5555）とは別のポート・別の役割なので、両者は同じ GPU ノードで問題なく共存します。
 
 :::message alert
-GPU Operator には standalone DCGM を立てるオプション（`dcgm.enabled=true`）もありますが、この基盤では有効化していません。standalone DCGM の DaemonSet はホストのポート 5555 を `hostPort` で確保します。NMA の `dcgm-server` も同じ 5555 を要求するので、両者は同じポートを取り合い、後から起動した方が `Pending` のまま立ち上がれずに GPU 健全性検知が沈黙します (実機で確認しています)。そもそも AWS のドキュメントは、既存の DCGM 導入と NMA の併用はできないとしています。GPU 健全性を読む役目は NMA の `dcgm-server` に任せれば十分なので、この基盤では [`gpu-addons.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/gpu-addons.tf) で standalone DCGM を無効のままにし、メトリクスは埋め込みモードの dcgm-exporter に任せています。
+GPU Operator には standalone DCGM を起動するオプション（`dcgm.enabled=true`）もありますが、この基盤では有効化していません。standalone DCGM の DaemonSet はホストのポート 5555 を `hostPort` で確保します。NMA の `dcgm-server` も同じ 5555 を要求するので、両者は同じポートを取り合い、後から起動した方が `Pending` のまま立ち上がれずに GPU 健全性検知が沈黙します (実機で確認しています)。そもそも AWS のドキュメントは、既存の DCGM 導入と NMA の併用はできないとしています。GPU 健全性を読む役目は NMA の `dcgm-server` に任せれば十分なので、この基盤では [`gpu-addons.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/gpu-addons.tf) で standalone DCGM を無効のままにし、メトリクスは埋め込みモードの dcgm-exporter に任せています。
 :::
 
 ## GPU taint と dcgm-server の相性
 
 この基盤では GPU ノードに `nvidia.com/gpu=:NoSchedule` の taint を付けて、GPU を要求しない一般の Pod が高価な GPU ノードに載らないようにしています。この taint が NMA の `dcgm-server` と相性の悪い挙動を引き起こします。
 
-NMA を導入すると、エージェント本体はすべての taint を tolerate するので GPU ノードに載りますが、同梱の `dcgm-server` DaemonSet は tolerations が空のまま出荷されます。その結果、taint を持つ GPU ノードに `dcgm-server` が載れず、GPU があるノードでこそ GPU 健全性を読めない、という状態になります。
+NMA を導入すると、エージェント本体はすべての taint を tolerate するので GPU ノードに載りますが、同梱の `dcgm-server` DaemonSet は tolerations が空のまま出荷されます。その結果、taint を持つ GPU ノードに `dcgm-server` が載れず、まさに GPU があるノードで GPU 健全性を読めない、という状態になります。
 
-そこでこの基盤では、NMA を EKS アドオンとして導入したうえで、アドオンの設定値（`configuration_values`）に `dcgmAgent.tolerations` を渡して GPU taint への toleration を与えています。渡すのは `nvidia.com/gpu` だけでは足りません。Capacity Block のノードは `capacity-reservation` taint も持つので、これを落とすと、前払いしている CB の GPU ノードにこそ `dcgm-server` が載らず `Pending` のままになります。この基盤は `nvidia.com/gpu` と `capacity-reservation` に加えて、利用者が `accelerator_pools` で定義した taint の分も渡しています。なお `dcgmAgent.tolerations` は NMA アドオンの v1.3.0 以降のスキーマにある項目です。この基盤は既定ではアドオンのバージョンを固定せず EKS の既定に任せているので、`aws eks describe-addon` でバージョンを確かめておくと確実です。固定したい場合は `node_monitoring_agent_version` に指定します。なお NMA 自体も `enable_node_monitoring_agent` で切れるので、無効にしている環境では本章の手順 1 から進みません。これで `dcgm-server` が GPU ノードに載り、GPU 健全性検知が機能します。この設定は [`observability.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/observability.tf) にあります。
+そこでこの基盤では、NMA を EKS アドオンとして導入したうえで、アドオンの設定値（`configuration_values`）に `dcgmAgent.tolerations` を渡して GPU taint への toleration を与えています。渡すのは `nvidia.com/gpu` だけでは足りません。Capacity Block のノードは `capacity-reservation` taint も持つので、これを落とすと、前払いしている 本来必要な CB の GPU ノードに `dcgm-server` が載らず `Pending` のままになります。この基盤は `nvidia.com/gpu` と `capacity-reservation` に加えて、利用者が `accelerator_pools` で定義した taint の分も渡しています。なお `dcgmAgent.tolerations` は NMA アドオンの v1.3.0 以降のスキーマにある項目です。この基盤は既定ではアドオンのバージョンを固定せず EKS の既定に任せているので、`aws eks describe-addon` でバージョンを確かめておくと確実です。固定したい場合は `node_monitoring_agent_version` に指定します。なお NMA 自体も `enable_node_monitoring_agent` で切れるので、無効にしている環境では本章の手順 1 から進みません。これで `dcgm-server` が GPU ノードに載り、GPU 健全性検知が機能します。この設定は [`observability.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/observability.tf) にあります。
 
 ```hcl
 resource "aws_eks_addon" "node_monitoring_agent" {
@@ -175,7 +175,7 @@ False reason=NvidiaXID79Error msg=detected XID-79 on the instance, review kernel
 
 ## 4. アラートが発火することを確認する
 
-Basic08 の [`observability.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/observability.tf) が入れた PrometheusRule のうち、`AcceleratedHardwareUnhealthy`（critical）がこの反転で発火します。Prometheus に port-forward してアラートの状態を確認します。port-forward の確立を確実に待つため、ready エンドポイントが応答するまで待ってから叩きます。
+Basic08 の [`observability.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/observability.tf) が入れた PrometheusRule のうち、`AcceleratedHardwareUnhealthy`（critical）がこの反転で発火します。Prometheus に port-forward してアラートの状態を確認します。port-forward の確立を確実に待つため、ready エンドポイントが応答するまで待ってから実行します。
 
 ```bash
 k port-forward -n monitoring svc/kps-prometheus 9090:9090 &
@@ -219,7 +219,7 @@ curl -s "http://localhost:9090/api/v1/query" \
 ip-10-0-8-26... = 0
 ```
 
-これで、GPU 障害の注入から NodeCondition の反転、そして Prometheus アラートの発火までの検知経路が端から端まで生きていることを確認できました。
+これで、GPU 障害の注入から NodeCondition の反転、そして Prometheus アラートの発火までの検知経路が一連の流れが正しく機能していることを確認できました。
 
 ## 5. 注入をクリアして健全状態に戻す
 
@@ -259,7 +259,7 @@ port-forward はバックグラウンドで起動したので、確認が終わ�
 
 # まとめ
 
-本章では、DCGM の fault injection で XID 79 を GPU に注入し、NMA が `AcceleratedHardwareReady` を理由 `NvidiaXID79Error` とともに `False` へ反転させ、Prometheus の `AcceleratedHardwareUnhealthy` アラートが発火するところまでを実機で確かめました。実際の GPU を壊さずに検知経路の端から端までを検証できるのが fault injection の価値です。あわせて次のことを見ました。NMA は GPU 健全性を、同梱の `nv-hostengine` をポート 5555 で動かす `dcgm-server` から読みます。これは GPU Operator の埋め込み dcgm-exporter がポート 9400 で公開するメトリクスとは別経路なので共存できますが、standalone DCGM をホストネットワークで動かすとポート 5555 が競合します。そして GPU taint のために `dcgm-server` へ toleration を渡す必要があり、それを EKS アドオンの `configuration_values` で解決しています。検知が本当に動くことを平常時に確かめておけば、いざ GPU が壊れたときに「監視が入っていたのに気づけなかった」という事態を避けられます。
+本章では、DCGM の 障害注入 で XID 79 を GPU に注入し、NMA が `AcceleratedHardwareReady` を理由 `NvidiaXID79Error` とともに `False` へ反転させ、Prometheus の `AcceleratedHardwareUnhealthy` アラートが発火するところまでを実機で確かめました。実際の GPU を壊さずに検知経路の端から端までを検証できるのが 障害注入 の価値です。あわせて次のことを見ました。NMA は GPU 健全性を、同梱の `nv-hostengine` をポート 5555 で動かす `dcgm-server` から読みます。これは GPU Operator の埋め込み dcgm-exporter がポート 9400 で公開するメトリクスとは別経路なので共存できますが、standalone DCGM をホストネットワークで動かすとポート 5555 が競合します。そして GPU taint のために `dcgm-server` へ toleration を渡す必要があり、それを EKS アドオンの `configuration_values` で解決しています。検知が本当に動くことを平常時に確かめておけば、いざ GPU が壊れたときに「監視が入っていたのに気づけなかった」という事態を避けられます。
 
 # 参考資料
 
