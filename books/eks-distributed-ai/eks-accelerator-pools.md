@@ -140,12 +140,13 @@ Basic02 と同じ [`ddp.py`](https://github.com/littlemex/distributed-ai/blob/ma
 既存の TrainJob が残っていると spec が同一のため apply しても再実行されないので、作り直す前に削除します。イメージは Basic02 で push した `ddp-sample` で、`ECR_URL` の導出も Basic02 と同じです。
 
 ```bash
+export NAMESPACE=distai
 k delete trainjob ddp-trainjob --ignore-not-found
 
 ECR_URL=$(terraform output -raw ddp_sample_ecr_url)
 IMAGE=${ECR_URL}:v1
 
-helm template exp charts/experiments -n distai \
+helm template exp charts/experiments -n "$NAMESPACE" \
     --set trainjobTrain.enabled=true \
     --set trainjobTrain.image="$IMAGE" \
     --set trainjobTrain.nodeRole=gpu-ddp \

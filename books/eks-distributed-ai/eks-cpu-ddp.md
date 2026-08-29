@@ -97,10 +97,11 @@ TrainJob 側が指定するのは、台数（`numNodes`）とノードあたり�
 
 以降のコマンドは Basic01 で clone したリポジトリのルート、つまり `git rev-parse --show-toplevel` が返すディレクトリで実行する前提です。`infra/eks` に移る手順にはその都度 `cd` を書いています。`kubectl` が Basic01 のクラスタを指していること、MNIST データセットを取得するためのアウトバウンド通信やノードの ECR pull 権限は、いずれも Basic01 の構築で用意済みです。
 
-Basic01 手順 2 の 4 行を実行済みで、`k` がこのクラスタの `distai` namespace を向いている前提です（ターミナルを開き直した場合はその 4 行をもう一度実行してください）。作業用 namespace を冪等に用意しておきます（すでに存在していてもエラーになりません）。
+Basic01 手順 2 の 4 行を実行済みで、`k` がこのクラスタの `distai` namespace を向いている前提です (ターミナルを開き直した場合はその 4 行をもう一度実行してください)。以降のコマンドは namespace を `NAMESPACE` から受け取るので、ここで環境変数に入れておきます。作成は冪等なので、すでにあってもエラーになりません。
 
 ```bash
-k create namespace distai --dry-run=client -o yaml | k apply -f -
+export NAMESPACE=distai
+k create namespace "$NAMESPACE" --dry-run=client -o yaml | k apply -f -
 ```
 
 :::message
@@ -128,7 +129,7 @@ IMAGE=${ECR_URL}:v1
 
 k delete job build-ddp-sample-v1 -n image-builder --ignore-not-found
 
-helm template exp charts/experiments -n distai \
+helm template exp charts/experiments -n "$NAMESPACE" \
     --set imageBuild.enabled=true \
     --set imageBuild.repository="$ECR_URL" \
     --set imageBuild.tag=v1 \
@@ -210,7 +211,7 @@ k get pvc shared-claim
 cd "$(git rev-parse --show-toplevel)"/infra/eks
 k delete trainjob ddp-trainjob --ignore-not-found
 
-helm template exp charts/experiments -n distai \
+helm template exp charts/experiments -n "$NAMESPACE" \
     --set trainjobTrain.enabled=true \
     --set trainjobTrain.image="${IMAGE:-$(terraform output -raw ddp_sample_ecr_url):v1}" \
     --set trainjobTrain.nodeRole=cpu \
@@ -350,7 +351,7 @@ k get pvc shared-claim
 
 ```bash
 k delete trainjob ddp-trainjob --ignore-not-found
-k delete pod peek -n distai --ignore-not-found
+k delete pod peek -n "$NAMESPACE" --ignore-not-found
 k delete job build-ddp-sample-v1 -n image-builder --ignore-not-found
 k get nodes -l node-role=cpu
 ```

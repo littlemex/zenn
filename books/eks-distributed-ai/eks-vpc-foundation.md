@@ -368,10 +368,11 @@ ip-10-0-54-140.us-east-2.compute.internal   m5.xlarge   system       <none>
 
 本書のワークショップでは、学習 Job や推論サーバーなどのワークロードを `default` ではなく専用の namespace に作ります。あとで「この namespace ごと消せば実験の後片付けが済む」ようにするためです。本書では作業用 namespace を `distai` に統一して進めます。
 
-namespace の作成は `--dry-run` 経由の `apply` にしています。すでに存在していてもエラーにならないようにするためです。step 2 で既定 namespace が `distai` になっているので、ここで作る namespace 名も `distai` で揃えます。
+以降の章はこの名前を `NAMESPACE` で受け取る形に揃えているので、ここでも環境変数に入れてから作ります。別の名前で進めたい場合は、この 1 行だけを変えれば以降のコマンドはそのまま使えます。作成は `--dry-run` 経由の `apply` にしていて、すでに存在していてもエラーになりません。
 
 ```bash
-k create namespace distai --dry-run=client -o yaml | k apply -f -
+export NAMESPACE=distai
+k create namespace "$NAMESPACE" --dry-run=client -o yaml | k apply -f -
 ```
 
 `namespace/distai created`（初回）または `namespace/distai unchanged`（2 回目以降）と表示されれば準備完了です。本書は既定としてこの `distai` を使います (章によって別の namespace を使いたい場合の切り替え方は次に触れます)。作成後に step 2 の 4 行をもう一度実行すると、先ほどの `(the namespace does not exist yet)` が消えます。

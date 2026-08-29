@@ -173,7 +173,9 @@ operator の Deployment と Pod が `Running`、2 つの CRD、そして pod-bou
 管理者は、プラットフォーム側の既定値を持つ `AcceleratorClass` を 1 つ作ります。ここで手順 1 で控えた IAM ロールと discovery タグを渡します。`tenants` の 許可リスト に、プールを作ってよい namespace（ここでは `team-gpu`）を登録します。既定は `Deny` なので、登録しない namespace はプールを作れません。
 
 ```bash
-k apply -f - <<'EOF'
+export TENANT_NS=team-gpu
+
+k apply -f - <<EOF
 apiVersion: tenantpools.dev/v1alpha1
 kind: AcceleratorClass
 metadata:
@@ -190,11 +192,11 @@ spec:
   tenants:
     defaultPolicy: Deny
     entries:
-      - namespaces: ["team-gpu"]
+      - namespaces: ["${TENANT_NS}"]
         maxPools: 4
 EOF
 
-k create namespace team-gpu --dry-run=client -o yaml | k apply -f -
+k create namespace "$TENANT_NS" --dry-run=client -o yaml | k apply -f -
 ```
 
 `role`・`amiSelectorTerms`・`subnetSelectorTerms`・`securityGroupSelectorTerms` は、この本の Terraform 版が EC2NodeClass に書いていた値と同じものです。これらを管理者所有の Class 側に集約することで、テナントはこの値に触れずにプールを作れます。
@@ -212,12 +214,12 @@ Basic04 の Terraform 版で作った GPU プール（テナント taint を持�
 :::
 
 ```bash
-k apply -f - <<'EOF'
+k apply -f - <<EOF
 apiVersion: tenantpools.dev/v1alpha1
 kind: AcceleratorPool
 metadata:
   name: g5
-  namespace: team-gpu
+  namespace: ${TENANT_NS}
 spec:
   classRef: distai-default
   accelerator: { kind: nvidia }
@@ -228,13 +230,13 @@ spec:
     nvidia.com/gpu: "8"
 EOF
 
-k get acceleratorpool -n team-gpu g5 -o wide
+k get acceleratorpool -n "$TENANT_NS" g5 -o wide
 ```
 
 `READY` が出るまで数秒から十数秒かかります。`True` にならない場合は、CR の条件、operator のログ、生成された EC2NodeClass の条件を順に見ます。
 
 ```bash
-k get acceleratorpool -n team-gpu g5 -o jsonpath='{range .status.conditions[*]}{.type}={.status} {.reason} {.message}{"\n"}{end}'
+k get acceleratorpool -n "$TENANT_NS" g5 -o jsonpath='{range .status.conditions[*]}{.type}={.status} {.reason} {.message}{"\n"}{end}'
 k -n tenantpools-system logs deploy/ktp-karpenter-tenant-pools --tail=50
 ```
 
@@ -247,10 +249,17 @@ g5     nvidia   distai-default   True    team-gpu-g5-c48cedec7057ba71   11s
 
 `READY=True` になり、`NODEPOOL` 列に生成された NodePool 名が出ます。この NodePool 名はプールの namespace と名前から一意に導出され（ハッシュサフィックス付き）、テナントが名前を指定することはできません。生成された NodePool を見ると、operator がテナント taint と GPU の requirements を組み立てていることが分かります。
 
+以降のコマンドではこの名前を status から引いて使います。
+
+```bash
+NP_G5=$(k get acceleratorpool -n "$TENANT_NS" g5 -o jsonpath='{.status.nodePoolRef.name}')
+echo "NP_G5=$NP_G5"
+```
+
 まず requirements を見ます。
 
 ```bash
-k get nodepool team-gpu-g5-c48cedec7057ba71 \
+k get nodepool "$NP_G5" \
   -o jsonpath='{range .spec.template.spec.requirements[*]}{.key}={.values}{"\n"}{end}'
 ```
 
@@ -265,7 +274,7 @@ karpenter.sh/capacity-type=[on-demand]
 次に taints を見ます。
 
 ```bash
-k get nodepool team-gpu-g5-c48cedec7057ba71 \
+k get nodepool "$NP_G5" \
   -o jsonpath='{range .spec.template.spec.taints[*]}{.key}={.value}{"\n"}{end}'
 ```
 
@@ -279,7 +288,7 @@ nvidia.com/gpu=
 `tenantpools.dev/tenant=team-gpu` の taint が、CR の namespace から自動で載っている点が肝です。生成された EC2NodeClass 側には、手順 3 で Class に書いたロールとセレクタがそのまま入ります。
 
 ```bash
-k get ec2nodeclass team-gpu-g5-c48cedec7057ba71 \
+k get ec2nodeclass "$NP_G5" \
   -o jsonpath='role={.spec.role}{"\n"}ami={.spec.amiSelectorTerms}{"\n"}'
 ```
 
@@ -293,7 +302,7 @@ ami=[{"alias":"al2023@latest"}]
 生成された EC2NodeClass が Karpenter に受理されているかは、`Ready` condition で確認します。
 
 ```bash
-k get ec2nodeclass team-gpu-g5-c48cedec7057ba71 \
+k get ec2nodeclass "$NP_G5" \
   -o jsonpath='{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'
 ```
 
@@ -312,7 +321,7 @@ Ready=True
 Basic05 で購入した p5.48xlarge の Capacity Block を、operator 経由で使います。Capacity Block へのアクセスは、テナントが勝手に参照できてはならないため、管理者が `AcceleratorClass` の該当 namespace エントリに CB の ID を明示的に 許可リストに登録した場合にだけ許可されます。まず管理者が Class に CB を追加します。
 
 ```bash
-k apply -f - <<'EOF'
+k apply -f - <<EOF
 apiVersion: tenantpools.dev/v1alpha1
 kind: AcceleratorClass
 metadata:
@@ -329,7 +338,7 @@ spec:
   tenants:
     defaultPolicy: Deny
     entries:
-      - namespaces: ["team-gpu"]
+      - namespaces: ["${TENANT_NS}"]
         maxPools: 4
         capacityReservationIDs: ["cr-0056555dd93a28dde"]
 EOF
@@ -340,12 +349,12 @@ EOF
 次にテナントが CB を参照するプールを作ります。Capacity Block は単一 AZ なので、`zones` を予約の AZ 1 つに絞ります（EFA を使うプールや CB を参照するプールは単一 AZ に解決される必要があります）。
 
 ```bash
-k apply -f - <<'EOF'
+k apply -f - <<EOF
 apiVersion: tenantpools.dev/v1alpha1
 kind: AcceleratorPool
 metadata:
   name: p5-cb
-  namespace: team-gpu
+  namespace: ${TENANT_NS}
 spec:
   classRef: distai-default
   accelerator: { kind: nvidia }
@@ -358,7 +367,7 @@ spec:
     nvidia.com/gpu: "8"
 EOF
 
-k get acceleratorpool -n team-gpu p5-cb -o wide
+k get acceleratorpool -n "$TENANT_NS" p5-cb -o wide
 ```
 
 実機出力:
@@ -371,7 +380,7 @@ p5-cb   nvidia   distai-default   True    team-gpu-p5-cb-c93c47721822b8e7   8s
 条件（conditions）も確認します。
 
 ```bash
-k get acceleratorpool -n team-gpu p5-cb \
+k get acceleratorpool -n "$TENANT_NS" p5-cb \
   -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}){"\n"}{end}'
 ```
 
@@ -385,9 +394,10 @@ Ready=True (Ready)
 生成された EC2NodeClass には、Karpenter の `capacityReservationSelectorTerms` として CB の ID が入り、NodePool の requirements には `reserved` と AZ の制約が載ります。
 
 ```bash
-k get ec2nodeclass team-gpu-p5-cb-c93c47721822b8e7 \
+NP_P5=$(k get acceleratorpool -n "$TENANT_NS" p5-cb -o jsonpath='{.status.nodePoolRef.name}')
+k get ec2nodeclass "$NP_P5" \
   -o jsonpath='{.spec.capacityReservationSelectorTerms}{"\n"}'
-k get nodepool team-gpu-p5-cb-c93c47721822b8e7 \
+k get nodepool "$NP_P5" \
   -o jsonpath='{range .spec.template.spec.requirements[*]}{.key}={.values}{"\n"}{end}'
 ```
 
@@ -410,12 +420,12 @@ Basic05 では `cb_reservation_id` を Terraform の tfvars に書いて apply �
 境界が実際に効いていることを確かめます。まず、別テナントの taint を tolerate する Pod を `team-gpu` に作ろうとすると、VAP が admission の段階で拒否します。
 
 ```bash
-k apply -f - <<'EOF'
+k apply -f - <<EOF
 apiVersion: v1
 kind: Pod
 metadata:
   name: cross-tenant
-  namespace: team-gpu
+  namespace: ${TENANT_NS}
 spec:
   tolerations:
     - key: tenantpools.dev/tenant
@@ -441,17 +451,17 @@ tolerations are rejected
 一方、自分のテナント値（`team-gpu`）を tolerate する Pod は通ります（`--dry-run=server` で admission だけを確認します）。
 
 ```bash
-k apply --dry-run=server -f - <<'EOF'
+k apply --dry-run=server -f - <<EOF
 apiVersion: v1
 kind: Pod
 metadata:
   name: own-tenant
-  namespace: team-gpu
+  namespace: ${TENANT_NS}
 spec:
   tolerations:
     - key: tenantpools.dev/tenant
       operator: Equal
-      value: team-gpu
+      value: ${TENANT_NS}
       effect: NoSchedule
   containers:
     - name: c
@@ -468,12 +478,12 @@ pod/own-tenant created (server dry run)
 次に、Class の 許可リスト に無い CB を参照するプールを作ると、operator はそのプールを `Validated=False` のままにし、NodePool を生成しません。
 
 ```bash
-k apply -f - <<'EOF'
+k apply -f - <<EOF
 apiVersion: tenantpools.dev/v1alpha1
 kind: AcceleratorPool
 metadata:
   name: p5-unauth
-  namespace: team-gpu
+  namespace: ${TENANT_NS}
 spec:
   classRef: distai-default
   accelerator: { kind: nvidia }
@@ -485,7 +495,7 @@ spec:
   limits: { nvidia.com/gpu: "8" }
 EOF
 
-k get acceleratorpool -n team-gpu p5-unauth \
+k get acceleratorpool -n "$TENANT_NS" p5-unauth \
   -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}){"\n"}{end}'
 k get nodepool -l tenantpools.dev/owner-name=p5-unauth
 ```
@@ -526,10 +536,10 @@ capacity-reservation Exists NoSchedule
 作成した CR を削除します。`AcceleratorPool` を消すと、operator が生成した NodePool / EC2NodeClass も順序立てて削除されます。ノードを起動していなければ On-Demand の課金は発生していません (購入済みの Capacity Block の予約料金は、ノードを起動したかどうかとは別に発生します)。
 
 ```bash
-k delete acceleratorpool -n team-gpu g5 p5-cb p5-unauth --ignore-not-found
-k get nodepool -l app.kubernetes.io/managed-by=karpenter-tenant-pools | grep team-gpu || echo "(no team-gpu nodepools remain)"
+k delete acceleratorpool -n "$TENANT_NS" g5 p5-cb p5-unauth --ignore-not-found
+k get nodepool -l app.kubernetes.io/managed-by=karpenter-tenant-pools | grep "$TENANT_NS" || echo "(残っていません)"
 k delete acceleratorclass distai-default --ignore-not-found
-k delete namespace team-gpu --ignore-not-found
+k delete namespace "$TENANT_NS" --ignore-not-found
 ```
 
 operator 自体を外す場合は `helm uninstall ktp -n tenantpools-system` を実行します。このチャートは CRD を `crds.install` トグル付きの通常のテンプレートとして持っているので、`helm uninstall` で CRD も消えます。CRD が消えると、それに属する `AcceleratorPool` と `AcceleratorClass` もカスケードで消えます。プール定義を残したい場合は、`AcceleratorPool` と、それが `classRef` で参照する `AcceleratorClass` の両方を先に退避してから uninstall してください。
