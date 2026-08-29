@@ -126,7 +126,7 @@ export NAMESPACE=distai
 
 最初にやるべきは高速化ではなく計測です。ユーザー体感の待ち時間を「ノード provisioning」「manifest 往復」「レイヤ取得」「展開」に分解して実測し、以降の全ての採否をこの数字で決めます。
 
-計測対象として、Basic02 でビルドした学習イメージを digest 指定で 1 つ起動します。GPU プールを指定して、Karpenter に新規ノードを起こさせるところから測るのが要点です。既にそのプールのノードが立っている場合は、先に消してから始めます。
+計測対象として、Basic02 でビルドした学習イメージを digest 指定で 1 つ起動します。GPU プールを指定して、Karpenter に新規ノードを起こさせるところから測るのが要点です。既にそのプールのノードが立っている場合は、先に消してから始めます (`kubectl delete nodeclaim -l karpenter.sh/nodepool=gpu-ddp` で消すと、Karpenter が EC2 の終了まで面倒を見ます。ノードを直接 `delete node` すると NodeClaim が残って課金が続くので使いません)。
 
 ```bash
 DIGEST=$(aws ecr describe-images \
@@ -163,7 +163,7 @@ kubectl -n "$NAMESPACE" get events --field-selector involvedObject.name=coldpull
   --sort-by=.lastTimestamp -o wide
 ```
 
-`Scheduled` から `Pulling`、`Pulled`、`Started` までの各区間が、それぞれ provisioning・取得・展開のどこに時間を使っているかを示します。展開が支配的なら zstd が効き、取得が支配的なら prewarm や layer 経路が効く、という判断の土台になります。
+ここで読めるのは取得と展開の側です。`Pulling` から `Pulled` までがレイヤの取得と展開の合算で、`Pulled` から `Started` までがコンテナの作成と起動です。ノードの起動時間はここには出てきません。スケジューラが Pod をノードに割り当てるのはノードが Ready になったあとなので、Karpenter がノードを起こしていた 1〜2 分は Pod の作成時刻から `Scheduled` までの区間に入ります。そこを見るには `kubectl get pod coldpull -o jsonpath='{.metadata.creationTimestamp}'` と `Scheduled` の時刻を突き合わせます。展開と取得の合算が支配的なら zstd や prewarm が効き、Pod 作成から `Scheduled` までが支配的なら headroom floor が効く、という判断の土台になります。
 
 本書の検証では、Basic02 でビルドした 3.3 GB の学習イメージを digest 指定で起動し、次の数字が出ました。
 

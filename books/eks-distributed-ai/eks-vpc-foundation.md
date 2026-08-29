@@ -69,7 +69,7 @@ module "vpc" {
 
 当初この基盤は `single_nat_gateway = true` で単一 NAT にしていましたが、Capacity Block for ML がどの AZ でも使いうることを考えると、全ての AZ に NAT を置く方が良いと判断しました。単一 NAT だと他 AZ のノードからの外向き通信がすべて AZ をまたいでその NAT に集まり、クロス AZ のデータ転送料金がかかります。AZ ごとに NAT を置けばこの転送料金を避けられ、かつ 1 つの AZ の NAT が落ちても他 AZ の外向き通信が生き残る耐障害性の利点もあります。ただしこれはどちらでも良いと思います。
 
-なお、外向き通信は NAT だけに依存しているわけではありません。ECR・Amazon EC2・STS・SSM・CloudWatch Logs・EKS Auth は [`vpc-endpoints.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/vpc-endpoints.tf) の Interface endpoint 経由で、Amazon S3 は Gateway endpoint 経由で、いずれも NAT を通らずに到達します。ECR のイメージ pull はレイヤの実体を S3 から取得するため、この S3 Gateway endpoint も合わせて必要です。NAT が主に担うのは `nvcr.io` や `quay.io`、`registry.k8s.io` といった ECR 以外のレジストリと、Interface endpoint を持たない IAM です。
+なお、外向き通信は NAT だけに依存しているわけではありません。ECR・Amazon EC2・STS・SSM・CloudWatch Logs・EKS Auth は [`vpc-endpoints.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/vpc-endpoints.tf) の Interface endpoint 経由で、Amazon S3 は Gateway endpoint 経由で、いずれも NAT を通らずに到達します。ECR のイメージ pull は、リージョンによってレイヤの実体を S3 から取得するため、この S3 Gateway endpoint も合わせて用意しています。NAT が主に担うのは `nvcr.io` や `quay.io`、`registry.k8s.io` といった ECR 以外のレジストリと、Interface endpoint を持たない IAM です。
 
 **`private_subnet_tags` の `karpenter.sh/discovery`**: このタグが後の章で効いてきます。Karpenter は「ノードを起動してよいサブネット」をこのタグで検出します。ここで**プライベートサブネットにだけ**タグを付け、`public_subnet_tags` には付けていない点が重要です。もし共通の `tags` に含めてしまうと全サブネットに伝搬してパブリックサブネットにも付き、Karpenter がそこにノードを立ててしまいます。この構成はパブリックサブネットにパブリック IP を自動付与しない設定なので、そこに立ったノードは外向きの到達経路を持たず、`nodeadm` によるクラスタ参加に失敗します。
 
@@ -334,7 +334,7 @@ k config view --minify -o 'jsonpath={.contexts[0].context.namespace} @ {.cluster
 
 ## 6. (任意) スモークテストで動作確認する
 
-リポジトリの [`infra/eks/tests/`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/tests) にインフラ層のスモークテストが用意されています。実行は任意ですが、初回構築後やモジュール変更後に回すと「apply は通ったが何かが壊れている」を早期に検出できます。基盤テストは GPU ノードを起動せず約 1 分で完了します。
+リポジトリの [`infra/eks/tests/`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/tests) にインフラ層のスモークテストが用意されています。実行は任意ですが、初回構築後やモジュール変更後に回すと「apply は通ったが何かが壊れている」を早期に検出できます。基盤テストは GPU ノードを起動しません。下の実機出力の DETAIL 列を足すと 2 分弱で、時間のほとんどは共有ストレージのマウント確認に使われます。
 
 基盤テストが見るのは control-plane、system-nodes、karpenter、trainer、csi-drivers、device-plugins、storage-mount (FSx の読み書き) の 7 項目です。
 
