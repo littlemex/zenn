@@ -80,7 +80,7 @@ NMA が出す NodeCondition は、Karpenter のノード自動修復（auto-repa
 ## 1. 前提を確認し、対象ノードを決める
 
 - Basic08 で NMA と kube-prometheus-stack が導入済みであること。
-- `k` と `KUBECONFIG` は Basic01 手順 2 の 4 行で設定済みであること。
+- `k` と `KUBECONFIG` は Basic01 手順 2 の 4 行で設定済みであること。アドオンのバージョンを確認する `aws eks describe-addon` を打つ場合は、同じシェルに `CLUSTER_NAME` と `AWS_REGION` も入っている必要があります (Basic01 手順 2 で `export` した値です)。
 - GPU ノードが 1 台以上動いていること。Basic07 の vLLM や Basic05 の Capacity Block のいずれかを稼働させておきます。
 - 手順 4 の JSON パースに `python3` を使います。無い場合は `dnf install -y python3` などで入れておきます。
 
@@ -238,6 +238,7 @@ ip-10-0-8-26... = 0
 k rollout restart ds -n kube-system dcgm-server
 k rollout status ds -n kube-system dcgm-server
 
+k get pods -n kube-system --field-selector spec.nodeName="$NODE" | grep node-monitoring
 k delete pod -n kube-system -l app.kubernetes.io/name=eks-node-monitoring-agent \
   --field-selector spec.nodeName="$NODE"
 k rollout status ds -n kube-system eks-node-monitoring-agent
@@ -265,6 +266,15 @@ True (NvidiaGPUIsReady)
 port-forward はバックグラウンドで起動したので、確認が終わったら `jobs` で番号を確認して `kill %<番号>` で止めます。
 
 なお `dcgm-server` を再起動したことで Pod 名が変わっているため、もう一度注入を試す場合は手順 1 の変数取得（`$DCGM` / `$NODE`）からやり直してください。古い `$DCGM` のまま `k exec` すると `NotFound` になります。
+
+## 6. 検証に使った GPU ノードを片付ける
+
+この章のために起こした GPU ノードは、載っている Pod を消すまで回収されません。Basic07 の vLLM を動かして確認した場合は、Basic07 の後片付けと同じ手順で Deployment と Service を消せば、`consolidateAfter` の経過後にノードが回収されます。Capacity Block のノードで確認した場合は、前払いなので追加の課金は発生しませんが、予約期間が終わるまでノードは残ります。
+
+```bash
+k get nodes -l node-role=gpu-ddp
+k get nodeclaims
+```
 
 # まとめ
 

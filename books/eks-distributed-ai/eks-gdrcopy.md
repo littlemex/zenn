@@ -208,13 +208,13 @@ gdr_copy_to_mapping        4096       0.4793
 gdr_copy_to_mapping        8192       0.7943
 ```
 
-1 バイトで 0.30 us、8 KB でも 0.79 us と、CPU から GPU メモリへの直接コピーが非常に低いレイテンシで動いている。GDRCopy が BAR1 マッピングを確立し、コピー経路として機能していることの直接の証拠である。この 0.3 us オーダーという値を覚えておく。次のマルチノード測定で、この最適化がなぜ表に出てこないのかの鍵になる。確認が終わったら `k delete pod gdrcopy-probe -n "$NAMESPACE"` で消しておく。
+1 バイトで 0.30 us、8 KB でも 0.79 us と、CPU から GPU メモリへの直接コピーが非常に低いレイテンシで動いている。GDRCopy が BAR1 マッピングを確立し、コピー経路として機能していることの直接の証拠である。この 0.3 us オーダーという値を覚えておく。次のマルチノード測定で、この最適化がなぜ表に出てこないのかの鍵になる。確認が終わったら `k delete pod gdrcopy-probe -n "$NAMESPACE"` で消しておく。Pod を消してもノードは残る。予約や EFA のプールは `consolidateAfter: Never` なので保たれ、EFA 無しのオンデマンドのプールでは 5 分ほどで回収されるので、続けて手順 5 に進む場合はそのまま進めてよい。
 
 ## 5. マルチノード通信でレイテンシを測る
 
 GDRCopy が役に立つとすれば、小さいメッセージの受信コピーである。そこで小メッセージ中心の 2 ノード間 point-to-point レイテンシと all-reduce レイテンシを、`gdrdrv` をロードした状態（GDRCopy 有効）とアンロードした状態（無効）で測って並べる。
 
-測定は 2 ノード 16 GPU の NCCL 通信で行う。手順 4 のプローブが 1 台目を起こしているので、torchrun の 2 ノード測定 Pod を投入するともう 1 台が起動し、DaemonSet が両ノードに `gdrdrv` を載せる。torchrun で `torch.distributed` の point-to-point（`isend`/`irecv` の ping-pong）と `all_reduce` を回し、各サイズについて 50 回の往復を 1 試行として 20 試行の中央値をとり、往復時間の半分を片道レイテンシとした。GDRCopy 有効の状態でひととおり測ったあと、`gdrdrv` をアンロードして無効の状態を作り、同じ測定を繰り返す。アンロードの手順と注意点（Pod の削除、DaemonSet の停止、特権の要件）は手順 7 にまとめてある。無効状態では `/dev/gdrdrv` を開けなくなるので (ファイル自体は残ることがある)、測定 Pod は `/dev/gdrdrv` をマウントしない版を各条件で作り直す。
+測定は 2 ノード 16 GPU の NCCL 通信で行う。手順 4 で 1 台目が起きているので (プローブの Pod を消してもプールが保持する)、torchrun の 2 ノード測定 Pod を投入するともう 1 台が起動し、DaemonSet が両ノードに `gdrdrv` を載せる。なおこの節は筆者の測定結果とその読み方を示すもので、測定用のマニフェストとスクリプトは本書には同梱していない。自分の環境で測るなら Basic06 の `ncclTrainjob` を雛形にして、送るサイズと回数を自分の通信パターンに置き換える。torchrun で `torch.distributed` の point-to-point（`isend`/`irecv` の ping-pong）と `all_reduce` を回し、各サイズについて 50 回の往復を 1 試行として 20 試行の中央値をとり、往復時間の半分を片道レイテンシとした。GDRCopy 有効の状態でひととおり測ったあと、`gdrdrv` をアンロードして無効の状態を作り、同じ測定を繰り返す。アンロードの手順と注意点（Pod の削除、DaemonSet の停止、特権の要件）は手順 7 にまとめてある。無効状態では `/dev/gdrdrv` を開けなくなるので (ファイル自体は残ることがある)、測定 Pod は `/dev/gdrdrv` をマウントしない版を各条件で作り直す。
 
 point-to-point（ノード間 EFA、rank 0 と別ノードの rank 8 の間）の結果を次に示す。
 
@@ -311,7 +311,7 @@ terraform apply -var gdrcopy_mode=off
 
 ただしこれは Terraform 管理リソースの撤去であって、ホストの原状回復ではない。ノードには `gdrcopy-kmod` パッケージと有効化された `gdrcopy.service` が残り、ロード済みの `gdrdrv` も残る。`gdrcopy.service` が有効なままなので、ノードを再起動しても `/dev/gdrdrv` は復活する。これらは無害なので、通常は Basic06 と同じ [`04-teardown.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/04-teardown.sh) でノードプールごと退避すれば十分である。Capacity Block のノードは予約期間の終了時に AWS 側で回収されるため、モジュールがホストに残ることを気にする必要はない。
 
-手順 5 のように GDRCopy の有無を手作業で切り替えて測る場合にだけ、`gdrdrv` のアンロードが必要になる。その際は `/dev/gdrdrv` を開いている Pod を先にすべて消し（開いていると `Module is in use` で外せない）、`gdrdrv-loader` DaemonSet も止めてから、`CAP_SYS_MODULE` を持つ特権コンテキストで `rmmod gdrdrv` する。DaemonSet を止めるのは、稼働中の Pod が `rmmod` を検知して巻き戻すからではない。ロードは initContainer が 1 回だけ行うので、巻き戻るのは Pod が作り直されたとき (削除やノードの再起動) である。止めておかないとその再作成でロードが戻る。なお `/dev/gdrdrv` は `mknod` で作られるため `rmmod` では消えず、開けないだけのファイルが残ることがある。`hostPath` の `type: CharDevice` の検査は通ってしまうので、無効状態の測定では `/dev/gdrdrv` をマウントしない版の Pod を使う。
+手順 5 のように GDRCopy の有無を手作業で切り替えて測る場合にだけ、`gdrdrv` のアンロードが必要になる。その際は `/dev/gdrdrv` を開いている Pod を先にすべて消し（開いていると `Module is in use` で外せない）、`gdrdrv-loader` DaemonSet も止めてから、`CAP_SYS_MODULE` を持つ特権コンテキストで `rmmod gdrdrv` する。DaemonSet は Terraform が持っているので、`k delete ds` では次の apply で戻る。止めるなら `terraform apply -var gdrcopy_mode=off` を打つ。`rmmod` は手順 6 の `p2p-check` Pod の `command` を `rmmod gdrdrv` に置き換えたものが使える。DaemonSet を止めるのは、稼働中の Pod が `rmmod` を検知して巻き戻すからではない。ロードは initContainer が 1 回だけ行うので、巻き戻るのは Pod が作り直されたとき (削除やノードの再起動) である。止めておかないとその再作成でロードが戻る。なお `/dev/gdrdrv` は `mknod` で作られるため `rmmod` では消えず、開けないだけのファイルが残ることがある。`hostPath` の `type: CharDevice` の検査は通ってしまうので、無効状態の測定では `/dev/gdrdrv` をマウントしない版の Pod を使う。
 
 # まとめ
 

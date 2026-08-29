@@ -23,7 +23,7 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 
 Karpenter の `NodePool` と `EC2NodeClass` はどちらもクラスタスコープのリソースです。つまりプールに「所有者」という概念がなく、あるチームの Pod が別のチームの（多くは Capacity Block で予約した高価な）ノードに載るのを、仕組みとして止める手段が標準では存在しません。Basic04 のようにプール定義を 1 つの Terraform map 変数（`accelerator_pools`）に集約する方式は、単一の管理者が全プールを面倒みる分にはよいのですが、2 つのチームがそれぞれ独立にプールを足そうとすると同じ変数への二重代入になり、共有ファイルを手で編集し合うことになります。これはマルチテナントのワークフローとは言えません。
 
-`karpenter-tenant-pools`（以降 operator）は、namespace に属する `AcceleratorPool` という CRD を 1 つ受け取り、それを Karpenter の `NodePool` + `EC2NodeClass` のペアに変換します。テナント分離は、VAP を有効にした既定構成で、かつ除外ラベルを付ける権限を管理している限り、仕組みとして迂回できない形で強制されます。テナントを表す taint とラベルは CR の namespace から導出され（ユーザ入力からは決して作られません）、プール名は namespace と CR 名から一意に導出され（ハッシュサフィックス付きで、なりすましや衝突ができません）、同梱の `ValidatingAdmissionPolicy`（VAP）が「別テナントのノードを狙う toleration を持つ Pod」を拒否します。チームは namespace の RBAC さえ持てばプールを自己申請でき、`karpenter.sh` の API への書き込み権限を一切渡さずに済みます。
+`karpenter-tenant-pools`（以降 operator）は、namespace に属する `AcceleratorPool` という CRD を 1 つ受け取り、それを Karpenter の `NodePool` + `EC2NodeClass` のペアに変換します。テナント分離は、VAP を有効にした既定構成で、かつ除外ラベルを付ける権限を管理している限り、仕組みとして迂回できない形で強制されます。テナントを表す taint とラベルは CR の namespace から導出され、ユーザ入力からは決して作られません。プール名は namespace と CR 名から一意に導出されます。`sha256("<namespace>/<名前>")` の先頭 16 文字を付けるので、同じ namespace と名前なら読者の環境でも同じ名前になり、なりすましや衝突ができません。さらに同梱の `ValidatingAdmissionPolicy`（VAP）が「別テナントのノードを狙う toleration を持つ Pod」を拒否します。チームは namespace の RBAC さえ持てばプールを自己申請でき、`karpenter.sh` の API への書き込み権限を一切渡さずに済みます。
 
 operator 自身は AWS を呼びません (チャートには Capacity Block を読むための `awsLookup` という値がありますが、後述のとおり現時点の Deployment には渡っていません)。EC2 を起動するのは Karpenter の仕事であり、operator は CRD から CRD へ変換するだけなので、仮に operator が侵害されても AWS のリソースが直接作られることはありません。ただし Kubernetes 側の権限は必要で、Karpenter の NodePool と EC2NodeClass の作成・更新・削除、`AcceleratorPool` の更新、そして `AcceleratorPool` と `AcceleratorClass` の status と finalizer の更新権限を持ちます。つまり「AWS の権限は持たないが、Karpenter に何を作らせるかは書ける」という位置づけです。このクラウドの認証情報を持たない設計が、権限を絞ったままセルフサービスを実現する前提になっています。
 
@@ -96,7 +96,7 @@ instanceProfile=distai-eks-0807-karpenter-node
 subnet={"karpenter.sh/discovery":"distai-eks-0807"}
 ```
 
-ここで参照した `gpu-p5` は Basic04/05 で定義したプール名の一例です。読者の環境では別名のことがあるので、`k get ec2nodeclass` で存在する名前を確認して読み替えてください。この本の Terraform 版は `instanceProfile` を直接指定しているため `role` は空ですが、operator の `AcceleratorClass` は `role`（IAM ロール名）を受け取り、そのロールから Karpenter がインスタンスプロファイルを作ります。この検証環境では、インスタンスプロファイル `distai-eks-0807-karpenter-node` の背後にある同名の IAM ロール `distai-eks-0807-karpenter-node` がそのロールにあたります。次の手順ではこのロール名と discovery タグ `karpenter.sh/discovery: distai-eks-0807` を `AcceleratorClass` に渡します。
+ここで参照した `gpu-p5` は Basic04/05 で定義したプール名の一例です。読者の環境では別名のことがあるので、`k get ec2nodeclass` で存在する名前を確認して読み替えてください。この本の Terraform 版は `instanceProfile` を直接指定しているため `role` は空ですが、operator の `AcceleratorClass` は `role`（IAM ロール名）を受け取り、そのロールから Karpenter がインスタンスプロファイルを作ります。この検証環境では、インスタンスプロファイル `distai-eks-0807-karpenter-node` の背後にある同名の IAM ロール `distai-eks-0807-karpenter-node` がそのロールにあたります。次の手順ではこのロール名と discovery タグ `karpenter.sh/discovery: distai-eks-0807` を `AcceleratorClass` に渡します。以降のマニフェストに出てくる `distai-eks-0807` はこの検証環境のクラスタ名なので、**自分のクラスタ名に置き換えてから** apply してください。operator は AWS を呼ばないため、実在しないロールやタグでも apply 自体は成功し、手順 4 で生成される EC2NodeClass が Karpenter 側で解決できず `Ready=False` になって初めて分かります。
 
 :::message
 本書は作業用 namespace を `distai` に統一していますが、本章はテナント分離のデモが目的のため、テナント役の専用 namespace `team-gpu` を使います（`distai` 統一ルールの意図的な例外です）。
@@ -107,10 +107,12 @@ subnet={"karpenter.sh/discovery":"distai-eks-0807"}
 operator は Helm チャートで導入します。CRD もチャートに同梱されています。なおこの operator は早期開発中で、CRD の API バージョンは `v1alpha1` です。今後 API が変わりうるので、本章の手順は長期運用の前提としては読まないでください。既定で VAP が有効になるため、クラスタは Kubernetes 1.30 以上である必要があります（VAP が GA になったバージョン。手順 1 で確認済みです）。1.29 以下では `helm install` の時点でチャートが明示的に失敗します。どうしても古いクラスタで試す場合は `--set policies.validating.enabled=false` で VAP を無効化できますが、その場合 Pod 側の境界は taint だけになり、後述の admission による拒否は働きません。
 
 ```bash
-helm install ktp oci://ghcr.io/littlemex/karpenter-tenant-pools/chart \
+helm upgrade --install ktp oci://ghcr.io/littlemex/karpenter-tenant-pools/chart \
   --namespace tenantpools-system --create-namespace \
   --version 0.1.1
 ```
+
+`upgrade --install` にしているのは、途中で失敗したときにそのまま打ち直せるようにするためです。`helm install` で始めて失敗した場合は `cannot re-use a name that is still in use` になるので、`helm uninstall ktp -n tenantpools-system` してからやり直します。
 
 :::message
 本書の検証環境では、operator イメージをアカウント内の Amazon ECR にミラーして使いました。その場合は `--set image.repository=<account>.dkr.ecr.<region>.amazonaws.com/karpenter-tenant-pools --set image.tag=<tag>` を付けます。イメージを差し替えても VAP と CRD の挙動は変わりません。
@@ -223,6 +225,13 @@ EOF
 k get acceleratorpool -n team-gpu g5 -o wide
 ```
 
+`READY` が出るまで数秒から十数秒かかります。`True` にならない場合は、CR の条件、operator のログ、生成された EC2NodeClass の条件を順に見ます。
+
+```bash
+k get acceleratorpool -n team-gpu g5 -o jsonpath='{range .status.conditions[*]}{.type}={.status} {.reason} {.message}{"\n"}{end}'
+k -n tenantpools-system logs deploy/ktp-karpenter-tenant-pools --tail=50
+```
+
 実機出力:
 
 ```text
@@ -319,6 +328,8 @@ spec:
         capacityReservationIDs: ["cr-0056555dd93a28dde"]
 EOF
 ```
+
+`cr-...` は自分の予約 ID に置き換えます。この ID は次に作る `AcceleratorPool` 側にも書くので、2 か所を必ず同じ値にします。片方だけ変えると許可リストと一致せず、手順 6 で意図的に見せるはずの `Validated=False` を先に踏みます。CB を持っていない場合、operator は予約の実在を確かめないので定義の生成までは確認できますが、そのプールからノードは起動しません。
 
 次にテナントが CB を参照するプールを作ります。Capacity Block は単一 AZ なので、`zones` を予約の AZ 1 つに絞ります（EFA を使うプールや CB を参照するプールは単一 AZ に解決される必要があります）。
 
