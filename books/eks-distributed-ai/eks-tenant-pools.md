@@ -25,7 +25,7 @@ Karpenter の `NodePool` と `EC2NodeClass` はどちらもクラスタスコー
 
 `karpenter-tenant-pools`（以降 operator）は、namespace に属する `AcceleratorPool` という CRD を 1 つ受け取り、それを Karpenter の `NodePool` + `EC2NodeClass` のペアに変換します。テナント分離は、VAP を有効にした既定構成で、かつ除外ラベルを付ける権限を管理している限り、仕組みとして迂回できない形で強制されます。テナントを表す taint とラベルは CR の namespace から導出され（ユーザ入力からは決して作られません）、プール名は namespace と CR 名から一意に導出され（ハッシュサフィックス付きで、なりすましや衝突ができません）、同梱の `ValidatingAdmissionPolicy`（VAP）が「別テナントのノードを狙う toleration を持つ Pod」を拒否します。チームは namespace の RBAC さえ持てばプールを自己申請でき、`karpenter.sh` の API への書き込み権限を一切渡さずに済みます。
 
-operator 自身は AWS を呼びません。EC2 を起動するのは Karpenter の仕事であり、operator は CRD から CRD へ変換するだけなので、仮に operator が侵害されても AWS のリソースが直接作られることはありません。ただし Kubernetes 側の権限は必要で、Karpenter の NodePool と EC2NodeClass、そして自身が扱う `AcceleratorPool` への書き込み権限を持ちます。つまり「AWS の権限は持たないが、Karpenter に何を作らせるかは書ける」という位置づけです。このクラウドの認証情報を持たない設計が、権限を絞ったままセルフサービスを実現する前提になっています。
+operator 自身は AWS を呼びません (チャートには Capacity Block を読むための `awsLookup` という値がありますが、後述のとおり現時点の Deployment には渡っていません)。EC2 を起動するのは Karpenter の仕事であり、operator は CRD から CRD へ変換するだけなので、仮に operator が侵害されても AWS のリソースが直接作られることはありません。ただし Kubernetes 側の権限は必要で、Karpenter の NodePool と EC2NodeClass、そして自身が扱う `AcceleratorPool` への書き込み権限を持ちます。つまり「AWS の権限は持たないが、Karpenter に何を作らせるかは書ける」という位置づけです。このクラウドの認証情報を持たない設計が、権限を絞ったままセルフサービスを実現する前提になっています。
 
 ## AcceleratorClass と AcceleratorPool の分担
 
@@ -388,7 +388,7 @@ Basic05 では `cb_reservation_id` を Terraform の tfvars に書いて apply �
 
 ## 6. テナント境界を確認する
 
-ここで試すのは他テナントの toleration と未許可の Capacity Block ですが、VAP が検査している操作はそれだけではありません。テナントのラベルを狙う `nodeSelector`、`nodeAffinity` の一部、そして `spec.nodeName` の直接指定も拒否されます。`nodeAffinity` について見ているのは `requiredDuringSchedulingIgnoredDuringExecution` の値だけなので、`preferred` 側や `Exists` や `NotIn` のように値だけでは意味が決まらない条件は、この検査では捕まりません (そこは taint による分離が受け持ちます)。特に `spec.nodeName` はスケジューラを丸ごと飛ばすので、taint による分離が働きません。デバッグのために `nodeName` を書いた既存の Pod がここで落ちるのは、この操作を検査しているためです。
+ここで試すのは他テナントの toleration と未許可の Capacity Block ですが、VAP が検査している操作はそれだけではありません。テナントのラベルを狙う `nodeSelector`、`nodeAffinity` の一部、そして `spec.nodeName` の直接指定も拒否されます。`nodeAffinity` について見ているのは `requiredDuringSchedulingIgnoredDuringExecution` の値だけです。`preferred` 側は検査しません。また `operator` は見ずに値だけを判定するので、`Exists` のように値を持たない条件は素通りし、逆に `NotIn` は「他テナントを避ける」という正当な意図でも値に自分以外の namespace が入るため拒否されます。素通りする経路は taint による分離が受け持ちます。特に `spec.nodeName` はスケジューラを丸ごと飛ばすので、taint による分離が働きません。デバッグのために `nodeName` を書いた既存の Pod がここで落ちるのは、この操作を検査しているためです。
 
 境界が実際に効いていることを確かめます。まず、別テナントの taint を tolerate する Pod を `team-gpu` に作ろうとすると、VAP が admission の段階で拒否します。
 

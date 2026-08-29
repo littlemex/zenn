@@ -259,7 +259,7 @@ port-forward はバックグラウンドで起動したので、確認が終わ�
 
 # まとめ
 
-本章では、DCGM の 障害注入 で XID 79 を GPU に注入し、NMA が `AcceleratedHardwareReady` を理由 `NvidiaXID79Error` とともに `False` へ反転させ、Prometheus の `AcceleratedHardwareUnhealthy` アラートが発火するところまでを実機で確かめました。実際の GPU を壊さずに検知経路の端から端までを検証できるのが 障害注入 の価値です。あわせて次のことを見ました。NMA は GPU 健全性を、同梱の `nv-hostengine` をポート 5555 で動かす `dcgm-server` から読みます。これは GPU Operator の埋め込み dcgm-exporter がポート 9400 で公開するメトリクスとは別経路なので共存できますが、standalone DCGM をホストネットワークで動かすとポート 5555 が競合します。そして GPU taint のために `dcgm-server` へ toleration を渡す必要があり、それを EKS アドオンの `configuration_values` で解決しています。検知が本当に動くことを平常時に確かめておけば、いざ GPU が壊れたときに「監視が入っていたのに気づけなかった」という事態を避けられます。
+本章では、DCGM の 障害注入 で XID 79 を GPU に注入し、NMA が `AcceleratedHardwareReady` を理由 `NvidiaXID79Error` とともに `False` へ反転させ、Prometheus の `AcceleratedHardwareUnhealthy` アラートが発火するところまでを実機で確かめました。実際の GPU を壊さずに検知経路の端から端までを検証できるのが 障害注入 の価値です。あわせて次のことを見ました。NMA は GPU 健全性を、同梱の `nv-hostengine` をポート 5555 で動かす `dcgm-server` から読みます。これは GPU Operator の埋め込み dcgm-exporter がポート 9400 で公開するメトリクスとは別経路なので共存できますが、standalone DCGM は hostPort でホストのポート 5555 を確保するため競合します。そして GPU taint のために `dcgm-server` へ toleration を渡す必要があり、それを EKS アドオンの `configuration_values` で解決しています。検知が本当に動くことを平常時に確かめておけば、いざ GPU が壊れたときに「監視が入っていたのに気づけなかった」という事態を避けられます。
 
 # 参考資料
 

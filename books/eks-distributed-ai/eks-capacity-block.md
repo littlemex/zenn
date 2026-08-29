@@ -5,7 +5,7 @@ free: true
 
 GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0)
 
-本章では、Basic04 で `accelerator_pools` に用意しておいた `capacity_type = "reserved"` という選択肢を実際に使い、Capacity Block(CB) で確保したリソースを Amazon EKS クラスタに組み込みます。予約の検索・購入から `accelerator-pools.auto.tfvars` への反映、ノードが起動するところまでの確認、期限管理までを扱います。確保したノードで実際にマルチノード通信が出ているかの検証は、次章の Basic06 で行います。
+本章では、Basic04 で `accelerator_pools` に用意しておいた `capacity_type = "reserved"` という選択肢を実際に使い、Capacity Block(CB) で確保したリソースを Amazon EKS クラスタに組み込みます。予約の検索・購入から `accelerator-pools.auto.tfvars` への反映、NodePool と EC2NodeClass が正しく作られるところまでの確認、期限管理までを扱います (実際にノードが起動するのは次章 Basic06 です)。確保したノードで実際にマルチノード通信が出ているかの検証は、次章の Basic06 で行います。
 
 本章がこの位置にあるのは、次章で EFA のマルチノード通信を検証するために、EFA を複数枚持つインスタンスが 2 台以上必要になるためです。この規模のインスタンスは On-Demand ではなかなか確保できず、しかも EFA の OS バイパス通信は同一サブネットに限られるので、2 台を同じ AZ に揃える必要があります (クラスタプレイスメントグループはレイテンシを詰めるための推奨で、EFA の必須条件ではありません)。Capacity Block はこれらを満たす現実的な手段です。
 
