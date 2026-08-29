@@ -28,7 +28,7 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 
 本章では gloo backend を使い、CPU ノードの上で DDP を動かします。学習対象は、分散学習の教材として広く使われる MNIST を分類する小さな MLP です。モデルもデータも小さいので、GPU なしの CPU でも 1 周が数分で終わり、学習内容そのものより「複数プロセスが勾配を共有して 1 つのモデルを学習する」という DDP の挙動に集中できます。
 
-学習スクリプトは [`ddp.py`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/manifests/ddp-sample/ddp.py) の 1 本で、DDP の各プロセスは `torchrun` が起動します。`torchrun --standalone --nproc_per_node=2` のように使うと、1 ノード内に複数のプロセス（rank 0, rank 1, ...）を立て、それぞれに `RANK` / `WORLD_SIZE` / `LOCAL_RANK` などの環境変数が自動で設定されます。単一ノードで完結するならこれを素の `batch/v1` Job で実行するだけで済みますが、分散学習を複数ノードに広げると「どのノードの誰が rank 0 で、プロセス同士の待ち合わせ（rendezvous）はどこか」を各ノードに伝える仕組みが要ります。
+学習スクリプトは [`ddp.py`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/manifests/ddp-sample/ddp.py) の 1 本で、DDP の各プロセスは `torchrun` が起動します。`torchrun --standalone --nproc_per_node=2` のように使うと、1 ノード内に複数のプロセス（rank 0, rank 1, ...）を立て、それぞれに `RANK` / `WORLD_SIZE` / `LOCAL_RANK` などの環境変数が自動で設定されます。単一ノードで完結するならこれを通常の `batch/v1` Job で実行するだけで済みますが、分散学習を複数ノードに広げると「どのノードの誰が rank 0 で、プロセス同士の待ち合わせ（rendezvous）はどこか」を各ノードに伝える仕組みが要ります。
 
 Kubernetes 上でこれを宣言的に扱う標準が、Kubeflow Trainer v2 が提供する TrainJob（`trainer.kubeflow.org/v1alpha1`）です。ノード数を宣言すれば、Trainer が内部で JobSet を展開して各ノードの Pod を並べ、`torchrun` に渡す待ち合わせの情報を各 Pod に渡します（`numNodes=1` にすれば単一ノードでも動くため、単一ノードから複数ノードまで同じ仕組みで扱えます）。
 
@@ -48,28 +48,28 @@ Kubeflow Trainer v2 の API はまだ `v1alpha1`（アルファ）です。将�
 
 要点だけを対比します。細部は違っても、学習スクリプト `ddp.py` を `torchrun` で起動するという中身は v1 でも v2 でも同じです。
 
-| 観点 | v1: PyTorchJob（レガシー） | v2: TrainJob（本書の主線） |
+| 観点 | v1: PyTorchJob（レガシー） | v2: TrainJob（本書で中心に扱う方式） |
 |---|---|---|
 | API | `kubeflow.org/v1` | `trainer.kubeflow.org/v1alpha1` |
 | ジョブの型 | フレームワークごとに別 CRD（PyTorchJob / TFJob / MPIJob …） | 単一の TrainJob と Runtime の組（PyTorch も他フレームワークも同じ型） |
 | 待ち合わせ（rendezvous） | 基本は operator が配線。elastic 構成では方式（etcd/c10d など）を利用者が選ぶ | Trainer が自動設定するため、利用者側の選択・設定が不要 |
-| 実行の土台 | operator 単体 | JobSet の上に構築 |
+| 実行を担う仕組み | operator 単体 | JobSet の上に構築 |
 | 成熟度 | 安定（ただしレガシー） | アルファ（API 変更あり得る） |
 | 変わらないもの | `ddp.py` と `torchrun` の実行モデル | 同左 |
 
 v2 の要点は「利用者は TrainJob で台数と中身だけを書き、接続情報の設定は Trainer に任せる」ことです。具体的には、Trainer の torch プラグインが各 Pod に `torchrun`（TorchElastic）が読む `PET_*` 環境変数（`PET_NNODES` / `PET_NPROC_PER_NODE` / `PET_NODE_RANK` / `PET_MASTER_ADDR` / `PET_MASTER_PORT`）を注入します。`PET_NODE_RANK` は Pod のインデックスから固定で決まるため、`node-0-0` が常に node rank 0（= rank 0）になります。`PET_MASTER_ADDR` は先頭ノードの Pod（JobSet が払い出す `<ジョブ名>-node-0-0` の headless DNS）を指し、そこが待ち合わせになります。`torchrun` はこれらを引数の既定値として読み（先頭ノード上の TCPStore を使う既定の rendezvous で動きます。参加順で rank が変わる動的方式ではありません）、各学習プロセスに `RANK` / `WORLD_SIZE` / `LOCAL_RANK` / `MASTER_ADDR` / `MASTER_PORT` を再エクスポートします。`ddp.py` はその値を env:// の rendezvous で読み取ります (`init_process_group` には backend だけを渡し、待ち合わせの情報は引数で渡しません)。
 
-TrainJob 側が指定するのは、台数（`numNodes`）とノードあたりのプロセス数（`numProcPerNode`）、イメージ、起動コマンド、そのノードに要求するリソース（`resourcesPerNode`）と、実行ごとに変えたい環境変数です。接続情報の設定や 1 ノード 1 Pod の配置といった土台側の設定は、本書がクラスタに用意した Runtime（[`torch-distributed-eks`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/clustertrainingruntime-eks.yaml)）が持っています。この Runtime を導入する Trainer v2 本体は Terraform の [`trainer.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/trainer.tf) が導入します。ただし Runtime そのものは Terraform では作られず、手順 4 で TrainJob と同じ `helm template` の出力に含まれる形で適用されます。この時点で `k get clustertrainingruntime` を実行しても何も出ないのは正常です。
+TrainJob 側が指定するのは、台数（`numNodes`）とノードあたりのプロセス数（`numProcPerNode`）、イメージ、起動コマンド、そのノードに要求するリソース（`resourcesPerNode`）と、実行ごとに変えたい環境変数です。接続情報の設定や 1 ノード 1 Pod の配置といった共通側の設定は、本書がクラスタに用意した Runtime（[`torch-distributed-eks`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/clustertrainingruntime-eks.yaml)）が持っています。この Runtime を導入する Trainer v2 本体は Terraform の [`trainer.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/trainer.tf) が導入します。ただし Runtime そのものは Terraform では作られず、手順 4 で TrainJob と同じ `helm template` の出力に含まれる形で適用されます。この時点で `k get clustertrainingruntime` を実行しても何も出ないのは正常です。
 
 ## 学習結果の保存先と共有ストレージ
 
 本章のワークロード（`trainjobTrain`）は、MNIST のデータと学習スナップショットを共有ストレージに保存します。既定の保存先は単一 AZ の **Amazon FSx for OpenZFS** です。Basic01 で `DISTAI_SHARED_STORAGE=off` を付けて実行した場合はファイルシステムが作られていないため、先に `infra/eks/terraform.tfvars` の `fsx_enabled` と `openzfs_enabled` を `true` に直して [`distai-up.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/scripts/distai-up.sh) を実行し直してください。そのままでは後述の `terraform output -json shared_storage` が PV 名を返さず、`shared-claim` が `Bound` になりません。ストレージの詳細は後続の章で扱いますが、`openzfs_enabled` が既定で有効なため、`terraform apply` の時点でファイルシステムと静的 PersistentVolume（`openzfs-shared`）はすでに作られています。
 
-この PV を掴む PersistentVolumeClaim（`shared-claim`）は、Helm チャートは作りません。読者が `kubectl apply` で 1 回だけ作り、その名前を `--set sharedStorage.existingClaimName=shared-claim` で各ワークロードに渡します。なぜチャートに作らせないのかは、この後の「共有 PVC を用意する」ステップと、章末の「共有 PVC を消してみる」ステップで実際に手を動かしながら説明します。要点だけ先に言うと、静的 PV は同時に 1 つの PVC としか結びつきません。PVC の生成をワークロードのレンダリングに含めると、PVC の寿命がその都度の `apply`/`delete` に引きずられてしまい、PV 側の寿命（Terraform が管理する、基盤が続く限り存在するもの）とズレてしまいます。PVC の作成を「基盤を用意する」タイミングに切り離し、以降は何度ワークロードを消して作り直しても同じ PVC を使い続けられるようにするのが、ここで一度だけ手動で作る理由です。
+この PV にバインドする PersistentVolumeClaim（`shared-claim`）は、Helm チャートは作りません。読者が `kubectl apply` で 1 回だけ作り、その名前を `--set sharedStorage.existingClaimName=shared-claim` で各ワークロードに渡します。なぜチャートに作らせないのかは、この後の「共有 PVC を用意する」ステップと、章末の「共有 PVC を消してみる」ステップで実際に手を動かしながら説明します。要点だけ先に言うと、静的 PV は同時に 1 つの PVC としか結びつきません。PVC の生成をワークロードのレンダリングに含めると、PVC の寿命がその都度の `apply`/`delete` に引きずられてしまい、PV 側の寿命（Terraform が管理する、基盤が続く限り存在するもの）とズレてしまいます。PVC の作成を「基盤を用意する」タイミングに切り離し、以降は何度ワークロードを消して作り直しても同じ PVC を使い続けられるようにするのが、ここで一度だけ手動で作る理由です。
 
 複数ノードの TrainJob では、各 rank が別ノードの別 Pod で動き、同じデータセット置き場を読み、rank 0 が成果物を書きます。rank 0 がどのノードに配置されても同じ場所に成果物が集まるよう、全ノードから同一パスを読み書きできる共有ストレージ（ReadWriteMany）が要ります。共有ファイルシステム上での同時書き込みによる破損を避けるため、スナップショットの書き込みは rank 0 だけが行います。MNIST のダウンロードは全 rank が実行します（`download=True` は冪等で、既にファイルが揃っていれば torchvision 側が再取得をスキップします）。
 
-保存先を変えたい場合に効くのは Helm の値ではなく、`shared-claim` がどの PV に結びついているかです。Terraform は `openzfs`（FSx for OpenZFS）、`fsx`（FSx for Lustre）、`efs` の 3 つについてそれぞれ静的 PV を用意する設計で、既定では `openzfs` と `fsx` が有効、`efs` は無効（ドライバのみ常設）です。後述の手順 3 で `shared-claim` を作るときに、どの PV 名を埋め込むかで保存先が決まります。ワークロードに渡す `--set sharedStorage.existingClaimName=shared-claim` は「どの PVC を使うか」だけを伝える値なので、これを変えずに保存先を切り替えることはできません。なお [`values.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/values.yaml) には `sharedStorage.backend` という項目が残っていますが、これは PV 名を思い出すための注記で、現在どのテンプレートからも読まれていません。
+保存先を決めるのは Helm の値ではなく、`shared-claim` がどの PV に結びついているかです。Terraform は `openzfs`（FSx for OpenZFS）、`fsx`（FSx for Lustre）、`efs` の 3 つについてそれぞれ静的 PV を用意する設計で、既定では `openzfs` と `fsx` が有効、`efs` は無効（ドライバのみ常設）です。後述の手順 3 で `shared-claim` を作るときに、どの PV 名を埋め込むかで保存先が決まります。ワークロードに渡す `--set sharedStorage.existingClaimName=shared-claim` は「どの PVC を使うか」だけを伝える値なので、これを変えずに保存先を切り替えることはできません。なお [`values.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/values.yaml) には `sharedStorage.backend` という項目が残っていますが、これは PV 名を思い出すための注記で、現在どのテンプレートからも読まれていません。
 
 ## 学習用イメージをクラスタ内でビルドする
 
@@ -192,7 +192,7 @@ k get pvc shared-claim
 
 ## 4. 複数ノードで TrainJob を動かす
 
-`ddp.py` を 2 ノードにまたがる TrainJob で動かします。`torchrun` を素の `batch/v1` Job で単一ノードに動かす場合は 1 Pod 内で複数プロセスが立ちますが、TrainJob で複数ノードに広げると **rank ごとに別々の Pod、別々のノード**に分かれます。rank 0 と rank 1 は同じコンテナのプロセスではなく、ネットワーク越しに通信する別々の Pod です。
+`ddp.py` を 2 ノードにまたがる TrainJob で動かします。`torchrun` を通常の `batch/v1` Job で単一ノードに動かす場合は 1 Pod 内で複数プロセスが立ちますが、TrainJob で複数ノードに広げると **rank ごとに別々の Pod、別々のノード**に分かれます。rank 0 と rank 1 は同じコンテナのプロセスではなく、ネットワーク越しに通信する別々の Pod です。
 
 `numNodes=2` がノード数、`nprocPerNode=1` が各ノード内のプロセス数です（Helm の `nprocPerNode` は TrainJob の `numProcPerNode` に対応します）。本書がクラスタに用意した Runtime（[`torch-distributed-eks`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/clustertrainingruntime-eks.yaml)）に `topologyKey: kubernetes.io/hostname` の podAntiAffinity が入っているので、2 つの Pod は必ず別ノードに分かれて配置されます。PVC は step 3 で作った `shared-claim` を使います。
 
@@ -213,7 +213,7 @@ helm template exp charts/experiments -n distai \
     | k apply -f -
 ```
 
-TrainJob が展開する Pod は JobSet の規則で名付けられ、`<ジョブ名>-node-0-<index>-<ランダム>` になります。本章のジョブ名は `ddp-trainjob` なので、rank 0 の Pod は `ddp-trainjob-node-0-0-xxxxx`、rank 1 は `ddp-trainjob-node-0-1-xxxxx` という形です（末尾のランダムな 5 文字は実行のたびに変わるので、Pod 名を決め打ちせずラベルで選ぶのが確実です）。本章は `nprocPerNode=1` なので 1 Pod に 1 rank が対応し、node index と rank が一致して `node-0-0` が rank 0 になります (GPU 枚数に合わせて `nprocPerNode` を増やすと 1 つの Pod の中に複数 rank が立つので、この対応は崩れます)。まず 2 つの Pod がそれぞれ別ノードに載っていることを確認します（`-o wide` の `NODE` 列が 2 つとも違えば OK です）。ジョブ名のラベルで全ノードの Pod をまとめて選べます。
+TrainJob が展開する Pod は JobSet の規則で名付けられ、`<ジョブ名>-node-0-<index>-<ランダム>` になります。本章のジョブ名は `ddp-trainjob` なので、rank 0 の Pod は `ddp-trainjob-node-0-0-xxxxx`、rank 1 は `ddp-trainjob-node-0-1-xxxxx` という形です（末尾のランダムな 5 文字は実行のたびに変わるので、Pod 名を固定値で指定せずラベルで選ぶのが確実です）。本章は `nprocPerNode=1` なので 1 Pod に 1 rank が対応し、node index と rank が一致して `node-0-0` が rank 0 になります (GPU 枚数に合わせて `nprocPerNode` を増やすと 1 つの Pod の中に複数 rank が立つので、この対応は崩れます)。まず 2 つの Pod がそれぞれ別ノードに載っていることを確認します（`-o wide` の `NODE` 列が 2 つとも違えば OK です）。ジョブ名のラベルで全ノードの Pod をまとめて選べます。
 
 ```bash
 k get pods -o wide -l jobset.sigs.k8s.io/jobset-name=ddp-trainjob
@@ -225,7 +225,7 @@ k get pods -o wide -l jobset.sigs.k8s.io/jobset-name=ddp-trainjob
 k get trainjob ddp-trainjob -w
 ```
 
-rank 0 が載る Pod のログを追います。Pod 名は末尾のランダム文字が変わるので、決め打ちせずラベルで選びます。rank 0 は JobSet の [completion index](https://kubernetes.io/docs/concepts/workloads/controllers/job/#completion-mode) 0 なので、`batch.kubernetes.io/job-completion-index=0` と jobset 名の 2 つのラベルで一意に選べます（この Pod ラベルは Kubernetes 1.28 以降で既定有効です）。そもそも TrainJob が展開する子 Job の名前は `ddp-trainjob-node-0` で、`ddp-trainjob` という名前の Job は無いため `logs job/ddp-trainjob` は該当なしになります。複数ある Pod のどれを見るかを確実に選ぶにはラベルセレクタが向いています。ログは Pod が存在する間に取ります（完了 Pod は Job/TrainJob を消すまで残るので完了後でも取れますが、`k delete` で消した後は取れません。この学習ジョブには `ttlSecondsAfterFinished` を設定していないので、消すまで自動回収はされません）。
+rank 0 が載る Pod のログを追います。Pod 名は末尾のランダム文字が変わるので、固定値で指定せずラベルで選びます。rank 0 は JobSet の [completion index](https://kubernetes.io/docs/concepts/workloads/controllers/job/#completion-mode) 0 なので、`batch.kubernetes.io/job-completion-index=0` と jobset 名の 2 つのラベルで一意に選べます（この Pod ラベルは Kubernetes 1.28 以降で既定有効です）。そもそも TrainJob が展開する子 Job の名前は `ddp-trainjob-node-0` で、`ddp-trainjob` という名前の Job は無いため `logs job/ddp-trainjob` は該当なしになります。複数ある Pod のどれを見るかを確実に選ぶにはラベルセレクタが向いています。ログは Pod が存在する間に取ります（完了 Pod は Job/TrainJob を消すまで残るので完了後でも取れますが、`k delete` で消した後は取れません。この学習ジョブには `ttlSecondsAfterFinished` を設定していないので、消すまで自動回収はされません）。
 
 ```bash
 SEL="jobset.sigs.k8s.io/jobset-name=ddp-trainjob,batch.kubernetes.io/job-completion-index=0"

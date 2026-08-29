@@ -5,28 +5,28 @@ free: true
 
 GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0)
 
-本章では、これまで積み上げてきた Amazon EKS 基盤を安全に破棄します。この章の目的はシンプルで、立てたリソースをすべて綺麗に消し、消えたことを確認することです。アクセラレータノードは時間単価が高いため、ワークショップ向けに試した後に破棄し損ねて課金だけが残る事故を防ぐことが狙いです。
+本章では、これまで構築してきた Amazon EKS 基盤を安全に破棄します。この章の目的はシンプルで、立てたリソースをすべて漏れなく削除し、消えたことを確認することです。アクセラレータノードは時間単価が高いため、ワークショップ向けに試した後に破棄し損ねて課金だけが残る事故を防ぐことが狙いです。
 
 # 解説
 
 ## これは何をするものか
 
-破棄で気をつけるべき点は 1 つです。NodePool を消しても、実際のノードの drain・Amazon EC2 インスタンスの終了・ENI の解放は Karpenter が引き継いで進めます。`kubectl delete nodepool` はその後始末が終わるまで戻ってこないことがあり、Pod が退去できないなどで詰まると長く待たされます ([`04-teardown.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/04-teardown.sh) の破棄経路がこの削除にタイムアウトを付けているのはそのためです)。この非同期処理が終わる前に Karpenter 本体やアクセラレータ関連のコントローラを消してしまうと、ノードを終了させる担当がいなくなり、Amazon EC2 インスタンスが孤立して課金だけが続きます。
+破棄で気をつけるべき点は 1 つです。NodePool を消しても、実際のノードの drain・Amazon EC2 インスタンスの終了・ENI の解放は Karpenter が引き継いで進めます。`kubectl delete nodepool` はその後始末が終わるまで戻ってこないことがあり、Pod が退去できないなどで進まなくなると長く待たされます ([`04-teardown.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/04-teardown.sh) の破棄経路がこの削除にタイムアウトを付けているのはそのためです)。この非同期処理が終わる前に Karpenter 本体やアクセラレータ関連のコントローラを消してしまうと、ノードを終了させるコントローラが無くなり、Amazon EC2 インスタンスが孤立して課金だけが続きます。
 
-この事故を防ぐため、破棄は 2 段階で進めます。まずアクセラレータプールのワークロードとノードを片付け、ノードが実際に消えたことを確認してから、`terraform destroy` でクラスタ全体を壊します。この順序と、`terraform destroy` の内部でノードの drain 完了を待つ仕組みは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks) が担保しているので、本章では手順の実行と確認に集中します。
+この事故を防ぐため、破棄は 2 段階で進めます。まずアクセラレータプールのワークロードとノードを片付け、ノードが実際に消えたことを確認してから、`terraform destroy` でクラスタ全体を破棄します。この順序と、`terraform destroy` の内部でノードの drain 完了を待つ仕組みは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks) が担保しているので、本章では手順の実行と確認に集中します。
 
 ## ストレージを残したい場合
 
 現在の実装は、Amazon FSx for Lustre や Amazon EFS を含むすべてのリソースを 1 つの Terraform state で管理しており、`terraform destroy` はストレージも含めて丸ごと削除します。これは再現性を優先した使い捨て環境としての設計です。
 
-本章の手順を使わず `terraform destroy` を直接実行した場合も、課金が残らないようにする仕掛けは働きます。ただしそのために destroy は Kubernetes 側に手を入れます。具体的には、全 namespace の TrainJob と全 NodePool を削除してから、NodeClaim が 0 になるのを待ちます。TrainJob が残っていると JobSet の Pod がノードを掴んで待ちがタイムアウトし、NodePool が残っていると Karpenter がノードを作り続けて待ちが終わらないためです。`distai` 以外の namespace に置いた TrainJob も削除対象になるので、消えて困るものがあるなら destroy より先に退避してください。
+本章の手順を使わず `terraform destroy` を直接実行した場合も、課金が残らないようにする仕掛けは働きます。ただしそのために destroy は Kubernetes 側に手を入れます。具体的には、全 namespace の TrainJob と全 NodePool を削除してから、NodeClaim が 0 になるのを待ちます。TrainJob が残っていると JobSet の Pod がノードを使い続けて待ちがタイムアウトし、NodePool が残っていると Karpenter がノードを作り続けて待ちが終わらないためです。`distai` 以外の namespace に置いた TrainJob も削除対象になるので、消えて困るものがあるなら destroy より先に退避してください。
 
-クラスタだけ壊してストレージを残したい、あるいは次に立てるクラスタで既存のファイルシステムを再利用したい、という要求も実運用では出てきます。結論として、どちらも現在の実装では対応していません。
+クラスタだけ壊してストレージを残したい、あるいは次に構築するクラスタで既存のファイルシステムを再利用したい、という要求も実運用では出てきます。結論として、どちらも現在の実装では対応していません。
 
 - **ストレージだけ残す** — ストレージをクラスタとは別の Terraform state に切り出す、破棄の直前に対象リソースを state から外す、`prevent_destroy` を設定するといった方法が一般にはありますが、いずれも現在の実装には入っていません。長期保持したいデータがある場合は、破棄の前に Amazon S3 などへ退避するのが現実的です。
 - **既存ファイルシステムの再利用** — 静的プロビジョニングの仕組み自体は、PersistentVolume に既存ファイルシステムを書けば技術的には成立します。ただし Basic10 で見たとおり、FSx for Lustre では `volumeHandle` だけでは足りず `dnsname` と `mountname` を `volumeAttributes` に書く必要があります (ノード側のドライバは `<dnsname>@tcp:/<mountname>` をマウントし、どちらも `volumeHandle` からは導出しません)。ただし作成をスキップして既存 ID を参照するための変数は用意されておらず、同一 VPC 内であればセキュリティグループの追加、別 VPC であれば VPC ピアリングなどのネットワーク到達性の確保が別途必要になります。
 
-これらを恒久的に運用へ組み込むかどうかは今後の検討事項です。本章の手順は、あくまで環境を綺麗に消し切ることを前提にしています。
+これらを恒久的に運用へ組み込むかどうかは今後の検討事項です。本章の手順は、あくまで環境を漏れなく削除することを前提にしています。
 
 # ワークショップ実施
 
@@ -61,9 +61,9 @@ cd "$(git rev-parse --show-toplevel)"/infra/eks/scripts
 ./04-teardown.sh --namespace "$NAMESPACE"
 ```
 
-削除対象の NodePool は、アクセラレータプールの device taint（`nvidia.com/gpu` / `aws.amazon.com/neuron`）を持つものをクラスタに問い合わせて自動的に見つけます。`accelerator_pools` は読者が自分で定義するマップなので、スクリプトが特定のプール名を決め打ちすることはありません。CPU プールは、`terraform destroy` 自身が最後に流す処理の実行先として要るので、この手順では対象外です (手順 4 のスクリプトが `terraform destroy` に入る直前にまとめて削除します)。
+削除対象の NodePool は、アクセラレータプールの device taint（`nvidia.com/gpu` / `aws.amazon.com/neuron`）を持つものをクラスタに問い合わせて自動的に見つけます。`accelerator_pools` は読者が自分で定義するマップなので、スクリプトが特定のプール名を固定値で指定することはありません。CPU プールは、`terraform destroy` 自身が最後に流す処理の実行先として要るので、この手順では対象外です (手順 4 のスクリプトが `terraform destroy` に入る直前にまとめて削除します)。
 
-クラスタは残したまま namespace の PVC も片付けたい場合は `--delete-pvcs` を付けます。その namespace の PVC を storage の種類によらず一括削除し、削除が Pod で止まったときはどの Pod が掴んでいるかを表示します。本書が用意する共有ストレージの PV は `Retain` なので、ファイルシステムのデータは消えず、PVC のバインドだけが外れて PV は `Released` になります。ただしこのフラグは namespace の PVC を種類によらず全部消すので、自分で作った動的プロビジョニングの PVC (`storageClassName: gp3` など、`reclaimPolicy: Delete` の PV を持つもの) があると、その EBS ボリュームは中身ごと削除されます。残したいものが無いかを `k get pvc -n "$NAMESPACE"` で確認してから付けてください。クラスタごと破棄する場合も、PVC は誰も消しません。`--destroy` の経路に PVC を削除する処理はなく、読者が作った PVC は Terraform の管理下にもないからです。Basic10 の手順 5 で見たとおり、PVC が `Bound` のまま残っていると PV の削除がファイナライザで止まり、`terraform destroy` がそこで停滞し得ます。クラスタごと捨てる場合も `--delete-pvcs` を付けるか、Basic10 手順 5 と同じ手順で先に PVC を消しておくのが安全です。
+クラスタは残したまま namespace の PVC も片付けたい場合は `--delete-pvcs` を付けます。その namespace の PVC を storage の種類によらず一括削除し、削除が Pod で止まったときはどの Pod が使用しているかを表示します。本書が用意する共有ストレージの PV は `Retain` なので、ファイルシステムのデータは消えず、PVC のバインドだけが外れて PV は `Released` になります。ただしこのフラグは namespace の PVC を種類によらず全部消すので、自分で作った動的プロビジョニングの PVC (`storageClassName: gp3` など、`reclaimPolicy: Delete` の PV を持つもの) があると、その EBS ボリュームは中身ごと削除されます。残したいものが無いかを `k get pvc -n "$NAMESPACE"` で確認してから付けてください。クラスタごと破棄する場合も、PVC は自動では削除されません。`--destroy` の経路に PVC を削除する処理はなく、読者が作った PVC は Terraform の管理下にもないからです。Basic10 の手順 5 で見たとおり、PVC が `Bound` のまま残っていると PV の削除がファイナライザで止まり、`terraform destroy` がそこで停滞し得ます。クラスタごと捨てる場合も `--delete-pvcs` を付けるか、Basic10 手順 5 と同じ手順で先に PVC を消しておくのが安全です。
 
 対話実行なので、各ステップの前に `y/N` の確認が入ります。実行後に、device リソースを持つノードが残っていないかが表示されます。
 
@@ -94,7 +94,7 @@ NodePool 削除の直後は、そのプールの NodeClaim が `Terminating` で
 ./04-teardown.sh --namespace "$NAMESPACE" --destroy
 ```
 
-`--destroy` を付けると、ワークロードとノードの片付けに続けて `terraform destroy` が走ります。ただし destroy を始める前に、この VPC の中に state が管理していないものが残っていないかを点検します。他チームの EFS マウントターゲットやロードバランサ、他の state が作ったセキュリティグループなどがあると、subnet や VPC の削除が拒否されて destroy が終盤で失敗します。それを 1 時間後のエラーで知るのではなく先に知るための点検で、見つかった場合は何がどれを掴んでいるかを名前付きで一覧して停止します。表示されたものが消えて構わないと判断できるなら `--ignore-vpc-dependents` を付けて続行します。なお destroy が失敗した場合は、EKS が置いていったセキュリティグループが残っていないかを見ます。実際に掃除できたときだけ 1 度再試行し、掃除するものが無ければ、このスクリプトでは解消できない失敗としてそのまま報告します。このとき `04-teardown.sh` は、手順 2 で消したアクセラレータプールに加えて、`monitoring` などクラスタに残っている Karpenter の NodePool もすべて先に削除します。これは、NodePool が残っていると Karpenter が Pod を載せるためにノードを作り続け、`terraform destroy` が内部で待つノードのドレイン完了がいつまでも来なくなるためです。すべての NodePool を止めたうえで `terraform destroy` に入り、Karpenter がノードを終了し終えるのを待ってから、Karpenter 本体やアクセラレータ関連のコントローラを破棄します。この順序により、アクセラレータノードが終了されないまま課金だけが残る事態を防ぎます。
+`--destroy` を付けると、ワークロードとノードの片付けに続けて `terraform destroy` が走ります。ただし destroy を始める前に、この VPC の中に state が管理していないものが残っていないかを点検します。他チームの EFS マウントターゲットやロードバランサ、他の state が作ったセキュリティグループなどがあると、subnet や VPC の削除が拒否されて destroy が終盤で失敗します。それを 1 時間後のエラーで知るのではなく先に知るための点検で、見つかった場合は何がどれを使用しているかを名前付きで一覧して停止します。表示されたものが消えて構わないと判断できるなら `--ignore-vpc-dependents` を付けて続行します。なお destroy が失敗した場合は、EKS が自動作成して残ったセキュリティグループが残っていないかを見ます。実際に掃除できたときだけ 1 度再試行し、掃除するものが無ければ、このスクリプトでは解消できない失敗としてそのまま報告します。このとき `04-teardown.sh` は、手順 2 で消したアクセラレータプールに加えて、`monitoring` などクラスタに残っている Karpenter の NodePool もすべて先に削除します。これは、NodePool が残っていると Karpenter が Pod を載せるためにノードを作り続け、`terraform destroy` が内部で待つノードのドレイン完了がいつまでも来なくなるためです。すべての NodePool を止めたうえで `terraform destroy` に入り、Karpenter がノードを終了し終えるのを待ってから、Karpenter 本体やアクセラレータ関連のコントローラを破棄します。この順序により、アクセラレータノードが終了されないまま課金だけが残る事態を防ぎます。
 
 :::message alert
 ノードのドレイン待ちが進まない場合、よくある原因は `karpenter.sh/do-not-disrupt` を付けた Pod です。Karpenter はこの Pod を退去させないので、載っているノードが空になりません。手順 1 が片付けるのは `--namespace` で指定した namespace だけなので、それ以外の namespace に置いたものは残ります。Advanced01 の headroom Deployment (`kube-system`) がその例で、消し忘れると待ちが終わりません。待ちが 5 分を超えるとスクリプトが該当する Pod を名前付きで一覧するので、表示されたものを消してください。
@@ -132,12 +132,12 @@ fi
 ```
 
 :::message alert
-Advanced02 のプロファイリング基盤を導入した場合、そのデータ層 (SageMaker MLflow、trace バケット、S3 Files) はクラスタとは別の Terraform state にあるため、本章の破棄では消えず課金が続きます。データ層は記録の正本なのでクラスタの寿命とは切り離してあります。不要になったら Advanced02 の後片付けの手順で明示的に畳んでください。
+Advanced02 のプロファイリング基盤を導入した場合、そのデータ層 (SageMaker MLflow、trace バケット、S3 Files) はクラスタとは別の Terraform state にあるため、本章の破棄では消えず課金が続きます。データ層は消してはいけない記録なのでクラスタの寿命とは切り離してあります。不要になったら Advanced02 の後片付けの手順で明示的に削除してください。
 :::
 
 # まとめ
 
-本章では、`04-teardown.sh` を使ってアクセラレータプールをドレインし、ノードが消えたことを確認してから `terraform destroy` でクラスタ全体を破棄しました。ポイントは、Kubernetes API の受理と実際のリソース削除は別物であり、ノードが本当に消えたことを確認してから次に進むことです。この順序を守れば、GPU や Neuron のような高額なリソースを課金を残さず安全に畳めます。state の置き場とレジストリの記録は同じ名前で立て直すために残るので、二度と使わない場合だけ消してください。ストレージを残す運用や既存ファイルシステムの再利用は現在の実装では対応しておらず、必要なデータは破棄の前に退避してください。
+本章では、`04-teardown.sh` を使ってアクセラレータプールをドレインし、ノードが消えたことを確認してから `terraform destroy` でクラスタ全体を破棄しました。ポイントは、Kubernetes API の受理と実際のリソース削除は別物であり、ノードが本当に消えたことを確認してから次に進むことです。この順序を守れば、GPU や Neuron のような高額なリソースを課金を残さず安全に削除できます。state の置き場とレジストリの記録は同じ名前で再構築するために残るので、二度と使わない場合だけ消してください。ストレージを残す運用や既存ファイルシステムの再利用は現在の実装では対応しておらず、必要なデータは破棄の前に退避してください。
 
 # 参考資料
 

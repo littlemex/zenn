@@ -36,7 +36,7 @@ Karpenter（karpenter-provider-aws v1.11 以降）の EC2NodeClass は、`spec.n
 - カード 0: `interfaceType: "interface"`（ノード IP 用、primary ENI）
 - カード 1〜N: `interfaceType: "efa-only"`（RDMA 専用、IP を持たない）
 
-この宣言はインスタンスタイプごとにカード枚数とレイアウトが異なるため、プールごとに手書きするとカード枚数を 1 つ間違えるだけで事故になります。以降では、この宣言を自動生成している実コードを引用しながら、設計意図を見ていきます。対象モジュールは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks) です。
+この宣言はインスタンスタイプごとにカード枚数とレイアウトが異なるため、プールごとに手書きするとカード枚数を 1 つ間違えるだけで障害につながります。以降では、この宣言を自動生成している実コードを引用しながら、設計意図を見ていきます。対象モジュールは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks) です。
 
 ## EFA トポロジを EC2 API から動的に取得する
 
@@ -55,7 +55,7 @@ aws ec2 describe-instance-types --instance-types $INSTANCE_TYPE \
 }
 ```
 
-この知識を静的テーブルとしてコードに埋め込むと、新しい世代（g8e など）が出るたびに手で追記が必要になり、追記を忘れた型はビルドが落ちるか、あるいは黙って EFA が無効化されるという負債になります。
+この知識を静的テーブルとしてコードに埋め込むと、新しい世代（g8e など）が出るたびに手で追記が必要になり、追記を忘れた型はビルドが失敗するか、あるいは黙って EFA が無効化されるという負債になります。
 
 そこでこのモジュールでは、[`karpenter-resources.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/karpenter-resources.tf) で `data.aws_ec2_instance_type` を使い、pool の `instance_types` の EFA 情報を plan 時に EC2 の DescribeInstanceTypes API から取得します。
 
@@ -141,7 +141,7 @@ EFA を Pod にリソースとして見せるのは `aws-efa-k8s-device-plugin` 
 
 ## EFA 関連の環境変数
 
-その前に、この変数が何をするものかを押さえておきます。NCCL はマルチノード実行で 2 種類の通信を使い分けます。1 つはデータ本体の集合通信で、これは EFA/RDMA（`FI_PROVIDER=efa` で選ばれる経路）を通ります。もう 1 つは実行開始時に rank どうしが顔合わせをする bootstrap（ランデブー）で、こちらは通常の TCP/IP ソケットを使います。`NCCL_SOCKET_IFNAME` は後者の bootstrap にどのネットワークインターフェースを使うかを NCCL に指示する変数です。EFA を使う構成でも、この TCP 側のインターフェース選択を誤ると rank どうしが顔合わせできず、データ通信を始める前に止まってしまいます。だから「EFA を使うのに、なぜ TCP インターフェースの指定が要るのか」という話になります。
+その前に、この変数が何をするものかを確認しておきます。NCCL はマルチノード実行で 2 種類の通信を使い分けます。1 つはデータ本体の集合通信で、これは EFA/RDMA（`FI_PROVIDER=efa` で選ばれる経路）を通ります。もう 1 つは実行開始時に rank どうしが顔合わせをする bootstrap（ランデブー）で、こちらは通常の TCP/IP ソケットを使います。`NCCL_SOCKET_IFNAME` は後者の bootstrap にどのネットワークインターフェースを使うかを NCCL に指示する変数です。EFA を使う構成でも、この TCP 側のインターフェース選択を誤ると rank どうしが顔合わせできず、データ通信を始める前に止まってしまいます。だから「EFA を使うのに、なぜ TCP インターフェースの指定が要るのか」という話になります。
 
 次の手順で投入する測定ワークロードは、環境変数に以下を渡します。自分でワークロードを書く場合も同じ形にします。
 
@@ -171,7 +171,7 @@ env:
 
 # ワークショップ実施
 
-本章の実機検証は p4d.24xlarge（NVIDIA A100 40GB x8、EFA x4）2 台の Capacity Block で実施しました。以降の出力はこの構成の実測値です。EFA の枚数はインスタンスファミリごとに違うので、読者の環境では数値が変わります。だからこそ枚数を決め打ちせず、次の手順のように必ず AWS 側の値を参照してください。
+本章の実機検証は p4d.24xlarge（NVIDIA A100 40GB x8、EFA x4）2 台の Capacity Block で実施しました。以降の出力はこの構成の実測値です。EFA の枚数はインスタンスファミリごとに違うので、読者の環境では数値が変わります。だからこそ枚数を固定値で指定せず、次の手順のように必ず AWS 側の値を参照してください。
 
 ## 1. 前提を確認する
 
@@ -259,7 +259,7 @@ helm template exp charts/experiments -n "$NAMESPACE" \
 
 hugepages は Linux が通常の 4 KB より大きい単位（2 MB など）で確保するメモリページで、RDMA のようにメモリ領域を固定して DMA する用途で使われます。Pod は `hugepages-2Mi` リソースとして要求し、ノード側が起動時に予約しておく必要があります。ところが Karpenter は hugepages を「どのインスタンスタイプなら足りるか」の判断に使わないため、hugepages を要求する Pod で新規ノードの起動を誘発しようとすると、`no instance type has enough resources` と判定されて NodeClaim が作られず、Pod は永久に `Pending` になります。
 
-これらの方式を使うときは、先に hugepages を要求しない GPU Pod（`sleep` するだけの使い捨て Pod で GPU を全数要求）で 2 台のノードを起こし、`Ready` を確認してからその Pod を削除し、そのうえで hugepages を要求する測定ワークロードを載せます。ノードは上記の `protect` preset で残るので、踏み台 Pod を消してもノードは回収されません。`ncclTrainjob` だけを使う本章の手順では、この段取りは不要です。
+これらの方式を使うときは、先に hugepages を要求しない GPU Pod（`sleep` するだけの使い捨て Pod で GPU を全数要求）で 2 台のノードを起動し、`Ready` を確認してからその Pod を削除し、そのうえで hugepages を要求する測定ワークロードを載せます。ノードは上記の `protect` preset で残るので、踏み台 Pod を消してもノードは回収されません。`ncclTrainjob` だけを使う本章の手順では、この段取りは不要です。
 :::
 
 `ncclTrainjob` は Basic02 と同じ Kubeflow Trainer v2 の TrainJob で、`torch.distributed` の `all_reduce` を 2 ノードにまたがって回します。ノードをまたぐ起動の段取り、つまり「どのプロセスが rank いくつで、どこに集合するか」は TrainJob が担います。[Trainer](https://trainer.kubeflow.org/en/latest/) が `PET_NNODES` / `PET_NPROC_PER_NODE` / `PET_NODE_RANK` / `PET_MASTER_ADDR` を各 Pod に注入し、[`torchrun`](https://pytorch.org/docs/stable/elastic/run.html) がそれを既定値として読むという仕組みです。
@@ -284,7 +284,7 @@ Karpenter が起動時に付ける `node-role=<プール名>` を使えば、ノ
 
 `nccl-tests` のイメージは Open MPI 前提で `torchrun` を持たないため、Pod が即座に `exec: "torchrun": executable file not found in $PATH` で落ちます。これは失敗が明示されるので気づけます。
 
-危険なのは Basic02 でビルドした `ddp-sample` のイメージです。`torchrun` は持ちますが素の PyTorch イメージなので EFA プラグインがありません。この場合 NCCL はエラーを出さず、自前の TCP ソケット通信に**黙って切り替えます**。ベンチマークは完走し、それらしい数値も出るので、EFA を測ったつもりで実際には TCP を測っていたという結果になります。帯域の数値だけでは区別できないため、手順 6 で説明するログ行の確認が必須です。
+危険なのは Basic02 でビルドした `ddp-sample` のイメージです。`torchrun` は持ちますがEFA を含まない PyTorch イメージなので EFA プラグインがありません。この場合 NCCL はエラーを出さず、自前の TCP ソケット通信に**黙って切り替えます**。ベンチマークは完走し、それらしい数値も出るので、EFA を測ったつもりで実際には TCP を測っていたという結果になります。帯域の数値だけでは区別できないため、手順 6 で説明するログ行の確認が必須です。
 
 `torchrun` と EFA プラグインの両方を持つイメージとして、[AWS Deep Learning Containers](https://docs.aws.amazon.com/deep-learning-containers/latest/devguide/deep-learning-containers-images.html) があります。利用可能なタグは次のように調べられます。
 
@@ -297,7 +297,7 @@ aws ecr describe-images --region "$AWS_REGION" --registry-id 763104351884 --repo
 
 ## 4. ノード上の EFA リソースを確認する
 
-手順 3 を投入したら、まずノードが上がって stage Job が終わるのを待ちます。
+手順 3 を投入したら、まずノードが起動して stage Job が終わるのを待ちます。
 
 ```bash
 k wait --for=condition=Ready node -l node-role=$POOL --timeout=20m
@@ -385,7 +385,7 @@ nccl-trainjob-node-0-0:172:172 [0] NCCL INFO NET/OFI Using Libfabric version 2.4
 nccl-trainjob-node-0-1:172:172 [0] NCCL INFO NET/OFI Selected provider is efa, fabric is efa (found 3 nics)
 ```
 
-両ノードで `efa` プロバイダが選択され、3 NIC が認識されています。この `found 3 nics` が、手順 2 の `terraform output accelerator_pool_efa_schedulable` が CB プールについて返す値（p4d.24xlarge なら 3 = 4 − 1）と一致していることが重要です。手順 2 を実行した時点では `gpu-ddp` しか無いので 0 だけが出ますが、Basic05 の CB プールを apply したあとに同じコマンドを実行すると 3 が出ます。複数カードのインスタンスでは、カード枚数から 1 引いた値がそのまま NCCL が掴む NIC 数になります (カード 0 はノードの IP を持つため要求できません)。カードが 1 枚のインスタンス、たとえば g6e.12xlarge では引き算はせず 1 が schedulable になります。
+両ノードで `efa` プロバイダが選択され、3 NIC が認識されています。この `found 3 nics` が、手順 2 の `terraform output accelerator_pool_efa_schedulable` が CB プールについて返す値（p4d.24xlarge なら 3 = 4 − 1）と一致していることが重要です。手順 2 を実行した時点では `gpu-ddp` しか無いので 0 だけが出ますが、Basic05 の CB プールを apply したあとに同じコマンドを実行すると 3 が出ます。複数カードのインスタンスでは、カード枚数から 1 引いた値がそのまま NCCL が使う NIC 数になります (カード 0 はノードの IP を持つため要求できません)。カードが 1 枚のインスタンス、たとえば g6e.12xlarge では引き算はせず 1 が schedulable になります。
 
 帯域の実測値:
 
@@ -424,7 +424,7 @@ NCCL テストを実行するには、テスト対象の GPU が他の Pod（Ray
 
 ## NCCL ログに出る GDRCopy 警告の正体
 
-EFA でノード間通信を回すと、NCCL のログに次の一行が出ることがあります。
+EFA でノード間通信を実行すると、NCCL のログに次の一行が出ることがあります。
 
 ```text
 NET/OFI Failed to initialize GDRCopy: Failed to open gdr handle
@@ -442,20 +442,20 @@ GDRCopy を実際に有効にするには、ノードのカーネルに `gdrdrv`
 k delete trainjob nccl-trainjob -n "$NAMESPACE" --ignore-not-found
 ```
 
-helper script でノードプールを退避する場合、 `infra/eks/scripts` にスクリプトがあります。
+補助スクリプト でノードプールを退避する場合、 `infra/eks/scripts` にスクリプトがあります。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks/scripts
 ./04-teardown.sh --namespace "$NAMESPACE" --nodepool "$POOL"
 ```
 
-`04-teardown.sh` は Deployment/StatefulSet/Job/TrainJob/MPIJob を削除し、GPU Pod が完全に終了したのを確認したうえで Karpenter の NodePool を削除します。CB のノード自体は予約期間の終了時に AWS 側で強制回収されるため、このスクリプトは「ワークロードを安全に退避させる」ところまでを担当します。クラスタ全体を壊す `terraform destroy` は `--destroy` を明示した場合のみ実行されます。
+`04-teardown.sh` は Deployment/StatefulSet/Job/TrainJob/MPIJob を削除し、GPU Pod が完全に終了したのを確認したうえで Karpenter の NodePool を削除します。CB のノード自体は予約期間の終了時に AWS 側で強制回収されるため、このスクリプトは「ワークロードを安全に退避させる」ところまでを担当します。クラスタ全体を破棄する `terraform destroy` は `--destroy` を明示した場合のみ実行されます。
 
 # まとめ
 
 本章では、Karpenter が起動する EFA 対応ノードで EFA が正しく構成され、実際にノード間で帯域が出ていることを確認しました。カード枚数とレイアウトは EC2 の `DescribeInstanceTypes` から plan 時に導出されるため、インスタンスタイプを書けば `networkInterfaces` は自動生成されます。
 
-加えて、実装を読まないと気づきにくい 2 点を押さえました。EFA のセキュリティグループには ingress と egress の**両方**に self-referencing ルールが必要で、egress を CIDR で書いても SRD トラフィックは通りません。`NCCL_SOCKET_IFNAME` は許可リストではなく `^` 始まりの除外パターンで書きます。どちらも設定を誤ると「EFA を選んだはずなのにデータが流れない」という診断困難な症状になります。
+加えて、実装を読まないと気づきにくい 2 点を整理しました。EFA のセキュリティグループには ingress と egress の**両方**に self-referencing ルールが必要で、egress を CIDR で書いても SRD トラフィックは通りません。`NCCL_SOCKET_IFNAME` は許可リストではなく `^` 始まりの除外パターンで書きます。どちらも設定を誤ると「EFA を選んだはずなのにデータが流れない」という診断困難な症状になります。
 
 帯域は p4d.24xlarge 2 台で busbw 57.8 GB/s（対照の単一ノード NVLink は 227.1 GB/s）でした。NCCL のログが `Selected provider is efa (found 3 nics)` を示し、この `3` が手順 2 で見た schedulable EFA 数と一致することが、EFA が意図どおり配線されている証拠になります。
 
