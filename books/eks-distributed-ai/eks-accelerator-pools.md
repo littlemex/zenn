@@ -212,33 +212,35 @@ k logs -f --tail=-1 -l "$SEL"
 
 ## 4. (任意) GPU スモークテストで確認する
 
-Basic01 で紹介したインフラ層のスモークテストには、GPU ノードを実際に起動して確認する `--with-gpu` モードがあります。アクセラレータプールを定義した本章の段階で初めて実行できます。Basic01 の基盤テストと違い、Karpenter が GPU ノードを起動するため 5〜10 分かかります。`--namespace` を明示するのは Basic01 と同じ理由です。このシェルには `NAMESPACE` が入っているので、渡さないとテストが作業 namespace を自分のものと解釈して停止します。
+Basic01 で紹介したインフラ層のスモークテストには、GPU ノードを実際に起動して確認する `--with-gpu` モードがあります。アクセラレータプールを定義した本章の段階で初めて実行できます。`--with-gpu` は Basic01 の 38 項目をもう一度回したうえで GPU の層を足すので、全部で 43 項目、9 分前後かかります。長いのは Karpenter が GPU ノードを起動する分と、最後の `gpu-serving-vllm` が vLLM を実際にデプロイして API を叩く分です。`--namespace` を明示するのは Basic01 と同じ理由です。このシェルには `NAMESPACE` が入っているので、渡さないとテストが作業 namespace を自分のものと解釈して停止します。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks/tests
 ./run-tests.sh --with-gpu --gpu-count 1 --namespace distai-test
 ```
 
+GPU の層は 5 項目です。実機出力から該当部分と集計を抜き出します。
+
 ```text
-==============================
- Test Summary
-==============================
-STATUS   TEST                                DETAIL
+[INFO] --- gpu tests ---
+pod/gpu-smoke-test created
+[OK]   gpu-node-launch (114s)
+[OK]   nvidia-smi-check (2s)
+job.batch/cuda-vectoradd created
+[OK]   cuda-vector-add (16s)
+pod/gpu-fsx-mount-test created
+[OK]   gpu-fsx-mount (40s)
+service/gpu-vllm created
+deployment.apps/gpu-vllm created
+deployment "gpu-vllm" successfully rolled out
+models ok: Qwen/Qwen2.5-0.5B-Instruct
+text ok: 'Hello!'
+[OK]   gpu-serving-vllm (172s)
 --------------------------------------------------------------
-PASS     control-plane                       3s
-PASS     system-nodes                        4s
-PASS     karpenter                           7s
-PASS     trainer                             4s
-PASS     csi-drivers                         28s
-PASS     device-plugins                      11s
-PASS     storage-mount                       43s
-PASS     gpu-node-launch+nvidia-smi          86s
-PASS     nvidia-smi-check                    2s
-PASS     cuda-vector-add                     17s
-PASS     gpu-fsx-mount                       12s
---------------------------------------------------------------
-PASS: 11  FAIL: 0  SKIP: 0  TOTAL: 11
+PASS: 42  FAIL: 0  SKIP: 1  TOTAL: 43
 ```
+
+`SKIP` の 1 件は Basic01 と同じ `registry-default-layer-attached` です。テストが作ったものは最後に namespace ごと消えるので、GPU ノードも Pod が無くなった時点で回収に入ります。
 
 対象の NodePool は [`resolve_gpu_nodepool`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/tests/lib/resolve.sh) が NVIDIA GPU のプールから自動選択します（`--gpu-nodepool` で明示指定も可能）。スモーク Pod が要求するのは `nvidia.com/gpu` なので、Neuron のような非 NVIDIA のプールは候補になりません。`--gpu-count` には検証したい GPU 枚数を渡します（g6.2xlarge なら 1、g6e.12xlarge なら 4、p4d.24xlarge なら 8）。GPU テストで ICE（InsufficientInstanceCapacity）により起動できない場合は AWS 側のキャパシティ問題であり、インフラの不具合ではありません。
 
