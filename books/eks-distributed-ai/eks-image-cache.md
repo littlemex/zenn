@@ -126,7 +126,7 @@ export NAMESPACE=distai
 
 最初にやるべきは高速化ではなく計測です。ユーザー体感の待ち時間を「ノード provisioning」「manifest 往復」「レイヤ取得」「展開」に分解して実測し、以降の全ての採否をこの数字で決めます。
 
-計測対象として、Basic02 でビルドした学習イメージを digest 指定で 1 つ起動します。GPU プールを指定して、Karpenter に新規ノードを起こさせるところから測るのが要点です。既にそのプールのノードが立っている場合は、先に消してから始めます (`kubectl delete nodeclaim -l karpenter.sh/nodepool=gpu-ddp` で消すと、Karpenter が EC2 の終了まで処理します。ノードを直接 `delete node` すると NodeClaim が残って課金が続くので使いません)。
+計測対象として、Basic02 でビルドした学習イメージを digest 指定で 1 つ起動します。GPU プールを指定して、Karpenter に新規ノードを起こさせるところから測るのが要点です。既にそのプールのノードが立っている場合は、先に消してから始めます (`kubectl delete nodeclaim -l karpenter.sh/nodepool=gpu-ddp` を使います。`delete node` でも Karpenter が EC2 の終了まで処理しますが、NodeClaim ならプール単位でまとめて消せるので本書ではこちらにします)。
 
 ```bash
 DIGEST=$(aws ecr describe-images \
@@ -436,7 +436,7 @@ kubectl -n "$NAMESPACE" patch daemonset image-prewarm-gpu-ddp \
 常設の基盤として置き続けるならこのままで構いませんが、試しただけならこの章で作ったものを消します。**特に headroom floor (アイドル時もノードを 1 台残す仕組み) (アイドル時もノードを 1 台残す仕組み) (アイドル時もノードを 1 台残す仕組み) (アイドル時もノードを 1 台残す仕組み) は消し忘れるとクラスタの破棄が止まります。** `do-not-disrupt` を付けた Pod は Karpenter が退去させないので、そのノードが空にならず、Basic11 の `terraform destroy` が NodeClaim の待ちで停滞します。しかも headroom は `kube-system` に置くので、Basic11 の片付けスクリプトが対象にする namespace の外にいて、掃除されません。実際にこれで destroy が 18 分止まり、手で消して初めて先に進みました。
 
 ```bash
-kubectl -n "$NAMESPACE" delete daemonset -l app.kubernetes.io/name=image-prewarm --ignore-not-found
+kubectl -n "$NAMESPACE" delete daemonset -l app=image-prewarm-cpu --ignore-not-found
 kubectl -n kube-system delete deployment cache-headroom --ignore-not-found
 kubectl delete priorityclass cache-headroom --ignore-not-found
 kubectl get nodes -l node-role=cpu

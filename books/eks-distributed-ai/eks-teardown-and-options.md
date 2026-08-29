@@ -97,7 +97,7 @@ NodePool 削除の直後は、そのプールの NodeClaim が `Terminating` で
 `--destroy` を付けると、ワークロードとノードの片付けに続けて `terraform destroy` が走ります。ただし destroy を始める前に、この VPC の中に state が管理していないものが残っていないかを点検します。他チームの EFS マウントターゲットやロードバランサ、他の state が作ったセキュリティグループなどがあると、subnet や VPC の削除が拒否されて destroy が終盤で失敗します。それを 1 時間後のエラーで知るのではなく先に知るための点検で、見つかった場合は何がどれを使用しているかを名前付きで一覧して停止します。表示されたものが消えて構わないと判断できるなら `--ignore-vpc-dependents` を付けて続行します。なお destroy が失敗した場合は、EKS が自動作成して残ったセキュリティグループが残っていないかを見ます。実際に掃除できたときだけ 1 度再試行し、掃除するものが無ければ、このスクリプトでは解消できない失敗としてそのまま報告します。このとき `04-teardown.sh` は、手順 2 で消したアクセラレータプールに加えて、`monitoring` などクラスタに残っている Karpenter の NodePool もすべて先に削除します。これは、NodePool が残っていると Karpenter が Pod を載せるためにノードを作り続け、`terraform destroy` が内部で待つノードのドレイン完了がいつまでも来なくなるためです。すべての NodePool を止めたうえで `terraform destroy` に入り、Karpenter がノードを終了し終えるのを待ってから、Karpenter 本体やアクセラレータ関連のコントローラを破棄します。この順序により、アクセラレータノードが終了されないまま課金だけが残る事態を防ぎます。
 
 :::message alert
-ノードのドレイン待ちが進まない場合、よくある原因は `karpenter.sh/do-not-disrupt` を付けた Pod です。Karpenter はこの Pod を退去させないので、載っているノードが空になりません。手順 1 が片付けるのは `--namespace` で指定した namespace だけなので、それ以外の namespace に置いたものは残ります。Advanced01 の headroom Deployment (`kube-system`) がその例で、消し忘れると待ちが終わりません。待ちが 5 分を超えるとスクリプトが該当する Pod を名前付きで一覧するので、表示されたものを消してください。
+ノードのドレイン待ちが進まない場合、よくある原因は `karpenter.sh/do-not-disrupt` を付けた Pod です。Karpenter はこの Pod を退去させないので、載っているノードが空になりません。手順 2 が片付けるのは `--namespace` で指定した namespace だけなので、それ以外の namespace に置いたものは残ります。Advanced01 の headroom Deployment (`kube-system`) がその例で、消し忘れると待ちが終わりません。待ちが 5 分を超えるとスクリプトが該当する Pod を名前付きで一覧するので、表示されたものを消してください。
 
 `terraform destroy` の完了まで、ターミナルを閉じずに待ちましょう。途中で中断すると、アクセラレータノードが取り残されて課金が続く可能性があります。破棄が完了したら、Amazon EC2 コンソールや `aws ec2 describe-instances` で対象リソースが残っていないことを最終確認すると確実です。
 :::

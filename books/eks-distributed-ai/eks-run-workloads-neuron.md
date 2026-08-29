@@ -49,7 +49,7 @@ GPU 版（Basic07）との対応関係は次のとおりです。
 
 ## 1. 前提を確認する
 
-- Basic05 の手順で trn2.3xlarge の Capacity Block をメルボルンリージョンで確保ずみ
+- Basic05 の手順で trn2.3xlarge の Capacity Block を確保済み (本章の実機例はメルボルン `ap-southeast-4` ですが、trn2 が使えるリージョンならどこでもかまいません)
 - Basic05 の手順で `terraform apply` で NodePool 作成済み
 - `k` と `KUBECONFIG` は Basic01 手順 2 の 4 行で設定済み
 

@@ -147,7 +147,7 @@ terraform apply -var gdrcopy_mode=daemonset
 ```
 
 :::message alert
-`terraform.tfvars` に `gdrcopy_mode = "userdata"` を書き込むのは、恒久的にこの方式へ切り替えると決めたときだけにする。tfvars に書くと EC2NodeClass の userData が変わり、既存ノードは drift 扱いになる。ただし置き換えが実際に走るかはプールしだいである。Capacity Block や EFA を使うプールは disruption budget が 0 ノードに固定されているので、drift と判定されても自発的な置き換えは起きない。置き換えが走るのは budget が既定 (10%) のままの on-demand / spot プールで、その場合は稼働中のノードが入れ替わる。いずれにせよ恒久的に切り替えると決めるまでは、本章の検証は `-var` の一時上書きだけで行う。
+`terraform.tfvars` に `gdrcopy_mode = "userdata"` を書き込むのは、恒久的にこの方式へ切り替えると決めたときだけにする。tfvars に書くと EC2NodeClass の userData が変わり、既存ノードは drift 扱いになる。ただし置き換えが実際に走るかはプールしだいである。Capacity Block や EFA を使うプールは既定で disruption budget が 0 ノードなので、drift と判定されても自発的な置き換えは起きない (プール側で `disruption_budget_nodes` を書いて上書きした場合はこの限りではない)。置き換えが走るのは budget が既定 (10%) のままの on-demand / spot プールで、その場合は稼働中のノードが入れ替わる。いずれにせよ恒久的に切り替えると決めるまでは、本章の検証は `-var` の一時上書きだけで行う。
 :::
 
 これで `gdrdrv-loader` の DaemonSet が入る。GPU ノードがまだ 1 台も無ければ配布先が無いので待機状態になる。次の手順以降で GPU Pod を投入すると Karpenter がノードを起動し、そのノードへ DaemonSet が自動で配られて、initContainer が `gdrcopy-kmod` をインストールし `gdrdrv` をロードする。なお Basic06 の EFA プールは空でもノードを保持する設定なので、ノードが残っている環境では apply の直後に既存ノード上で initContainer が走り、その場で `gdrdrv` がロードされる。ロードの完了は、ノードが起動したあとに次で確認できる（2 ノードそろうのは手順 5 の測定 Pod を投入したあとになる）。

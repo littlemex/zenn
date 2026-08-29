@@ -82,7 +82,7 @@ accelerator_pools = {
 
 NVIDIA GPU Operator は Basic03 の時点では入っていません。`accelerator_pools` に `device_plugin = "nvidia"` のプールが 1 つ以上あることを条件(`local.has_gpu_pool`)に導入されるため、本章で初めてインストールされます。
 
-プール定義は `terraform.tfvars` に直接書かず、専用ファイル `accelerator-pools.auto.tfvars` に置きます。`accelerator_pools` は単一の map 変数なので、`terraform.tfvars` にも書くと重複代入エラーになります。定義箇所をこの 1 ファイルに集約し、`terraform.tfvars` 側には `accelerator_pools` を書かないのがポイントです（変数の `default = {}` があるので、ファイルが無い章でも apply は成功します）。`*.auto.tfvars` は Terraform が自動で読み込むため、`-var-file` の指定も不要です。
+プール定義は `terraform.tfvars` に直接書かず、専用ファイル `accelerator-pools.auto.tfvars` に置きます。`accelerator_pools` は 1 つの map 変数なので、`terraform.tfvars` にも書くと定義が 2 か所になります。このときエラーにはならず、[読み込み順](https://developer.hashicorp.com/terraform/language/values/variables#variable-definition-precedence)で後になる `*.auto.tfvars` の値が黙って優先され、`terraform.tfvars` に書いたほうは何も言われずに無視されます。気づけない事故になるので、定義箇所をこの 1 ファイルに集約し、`terraform.tfvars` 側には `accelerator_pools` を書かないのがポイントです（変数の `default = {}` があるので、ファイルが無い章でも apply は成功します）。`*.auto.tfvars` は Terraform が自動で読み込むため、`-var-file` の指定も不要です。
 
 リポジトリにはコメント付きの雛形 `accelerator-pools.tfvars.example` があります。どんなプールが書けるかはこれを読むと分かるので、まず中身を眺めます。雛形は全プール例がコメントアウトされた空の map (`accelerator_pools = {}`) なので、これをそのままコピーして apply しても何も作られません。
 
@@ -244,7 +244,7 @@ NodePool 自体は残しておいてかまいません。Karpenter は要求が�
 ここまでの `accelerator_pools`（Terraform の map 変数を専用 tfvars ファイルで管理する方式）は、一人ないし信頼できる少人数が同じ Terraform state を触る前提では十分に機能します。一方で、複数チームがひとつのクラスタを共有するマルチテナント運用に持ち込もうとすると、次の限界が見えてきます。
 
 ::::details マルチテナントで tfvars 方式では足りなくなる理由
-- **ファイル単位の分離ができない**: `accelerator_pools` は単一の map 変数なので、チーム A とチーム B が別ファイルに `accelerator_pools = {...}` を書くと、本章冒頭で見たのと同じ重複代入エラーになります。結局ひとつのファイルを全員で編集することになり、プルリクエストが恒常的にコンフリクトします。
+- **ファイル単位の分離ができない**: `accelerator_pools` は単一の map 変数なので、チーム A とチーム B が別ファイルに `accelerator_pools = {...}` を書くと、ファイル名の辞書順で後になるほうが黙って勝ち、もう一方のプール定義は消えます。エラーにならないので気づけません。結局ひとつのファイルを全員で編集することになり、プルリクエストが恒常的にコンフリクトします。
 - **RBAC で権限を絞れない**: Terraform state と AWS の認証情報を持つ人は、他チームのプール定義も含めて何でも書き換えられます。「チーム A は自分のプールだけ作れる」「Capacity Block の ID はプラットフォーム管理者が許可したものだけ使える」といった、Kubernetes の RBAC 相当の権限分離を tfvars では表現できません。
 - **ノードの分離境界を宣言できない**: あるチームのプールで立てたノードに、他チームの Pod が載らないようにする taint／label の対応関係を、テナント自身が勝手に書き換えられないよう固定する仕組みがありません。tfvars は「誰が書いたか」を区別しないため、境界フィールド（テナント taint や `capacity-type: reserved` のピン留め）を守れません。
 - **セルフサービスにならない**: 新しいプールが欲しいたびにプラットフォームチームへ tfvars の編集を依頼する運用になり、Kubernetes のマニフェストを `kubectl apply` する感覚での自助にはなりません。
