@@ -5,7 +5,7 @@ free: true
 
 GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0)
 
-本章では、Basic02 で CPU だけだった分散学習(DDP)を GPU に載せ替えます。ここでは Karpenter の混在確保の実験も兼ねて、g5 と g6 を混ぜた spot+on-demand フォールバック構成で 2 ノード GPU DDP を実行してみます。なお spot を混ぜた DDP は本来、バッチ推論やデータ前処理に向くもので、大規模な分散学習では中断のたびに全 rank が巻き戻るため実用的ではありません。本章はあくまで「すでに動かした DDP を GPU に載せ、Karpenter の混在確保を確かめる」実験としての位置づけです。
+本章では、Basic02 で CPU だけだった分散学習(DDP)を GPU に載せ替えます。ここでは Karpenter の混在させた確保の実験も兼ねて、g5 と g6 を混ぜた Spot とオンデマンドを組み合わせた構成で 2 ノード GPU DDP を実行してみます。なお Spot を混ぜた DDP は本来、バッチ推論やデータ前処理に向くもので、大規模な分散学習では中断のたびに全 rank が最後のスナップショットからやり直しになるため実用的ではありません。本章はあくまで「すでに動かした DDP を GPU に載せ、Karpenter の混在させた確保を確かめる」実験としての位置づけです。
 
 # 解説
 
@@ -13,16 +13,16 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 
 ![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 
-本章で扱うのは、この図のうち **Karpenter が起動するアクセラレータノードのプール定義**です。Basic03 で入れた Karpenter が実際に GPU ノードを立てられるようにするのがゴールです。
+本章で扱うのは、この図のうち **Karpenter が起動するアクセラレータノードのプール定義**です。Basic03 で入れた Karpenter が実際に GPU ノードを起動できるようにするのがゴールです。
 
 ## この章で試すこと
 
-この章で試すのは Karpenter の混在確保、すなわち複数のインスタンスタイプと購入オプション（spot／on-demand）を 1 つの NodePool に許可して、確保できるものからノードを立てる挙動です。単一のインスタンスタイプ・単一の購入オプションに絞ると、そのサイズや spot 在庫が足りないときにキャパシティエラーで詰まりますが、混在させておくと空いている組み合わせで埋められます。これは単発の実験ジョブなどでノードを確保したい場面で効きます。ここではその挙動を、すでに動かした DDP を GPU に載せて確かめます。
+この章で試すのは Karpenter の混在させた確保、すなわち複数のインスタンスタイプと購入オプション（Spot とオンデマンド）を 1 つの NodePool に許可して、確保できるものからノードを起動する挙動です。単一のインスタンスタイプ・単一の購入オプションに絞ると、そのサイズや spot 在庫が足りないときに確保に失敗して先に進めなくなりますが、混在させておくと空いている組み合わせで埋められます。これは単発の実験ジョブなどでノードを確保したい場面で役に立ちます。ここではその挙動を、すでに動かした DDP を GPU に載せて確かめます。
 
 本章のアプローチは次の通りです。
 
-- g5(A10G)と g6(L4)を**ヘテロジニアスに混ぜます**: 片方が取れなくても他方でノードが立ちます
-- spot を第一優先、on-demand をフォールバックにします: コストを抑えつつ 2 台確保します
+- g5(A10G)と g6(L4)を**異なる世代を混在させます**: 片方が取れなくても他方でノードが立ちます
+- Spot を第一優先、オンデマンドをフォールバックにします: コストを抑えつつ 2 台確保します
 - 単一 AZ に固定します: cross-AZ レイテンシの影響を避けます(マルチ AZ 構成も作り的には可能です)
 
 :::message
@@ -53,7 +53,7 @@ accelerator_pools = {
 |---|---|---|
 | instance_types | g6.2xlarge, g5.2xlarge, g6.xlarge, g5.xlarge | 4 種のうちキャパシティがあるものを Karpenter が選択 |
 | capacity_types | ["spot", "on-demand"] | spot 優先、取れなければ on-demand にフォールバック |
-| zones | 未指定(`local.azs[0]` に自動導出) | 将来 Basic05 で追加する Capacity Block プールと同じ AZ に配置し、共有ストレージ接続に備える |
+| zones | 未指定(`local.azs[0]` に自動導出) | 共有ストレージと同じ AZ に寄せる。Basic05 の Capacity Block プールの AZ は予約から導出されるため、同じ AZ になるとは限らない |
 | efa_interface_count | 0 | 小型 GPU に EFA なし(NCCL は TCP ソケット経由で通信) |
 | labels | workload=ddp-basic04 | 追加のラベル。Pod からプールを選ぶ第一級の手段は、プール名(map のキー)がそのまま Karpenter のノードラベル `node-role=<プール名>` になる仕組みで、`labels` はさらに細かくルーティングしたいときの補助です |
 
@@ -80,20 +80,29 @@ accelerator_pools = {
 - Karpenter が導入済み
 - Basic02 で作った `ddp-sample` イメージ(ECR に push 済み)
 
-NVIDIA GPU Operator は Basic03 の時点では入っていません。`accelerator_pools` に `device_plugin = "nvidia"` のプールが 1 つ以上あることを条件(`local.has_gpu_pool`)に導入されるため、本章で初めてインストールされます。
+NVIDIA GPU Operator は Basic03 の時点では入っていません。`accelerator_pools` に `device_plugin = "nvidia"` のプールが 1 つ以上あることを条件 ([`local.has_gpu_pool`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/locals.tf))に導入されるため、本章で初めてインストールされます。
 
-プール定義は `terraform.tfvars` に直接書かず、専用ファイル `accelerator-pools.auto.tfvars` に置きます。`accelerator_pools` は単一の map 変数なので、`terraform.tfvars` にも書くと重複代入エラーになります。定義箇所をこの 1 ファイルに集約し、`terraform.tfvars` 側には `accelerator_pools` を書かないのがポイントです（変数の `default = {}` があるので、ファイルが無い章でも apply は通ります）。`*.auto.tfvars` は Terraform が自動で読み込むため、`-var-file` の指定も要りません。
+プール定義は `terraform.tfvars` に直接書かず、専用ファイル `accelerator-pools.auto.tfvars` に置きます。`accelerator_pools` は 1 つの map 変数なので、`terraform.tfvars` にも書くと定義が 2 か所になります。このときエラーにはならず、[読み込み順](https://developer.hashicorp.com/terraform/language/values/variables#variable-definition-precedence)で後になる `*.auto.tfvars` の値が黙って優先され、`terraform.tfvars` に書いたほうは何も言われずに無視されます。気づけない事故になるので、定義箇所をこの 1 ファイルに集約し、`terraform.tfvars` 側には `accelerator_pools` を書かないのがポイントです（変数の `default = {}` があるので、ファイルが無い章でも apply は成功します）。`*.auto.tfvars` は Terraform が自動で読み込むため、`-var-file` の指定も不要です。
 
-リポジトリにはコメント付きの雛形 `accelerator-pools.tfvars.example` があります。初回はこれをコピーして自分用のファイルを作ります。コピー直後は全プール例がコメントアウトされた空の map（`accelerator_pools = {}`）なので、そのままでも apply は通ります。
+リポジトリにはコメント付きの雛形 [`accelerator-pools.tfvars.example`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/accelerator-pools.tfvars.example) があります。どんなプールが書けるかはこれを読むと分かるので、まず中身を眺めます。雛形は全プール例がコメントアウトされた空の map (`accelerator_pools = {}`) なので、これをそのままコピーして apply しても何も作られません。
 
-雛形をコピーせずに、下に示すテンプレートを自分で書き起こしても構いません。
+本章で作るファイルは次の手順の heredoc で作成するため、雛形のコピーは不要です。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
-cp accelerator-pools.tfvars.example accelerator-pools.auto.tfvars
+cat accelerator-pools.tfvars.example
 ```
 
-本章ではこのファイルの中身を次の内容にします。
+プールに書くインスタンスタイプは、クラスタのリージョンで提供されているものに限ります。提供されていない型を書くと、Karpenter がフォールバックする前に `terraform plan` がその型の照会で失敗します。書く前に確かめておきます。
+
+```bash
+aws ec2 describe-instance-type-offerings --region "$AWS_REGION" \
+  --location-type availability-zone \
+  --filters 'Name=instance-type,Values=g6.2xlarge,g5.2xlarge,g6.xlarge,g5.xlarge' \
+  --query 'InstanceTypeOfferings[].{Type:InstanceType,AZ:Location}' --output table
+```
+
+表示されなかった型は次の定義から外します。本章ではこのファイルの中身を次の内容にします。
 
 ```bash
 cat > accelerator-pools.auto.tfvars <<'EOF'
@@ -111,17 +120,22 @@ EOF
 
 書き込めたら apply します。
 
-`infra/eks` ディレクトリで apply します。
+`infra/eks` ディレクトリで apply します。この apply は NVIDIA GPU Operator の初導入を含むので 5 分前後かかります。終わったら NodePool と Operator の Pod を見て、次に進める状態かを確かめます。
 
 ```bash
+cd "$(git rev-parse --show-toplevel)"/infra/eks
 terraform apply
+k get nodepool gpu-ddp
+k get pods -n gpu-operator
 ```
+
+`gpu-operator` の Pod がまだ `ContainerCreating` でも、NodePool が出来ていれば手順 2 に進めます。device plugin の DaemonSet は GPU ノードが起動してから載ります。
 
 ## 2. TrainJob で 2 ノード DDP を投入する
 
-Kubeflow Trainer v2 の TrainJob は、Pod への `nodeSelector` や `tolerations` をトップレベルの専用フィールドとしては持たず（`spec.podSpecOverrides` で上書きする口はありますが）、Pod スペックの土台は Basic02 で確認した `ClusterTrainingRuntime`(`torch-distributed-eks`)が持ちます。そこに焼き込まれた `nodeSelector: { node-role: <値> }` がどのプールに載せるかを決めます。本構成では上書きに頼らず、Helm の `trainjobTrain.nodeRole` を `gpu-ddp` に切り替えて `torch-distributed-eks` を再レンダリングすることで GPU プールへ載せ替えます。
+Kubeflow Trainer v2 の TrainJob は、Pod への `nodeSelector` や `tolerations` をトップレベルの専用フィールドとしては持たず（`spec.podSpecOverrides` で上書きする口はありますが）、Pod スペックの元になるのは Basic02 で確認した `ClusterTrainingRuntime`(`torch-distributed-eks`)が持ちます。そこに焼き込まれた `nodeSelector: { node-role: <値> }` がどのプールに載せるかを決めます。本構成では上書きに頼らず、Helm の `trainjobTrain.nodeRole` を `gpu-ddp` に切り替えて `torch-distributed-eks` を再レンダリングすることで GPU プールへ載せ替えます。
 
-Basic02 と同じ `ddp.py`(CUDA が見えれば nccl backend を自動選択するコード)を、同じ `ddp-sample` イメージ(CUDA ベース)で動かすので、学習コード・イメージのどちらも変更不要です。変わるのは Helm に渡す値(`nodeRole`、`gpu.enabled`、`gpu.count`)だけです。
+Basic02 と同じ [`ddp.py`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/manifests/ddp-sample/ddp.py)(CUDA が見えれば nccl backend を自動選択するコード)を、同じ `ddp-sample` イメージ(CUDA ベース)で動かすので、学習コード・イメージのどちらも変更不要です。変わるのは Helm に渡す値(`nodeRole`、`gpu.enabled`、`gpu.count`)だけです。
 
 既存の TrainJob が残っていると spec が同一のため apply しても再実行されないので、作り直す前に削除します。イメージは Basic02 で push した `ddp-sample` で、`ECR_URL` の導出も Basic02 と同じです。
 
@@ -148,7 +162,7 @@ helm template exp charts/experiments -n distai \
 
 ## 3. 実行と確認
 
-TrainJob が展開する Pod は JobSet の規則で名付けられるため、Pod 名を決め打ちせずラベルで選びます。
+TrainJob が展開する Pod は JobSet の規則で名付けられるため、Pod 名を固定値で指定せずラベルで選びます。
 
 ```bash
 k get pods -o wide -l jobset.sigs.k8s.io/jobset-name=ddp-trainjob
@@ -169,12 +183,13 @@ gpu-ddp-9clls   g6.2xlarge   spot        us-west-2a   ip-10-0-0-254.us-west-2.co
 gpu-ddp-qhczq   g6.2xlarge   on-demand   us-west-2a   ip-10-0-27-109.us-west-2.compute.internal   True    3m
 ```
 
-この例では 1 台目が spot、2 台目が on-demand になっています。Karpenter は許可した複数タイプ・複数 capacity-type の中から確保可能なものを選ぶため、spot の空きが足りないときは他タイプの spot を試し、それも取れなければ on-demand にフォールバックして台数を満たします。`CAPACITY` 列が 2 台で異なるのは失敗ではなく、単一タイプ・単一 capacity-type に固定していたら 2 台目が `Pending` のままだった状況を、混在確保が救っている状態です。空き状況によっては spot x2 で揃うこともあります。
+この例では 1 台目が spot、2 台目が on-demand になっています。Karpenter は許可した複数タイプ・複数 capacity-type の中から確保可能なものを選ぶため、spot の空きが足りないときは他タイプの spot を試し、それも取れなければ on-demand にフォールバックして台数を満たします。`CAPACITY` 列が 2 台で異なるのは失敗ではなく、単一タイプ・単一 capacity-type に固定していたら 2 台目が `Pending` のままだった状況を、混在させた確保が救っている状態です。空き状況によっては spot x2 で揃うこともあります。
 
 rank 0(completion index 0)のログを追います。
 
 ```bash
 SEL="jobset.sigs.k8s.io/jobset-name=ddp-trainjob,batch.kubernetes.io/job-completion-index=0"
+until k get pods -l "$SEL" --no-headers 2>/dev/null | grep -q .; do sleep 5; done
 k wait --for=condition=ready pod -l "$SEL" --timeout=15m
 k logs -f --tail=-1 -l "$SEL"
 ```
@@ -224,24 +239,37 @@ PASS     gpu-fsx-mount                       12s
 PASS: 11  FAIL: 0  SKIP: 0  TOTAL: 11
 ```
 
-対象の NodePool は cpu 以外の NodePool から自動選択されます（`--gpu-nodepool` で明示指定も可能）。`--gpu-count` には検証したい GPU 枚数を渡します（g6.2xlarge なら 1、g6e.12xlarge なら 4、p4d.24xlarge なら 8）。GPU テストで ICE（InsufficientInstanceCapacity）により起動できない場合は AWS 側のキャパシティ問題であり、インフラの不具合ではありません。
+対象の NodePool は [`resolve_gpu_nodepool`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/tests/lib/resolve.sh) が NVIDIA GPU のプールから自動選択します（`--gpu-nodepool` で明示指定も可能）。スモーク Pod が要求するのは `nvidia.com/gpu` なので、Neuron のような非 NVIDIA のプールは候補になりません。`--gpu-count` には検証したい GPU 枚数を渡します（g6.2xlarge なら 1、g6e.12xlarge なら 4、p4d.24xlarge なら 8）。GPU テストで ICE（InsufficientInstanceCapacity）により起動できない場合は AWS 側のキャパシティ問題であり、インフラの不具合ではありません。
+
+## 5. 後片付け
+
+本章で起動する GPU ノードは、本書で最初に触れる高額なリソースです。確認が済んだら TrainJob を削除して、ノードが回収されることまで見届けてください。
+
+```bash
+k delete trainjob ddp-trainjob
+k get nodeclaims -l karpenter.sh/nodepool=gpu-ddp -w
+```
+
+Pod が消えると NodePool の `consolidationPolicy` に従って Karpenter がノードを回収します。`gpu-ddp` の NodeClaim が無くなれば GPU の課金は止まります (フィルタを外すと CPU プールの NodeClaim も並ぶので、GPU の判定にはプール名で絞ります)。回収は非同期で数分かかるので、消えるまで待ってから次章に進みます。ここで NodeClaim が残り続けるのは、そのノードにまだ Pod が載っているときです (`karpenter.sh/do-not-disrupt` を付けた Pod が動き続けている場合も含みます)。`k get pods` で確認します (`k` の既定 namespace は Basic01 手順 2 の 4 行で `distai` に設定済みです)。
+
+NodePool 自体は残しておいてかまいません。Karpenter は要求があってからノードを起動するので、プールが存在するだけでは課金されません。Basic07 と Basic08 はこの `gpu-ddp` プールをそのまま使います。
 
 # 今の仕組みの限界
 
 ここまでの `accelerator_pools`（Terraform の map 変数を専用 tfvars ファイルで管理する方式）は、一人ないし信頼できる少人数が同じ Terraform state を触る前提では十分に機能します。一方で、複数チームがひとつのクラスタを共有するマルチテナント運用に持ち込もうとすると、次の限界が見えてきます。
 
-::::details マルチテナントで tfvars 方式が破綻する理由
-- **ファイル単位の分離ができない**: `accelerator_pools` は単一の map 変数なので、チーム A とチーム B が別ファイルに `accelerator_pools = {...}` を書くと、本章冒頭で見たのと同じ重複代入エラーになります。結局ひとつのファイルを全員で編集することになり、プルリクエストが恒常的にコンフリクトします。
+::::details マルチテナントで tfvars 方式では足りなくなる理由
+- **ファイル単位の分離ができない**: `accelerator_pools` は単一の map 変数なので、チーム A とチーム B が別ファイルに `accelerator_pools = {...}` を書くと、ファイル名の辞書順で後になるほうが黙って勝ち、もう一方のプール定義は消えます。エラーにならないので気づけません。結局ひとつのファイルを全員で編集することになり、プルリクエストが恒常的にコンフリクトします。
 - **RBAC で権限を絞れない**: Terraform state と AWS の認証情報を持つ人は、他チームのプール定義も含めて何でも書き換えられます。「チーム A は自分のプールだけ作れる」「Capacity Block の ID はプラットフォーム管理者が許可したものだけ使える」といった、Kubernetes の RBAC 相当の権限分離を tfvars では表現できません。
 - **ノードの分離境界を宣言できない**: あるチームのプールで立てたノードに、他チームの Pod が載らないようにする taint／label の対応関係を、テナント自身が勝手に書き換えられないよう固定する仕組みがありません。tfvars は「誰が書いたか」を区別しないため、境界フィールド（テナント taint や `capacity-type: reserved` のピン留め）を守れません。
 - **セルフサービスにならない**: 新しいプールが欲しいたびにプラットフォームチームへ tfvars の編集を依頼する運用になり、Kubernetes のマニフェストを `kubectl apply` する感覚での自助にはなりません。
 ::::
 
-これらは Terraform の使い方の問題ではなく、「アクセラレータプールの確保」をマルチテナントのセルフサービスとして扱うには、Namespace 単位で分離され RBAC で保護される Kubernetes ネイティブな API（CRD）が要る、という構造的な要請です。本章の tfvars 方式は、まずは単一チームで確実に動かすための土台と位置づけてください。今後改善を予定しています。
+これらは Terraform の使い方の問題ではなく、「アクセラレータプールの確保」をマルチテナントのセルフサービスとして扱うには、Namespace 単位で分離され RBAC で保護される Kubernetes ネイティブな API（CRD）が要る、という構造的な要請です。本章の tfvars 方式は、まずは単一チームで確実に動かすための出発点と考えてください。今後改善を予定しています。
 
 # まとめ
 
-`accelerator_pools` に 1 エントリ書くだけで、ヘテロジニアスな GPU DDP 環境が立ち上がりました。tfvars 方式は単一チームの検証には十分ですが、マルチテナント運用では RBAC やファイル分離の限界があり、そこは Kubernetes ネイティブな CRD で解く領域だと整理しました。
+`accelerator_pools` に 1 エントリ書くだけで、GPU の世代が混在した DDP 環境が立ち上がりました。tfvars 方式は単一チームの検証には十分ですが、マルチテナント運用では RBAC やファイル分離の限界があり、そこは Kubernetes ネイティブな CRD で解く領域だと整理しました。
 
 # 参考資料
 
@@ -249,4 +277,4 @@ PASS: 11  FAIL: 0  SKIP: 0  TOTAL: 11
 - [Amazon EC2 スポットインスタンス](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-spot-instances.html)
 - [Kubeflow Trainer](https://www.kubeflow.org/docs/components/trainer/)
 - [対象モジュール infra/eks](https://github.com/littlemex/distributed-ai/tree/main/infra/eks)
-- [実験ワークロード chart（charts/experiments）](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/charts/experiments)
+- [実験ワークロードのチャート（charts/experiments）](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/charts/experiments)

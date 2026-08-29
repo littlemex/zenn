@@ -8,14 +8,14 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 本章では、Basic07 で GPU 向けに vLLM 推論サーバーを立ち上げましたが、この章では vLLM と vLLM Neuron Plugin というものを使って AWS Trainium チップの上で LLM 推論を動かします。大きな違いは 2 点で、1 つはランタイム、もう 1 つはハードウェアの確保方法です。ランタイムは、Neuron が CUDA ではなく Neuron ランタイムで動くため、vLLM 本体に Neuron 対応を足す [vLLM Neuron plugin](https://github.com/aws-neuron/upstreaming-to-vllm) を同梱した Deep Learning Container（DLC）を使います。モデルはマルチモーダル（画像とテキスト）の `Qwen/Qwen3-VL-4B-Instruct` を使います。
 
 :::message
-本章は Capacity Block を使います。trn2.3xlarge はメルボルンリージョンなどで spot を使うこともできます。Basic05 の手順で確保した trn2 の Capacity Block ノードが前提なのでクラスターと合わせて trn2 対応のリージョンでクラスター作成から準備してください。今回はマルチノードや EFA は使いません。
+本章は Basic05 の手順で確保した trn2 の Capacity Block ノードを前提にします。クラスタと Capacity Block は同じリージョンに無いといけないので、これまでの章と違うリージョンで trn2 を確保する場合は、Basic01 に戻ってそのリージョンにクラスタを作るところからやり直すことになります。作業量が大きいので、リージョンは Basic01 の時点で決めておくのが楽です。なお trn2.3xlarge は一部のリージョンで Spot も選べますが、本章では扱いません。今回はマルチノードや EFA も使いません。
 :::
 
 # 解説
 
 ## 全体構成
 
-本章は、Capacity Block で確保した Trainium ノード 1 台に、vLLM Neuron plugin の推論サーバーの Pod を載せる構成です。
+本章は、Capacity Block で確保した Trainium ノード 1 台に、vLLM Neuron plugin の推論サーバーの Pod を載せる構成です。Pod をそこに載せているのは `aws.amazon.com/neuron` というデバイス要求で、Capacity Block のノードそのものを指定しているわけではありません。同じクラスタに on-demand や Spot の Neuron プールも置いている場合は、`--set neuronVllmPlugin.nodeRole=<プール名>` でどのプールに載せるかを明示してください。
 
 ![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 
@@ -23,15 +23,15 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 
 ## これは何をするものか
 
-https://zenn.dev/tosshi/articles/976e375fd47726
+[AWS Neuron と Trainium の入門](https://zenn.dev/tosshi/articles/976e375fd47726)
 
-https://zenn.dev/tosshi/articles/545d60be7314cb
+[AWS Neuron の開発フロー](https://zenn.dev/tosshi/articles/545d60be7314cb)
 
 詳細は割愛しますが AWS Neuron や Trainium については上記の記事などを確認してください。
 
-https://zenn.dev/tosshi/articles/be22d1ace136a5
+[vLLM Neuron plugin の解説](https://zenn.dev/tosshi/articles/be22d1ace136a5)
 
-vLLM Neuron plugin については上記の記事にまとめてあります。この plugin を同梱した [AWS 公式 DLC][`public.ecr.aws/neuron/pytorch-inference-vllm-neuronx`] を Kubernetes の Deployment として trn2 ノードに載せ、Qwen3-VL モデルをサービングします。
+vLLM Neuron plugin については上記の記事にまとめてあります。この plugin を同梱した AWS 公式 DLC ([`public.ecr.aws/neuron/pytorch-inference-vllm-neuronx`](https://gallery.ecr.aws/neuron/pytorch-inference-vllm-neuronx)) を Kubernetes の Deployment として trn2 ノードに載せ、Qwen3-VL モデルをサービングします。
 
 GPU 版（Basic07）との対応関係は次のとおりです。
 
@@ -49,11 +49,11 @@ GPU 版（Basic07）との対応関係は次のとおりです。
 
 ## 1. 前提を確認する
 
-- Basic05 の手順で trn2.3xlarge の Capacity Block をメルボルンリージョンで確保ずみ
+- Basic05 の手順で trn2.3xlarge の Capacity Block を確保済み (本章の実機例はメルボルン `ap-southeast-4` ですが、trn2 が使えるリージョンならどこでもかまいません)
 - Basic05 の手順で `terraform apply` で NodePool 作成済み
-- `k` と `KUBECONFIG` は Basic01 step 2 の 4 行で設定済み
+- `k` と `KUBECONFIG` は Basic01 手順 2 の 4 行で設定済み
 
-trn2 ノードと Neuron リソースを確認します。
+trn2 の NodePool と、すでにノードが起動している場合の Neuron リソースを確認します。Karpenter は要求があってからノードを起動するので、手順 3 の Deployment を投入する前は、下のようにインスタンスタイプで絞ったノード一覧が空になるのが正常です (絞り込みを外すと system と monitoring の常駐ノードが並びます)。空だった場合は `k get nodepool` で NodePool の存在だけを確かめて手順 3 に進んでください。
 
 ```bash
 k get nodes -l node.kubernetes.io/instance-type=trn2.3xlarge \
@@ -67,10 +67,10 @@ NAME                                             DEVICE   CORE
 ip-10-0-21-164.ap-southeast-4.compute.internal   1        4
 ```
 
-`trn2.3xlarge` は Trainium2 デバイスを 1 個持ち、device plugin はそれを「デバイス 1 個」（`aws.amazon.com/neuron: 1`）かつ「NeuronCore 4 個」（`aws.amazon.com/neuroncore: 4`）として同時に advertise します。この 2 つの単位の違いが、手順 3 のチャート投入時に効いてきます。
+`trn2.3xlarge` は Trainium2 デバイスを 1 個持ち、[device plugin](https://github.com/aws-neuron/neuron-helm-charts) はそれを「デバイス 1 個」（`aws.amazon.com/neuron: 1`）かつ「NeuronCore 4 個」（`aws.amazon.com/neuroncore: 4`）として同時に公開します。この 2 つの単位の違いが、手順 3 のチャート投入時に有効に働きます。
 
 :::message
-`CORE` が `4` になるのは、このノードが論理 NeuronCore 設定 LNC=2（環境変数 `NEURON_LOGICAL_NC_CONFIG=2` 相当）で動作しているためです。もし環境によって `CORE` が `8`（LNC=1）と表示された場合は、後述の `--tensor-parallel-size` を advertise されたコア数（この例なら 8）に合わせてください。
+`CORE` が `4` になるのは、このノードが論理 NeuronCore 設定 LNC=2（環境変数 `NEURON_LOGICAL_NC_CONFIG=2` 相当）で動作しているためです。もし環境によって `CORE` が `8`（LNC=1）と表示された場合は、テンソル並列数を ノードが公開しているコア数（この例なら 8）に合わせます。ノードが 1 台も無い状態では `CORE` を確認できないので、その場合は既定の 4 のまま手順 3 に進み、ノードが起動したところでこのコマンドを実行して `CORE` を見ます。`8` だった場合は Deployment を消して `tpSize=8` で入れ直します。チャートの既定は 4 なので、手順 3 のコマンドに `--set neuronVllmPlugin.tpSize=8` を足してください（この値がコンテナの `--tensor-parallel-size` になります）。
 :::
 
 ## 2. 作業用 namespace を用意する
@@ -105,20 +105,25 @@ trn2 ノードは Trainium デバイスが 1 個しかないため、Deployment 
 
 ### 初回コンパイルとキャッシュ（VLLM_CACHE_ROOT）
 
-前述のとおり Neuron は初回起動時にモデルを NEFF へコンパイルします。`VLLM_CACHE_ROOT` にコンパイル成果物の置き場を指定すると、次回以降はキャッシュから読み込まれ、コンパイルを飛ばして起動します。ここで注意したいのは、`VLLM_CACHE_ROOT` がキャッシュするのは NEFF 成果物であって、HuggingFace から取得するモデル本体（数 GB）ではない点です。本章ではどちらも Pod 内の一時ボリューム（`emptyDir`）に置くため、Pod を作り直すと「モデルの再ダウンロード」と「NEFF の再コンパイル」の両方が発生します。Recreate 戦略のもとでは、Deployment を更新するたびにこの両方が走ります。永続ストレージにキャッシュを置けば、Pod やノードを跨いで NEFF を再利用できます。
+前述のとおり Neuron は初回起動時にモデルを NEFF へコンパイルします。`VLLM_CACHE_ROOT` にコンパイル成果物の置き場を指定すると、次回以降はキャッシュから読み込まれ、コンパイルを飛ばして起動します。ここで注意したいのは、`VLLM_CACHE_ROOT` がキャッシュするのは NEFF 成果物であって、HuggingFace から取得するモデル本体（数 GB）ではない点です。本章のチャートが `emptyDir` に載せているのは `VLLM_CACHE_ROOT`、つまり NEFF の側だけです。モデル本体のダウンロード先（HuggingFace のキャッシュ）は指定していないので、コンテナの書き込みレイヤに落ちます。どちらも Pod と一緒に消えるため、Pod を作り直すと「モデルの再ダウンロード」と「NEFF の再コンパイル」の両方が発生します。Recreate 戦略のもとでは、Deployment を更新するたびにこの両方が走ります。永続ストレージにキャッシュを置けば、Pod やノードを跨いで NEFF を再利用できます。
 
 ### 環境変数と権限、初回のデプロイ期限
 
 - `securityContext.capabilities.add: ["IPC_LOCK"]`: Neuron ランタイムが要求します。
 - `progressDeadlineSeconds: 2400`: 初回は数 GB の DLC の pull、モデルのダウンロード、NEFF コンパイルが順に走り、Deployment 既定の進捗期限 600 秒を超えます。これを延ばしておかないと、後述の `rollout status` が待機途中で `ProgressDeadlineExceeded` により失敗します。
 
-以上の設定はチャート（`charts/experiments` の `values.yaml`、`neuronVllmPlugin`）に定義されています。有効化してレンダリングし、適用します。`model` などを変えたい場合は `--set neuronVllmPlugin.model=...` で上書きできます。
+リソース要求も確認しておきます。このチャートは CPU を 8、メモリを request 24Gi / limit 96Gi で要求し、`/dev/shm` に 8Gi の tmpfs を割り当てます。Basic07 と同じく `/dev/shm` の使用量はコンテナのメモリ制限に計上されるので、Pod が `Pending` のときは Neuron デバイスの数だけでなく CPU とメモリの空きを、`OOMKilled` のときは `/dev/shm` を含む実使用を見てください。値は `--set neuronVllmPlugin.cpu=...` などで変えられます。
+
+以上の設定はチャート（`charts/experiments` の [`values.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/values.yaml)、`neuronVllmPlugin`）に定義されています。有効化してレンダリングし、適用します。`model` などを変えたい場合は `--set neuronVllmPlugin.model=...` で上書きできます。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
 helm dependency build charts/experiments
+POOL=<Basic05 で作った trn2 プール名>
+k get nodepool "$POOL"
 helm template exp charts/experiments -n "$NAMESPACE" \
     --set neuronVllmPlugin.enabled=true \
+    --set neuronVllmPlugin.nodeRole="$POOL" \
     | k apply -f -
 ```
 
@@ -147,7 +152,7 @@ INFO ... Application startup complete.
 
 Pod が `1/1 Running` になれば準備完了です。
 
-## 5. OpenAI 互換 API を叩く
+## 5. OpenAI 互換 API を呼び出す
 
 port-forward してモデル一覧と推論を確認します。
 
@@ -173,7 +178,7 @@ curl -s localhost:8000/v1/models | python3 -m json.tool
 }
 ```
 
-まずテキストのみの chat completion を叩きます。
+まずテキストのみの chat completion を呼び出します。
 
 ```bash
 curl -s localhost:8000/v1/chat/completions \
@@ -237,11 +242,17 @@ curl -s localhost:8000/v1/chat/completions \
 
 ## 6. 後片付け
 
-推論サーバーを削除します。Capacity Block for ML の場合、インスタンスは期限で自動的に削除されます。
+推論サーバーを削除します。Capacity Block for ML の場合、インスタンスは期限で自動的に削除されます。手順 5 の port-forward はバックグラウンドに残るので、`jobs` で確認して `kill %<n>` で止めます。残したままにすると、次に 8000 番を使うときに `address already in use` になります。
 
 ```bash
-k delete deploy/neuron-vllm svc/neuron-vllm -n "$NAMESPACE"
+cd "$(git rev-parse --show-toplevel)"/infra/eks
+helm template exp charts/experiments -n "$NAMESPACE" \
+    --set neuronVllmPlugin.enabled=true \
+    --set neuronVllmPlugin.nodeRole="$POOL" \
+    | k delete -f -
 ```
+
+Basic07 と同じく、投入に使ったのと同じ値でレンダリングして `k delete` に流します。こうするとチャートが出した分だけを確実に消せます。
 
 # まとめ
 

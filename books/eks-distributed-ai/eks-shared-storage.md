@@ -5,7 +5,7 @@ free: true
 
 GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0)
 
-本章では、Basic01 から Basic04 で構築した Amazon VPC・Amazon EKS コントロールプレーン・アクセラレータノードの土台の上に、Karpenter がノードを入れ替えても失われないデータ層として Amazon FSx for Lustre を構成します。Amazon FSx for Lustre は単一 AZ の高スループットなスクラッチおよびチェックポイント領域で、Terraform で 1 度作成すれば以降の Karpenter によるノード入れ替えの影響を受けません。
+本章では、Basic01 から Basic04 で構築した Amazon VPC・Amazon EKS コントロールプレーン・アクセラレータノードを前提に、Karpenter がノードを入れ替えても失われないデータ層として Amazon FSx for Lustre を構成します。Amazon FSx for Lustre は単一 AZ の高スループットなスクラッチおよびチェックポイント領域で、Terraform で 1 度作成すれば以降の Karpenter によるノード入れ替えの影響を受けません。
 
 :::message
 共有ストレージのうち Amazon FSx for OpenZFS と、静的 PersistentVolume・PersistentVolumeClaim の基本的な仕組みは Basic02 で解説済みです。本章ではそれらの再説明は行わず、Amazon FSx for Lustre 固有の特徴と制約に絞って扱います。Amazon EFS については本章の末尾で選択肢として簡単に触れるにとどめ、詳細は Neuron を扱う章に譲ります。
@@ -39,7 +39,7 @@ Amazon FSx for Lustre の静的 PV と PVC がどう結びつくかを図で整�
 
 ![Amazon FSx for Lustre の静的 PV と PVC の関係](/images/books/eks-distributed-ai/storage-pv-pvc.png)
 
-PV は Terraform が管理し、基盤が存在する限り残ります。PVC は Pod がボリュームを掴むための参照で、ワークショップ手順の中で読者が 1 度だけ作成します。PVC の要求容量が PV の容量に収まりアクセスモードを満たしたうえで、PVC の `volumeName` が PV 名を指していると `Bound` になります。ここで押さえるべき Amazon FSx for Lustre 固有の点は次の 2 つです。
+PV は Terraform が管理し、基盤が存在する限り残ります。PVC は Pod がボリュームを使うための参照で、ワークショップ手順の中で読者が 1 度だけ作成します。PVC の要求容量が PV の容量に収まりアクセスモードを満たしたうえで、PVC の `volumeName` が PV 名を指していると `Bound` になります。ここで押さえるべき Amazon FSx for Lustre 固有の点は次の 2 つです。
 
 1 つ目は、PV の `volumeAttributes` のキーが小文字でなければ CSI ドライバに読まれないことです。`aws-fsx-csi-driver` は `dnsname` と `mountname` という小文字キーしか認識しません。
 
@@ -51,7 +51,7 @@ volumeAttributes = {
 }
 ```
 
-キャメルケースの `dnsName` と書くとドライバに黙って無視され、`NodeStageVolume` が「dnsname is not provided」で失敗し、Pod は `ContainerCreating` のまま止まります。`volumeHandle` はあくまで Kubernetes 側の識別子であり、マウント時に AWS API を呼んで DNS 名を解決するわけではないため、`dnsname` と `mountname` を PV に自分で埋め込む必要があります。
+キャメルケースの `dnsName` と書くとドライバがエラーを出さずに無視し、`NodeStageVolume` が「dnsname is not provided」で失敗し、Pod は `ContainerCreating` のまま止まります。`volumeHandle` はあくまで Kubernetes 側の識別子であり、マウント時に AWS API を呼んで DNS 名を解決するわけではないため、`dnsname` と `mountname` を PV に自分で埋め込む必要があります。
 
 2 つ目は、PV の `mountOptions` に `flock` を指定していることです。これは `aws-fsx-csi-driver` の静的プロビジョニングのサンプルが採用している設定で、Lustre 上でのファイルロックを有効にします。
 
@@ -65,7 +65,7 @@ mountOptions                  = ["flock"]
 
 ## EFA でさらに高いスループットを得る
 
-Amazon FSx for Lustre は Elastic Fabric Adapter（EFA）を有効にすると、通常の TCP マウントより大幅に高いクライアント単体スループットを得られます。AWS 公式の性能ガイドが示す 1 クライアントあたりの最大スループットは次のとおりです。
+Amazon FSx for Lustre は Elastic Fabric Adapter（EFA）を有効にすると、通常の TCP マウントより大幅に高いクライアント単体スループットを得られます。[AWS 公式の性能ガイド](https://docs.aws.amazon.com/fsx/latest/LustreGuide/performance.html#throughput-clients)が示す 1 クライアントあたりの最大スループットは次のとおりです。
 
 | ファイルシステム | クライアントのネットワークインターフェース | 最大スループット |
 | --- | --- | --- |
@@ -74,7 +74,7 @@ Amazon FSx for Lustre は Elastic Fabric Adapter（EFA）を有効にすると�
 | EFA 有効 | EFA | 700 Gbps |
 | EFA 有効 | EFA + GPUDirect Storage | 1200 Gbps |
 
-EFA は OS をバイパスし SRD プロトコルで RDMA 通信を行うため、CPU 負荷を下げつつスループットを上げ、テールレイテンシを縮めます。大規模モデルのチェックポイント読み込みのように、ファイルシステムのスループットがそのままジョブのコールドスタート時間に効く場面で価値が大きく、AWS は 10 GBps を超えるスループット容量を要する場合に EFA を推奨しています。ここで単位に注意が必要で、この 10 GBps はバイト毎秒で、ビット毎秒に直すと 80 Gbps にあたります。上の表の 100 Gbps などはビット毎秒なので、両者を混同しないでください。
+EFA は OS をバイパスし [SRD](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/efa-working-with.html) プロトコルで RDMA 通信を行うため、CPU 負荷を下げつつスループットを上げ、テールレイテンシを縮めます。大規模モデルのチェックポイント読み込みのように、ファイルシステムのスループットがそのままジョブのコールドスタート時間を左右する場面で価値が大きく、AWS は [10 GBps を超えるスループット容量](https://docs.aws.amazon.com/fsx/latest/LustreGuide/performance.html#throughput-clients)を要する場合に EFA を推奨しています。ここで単位に注意が必要で、この 10 GBps はバイト毎秒で、ビット毎秒に直すと 80 Gbps にあたります。上の表の 100 Gbps などはビット毎秒なので、両者を混同しないでください。
 
 表の 2 行目が示すとおり、ファイルシステムを EFA 有効にしても、クライアント側が EFA 対応でなければスループットは 100 Gbps に留まります。EFA の効果を得るにはファイルシステムとクライアントの両方の準備が要ります。なお EFA 有効時もメタデータサーバとの通信は TCP を使い、実データが EFA ネットワークを流れます。
 
@@ -84,10 +84,10 @@ EFA は OS をバイパスし SRD プロトコルで RDMA 通信を行うため�
 - **作成時のみ設定可能** — `EfaEnabled` はファイルシステム作成時にしか指定できず、後から有効化できません。既存ファイルシステムに有効化するには作り直しが必要です。
 - **メタデータと容量の下限** — EFA 有効時はメタデータを USER_PROVISIONED モードで最低 6000 IOPS、ストレージ容量を最低 4800 GiB でプロビジョニングする必要があります。
 - **単一 AZ** — EFA デバイスは単一 AZ 内でのみ動作します。Amazon FSx for Lustre はもともと単一 AZ ですが、EFA を使う場合は、実際にマウントするアクセラレータプールの AZ もファイルシステムと同じ AZ に揃えることが必須になります。EFA を使わない場合のクロス AZ マウントは動作こそしますが、EFA データパスは AZ を跨げません。
-- **EFA 対応インスタンスとクライアント側設定** — クライアント側は Nitro v4 世代以降の EFA 対応インスタンスであることに加え、EFA ドライバ・Lustre クライアント・LNET の EFA 設定をノード起動時に適用しておく必要があります。
-- **セキュリティグループ** — EFA の SRD トラフィックは TCP のポート単位ルールでは表現できないため、EFA 有効ファイルシステムのセキュリティグループには、そのセキュリティグループ自身との間で全トラフィックを許可する自己参照ルールが別途必要になります。これは Lustre の 988・1018-1023 ポートのルールとは別の要件です。この自己参照ルールが効くのは、ファイルシステムとクライアントの EFA インターフェースが同じセキュリティグループに所属している場合なので、クライアント側を整備する際には、ノードの EFA インターフェースをこのセキュリティグループに参加させる構成もあわせて必要になります。
+- **EFA 対応インスタンスとクライアント側設定** — クライアント側は [Nitro v4 世代以降の EFA 対応インスタンス](https://docs.aws.amazon.com/fsx/latest/LustreGuide/configure-efa-clients.html)であることに加え、EFA ドライバ・Lustre クライアント・LNET の EFA 設定をノード起動時に適用しておく必要があります。AWS のドキュメントは trn2 系を対象外として明記しているので、Basic09 の Neuron ノードからこの EFA 経路は使えません。
+- **セキュリティグループ** — EFA の SRD トラフィックは TCP のポート単位ルールでは表現できないため、EFA 有効ファイルシステムのセキュリティグループには、そのセキュリティグループ自身との間で全トラフィックを許可する自己参照ルールが別途必要になります。これは Lustre の 988・1018-1023 ポートのルールとは別の要件です。この自己参照ルールは EFA 有効ファイルシステム側の要件として必ず要りますが、これだけでノードとファイルシステムの間の SRD が通るのは、クライアントの EFA インターフェースも同じセキュリティグループに所属している場合です。別のセキュリティグループに置く構成なら、両者の間で全トラフィックを許可するルールが別途必要になります。
 
-この実装では、ファイルシステム側の EFA 有効化を `terraform.tfvars` の `fsx_efa_enabled`（既定 `false`）で切り替えられるようにしてあります。`true` にすると `EfaEnabled` の付与、USER_PROVISIONED メタデータ 6000 IOPS、EFA 用の自己参照セキュリティグループルールが自動で構成され、容量と IOPS の下限は `terraform plan` の段階で検証されます。
+この実装では、ファイルシステム側の EFA 有効化を `terraform.tfvars` の [`fsx_efa_enabled`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/variables.tf)（既定 `false`）で切り替えられるようにしてあります。`true` にすると `EfaEnabled` の付与、USER_PROVISIONED のメタデータ構成 (IOPS は `fsx_metadata_iops` で指定し、EFA を使う場合は 6000 が下限)、EFA 用の自己参照セキュリティグループルールが自動で構成され、容量と IOPS の下限は `terraform plan` の段階で検証されます。
 
 :::message alert
 `fsx_efa_enabled = true` はファイルシステム側の設定だけを行います。ノード側の EFA ドライバ・Lustre クライアント・LNET の EFA 設定と、ノードをファイルシステムのセキュリティグループに参加させる構成は本実装では導入していないため、この設定だけを有効にしてもクライアントは EFA データパスを使えません。ノード側の具体的な導入手順は、後述の参考資料に挙げた AWS の [FSx for Lustre ワークショップ](https://catalog.us-east-1.prod.workshops.aws/workshops/1152c25d-552e-4b9f-8cd0-875910071c54/en-US)の EFA および EKS+EFA のセクションを参照してください。加えて `EfaEnabled` は作成時のみ指定できる設定のため、稼働中のファイルシステムでこの値を切り替えると `terraform apply` はファイルシステムを再作成し、保存済みのデータはすべて失われます。切り替える場合は、事前に必要なデータを Amazon S3 などへ退避してください。今後の課題として EFA 利用有無をより柔軟に扱う仕組みを検討します。
@@ -97,16 +97,16 @@ EFA は OS をバイパスし SRD プロトコルで RDMA 通信を行うため�
 
 GPU 分散学習では NCCL の集合通信も EFA を使います。Amazon FSx for Lustre を EFA 有効にすると、ファイルシステムの I/O と NCCL 通信が同じノードの EFA を使うことになるため、両者の関係を理解しておく必要があります。
 
-結論として、両者は同一インスタンスが持つ複数の EFA デバイスのうち別々のデバイスに分離して割り当てられます。AWS の EKS 向け FSx チューニング手順では、P5 系のように 32 枚のネットワークカードを持つインスタンスで、そのうち 8 枚だけを Lustre 用の LNET に割り当て、残りを NCCL の集合通信用に空けています。ただし機種によって既定の割り当ては異なり、P6-B300 では既定で EFA 対応カードすべてを Lustre に割り当てるため、複数ノード学習ではデバイスを明示的に分割する設定が推奨されます。単一ノードでチェックポイントを読み込むだけで NCCL 通信が発生しない場合は、全デバイスを Lustre に使って構いません。なお EFA と IP の通信はインスタンス全体の帯域を共有するため、デバイスを分離しても総帯域の上限は共通である点には留意してください。
+結論として、両者は同一インスタンスが持つ複数の EFA デバイスのうち別々のデバイスに分離して割り当てられます。AWS が配布する [EFA クライアント設定スクリプト](https://docs.aws.amazon.com/fsx/latest/LustreGuide/configure-efa-clients.html#add-efa-interfaces)は、インスタンスタイプごとに Lustre 用の LNET へ割り当てる EFA インターフェース数を決めています。32 枚のネットワークカードを持つ p5.48xlarge では 8 枚で、残りは NCCL の集合通信用に空きます。既定の枚数は機種によって異なり、p6-b300.48xlarge は 16 枚、つまり既定の EFA インターフェースすべてが Lustre 側に回るので、複数ノード学習ではデバイスを明示的に分割する設定が要ります。単一ノードでチェックポイントを読み込むだけで NCCL 通信が発生しない場合は、全デバイスを Lustre に使って構いません。なお EFA と IP の通信はインスタンス全体の帯域を共有するため、デバイスを分離しても総帯域の上限は共通である点には留意してください。
 
 # ワークショップ実施
 
-本章の実機検証は、`terraform.tfvars` の既定値（`fsx_enabled = true` / `openzfs_enabled = true` / `efs_enabled = false` / `fsx_efa_enabled = false`）のまま実施します。以下の実機出力は `us-west-2` で採取した例で、読者が別リージョンで進める場合はリージョン名とファイルシステム ID が変わりますが、手順そのものは同じです。
+本章の実機検証は、`terraform.tfvars` の既定値（`fsx_enabled = true` / `openzfs_enabled = true` / `efs_enabled = false` / `fsx_efa_enabled = false`）のまま実施します。以下の実機出力は `us-east-2` で採取した例で、読者が別リージョンで進める場合はリージョン名とファイルシステム ID が変わりますが、手順そのものは同じです。
 
 ## 1. 前提を確認する
 
 - `terraform apply` 実行ずみ
-- `k` と `KUBECONFIG` は Basic01 step 2 の 4 行で設定済み
+- `k` と `KUBECONFIG` は Basic01 手順 2 の 4 行で設定済み (別のターミナルを開いた場合は設定が残らないので、`k config current-context` が対象クラスタを返すかを確かめ、返らなければ 4 行を実行し直します)
 
 ```bash
 export NAMESPACE=distai
@@ -124,8 +124,16 @@ terraform output shared_storage
 
 ```text
 {
+  "efs" = {
+    "dns_name" = ""
+    "enabled" = false
+    "id" = ""
+    "mount_name" = ""
+    "persistent_volume" = "efs-neuron-workspace"
+    "storage_capacity" = ""
+  }
   "fsx_lustre" = {
-    "dns_name" = "fs-0123456789abcdef1.fsx.us-west-2.amazonaws.com"
+    "dns_name" = "fs-0123456789abcdef1.fsx.us-east-2.amazonaws.com"
     "enabled" = true
     "id" = "fs-0123456789abcdef1"
     "mount_name" = "abcd1234"
@@ -133,24 +141,26 @@ terraform output shared_storage
     "storage_capacity" = "4800"
   }
   "fsx_openzfs" = {
-    "dns_name" = "fs-0123456789abcdef2.fsx.us-west-2.amazonaws.com"
+    "dns_name" = "fs-0123456789abcdef2.fsx.us-east-2.amazonaws.com"
     "enabled" = true
     "id" = "fs-0123456789abcdef2"
+    "mount_name" = ""
     "persistent_volume" = "openzfs-shared"
+    "root_volume_id" = "fsvol-0123456789abcdef3"
     "storage_capacity" = "256"
   }
 }
 ```
 
-`enabled` がその層を使うかどうか、`persistent_volume` が静的 PV の名前です。
+`enabled` がその層を使うかどうか、`persistent_volume` が静的 PV の名前です。3 つの層は無効なものも同じ形で並ぶので、`efs` が `enabled = false` で空の値を持って出てくるのは正常です。`root_volume_id` は OpenZFS だけが持つ値で、テナントごとに子ボリュームを切るときの親を指します。
 
 ## 3. PersistentVolume を確認する
 
 ```bash
-k get pv
+k get pv fsx-training openzfs-shared
 ```
 
-既定で apply した直後の実機出力です。Amazon FSx for Lustre（`fsx-training`）と Amazon FSx for OpenZFS（`openzfs-shared`）の静的 PV が作られており、まだどの PVC も作っていないので `Available` です。
+既定で apply した直後の実機出力です。名前を指定せずに `k get pv` を打つと、Basic08 の監視スタックを入れている場合は Prometheus と Grafana の動的 PV (`pvc-` で始まる `Bound` の行) も並びます。ここで見るのはこの 2 本だけです。Amazon FSx for Lustre（`fsx-training`）と Amazon FSx for OpenZFS（`openzfs-shared`）の静的 PV が作られており、まだどの PVC も作っていないので `Available` です。
 
 ```text
 NAME             CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS      CLAIM   STORAGECLASS   VOLUMEATTRIBUTESCLASS   REASON   AGE
@@ -160,19 +170,19 @@ openzfs-shared   256Gi      RWX            Retain           Available           
 
 いずれも `storageClassName` が空の静的 PV です。アクセスモードが ReadWriteMany なのは、複数ノードの Pod から同時にチェックポイント書き込みやデータ読み出しができるようにするためです。
 
-`STATUS` が `Available` ではなく `Bound` や `Released` になっている場合は、Basic02 で `fsx` バックエンドを試すなどして、この PV を掴んだ PVC が過去にあったことを意味します。その状態では次の手順で作る PVC が `Pending` のままになるため、先に PV を解放しておきます。
+`STATUS` が `Available` ではなく `Bound` や `Released` になっている場合は、Basic02 で `fsx` バックエンドを試すなどして、この PV をバインドした PVC が過去にあったことを意味します。その状態では次の手順で作る PVC が `Pending` のままになるため、先に PV を解放しておきます。
 
 :::message
-ここで注意したいのが、`kubectl get pv` で `STATUS=Available` に見えても、`CLAIM` 欄に別 namespace の PVC 名が残っていると、その PV は「その PVC 専用に予約された」状態で、別 namespace の PVC はバインドできず `Pending` のままになる点です。静的 PV は `Retain` なので、一度どれかの PVC がバインドすると `spec.claimRef` が残り続けるためです。この解放は手順を 1 つでも誤ると PVC を掴んだ Pod のファイナライザやテナントの ValidatingAdmissionPolicy でハマりやすいので、確実に済ませたい場合は次のスクリプトを使えます。
+ここで注意したいのが、`kubectl get pv` で `STATUS=Available` に見えても、`CLAIM` 欄に別 namespace の PVC 名が残っていると、その PV は「その PVC 専用に予約された」状態で、別 namespace の PVC はバインドできず `Pending` のままになる点です。静的 PV は `Retain` なので、一度どれかの PVC がバインドすると `spec.claimRef` が残り続けるためです。この解放は手順を 1 つでも誤ると PVC をバインドした Pod のファイナライザやテナントの ValidatingAdmissionPolicy でハマりやすいので、確実に済ませたい場合は次のスクリプトを使えます。
 
-`--storage` には `fsx` と `openzfs` と `efs` のいずれかを指定します。対象の PV を確実に `Available` へ戻します。
+`--storage` には `fsx` と `openzfs` と `efs` のいずれかを指定します。解放できる状態であれば対象の PV を `Available` へ戻します。ただしその PV を待っている PVC が別にある場合は `Available` を経ずにそちらへ再バインドし、それも成功として終わります (使われている状態に戻っただけなので、意図どおりです)。逆に、PVC を使用している Pod が Deployment・ReplicaSet・StatefulSet・Job のいずれかに管理されている場合は、消しても作り直されて同じ PVC を再びバインドするため、`--force` を付けても停止します。そのコントローラを先に止めてから再実行してください。検出するのはこの 4 種類なので、それ以外のコントローラ (DaemonSet や自作の operator) が使用している場合は止まらず、Pod が再作成されて後続で詰まります。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks/scripts
 ./05-release-pv.sh --storage fsx
 ```
 
-`05-release-pv.sh` は、PVC が既に消えている残骸なら claimRef を外して `Available` に戻し、PVC がまだ生きている場合は誤って壊さないよう `--force` を要求します。`reclaimPolicy` が `Retain` 以外の PV は拒否するため、データを削除してしまう事故も防げます。以下は、このスクリプトが内部で行っている手動手順です。
+[`05-release-pv.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/05-release-pv.sh) は、PVC が既に消えている残骸なら claimRef を外して `Available` に戻し、PVC がまだ生きている場合は誤って壊さないよう `--force` を要求します。`reclaimPolicy` が `Retain` 以外の PV は拒否するため、データを削除してしまう事故も防げます。以下は、このスクリプトが行っていることを手で行う場合の手順です。
 :::
 
 手動で行う場合は、名前を直接書かず、PV から `claimRef` を引いて変数で扱います。
@@ -184,20 +194,22 @@ PVC_NAME=$(k get pv "$PV" -o jsonpath='{.spec.claimRef.name}')
 echo "この PV を掴んでいる PVC: ${PVC_NS}/${PVC_NAME}"
 ```
 
-状態が `Bound` の場合は、掴んでいる PVC を消します。`reclaimPolicy=Retain` なので PV は消えず `Released` になります。
+状態が `Bound` の場合は、使用している PVC を消します。`reclaimPolicy=Retain` なので PV は消えず `Released` になります。
 
 ```bash
 k delete pvc "$PVC_NAME" -n "$PVC_NS"
 ```
 
-同じ namespace で同名の PVC を再作成して使い続ける場合は、`claimRef` の `uid` と `resourceVersion` だけを外します。
+同じ namespace で同名の PVC を再作成して使い続ける場合は、`claimRef` の `uid` と `resourceVersion` だけを外す手もあります。これは手で行うときの選択肢で、`05-release-pv.sh` は常に `claimRef` 全体を外して、どの namespace の PVC でもバインドできる `Available` に戻します。
 
 ```bash
 k patch pv "$PV" --type=json \
   -p '[{"op":"remove","path":"/spec/claimRef/uid"},{"op":"remove","path":"/spec/claimRef/resourceVersion"}]'
 ```
 
-別の namespace の PVC で使いたい場合は、`claimRef` 全体を外して完全な `Available` に戻します。`uid` だけ外しても `claimRef` の namespace と name が残っていると、別 namespace の PVC は弾かれます。
+この形の patch は指定したパスが存在するときだけ成功します。2 回目は `doc is missing path` で失敗しますが、その場合はすでに外れているので気にしなくてよいです。
+
+別の namespace の PVC で使いたい場合は、`claimRef` 全体を外して完全な `Available` に戻します。`uid` だけ外しても `claimRef` の namespace と name が残っていると、別 namespace の PVC は拒否されます。
 
 ```bash
 k patch pv "$PV" --type=json -p '[{"op":"remove","path":"/spec/claimRef"}]'
@@ -226,7 +238,7 @@ for p in json.load(sys.stdin).get('items', []):
 k delete pod -n "$PVC_NS" <上で出た Pod 名> --wait=false
 ```
 
-Pod 自身が `Terminating` のまま消えないこともあります。多くは Job 管理の `batch.kubernetes.io/job-tracking` ファイナライザが残っているケースで、作成元の Job が既に無いと誰も外してくれません。終了済みの残骸 Pod に対してのみ、ファイナライザを手で外します。
+Pod 自身が `Terminating` のまま消えないこともあります。多くは Job 管理の `batch.kubernetes.io/job-tracking` ファイナライザが残っているケースで、作成元の Job が既に無いと自動では外れません。終了済みの残骸 Pod に対してのみ、ファイナライザを手で外します。
 
 ```bash
 k patch pod -n "$PVC_NS" <残骸 Pod 名> -p '{"metadata":{"finalizers":null}}' --type=merge
@@ -242,12 +254,12 @@ k label namespace "$PVC_NS" tenantpools.dev/excluded-
 ::::
 
 :::message
-PersistentVolume と PersistentVolumeClaim の namespace の考え方を整理しておきます。PV はクラスタスコープのリソースで namespace を持ちません。namespace を持つのは PVC のほうで、Pod は自分と同じ namespace の PVC しか参照できません。つまり「PVC と、それをマウントする Pod は必ず同じ namespace に置く」「PV はどの namespace の PVC からでも `volumeName` でバインドできる共通の存在」と理解しておくと混乱しません。本 book は作業用 namespace を `distai` に統一しているので、PVC も Pod も `distai` に作ります。`default` などにうっかり作ると、Basic11 の `04-teardown.sh --namespace distai` が対象にせず消し漏らし、Bound な PV が残って `terraform destroy` を止める原因になります。
+PersistentVolume と PersistentVolumeClaim の namespace の考え方を整理しておきます。PV はクラスタスコープのリソースで namespace を持ちません。namespace を持つのは PVC のほうで、Pod は自分と同じ namespace の PVC しか参照できません。つまり「PVC と、それをマウントする Pod は必ず同じ namespace に置く」「PV はどの namespace の PVC からでも `volumeName` でバインドできる共通の存在」と理解しておくと混乱しません。本書は作業用 namespace を `distai` に統一しているので、PVC も Pod も `distai` に作ります。`default` などにうっかり作ると、Basic11 の `04-teardown.sh --namespace distai` が対象にせず消し漏らし、Bound な PV が残って `terraform destroy` を止める原因になります。
 :::
 
-## 4. Amazon FSx for Lustre に書き込み、ノードを跨いでデータが残ることを確認する
+## 4. Amazon FSx for Lustre に書き込み、Pod を作り直してもデータが残ることを確認する
 
-PV は Terraform で作られていますが、PVC は手動で作ります。静的 PV に名前でバインドするため `volumeName` に PV 名を、`storageClassName` に空文字を指定します。
+PV は Terraform で作られていますが、PVC は手動で作ります。静的 PV に名前でバインドするため `volumeName` に PV 名を、`storageClassName` に空文字を指定します。学習ワークロードが使う共通の PVC は [`manifests/shared-pvc.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/manifests/shared-pvc.yaml) にテンプレートがあり、そちらも同じ書き方です。
 
 ```bash
 k apply -n "$NAMESPACE" -f - <<'EOF'
@@ -266,6 +278,8 @@ EOF
 k get pvc fsx-claim -n "$NAMESPACE"
 ```
 
+`4800Gi` は手順 2 で見た `storage_capacity` の値です。`fsx_storage_capacity_gib` を変えて構築した場合は、その値 (PV の容量) 以下にします。PV より大きい容量を要求すると PVC は `Pending` のままになり、次のテスト Pod も起動しません。
+
 `Bound` になったら、ファイルを書き込むテスト Pod を実行します。
 
 ```bash
@@ -275,28 +289,28 @@ k wait --for=jsonpath='{.status.phase}'=Succeeded pod/fsx-test -n "$NAMESPACE" -
 k logs fsx-test -n "$NAMESPACE"
 ```
 
-初回はイメージの取得とそのノードでの初回マウントに数十秒かかり、Pod はしばらく `ContainerCreating` にとどまります。これは正常な待ち時間なので、上の `k wait` で完了を待ってからログを見ます。Pod のログに `hello-fsx` が出れば、マウントと書き込みが成功しています。続いて Pod を削除し、別名の Pod から同じファイルを読み出します。
+初回はイメージの取得とそのノードでの初回マウントに数十秒かかり、Pod はしばらく `ContainerCreating` にとどまります。これは正常な待ち時間なので、上の `k wait` で完了を待ってからログを見ます。`k wait` が `timed out waiting for the condition` で終わった場合はマウントに失敗しています。`k describe pod fsx-test -n "$NAMESPACE"` の Events を見ると、`FailedMount` や `NodeStageVolume` の行に `dnsname is not provided` (PV の `volumeAttributes` のキーが大文字になっている) や到達不能 (セキュリティグループ) といった原因が出ます。`k describe pvc fsx-claim -n "$NAMESPACE"` と `k describe pv fsx-training` も合わせて見ます。失敗した Pod は同じ名前では作り直せないので、`k delete pod fsx-test -n "$NAMESPACE" --ignore-not-found` を先に実行してからやり直します。Pod のログに `hello-fsx` が出れば、マウントと書き込みが成功しています。続いて Pod を削除し、別名の Pod から同じファイルを読み出します。
 
 ```bash
-k delete pod fsx-test -n "$NAMESPACE"
+k delete pod fsx-test fsx-test2 -n "$NAMESPACE" --ignore-not-found
 k run fsx-test2 -n "$NAMESPACE" --restart=Never --image=busybox \
     --overrides='{"spec":{"containers":[{"name":"fsx-test2","image":"busybox","command":["cat","/mnt/fsx/test.txt"],"volumeMounts":[{"name":"fsx","mountPath":"/mnt/fsx"}]}],"volumes":[{"name":"fsx","persistentVolumeClaim":{"claimName":"fsx-claim"}}]}}'
 k wait --for=jsonpath='{.status.phase}'=Succeeded pod/fsx-test2 -n "$NAMESPACE" --timeout=180s
 k logs fsx-test2 -n "$NAMESPACE"
 ```
 
-別名の Pod でも `hello-fsx` が読み出せます。Pod やノードが入れ替わっても、共有ストレージ上のデータが残り続けることが確認できます。
+別名の Pod でも `hello-fsx` が読み出せます。ここで直接確認しているのは Pod を作り直してもデータが残ることです。共有ストレージはノードの入れ替えにも耐える設計ですが、それを確かめるにはノードごと消して別ノードに載せる必要があるので、この手順には含めていません。
 
 ## 5. 検証用リソースを削除する
 
 検証が終わったら、テスト Pod と PVC を削除しておきます。Amazon FSx for Lustre を無効化する場合は、この削除を先に済ませておかないと、Bound な PV の削除がファイナライザで止まり `terraform apply` や `terraform destroy` が詰まることがあります。
 
 ```bash
-k delete pod fsx-test2 -n "$NAMESPACE" --ignore-not-found
+k delete pod fsx-test fsx-test2 -n "$NAMESPACE" --ignore-not-found
 k delete pvc fsx-claim -n "$NAMESPACE" --ignore-not-found
 ```
 
-Pod を先に、PVC を後に消すこの順序が大事です。逆にすると `k delete pvc` が Pod の残るあいだファイナライザで止まります。namespace 内の PVC をまとめて片付けたい場合は、Basic11 の `04-teardown.sh` に `--delete-pvcs` を付けると、その namespace の PVC を storage の種類によらず一括削除できます。削除が止まったときの原因の切り分けは、手順 3 の details で示した Pod の調べ方と同じです。
+Pod を先に、PVC を後に消すこの順序が大事です。逆にすると `k delete pvc` が Pod の残るあいだファイナライザで止まります。namespace 内の PVC をまとめて片付けたい場合は、Basic11 の [`04-teardown.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/04-teardown.sh) に `--delete-pvcs` を付けると、その namespace の PVC を storage の種類によらず一括削除できます。削除が止まったときの原因の切り分けは、手順 3 の details で示した Pod の調べ方と同じです。
 
 PV 自体は Terraform が管理しているため、この削除では消えません。`reclaimPolicy` が `Retain` なので、Bound だった PVC を削除しても PV は `Released` になります。同じ PV に再びバインドしたい場合の復旧手順は Basic02 で扱ったものと同じです。
 
@@ -305,12 +319,12 @@ Amazon FSx for Lustre は有効な間、プロビジョニングした容量分�
 :::
 
 :::message
-マルチ AZ で ReadWriteMany のキャッシュが必要な場合は、opt-in の Amazon EFS を選べます。`terraform.tfvars` で `efs_enabled = true` にして apply すると、ファイルシステムと private subnet ごとのマウントターゲット、静的 PV が作られ、Karpenter がノードを別 AZ に入れ替えても同じキャッシュを読み続けられます。CSI ドライバ自体は既定で常設されているため、有効化するのはファイルシステム本体だけです。Amazon EFS の詳しい構成と用途は、マルチ AZ での NEFF キャッシュ共有が要点になる Neuron の章で扱います。
+マルチ AZ で ReadWriteMany のキャッシュが必要な場合は、任意で有効にできる Amazon EFS を選べます。`terraform.tfvars` で `efs_enabled = true` にして apply すると、ファイルシステムと private subnet ごとのマウントターゲット、静的 PV が作られ、Karpenter がノードを別 AZ に入れ替えても同じキャッシュを読み続けられます。CSI ドライバ自体は既定で常設されています。有効化で追加されるのは、ファイルシステム本体とマウントターゲット、アクセスポイント、専用のセキュリティグループ、StorageClass、静的 PV です。無効に戻すとこれらも消えるので、Kubernetes 側の StorageClass や PV を参照しているものが無いか先に確かめてください。Amazon EFS の詳しい構成と用途は、マルチ AZ での NEFF キャッシュ共有が要点になる Neuron の章で扱います。
 :::
 
 # まとめ
 
-本章では、Karpenter によるノード入れ替えから独立したデータ層として Amazon FSx for Lustre を構成しました。既存ファイルシステムには静的プロビジョニングを用いる点、`volumeAttributes` のキーが小文字でないと読まれない点、`reclaimPolicy` は `Retain` が正しい点を押さえておけば、以降の章で GPU/Neuron ワークロードがこの共有ストレージを安心して利用できます。さらに高いスループットが必要な場合は EFA 有効化という選択肢があり、この実装では `fsx_efa_enabled` で切り替えられます。EFA 有効時はメタデータ 6000 IOPS・容量 4800 GiB・単一 AZ・ノード側の EFA 設定という制約を伴い、GPU 学習では NCCL 通信との EFA デバイス分離も検討することになります。
+本章では、Karpenter によるノード入れ替えから独立したデータ層として Amazon FSx for Lustre を構成しました。既存ファイルシステムには静的プロビジョニングを用いる点、`volumeAttributes` のキーが小文字でないと読まれない点、`reclaimPolicy` は `Retain` が正しい点を理解しておけば、以降の章で GPU/Neuron ワークロードがこの共有ストレージを安心して利用できます。さらに高いスループットが必要な場合は EFA 有効化という選択肢があり、この実装では `fsx_efa_enabled` で切り替えられます。EFA 有効時は USER_PROVISIONED メタデータ 6000 IOPS 以上・容量 4800 GiB 以上・単一 AZ・ノード側の EFA 設定という制約を伴い、GPU 学習では NCCL 通信との EFA デバイス分離も検討することになります。
 
 # 参考資料
 
