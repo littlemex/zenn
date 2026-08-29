@@ -15,7 +15,7 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 
 ## 全体構成
 
-本章は、Capacity Block で確保した Trainium ノード 1 台に、vLLM Neuron plugin の推論サーバーの Pod を載せる構成です。Pod をそこに載せているのは `aws.amazon.com/neuron` というデバイス要求で、Capacity Block のノードそのものを名指しで指定しているわけではありません。同じクラスタに on-demand や Spot の Neuron プールも置いている場合は、`--set neuronVllmPlugin.nodeRole=<プール名>` でどのプールに載せるかを明示してください。
+本章は、Capacity Block で確保した Trainium ノード 1 台に、vLLM Neuron plugin の推論サーバーの Pod を載せる構成です。Pod をそこに載せているのは `aws.amazon.com/neuron` というデバイス要求で、Capacity Block のノードそのものを指定しているわけではありません。同じクラスタに on-demand や Spot の Neuron プールも置いている場合は、`--set neuronVllmPlugin.nodeRole=<プール名>` でどのプールに載せるかを明示してください。
 
 ![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 
@@ -67,10 +67,10 @@ NAME                                             DEVICE   CORE
 ip-10-0-21-164.ap-southeast-4.compute.internal   1        4
 ```
 
-`trn2.3xlarge` は Trainium2 デバイスを 1 個持ち、device plugin はそれを「デバイス 1 個」（`aws.amazon.com/neuron: 1`）かつ「NeuronCore 4 個」（`aws.amazon.com/neuroncore: 4`）として同時に advertise します。この 2 つの単位の違いが、手順 3 のチャート投入時に効いてきます。
+`trn2.3xlarge` は Trainium2 デバイスを 1 個持ち、device plugin はそれを「デバイス 1 個」（`aws.amazon.com/neuron: 1`）かつ「NeuronCore 4 個」（`aws.amazon.com/neuroncore: 4`）として同時に公開します。この 2 つの単位の違いが、手順 3 のチャート投入時に有効に働きます。
 
 :::message
-`CORE` が `4` になるのは、このノードが論理 NeuronCore 設定 LNC=2（環境変数 `NEURON_LOGICAL_NC_CONFIG=2` 相当）で動作しているためです。もし環境によって `CORE` が `8`（LNC=1）と表示された場合は、テンソル並列数を advertise されたコア数（この例なら 8）に合わせます。チャートの既定は 4 なので、手順 3 のコマンドに `--set neuronVllmPlugin.tpSize=8` を足してください（この値がコンテナの `--tensor-parallel-size` になります）。
+`CORE` が `4` になるのは、このノードが論理 NeuronCore 設定 LNC=2（環境変数 `NEURON_LOGICAL_NC_CONFIG=2` 相当）で動作しているためです。もし環境によって `CORE` が `8`（LNC=1）と表示された場合は、テンソル並列数を ノードが公開しているコア数（この例なら 8）に合わせます。チャートの既定は 4 なので、手順 3 のコマンドに `--set neuronVllmPlugin.tpSize=8` を足してください（この値がコンテナの `--tensor-parallel-size` になります）。
 :::
 
 ## 2. 作業用 namespace を用意する

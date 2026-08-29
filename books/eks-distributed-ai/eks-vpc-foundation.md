@@ -71,7 +71,7 @@ module "vpc" {
 
 なお、外向き通信は NAT だけに依存しているわけではありません。ECR・Amazon EC2・STS・SSM・CloudWatch Logs・EKS Auth は [`vpc-endpoints.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/vpc-endpoints.tf) の Interface endpoint 経由で、Amazon S3 は Gateway endpoint 経由で、いずれも NAT を通らずに到達します。ECR のイメージ pull は、リージョンによってレイヤの実体を S3 から取得するため、この S3 Gateway endpoint も合わせて用意しています。NAT が主に担うのは `nvcr.io` や `quay.io`、`registry.k8s.io` といった ECR 以外のレジストリと、Interface endpoint を持たない IAM です。
 
-**`private_subnet_tags` の `karpenter.sh/discovery`**: このタグが後の章で効いてきます。Karpenter は「ノードを起動してよいサブネット」をこのタグで検出します。ここで**プライベートサブネットにだけ**タグを付け、`public_subnet_tags` には付けていない点が重要です。もし共通の `tags` に含めてしまうと全サブネットに伝搬してパブリックサブネットにも付き、Karpenter がそこにノードを起動してしまいます。この構成はパブリックサブネットにパブリック IP を自動付与しない設定なので、そこに立ったノードは外向きの到達経路を持たず、`nodeadm` によるクラスタ参加に失敗します。
+**`private_subnet_tags` の `karpenter.sh/discovery`**: このタグが後の章で有効に働きます。Karpenter は「ノードを起動してよいサブネット」をこのタグで検出します。ここで**プライベートサブネットにだけ**タグを付け、`public_subnet_tags` には付けていない点が重要です。もし共通の `tags` に含めてしまうと全サブネットに伝搬してパブリックサブネットにも付き、Karpenter がそこにノードを起動してしまいます。この構成はパブリックサブネットにパブリック IP を自動付与しない設定なので、そこに立ったノードは外向きの到達経路を持たず、`nodeadm` によるクラスタ参加に失敗します。
 
 ::::details nodeadm とは
 
@@ -119,7 +119,7 @@ Karpenter で AL2023 AMI を使う場合も、ノードの user data は nodeadm
 
 ## Amazon EKS クラスタと System ノードグループ
 
-Amazon EKS 本体は [`eks.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/eks.tf) で `terraform-aws-modules/eks/aws` モジュールを使って作ります。アドオンと System ノードグループの定義が読みどころです。
+Amazon EKS 本体は [`eks.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/eks.tf) で `terraform-aws-modules/eks/aws` モジュールを使って作ります。アドオンと System ノードグループの定義が注目すべき点です。
 
 ```hcl
 # eks.tf（抜粋）
@@ -167,7 +167,7 @@ module "eks" {
 
 **`before_compute = true` の 2 つのアドオン**: `vpc-cni` と `eks-pod-identity-agent` にこのフラグを付け、ワーカーノードが起動する前にアドオンを導入します。特に Pod Identity Agent は、Pod Identity で AWS 権限を得るコントローラ（Karpenter など）より先に存在していないと、それらが起動時に認証情報を取得できずクラッシュします。そのため順序を保証するためのフラグです。
 
-**System ノードグループの `karpenter.sh/controller` ラベル**: 既定では m5 系インスタンスを 2 台、固定で起動します。このノードグループは Karpenter が管理するのではなく、Amazon EKS Managed Node Group として常時稼働させます。`karpenter.sh/controller: "true"` というラベルを付けているのは、本章の apply で導入される Karpenter コントローラ自身をこのノードに載せるためです。Karpenter コントローラを Karpenter 管理下のノードに載せると、コントローラが自分の載るノードを消してしまうコントローラが自分の載っているノードを消しかねないため、推奨されません。そのため Karpenter 自身を動かすための、Karpenter が管理しないノードとして、Karpenter の管理外のノードグループが必要になります。もう 1 つの `node-role: system` は、後続の章で Karpenter の各プールが付ける `node-role=<プール名>` と同じキーです。ワークロードが「GPU でないノード」という消極的な条件で誤って system ノードに載るのを防ぎ、載せたい層を積極的に名指しできるようにしています。
+**System ノードグループの `karpenter.sh/controller` ラベル**: 既定では m5 系インスタンスを 2 台、固定で起動します。このノードグループは Karpenter が管理するのではなく、Amazon EKS Managed Node Group として常時稼働させます。`karpenter.sh/controller: "true"` というラベルを付けているのは、本章の apply で導入される Karpenter コントローラ自身をこのノードに載せるためです。Karpenter コントローラを Karpenter 管理下のノードに載せると、コントローラが自分の載るノードを消してしまうコントローラが自分の載っているノードを消しかねないため、推奨されません。そのため Karpenter 自身を動かすための、Karpenter が管理しないノードとして、Karpenter の管理外のノードグループが必要になります。もう 1 つの `node-role: system` は、後続の章で Karpenter の各プールが付ける `node-role=<プール名>` と同じキーです。ワークロードが「GPU でないノード」という消極的な条件で誤って system ノードに載るのを防ぎ、載せたい層を積極的に明示的に指定できるようにしています。
 
 ## Pod Identity による認証
 
@@ -236,7 +236,7 @@ cd ~/distributed-ai-v0.2.0
 ./infra/scripts/distai-up.sh
 ```
 
-分けてあるのは、`curl` をシェルに流す形の中で課金リソースを作らせないためです。理由は 3 つあります。取得と課金を別のコマンドにしておけば、何を取得して何に課金したかを後から追えます。パイプの中では stdin をスクリプト本体が使っているので、確認を求めても読者は答えられません。そして apply の前には plan を見せて明示的に確認を取りたいからです。ここで表示されるのは変更の件数と、変更のあるリソース名の先頭 40 件までです (作成だけでなく更新・置換・削除も同じ形で並び、40 件を超えた分は `... and N more` にまとめられます)。属性ごとの差分や置き換えの詳細は表示されないので、そこまで見たい場合は後述の 4 行を実行したうえで `infra/eks` で `terraform plan` を直に実行してください。
+分けてあるのは、`curl` をシェルに流す形の中で課金リソースを作らせないためです。理由は 3 つあります。取得と課金を別のコマンドにしておけば、何を取得して何に課金したかを後から追えます。パイプの中では stdin をスクリプト本体が使っているので、確認を求めても読者は答えられません。そして apply の前には `terraform plan` の内容を表示して明示的に確認を取りたいからです。ここで表示されるのは変更の件数と、変更のあるリソース名の先頭 40 件までです (作成だけでなく更新・置換・削除も同じ形で並び、40 件を超えた分は `... and N more` にまとめられます)。属性ごとの差分や置き換えの詳細は表示されないので、そこまで見たい場合は後述の 4 行を実行したうえで `infra/eks` で `terraform plan` を直に実行してください。
 
 `distai-up.sh` は 5 つのフェーズを順に実行します。前提確認、実行前の確認、state の作成とレジストリへの記録、変数ファイルの生成、そして plan の表示と apply です。実行前の確認では、その前の前提確認で表示されたアカウント・呼び出し元・リージョン・クラスタ名を確認したうえで**クラスタ名の入力**を求めます。y の 1 文字では、上に何が表示されていても押せてしまうからです。クラスタ名の入力は 2 回あります。1 回目がこの実行前の確認で、2 回目は plan を表示したあとの適用確認です。
 
