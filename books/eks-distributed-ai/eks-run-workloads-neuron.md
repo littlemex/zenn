@@ -70,7 +70,7 @@ ip-10-0-21-164.ap-southeast-4.compute.internal   1        4
 `trn2.3xlarge` は Trainium2 デバイスを 1 個持ち、[device plugin](https://github.com/aws-neuron/neuron-helm-charts) はそれを「デバイス 1 個」（`aws.amazon.com/neuron: 1`）かつ「NeuronCore 4 個」（`aws.amazon.com/neuroncore: 4`）として同時に公開します。この 2 つの単位の違いが、手順 3 のチャート投入時に有効に働きます。
 
 :::message
-`CORE` が `4` になるのは、このノードが論理 NeuronCore 設定 LNC=2（環境変数 `NEURON_LOGICAL_NC_CONFIG=2` 相当）で動作しているためです。もし環境によって `CORE` が `8`（LNC=1）と表示された場合は、テンソル並列数を ノードが公開しているコア数（この例なら 8）に合わせます。チャートの既定は 4 なので、手順 3 のコマンドに `--set neuronVllmPlugin.tpSize=8` を足してください（この値がコンテナの `--tensor-parallel-size` になります）。
+`CORE` が `4` になるのは、このノードが論理 NeuronCore 設定 LNC=2（環境変数 `NEURON_LOGICAL_NC_CONFIG=2` 相当）で動作しているためです。もし環境によって `CORE` が `8`（LNC=1）と表示された場合は、テンソル並列数を ノードが公開しているコア数（この例なら 8）に合わせます。ノードが 1 台も無い状態では `CORE` を確認できないので、その場合は既定の 4 のまま手順 3 に進み、ノードが起動したところでこのコマンドを実行して `CORE` を見ます。`8` だった場合は Deployment を消して `tpSize=8` で入れ直します。チャートの既定は 4 なので、手順 3 のコマンドに `--set neuronVllmPlugin.tpSize=8` を足してください（この値がコンテナの `--tensor-parallel-size` になります）。
 :::
 
 ## 2. 作業用 namespace を用意する
@@ -239,7 +239,7 @@ curl -s localhost:8000/v1/chat/completions \
 
 ## 6. 後片付け
 
-推論サーバーを削除します。Capacity Block for ML の場合、インスタンスは期限で自動的に削除されます。
+推論サーバーを削除します。Capacity Block for ML の場合、インスタンスは期限で自動的に削除されます。手順 5 の port-forward はバックグラウンドに残るので、`jobs` で確認して `kill %<n>` で止めます。残したままにすると、次に 8000 番を使うときに `address already in use` になります。
 
 ```bash
 k delete deploy/neuron-vllm svc/neuron-vllm -n "$NAMESPACE"

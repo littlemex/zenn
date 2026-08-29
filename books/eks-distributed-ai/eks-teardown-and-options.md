@@ -87,15 +87,26 @@ POOL=gpu-ddp
 k get nodeclaims -l "karpenter.sh/nodepool=$POOL" -w
 ```
 
+`-w` は watch なので、対象が空になってもコマンドは終わりません。行が消えたのを見たら `Ctrl-C` で抜けます。プロンプトに戻る形で待ちたい場合は次を使います。
+
+```bash
+while k get nodeclaims -l "karpenter.sh/nodepool=$POOL" --no-headers 2>/dev/null | grep -q .; do sleep 15; done
+```
+
 NodePool 削除の直後は、そのプールの NodeClaim が `Terminating` で残り、Karpenter が Amazon EC2 インスタンスの終了をバックグラウンドで進めます。単一ノードなら概ね 9 分前後で消えます。EFA を複数枚持つ大きなノードは ENI の解放に時間がかかり、さらに長くかかることがあります。
 
 ここで確認したいのは、手順 2 で削除したアクセラレータプールの NodeClaim が消えることです。上のコマンドはプール名で絞っているので、observability の章を実施していて `monitoring` NodePool の NodeClaim が残っていても表示されません。それは高価なアクセラレータではなく、次の手順 4 でクラスタごと破棄されるので待つ必要がありません。絞り込んだ一覧が空になったら破棄に進みます。
 
 ## 4. クラスタ全体を破棄する
 
+破棄の前に、作業 namespace に PVC が残っていないかを見ます。残っている場合は `--delete-pvcs` も付けます。付けないと `Bound` の PV がファイナライザで残り、`terraform destroy` がそこで停滞し得ます。
+
 ```bash
-./04-teardown.sh --namespace "$NAMESPACE" --destroy
+k get pvc -n "$NAMESPACE"
+./04-teardown.sh --namespace "$NAMESPACE" --delete-pvcs --destroy
 ```
+
+PVC が 1 つも無ければ `--delete-pvcs` は不要です。逆に、自分で作った動的プロビジョニングの PVC が残っている場合、このフラグはその EBS ボリュームを中身ごと消すので、手順 2 の注意を読んでから付けてください。
 
 `--destroy` を付けると、ワークロードとノードの片付けに続けて `terraform destroy` が走ります。この VPC の中にこの state が管理していないもの (他チームの EFS マウントターゲットやロードバランサ、別の state が作ったセキュリティグループなど) があると、subnet や VPC の削除が拒否されて destroy は終盤で失敗します。スクリプトはこれを事前に点検しないので、失敗したら Terraform のエラーに出るリソース ID を手がかりに、残っているものを自分で確認して片付けてから再実行します。このとき `04-teardown.sh` は、手順 2 で消したアクセラレータプールに加えて、`monitoring` などクラスタに残っている Karpenter の NodePool もすべて先に削除します。これは、NodePool が残っていると Karpenter が Pod を載せるためにノードを作り続け、`terraform destroy` が内部で待つノードのドレイン完了がいつまでも来なくなるためです。すべての NodePool を止めたうえで `terraform destroy` に入り、Karpenter がノードを終了し終えるのを待ってから、Karpenter 本体やアクセラレータ関連のコントローラを破棄します。この順序により、アクセラレータノードが終了されないまま課金だけが残る事態を防ぎます。
 
@@ -118,7 +129,7 @@ aws ec2 describe-volumes --region "$AWS_REGION" --filters "Name=status,Values=av
   --query 'Volumes[].[VolumeId,Size,Tags[?Key==`Name`]|[0].Value]' --output text
 ```
 
-名前に破棄したクラスタ名と `dynamic-pvc` を含むものが該当します。中身は Prometheus の時系列と Grafana の設定なので、残す必要がなければ `aws ec2 delete-volume --volume-id <id>` で消します。
+名前に破棄したクラスタ名と `dynamic-pvc` を含むものが該当します。中身は Prometheus の時系列と Grafana の設定なので、残す必要がなければ `aws ec2 delete-volume --region "$AWS_REGION" --volume-id <id>` で消します。
 
 ここからが意図的に残すものです。1 つ目は state 自身の置き場です。state のバケットとロックテーブルはアカウントとリージョンごとに 1 つで、同じアカウントの他のクラスタも同じものを使うため、クラスタの破棄では消しません。2 つ目はレジストリのパラメータで、これも残ります。同じ名前でもう一度立てるなら、そのまま [`distai-up.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/scripts/distai-up.sh) を実行すれば同じ state の場所を再利用します。3 つ目はローカルの kubeconfig (`~/.kube/distai/<クラスタ名>.<namespace>.yaml`) で、課金には関係しないので放置してかまいません。
 

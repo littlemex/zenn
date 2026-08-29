@@ -69,7 +69,7 @@ module "vpc" {
 
 当初この基盤は `single_nat_gateway = true` で単一 NAT にしていましたが、Capacity Block for ML がどの AZ でも使いうることを考えると、全ての AZ に NAT を置く方が良いと判断しました。単一 NAT だと他 AZ のノードからの外向き通信がすべて AZ をまたいでその NAT に集まり、クロス AZ のデータ転送料金がかかります。AZ ごとに NAT を置けばこの転送料金を避けられ、かつ 1 つの AZ の NAT が落ちても他 AZ の外向き通信が生き残る耐障害性の利点もあります。ただしこれはどちらでも良いと思います。
 
-なお、外向き通信は NAT だけに依存しているわけではありません。ECR・Amazon EC2・STS・SSM・CloudWatch Logs・EKS Auth は [`vpc-endpoints.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/vpc-endpoints.tf) の Interface endpoint 経由で、Amazon S3 は Gateway endpoint 経由で、いずれも NAT を通らずに到達します。ECR のイメージ pull は、リージョンによってレイヤの実体を S3 から取得するため、この S3 Gateway endpoint も合わせて用意しています。NAT が主に担うのは `nvcr.io` や `quay.io`、`registry.k8s.io` といった ECR 以外のレジストリと、Interface endpoint を持たない IAM です。
+なお、外向き通信は NAT だけに依存しているわけではありません。ECR・Amazon EC2・STS・SSM・CloudWatch Logs・EKS Auth は [`vpc-endpoints.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/vpc-endpoints.tf) の Interface endpoint 経由で、Amazon S3 は Gateway endpoint 経由で、いずれも NAT を通らずに到達します。ECR のイメージ pull は、リージョンによってレイヤの実体を S3 から取得するため、この S3 Gateway endpoint も合わせて用意しています。NAT が主に担うのは `nvcr.io` や `quay.io`、`registry.k8s.io` といった ECR 以外のレジストリと、Interface endpoint を持たない IAM です。なお Interface endpoint はサービスごと・AZ ごとに 1 つ作られます。AZ はリージョンの標準 AZ をすべて使うので、us-east-2 (3 AZ) なら 7 サービス × 3 で 21 個、AZ の多いリージョンではさらに増え、それぞれに時間課金とデータ処理課金がかかります。NAT を通す構成より安く済ませるための選択ですが、無料ではありません。
 
 **`private_subnet_tags` の `karpenter.sh/discovery`**: このタグが後の章で有効に働きます。Karpenter は「ノードを起動してよいサブネット」をこのタグで検出します。ここで**プライベートサブネットにだけ**タグを付け、`public_subnet_tags` には付けていない点が重要です。もし共通の `tags` に含めてしまうと全サブネットに伝搬してパブリックサブネットにも付き、Karpenter がそこにノードを起動してしまいます。この構成はパブリックサブネットにパブリック IP を自動付与しない設定なので、そこに立ったノードは外向きの到達経路を持たず、`nodeadm` によるクラスタ参加に失敗します。
 
@@ -229,11 +229,13 @@ export AWS_REGION=us-east-2
 
 名前付きプロファイルを使っている場合は、あわせて `export AWS_PROFILE=<自分のプロファイル名>` も置きます。プロファイル指定なしの `[default]` で認証している場合は不要です。存在しない名前を設定すると、スクリプトが `no usable AWS credentials. Sign in, or set AWS_PROFILE, before running this.` で停止します。AWS CLI 側の詳細メッセージは表示されないので、`aws sts get-caller-identity` を単独で実行して原因を見てください。
 
-コマンド自体は引数なしで実行します (使い方を出す `-h` は受け付けます)。
+コマンド自体は引数なしで実行します (使い方を出す `-h` は受け付けます)。ここで作られるもののうち、共有ストレージ (FSx for Lustre と OpenZFS) はアイドル時の課金が最も大きいので、まず基盤だけ見たい場合は下の 2 行目のように `DISTAI_SHARED_STORAGE=off` を付けます。この変数が効くのは `terraform.tfvars` を初めて生成するときだけで、後から付けても既存のファイルは書き換わりません。
 
 ```bash
 cd ~/distributed-ai-v0.2.0
 ./infra/scripts/distai-up.sh
+
+DISTAI_SHARED_STORAGE=off ./infra/scripts/distai-up.sh
 ```
 
 分けてあるのは、`curl` をシェルに流す形の中で課金リソースを作らせないためです。理由は 3 つあります。取得と課金を別のコマンドにしておけば、何を取得して何に課金したかを後から追えます。パイプの中では stdin をスクリプト本体が使っているので、確認を求めても読者は答えられません。そして apply の前には `terraform plan` の内容を表示して明示的に確認を取りたいからです。ここで表示されるのは変更の件数と、変更のあるリソース名の先頭 40 件までです (作成だけでなく更新・置換・削除も同じ形で並び、40 件を超えた分は `... and N more` にまとめられます)。属性ごとの差分や置き換えの詳細は表示されないので、そこまで見たい場合は後述の 4 行を実行したうえで `infra/eks` で `terraform plan` を直に実行してください。
@@ -246,11 +248,13 @@ cd ~/distributed-ai-v0.2.0
 cat infra/eks/terraform.tfvars
 ```
 
-アクセラレータノードのプールは生成されません。GPU や Capacity Block は利用料金が高いので、必要になった章で [`accelerator-pools.tfvars.example`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/accelerator-pools.tfvars.example) をコピーして明示的に有効化します。一方で監視スタック (`enable_observability`) は既定で有効なので、この apply の時点で監視専用の NodePool にノードが 1 台常駐し、Prometheus と Grafana の EBS も作られます。Basic08 まで監視を見ないのであれば、生成された `infra/eks/terraform.tfvars` に `enable_observability = false` を書いてから apply すると、この 1 台分を後回しにできます。共有ストレージ (FSx for Lustre と OpenZFS) は既定で有効です。学習サンプルが `/shared` をマウントするためですが、アイドル時の課金として最も大きいので、まず基盤だけ見たい場合は `DISTAI_SHARED_STORAGE=off` を付けて実行してください。この環境変数が反映されるのは `terraform.tfvars` を初めて生成するときだけです。すでにファイルがある場合はスクリプトが `exists; leaving it alone` と表示して触らないので、そのときは次に述べる方法でファイルを直接編集します。あとから有効にするときは、生成された `infra/eks/terraform.tfvars` の `fsx_enabled` と `openzfs_enabled` を `true` に直して `distai-up.sh` を再実行します。
+アクセラレータノードのプールは生成されません。GPU や Capacity Block は利用料金が高いので、必要になった章で [`accelerator-pools.tfvars.example`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/accelerator-pools.tfvars.example) をコピーして明示的に有効化します。一方で監視スタック (`enable_observability`) は既定で有効なので、この apply の時点で監視専用の NodePool にノードが 1 台常駐し、Prometheus と Grafana の EBS も作られます。Basic08 まで監視を見ないのであれば、この 1 台分を後回しにできます。ただし変数ファイルの生成と plan は同じ実行の中で連続して行われるので、生成された `terraform.tfvars` を編集する隙はありません。plan の適用確認でクラスタ名以外を入力すると `The plan above was discarded.` で終わるので、そこで `infra/eks/terraform.tfvars` に `enable_observability = false` を書き足し、`distai-up.sh` をもう一度実行します。2 回目は変数ファイルが既にあるのでそのまま使われます。共有ストレージ (FSx for Lustre と OpenZFS) は既定で有効です。学習サンプルが `/shared` をマウントするためですが、アイドル時の課金として最も大きいので、上に書いたとおり最初の実行で `DISTAI_SHARED_STORAGE=off` を付けるかどうかを決めます。この環境変数が反映されるのは `terraform.tfvars` を初めて生成するときだけです。すでにファイルがある場合はスクリプトが `exists; leaving it alone` と表示して触らないので、そのときは次に述べる方法でファイルを直接編集します。あとから有効にするときは、生成された `infra/eks/terraform.tfvars` の `fsx_enabled` と `openzfs_enabled` を `true` に直して `distai-up.sh` を再実行します。
 
 :::message alert
 `terraform apply` は state に記録されたリソースだけを管理し、state に無いリソースが AWS 側に存在するかどうかは確認しません。このため profile を取り違えると、名前に一意制約があるリソース (IAM ロール、KMS エイリアス、CloudWatch ロググループ) は作成時のエラーで失敗し、FSx ファイルシステムのように一意制約が無いものはエラーにならず二重作成されて課金が始まります。より危険なのは state にリソースが記録済みのまま別アカウントに profile が向くケースで、Terraform は「管理下のリソースがすべて消えた」と判断してエラーも出さずに丸ごと作り直します。`distai-up.sh` は実行前にアカウントと呼び出し元 ARN を表示し、生成する tfvars に `expected_account_id` を書き込むので、この事故は plan の段階で止まります。それでも表示されたアカウントが意図どおりかは自分の目で確かめてください。
 :::
+
+ここで中止しても、state のバケットとロックテーブル、レジストリのパラメータは前のフェーズで作成済みなので残ります。クラスタ本体を作らずにやめる場合は、これらを自分で消すか、次に同じ名前で作るときにそのまま再利用してください。
 
 plan が表示されたあと、apply に入る前にもう一度クラスタ名の入力を求められます。apply には 20〜30 分程度かかります。`Cluster <クラスタ名> is applied and registered.` と、次の step で使う 4 行が表示されれば成功です。時間がかかるのはコントロールプレーンの起動と FSx ファイルシステムの作成で、いずれも単独で 10〜15 分かかります。両者は VPC さえできれば並行して作られるので、2 つの合計にはなりません。
 
@@ -267,7 +271,7 @@ source infra/scripts/distai-env.sh
 
 1 行目でチェックアウトに移動しているのは、この後の章が `terraform output` を使うためと、リポジトリの外で実行すると別のリポジトリを参照してしまう可能性があるからです。別の場所に clone した場合はそのディレクトリに読み替えてください。名前付きプロファイル で認証している場合は、`export AWS_PROFILE=my-profile` もこの 4 行の前に置きます。
 
-これが解決するのは、リージョン、アカウント ID、state のバケットとキーとロックテーブルと暗号化キー、クラスタを作ったときのリリースタグと最後に適用したリリースタグ、そして紐づいているデータ層の一覧と既定です。ただしデータ層はプロファイリング基盤を導入したときに初めて紐づくので、Basic01 の時点ではこの項目は空です。バケット名や state のキーを章に書く必要がなくなり、別のマシンで clone し直した場合でも `backend.hcl` と、無ければ `backend.tf` もその場で用意されるので、`terraform output` がそのまま使えます (どちらもリポジトリには含まれないので、この生成が無いと `terraform init` が S3 の state を見ません)。
+これが解決するのは、リージョン、アカウント ID、state のバケットとキーとロックテーブルと暗号化キー、クラスタを作ったときのリリースタグと最後に適用したリリースタグ、そして紐づいているデータ層の一覧と既定です。ただしデータ層はプロファイリング基盤を導入したときに初めて紐づくので、Basic01 の時点ではこの項目は空です。バケット名や state のキーを章に書く必要がなくなり、別のマシンで clone し直した場合でも `backend.hcl` と、`backend.tf` が無ければそれも合わせて用意されます (どちらもリポジトリには含まれないので、この生成が無いと `terraform init` が S3 の state を見ません)。ただしこの 4 行は `terraform init` までは行いません。別のマシンで clone し直した直後は `.terraform` が無いので、`terraform output` は `Backend initialization required` で失敗します。その場合は一度 `terraform -chdir=infra/eks init -reconfigure -backend-config=backend.hcl` を実行してください。`backend.tf` を作るのは `backend.hcl` を生成するときだけなので、`backend.hcl` だけが残っていて `backend.tf` が無い作業ディレクトリでは、`infra/eks/backend.tf.example` を自分で `backend.tf` にコピーします。
 
 この 4 行はレジストリの読み取り、呼び出し元アカウントの確認、クラスタの参照を行うので、`ssm:GetParametersByPath`、`sts:GetCallerIdentity`、`eks:DescribeCluster` の権限が必要です。レジストリが読めないときは、この権限を疑ってください。
 
@@ -304,7 +308,7 @@ k get nodes
 k get nodes -o custom-columns='NAME:.metadata.name,TYPE:.metadata.labels.node\.kubernetes\.io/instance-type,ROLE:.metadata.labels.node-role,CAP:.metadata.labels.karpenter\.sh/capacity-type'
 ```
 
-`k get nodes` で m5 系のノードが 2 台 `Ready` 状態で表示されれば、System ノードグループの起動は成功です。監視スタックを既定のまま有効にしている場合は、これに加えて監視専用 NodePool のノードが 1 台見えるので、合計 3 台になります。
+`k get nodes` で m5 系のノードが 2 台 `Ready` 状態で表示されれば、System ノードグループの起動は成功です。監視スタックを既定のまま有効にしている場合は、これに加えて監視専用 NodePool のノードが 1 台見えるので、合計 3 台になります。この 3 台目は Karpenter が監視 Pod の `Pending` を見てから起動するので、apply 完了の数分後に現れます。2 台しか見えない時間があるのは失敗ではありません。10 分待っても増えない場合は `k get nodeclaims` と `k -n karpenter logs deploy/karpenter --tail=50` を見ます。
 
 :::message alert
 `kubectl` が `Unauthorized`（`error: You must be logged in to the server`）で拒否される場合、原因はほぼ 2 つです。1 つ目は、`terraform apply` を実行したプリンシパルと `kubectl` を実行するプリンシパルが食い違っているケースです。`enable_cluster_creator_admin_permissions = true` はクラスタを作成したプリンシパルにだけ管理者権限を与えるため、`distai-up.sh` を名前付きプロファイル（AWS SSO や assume-role）で実行したのに、`source` するシェルで `AWS_PROFILE` を設定し忘れてプロファイル指定なしの `[default]` で認証していると、両者が別プリンシパルになり拒否されます。`source` は `AWS_PROFILE` をそのまま kubeconfig に書き込むので、`export AWS_PROFILE=<name>` を 4 行の前に置き、`aws sts get-caller-identity` で両者のプリンシパルを確認してください。assume-role の場合はセッション名部分が違っていても問題なく、`assumed-role/<ロール名>` までが一致していれば認証は通ります（アクセスエントリは基底の IAM ロール ARN 単位でマッチするためです）。自分のロールが登録済みかは `aws eks list-access-entries --cluster-name <name>` でも確認できます。2 つ目は、`apply` 直後にアクセスエントリがまだ認証レイヤに伝播していないケースで、この場合は 1〜2 分待って再実行すれば通ります。
@@ -371,6 +375,8 @@ GPU ノードを起動して行う GPU スモークテストは、アクセラ�
 # まとめ
 
 本章では、分散 AI の実験を行うための基盤として Amazon EKS クラスタを構築し、以降のワークショップで使う作業用 namespace `distai` を作成しました。中核として作ったのは Amazon VPC・Amazon EKS コントロールプレーン・System ノードグループの 3 つで、同じ apply で載る Karpenter を Basic03 で掘り下げ、Basic04 以降でアクセラレータプールを積み上げていきます。
+
+ここで一度中断する場合は、この時点で EKS コントロールプレーン・System ノード・NAT Gateway・Interface endpoint・共有ストレージ・監視スタックが動いたままになります。先に進まないなら Basic11 の破棄手順で片付けてください。state を置く S3 バケットとレジストリ (AWS Systems Manager Parameter Store) は破棄後も残る設計です。
 
 # 参考資料
 

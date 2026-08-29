@@ -93,7 +93,16 @@ cd "$(git rev-parse --show-toplevel)"/infra/eks
 cat accelerator-pools.tfvars.example
 ```
 
-本章ではこのファイルの中身を次の内容にします。
+プールに書くインスタンスタイプは、クラスタのリージョンで提供されているものに限ります。提供されていない型を書くと、Karpenter がフォールバックする前に `terraform plan` がその型の照会で失敗します。書く前に確かめておきます。
+
+```bash
+aws ec2 describe-instance-type-offerings --region "$AWS_REGION" \
+  --location-type availability-zone \
+  --filters 'Name=instance-type,Values=g6.2xlarge,g5.2xlarge,g6.xlarge,g5.xlarge' \
+  --query 'InstanceTypeOfferings[].{Type:InstanceType,AZ:Location}' --output table
+```
+
+表示されなかった型は次の定義から外します。本章ではこのファイルの中身を次の内容にします。
 
 ```bash
 cat > accelerator-pools.auto.tfvars <<'EOF'
@@ -111,11 +120,16 @@ EOF
 
 書き込めたら apply します。
 
-`infra/eks` ディレクトリで apply します。
+`infra/eks` ディレクトリで apply します。この apply は NVIDIA GPU Operator の初導入を含むので 5 分前後かかります。終わったら NodePool と Operator の Pod を見て、次に進める状態かを確かめます。
 
 ```bash
+cd "$(git rev-parse --show-toplevel)"/infra/eks
 terraform apply
+k get nodepool gpu-ddp
+k get pods -n gpu-operator
 ```
+
+`gpu-operator` の Pod がまだ `ContainerCreating` でも、NodePool が出来ていれば手順 2 に進めます。device plugin の DaemonSet は GPU ノードが起動してから載ります。
 
 ## 2. TrainJob で 2 ノード DDP を投入する
 
@@ -175,6 +189,7 @@ rank 0(completion index 0)のログを追います。
 
 ```bash
 SEL="jobset.sigs.k8s.io/jobset-name=ddp-trainjob,batch.kubernetes.io/job-completion-index=0"
+until k get pods -l "$SEL" --no-headers 2>/dev/null | grep -q .; do sleep 5; done
 k wait --for=condition=ready pod -l "$SEL" --timeout=15m
 k logs -f --tail=-1 -l "$SEL"
 ```

@@ -394,7 +394,7 @@ alias は調査キャンペーン 1 つに 1 つ付け、条件の違いは `--p
 
 MLflow が app の場合、A に相当する操作はありません。API に app の起動と停止がなく、置いておくこと自体に課金要素がないためです。この場合は何もせずに放置するのが A で、撤去したいときだけ B に進みます。
 
-A の場合は、tracking server の名前を ConfigMap から引いて停止します。
+A の場合は、tracking server の名前を ConfigMap から引いて停止します。ARN に `mlflow-tracking-server` が入っているときだけ有効な操作なので、先に `k get configmap accelprof-config -o jsonpath='{.data.ACCELPROF_TRACKING_URI}'` で種類を確かめてください。
 
 ```bash
 export TRACKING_SERVER_NAME=$(k get configmap accelprof-config \
@@ -433,12 +433,12 @@ done
 変数の指定にも注意が必要です。データ層の apply には、導入時と同じ `trace_regions` と `s3files_trace_region` も渡します。これを省くと変数の既定値が使われ、いま使っている trace バケットが「不要なリソース」と判定されて破棄対象に入ります。実際に省いて plan を作ると、us-east-2 の trace バケットを破棄して別リージョンのバケットを作る計画になりました (`prevent_destroy` があるので apply は中断しますが、そこで手が止まります)。正しく渡した場合の plan は、S3 Files のファイルシステムとアクセスポイントと IAM ロール、そしてデータ層が記録していた MLflow の 5 つを破棄し、バケットには触りません。あわせて in-place の更新が 3 つ出ます。producer と mcp-reader のポリシーから MLflow の statement が落ちるためで、指す先が無くなった権限を残さない挙動です。
 
 :::message alert
-この 2 つの apply は導入スクリプトを通らないので、plan の分類も行われません。クラスタに溜まった profiling と無関係な差分も一緒に適用されます。そのため下では plan をファイルに保存し、内容を読んでからそのファイルを適用する形にしています。想定外の変更が出たら適用せず、`-target` で範囲を絞るか差分の出どころを解消してからやり直してください。
+この 2 つの apply は導入スクリプトを通らないので、plan の分類も行われません。クラスタに溜まった profiling と無関係な差分も一緒に適用されます。そのため下では plan をファイルに保存し、内容を読んでからそのファイルを適用する形にしています。この plan は Basic01 で構築したチェックアウト、つまり `infra/eks/terraform.tfvars` があるディレクトリで作ってください。変数ファイルの無いクローンで作ると、クラスタの設定が既定値に戻った巨大な差分になります。想定外の変更が出たら適用せず、`-target` で範囲を絞るか差分の出どころを解消してからやり直してください。
 :::
 
 ```bash
 export DATA_LAYER_NAME=profiling
-helm uninstall mcp -n mcp
+helm status mcp -n mcp >/dev/null 2>&1 && helm uninstall mcp -n mcp
 for ns in team-a team-b; do
   kubectl -n "$ns" delete serviceaccount mcp-producer --ignore-not-found
 done

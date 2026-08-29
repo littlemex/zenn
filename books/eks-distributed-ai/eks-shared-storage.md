@@ -276,6 +276,8 @@ EOF
 k get pvc fsx-claim -n "$NAMESPACE"
 ```
 
+`4800Gi` は手順 2 で見た `storage_capacity` の値です。`fsx_storage_capacity_gib` を変えて構築した場合は、その値 (PV の容量) 以下にします。PV より大きい容量を要求すると PVC は `Pending` のままになり、次のテスト Pod も起動しません。
+
 `Bound` になったら、ファイルを書き込むテスト Pod を実行します。
 
 ```bash
@@ -285,7 +287,7 @@ k wait --for=jsonpath='{.status.phase}'=Succeeded pod/fsx-test -n "$NAMESPACE" -
 k logs fsx-test -n "$NAMESPACE"
 ```
 
-初回はイメージの取得とそのノードでの初回マウントに数十秒かかり、Pod はしばらく `ContainerCreating` にとどまります。これは正常な待ち時間なので、上の `k wait` で完了を待ってからログを見ます。Pod のログに `hello-fsx` が出れば、マウントと書き込みが成功しています。続いて Pod を削除し、別名の Pod から同じファイルを読み出します。
+初回はイメージの取得とそのノードでの初回マウントに数十秒かかり、Pod はしばらく `ContainerCreating` にとどまります。これは正常な待ち時間なので、上の `k wait` で完了を待ってからログを見ます。`k wait` が `timed out waiting for the condition` で終わった場合はマウントに失敗しています。`k describe pod fsx-test -n "$NAMESPACE"` の Events を見ると、`FailedMount` や `NodeStageVolume` の行に `dnsname is not provided` (PV の `volumeAttributes` のキーが大文字になっている) や到達不能 (セキュリティグループ) といった原因が出ます。`k describe pvc fsx-claim -n "$NAMESPACE"` と `k describe pv fsx-training` も合わせて見ます。失敗した Pod は同じ名前では作り直せないので、`k delete pod fsx-test -n "$NAMESPACE" --ignore-not-found` を先に実行してからやり直します。Pod のログに `hello-fsx` が出れば、マウントと書き込みが成功しています。続いて Pod を削除し、別名の Pod から同じファイルを読み出します。
 
 ```bash
 k delete pod fsx-test -n "$NAMESPACE"
@@ -302,7 +304,7 @@ k logs fsx-test2 -n "$NAMESPACE"
 検証が終わったら、テスト Pod と PVC を削除しておきます。Amazon FSx for Lustre を無効化する場合は、この削除を先に済ませておかないと、Bound な PV の削除がファイナライザで止まり `terraform apply` や `terraform destroy` が詰まることがあります。
 
 ```bash
-k delete pod fsx-test2 -n "$NAMESPACE" --ignore-not-found
+k delete pod fsx-test fsx-test2 -n "$NAMESPACE" --ignore-not-found
 k delete pvc fsx-claim -n "$NAMESPACE" --ignore-not-found
 ```
 
