@@ -71,7 +71,7 @@ NMA が出す NodeCondition は、Karpenter のノード自動修復（auto-repa
 ## 1. 前提を確認し、対象ノードを決める
 
 - Basic08 で NMA と kube-prometheus-stack が導入済みであること。
-- `k` と `KUBECONFIG` は Basic01 step 2 の 4 行で設定済みであること。
+- `k` と `KUBECONFIG` は Basic01 手順 2 の 4 行で設定済みであること。
 - GPU ノードが 1 台以上動いていること。Basic07 の vLLM や Basic05 の Capacity Block のいずれかを稼働させておきます。
 - 手順 4 の JSON パースに `python3` を使います。無い場合は `dnf install -y python3` などで入れておきます。
 

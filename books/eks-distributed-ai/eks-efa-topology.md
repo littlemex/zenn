@@ -137,7 +137,7 @@ egress self-ref が無い場合の症状として、NCCL は bootstrap（TCP）�
 
 ## EFA device plugin の supportedInstanceLabels 自動導出
 
-EFA を Pod にリソースとして見せるのは `aws-efa-k8s-device-plugin` の DaemonSet です。この chart は [`supportedInstanceLabels`](https://github.com/aws/eks-charts/tree/master/stable/aws-efa-k8s-device-plugin) に列挙されたインスタンスタイプにしか nodeAffinity でスケジュールされず、chart 既定の一覧には g6e.12xlarge のような一部の EFA 対応タイプが含まれていません。既定のままだとそのタイプのノードにはプラグインが乗らず、`vpc.amazonaws.com/efa` が永久に広告されないという問題が起こり得ます。[`gpu-addons.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/gpu-addons.tf) はこれをクラスタが実際に使う pool から動的に導出することで防いでいます。
+EFA を Pod にリソースとして見せるのは `aws-efa-k8s-device-plugin` の DaemonSet です。このチャートは [`supportedInstanceLabels`](https://github.com/aws/eks-charts/tree/master/stable/aws-efa-k8s-device-plugin) に列挙されたインスタンスタイプにしか nodeAffinity でスケジュールされず、チャート既定の一覧には g6e.12xlarge のような一部の EFA 対応タイプが含まれていません。既定のままだとそのタイプのノードにはプラグインが乗らず、`vpc.amazonaws.com/efa` が永久に広告されないという問題が起こり得ます。[`gpu-addons.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/gpu-addons.tf) はこれをクラスタが実際に使う pool から動的に導出することで防いでいます。
 
 ## EFA 関連の環境変数
 
@@ -179,7 +179,7 @@ env:
 - リポジトリ同梱の NCCL 測定用 TrainJob チャート（`infra/eks/charts/experiments` の `ncclTrainjob`）。Basic04 では `trainjobTrain.nodeRole` が Runtime ごと再レンダリングされましたが、こちらは方式が違います。Runtime はクラスタ全体で共有される 1 つなので、`ncclTrainjob.nodeRole` は Runtime を書き換えず、この TrainJob だけに `nodeSelector` を重ねる形 (`runtimePatches`) で載せ先を決めます
 - Capacity Block のノードは予約の AZ に立つので、共有ストレージ (単一 AZ の FSx for OpenZFS) と別の AZ になることがあります。NFS は AZ を跨いでもマウントできるため本手順は動きますが、`/shared` への読み書きに AZ 間のデータ転送料金と余分なレイテンシがかかります。本章が `/shared` に置くのは数 KB の測定スクリプトだけなので測定結果には影響しません
 - Basic02 で作った共有 PVC `shared-claim` が対象 namespace にあること (`ncclTrainjob` は `/shared` をマウントします。チャートが検査するのは PVC 名を渡したかどうかだけなので、PVC が実在しなくてもレンダリングと `kubectl apply` は通り、Pod が `Pending` のまま止まります。`k get pvc -n $NAMESPACE shared-claim` で `Bound` を先に確かめてください)
-- `k` と `KUBECONFIG` は Basic01 step 2 の 4 行で設定済み
+- `k` と `KUBECONFIG` は Basic01 手順 2 の 4 行で設定済み
 
 EFA 関連のアドオン（EC2NodeClass の `networkInterfaces` 自動生成、EFA 用セキュリティグループ、`aws-efa-k8s-device-plugin`）は、EFA 対応プールが 1 つ以上あることを条件に前章までの `terraform apply` で導入済みです。本章はそれらが正しく効いているかを確認する章なので、新しくインフラを足す操作はありません。
 
@@ -200,7 +200,7 @@ Basic04 の `gpu-ddp` プールだけを定義した状態での出力です。B
 }
 ```
 
-この 0 は、Basic04 の tfvars で `gpu-ddp` に `efa_interface_count = 0` を明示しているためです。プール側で明示した値は API 値より優先されるので、ここに出ているのは自分が書いた値です。結果の数字が同じなのは、`gpu-ddp` が並べている g6.2xlarge / g5.2xlarge がそもそも EFA 非対応だからで、明示しなければ API から 0 が導出されます。API 側の事実は次のコマンドで直接確認できます（`$AWS_REGION` は Basic01 step 2 の 4 行で解決済みのクラスタのリージョンです。インスタンスタイプの EFA 情報自体はリージョンによらずほぼ同じですが、クラスタと同じリージョンを指定しておくと以降の手順と揃います）。
+この 0 は、Basic04 の tfvars で `gpu-ddp` に `efa_interface_count = 0` を明示しているためです。プール側で明示した値は API 値より優先されるので、ここに出ているのは自分が書いた値です。結果の数字が同じなのは、`gpu-ddp` が並べている g6.2xlarge / g5.2xlarge がそもそも EFA 非対応だからで、明示しなければ API から 0 が導出されます。API 側の事実は次のコマンドで直接確認できます（`$AWS_REGION` は Basic01 手順 2 の 4 行で解決済みのクラスタのリージョンです。インスタンスタイプの EFA 情報自体はリージョンによらずほぼ同じですが、クラスタと同じリージョンを指定しておくと以降の手順と揃います）。
 
 ```bash
 aws ec2 describe-instance-types --instance-types g6.2xlarge g5.2xlarge g6e.12xlarge \
@@ -430,13 +430,13 @@ EFA でノード間通信を実行すると、NCCL のログに次の一行が�
 NET/OFI Failed to initialize GDRCopy: Failed to open gdr handle
 ```
 
-これはエラーではなく、GDRCopy という補助機構が使えなかったという通知です。EFA がノード間で GPU メモリのデータをやり取りするとき、NIC が GPU メモリへ直接データを読み書きする経路が二段構えになっています。大きなメッセージのバルク転送は GPUDirect RDMA が NIC から GPU メモリへ直接 DMA するので、この経路は GDRCopy とは無関係に動きます。一方で受信側の小さなメッセージのコピーには GDRCopy を使う道があり、これが無い場合は libfabric の EFA プロバイダが EFA デバイス経由のループバック read という代替経路でホストのバウンスバッファ越しにコピーします。つまり GDRCopy はマルチノード通信の小さなメッセージのレイテンシを詰めるための補助であって、EFA/NCCL がノード間で帯域を出すこと自体には必須ではありません。上の警告が出ていても、`Selected provider is efa` と高い `busbw` が出ていれば EFA は正しく効いています。
+これはエラーではなく、GDRCopy という補助機構が使えなかったという通知です。EFA がノード間で GPU メモリのデータをやり取りするとき、NIC が GPU メモリへ直接データを読み書きする経路が 2 段階に分かれています。大きなメッセージのバルク転送は GPUDirect RDMA が NIC から GPU メモリへ直接 DMA するので、この経路は GDRCopy とは無関係に動きます。一方で受信側の小さなメッセージのコピーには GDRCopy を使う道があり、これが無い場合は libfabric の EFA プロバイダが EFA デバイス経由のループバック read という代替経路でホストのバウンスバッファ越しにコピーします。つまり GDRCopy はマルチノード通信の小さなメッセージのレイテンシを詰めるための補助であって、EFA/NCCL がノード間で帯域を出すこと自体には必須ではありません。上の警告が出ていても、`Selected provider is efa` と高い `busbw` が出ていれば EFA は正しく効いています。
 
 GDRCopy を実際に有効にするには、ノードのカーネルに `gdrdrv` というモジュールをロードして `/dev/gdrdrv` を用意する必要があります。AMI にこれが標準で載っていない場合、載せる仕組みを別途用意することになります。その仕組みと、GDRCopy を有効にしたときにマルチノード通信のレイテンシが実際にどうなるのかの実測は、本書では扱いません。上の警告が出ていても EFA の帯域が出ていれば、本章の検証としては合格です。
 
-## 7. teardown する
+## 7. 後片付けをする
 
-検証が終わったら、ワークロードを退避します。[`04-teardown.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/04-teardown.sh) は Deployment/StatefulSet/Job/TrainJob/MPIJob を削除対象に含むため、本章で投入した `ncclTrainjob` もこのスクリプトで消えます。TrainJob は配下に JobSet が管理する Pod を持ちますが、スクリプトは TrainJob の削除がタイムアウトした場合に finalizer を外して確実に消すフォールバックまで備えているので、Pod が残って NodePool の drain が引っかかることはありません。単独で先に消しておきたい場合は次のコマンドを使いますが、必須ではありません。
+検証が終わったら、ワークロードを退避します。[`04-teardown.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/04-teardown.sh) は Deployment/StatefulSet/Job/TrainJob/MPIJob を削除対象に含むため、本章で投入した `ncclTrainjob` もこのスクリプトで消えます。TrainJob は配下に JobSet が管理する Pod を持ちますが、スクリプトは TrainJob の削除がタイムアウトした場合に finalizer を外して確実に消すフォールバックまで備えているので、Pod が残って NodePool の退避が引っかかることはありません。単独で先に消しておきたい場合は次のコマンドを使いますが、必須ではありません。
 
 ```bash
 k delete trainjob nccl-trainjob -n "$NAMESPACE" --ignore-not-found

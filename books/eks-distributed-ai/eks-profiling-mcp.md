@@ -90,7 +90,7 @@ Job そのものは終了から 2 日後に Kubernetes が消します。run の
 
 導入スクリプトはテナントの namespace を作りません。作るのは Pod Identity の紐付けで、これは EKS コントロールプレーン上の `(namespace, ServiceAccount 名)` レコードなので、namespace や ServiceAccount の実在を要求しません。一方で ConfigMap と Role と点検は実在する namespace にしか配れないため、namespace と ServiceAccount は導入スクリプトより先に作ります。
 
-本章は作業 namespace が `distai` ではなく `team-a` なので、Basic01 step 2 の 4 行を `DISTAI_NAMESPACE` 付きで実行し直しておきます。こうすると `k` と後述のプラグインの既定がこの namespace になり、以降のコマンドに `-n` を書かずに済みます。
+本章は作業 namespace が `distai` ではなく `team-a` なので、Basic01 手順 2 の 4 行を `DISTAI_NAMESPACE` 付きで実行し直しておきます。こうすると `k` と後述のプラグインの既定がこの namespace になり、以降のコマンドに `-n` を書かずに済みます。
 
 ```bash
 cd ~/distributed-ai-v0.2.0
@@ -167,7 +167,7 @@ curl -fsSL https://raw.githubusercontent.com/littlemex/distributed-ai/refs/tags/
 
 URL のタグとスクリプトが固定するタグは同じものなので、コピーした 1 行と入るものがずれません。そのまま導入まで走らせるには `TF_STATE_BUCKET`、`TF_STATE_REGION`、`TF_STATE_KEY` と、クラスタの `terraform.tfvars` を指す `EKS_TFVARS` の 4 つが必要です。1 つでも欠けているとプラグインの設置だけで止まり、導入はチェックアウトから実行するよう案内されます。`~/.local/bin` が PATH に無い場合は通してください。
 
-渡すのは alias と自分のイメージと、実行したいコマンドだけです。まずは基盤イメージ自身を workload として 1 本流し、経路が通っていることを確認します。イメージの URI は namespace に配られた ConfigMap から引けるので、レジストリやタグを手で組み立てる必要はありません。
+渡すのは alias と自分のイメージと、実行したいコマンドだけです。まずは基盤イメージ自身を workload として 1 本流し、経路が通っていることを確認します。イメージの URI は namespace に配られた ConfigMap から引けるので、レジストリやタグを手動で組み立てる必要はありません。
 
 ```bash
 export IMAGE=$(k get configmap accelprof-config -o jsonpath='{.data.ACCELPROF_PLATFORM_IMAGE}')
@@ -236,7 +236,7 @@ nsys profile -t cuda,nvtx,osrt -o /accelprof/out/traces/rank-<index> --force-ove
 
 `-t` で指定した 3 系統が収集対象です。`cuda` は CUDA API の呼び出しと GPU 上のカーネル実行やメモリ転送で、CUPTI 経由で収集されます。`nvtx` はコード側で付けた NVTX の区間とマーカーなので、付けていなければ何も出ません。`osrt` はファイル I/O や同期などの OS ランタイム呼び出しです。実際にこの既定で取得したトレースを `nsys-stats` にかけると、NVTX Range Summary、OS Runtime Summary、CUDA API Summary、CUDA GPU Kernel Summary の 4 つが返ります。基盤イメージに入っている `nsys` のバージョンは、公開イメージを digest 指定で使う場合は 2026.4.1 です。`DEV_BUILD=1` で自分でビルドする場合は Dockerfile が `nsight-systems-cli` をバージョン固定せずに取得するため、ビルドした時期によって別のバージョンが入ります。以下の実測値はこのバージョンでのものです。検証したノードの NVIDIA ドライバは 580.178.04、ワークロード側の CUDA は 12.4 でした。
 
-既定で取れないものも確認しておきます。第一に GPU のハードウェアメトリクス (SM の稼働率、Tensor Core の利用率、DRAM 帯域) は含まれません。これらは `--gpu-metrics-devices` の指定が必要で、さらに NVIDIA ドライバの性能カウンタ制限に触れるため、ノード側の設定か追加の権限が要ります。本基盤ではこの経路は未検証です。第二にカーネル単位の詳細 (occupancy の内訳、命令ミックス、メモリ階層のヒット率) は nsys の守備範囲外で、Nsight Compute (`ncu`) の領分です。nsys で支配的なカーネルを特定し、そのカーネルを `ncu` で深掘りするのが定石です。第三に NCCL の通信は集合通信カーネルとしてカーネルの列には現れますが、どの集合操作がどのメッセージサイズで走ったかという意味づけは既定では付きません。
+既定で取れないものも確認しておきます。第一に GPU のハードウェアメトリクス (SM の稼働率、Tensor Core の利用率、DRAM 帯域) は含まれません。これらは `--gpu-metrics-devices` の指定が必要で、さらに NVIDIA ドライバの性能カウンタ制限に触れるため、ノード側の設定か追加の権限が要ります。本基盤ではこの経路は未検証です。第二にカーネル単位の詳細 (occupancy の内訳、命令ミックス、メモリ階層のヒット率) は nsys の対象外で、Nsight Compute (`ncu`) が扱う範囲です。nsys で支配的なカーネルを特定し、そのカーネルを `ncu` で深掘りするのが定石です。第三に NCCL の通信は集合通信カーネルとしてカーネルの列には現れますが、どの集合操作がどのメッセージサイズで走ったかという意味づけは既定では付きません。
 
 タイムラインを目で見たい場合は、`artifacts_uri` の `.nsys-rep` を手元に落として Nsight Systems の GUI で開きます。分析 MCP の `nsys-stats` はテキストの集計であり、タイムラインの目視を置き換えるものではありません。
 
@@ -353,7 +353,7 @@ analysis MCP には 4 節で取得した自分の run の `run_id` (`$RUN_ID` �
 
 上の表は、記録された GPU カーネル時間の内訳です。ここでは bf16 の GEMM が 320 回でそのほぼすべてを占め、1 回あたり 2.2 ミリ秒です (壁時計全体の内訳ではない点に注意してください)。下の表の 27 マイクロ秒は、NVTX で囲んだ範囲のホスト側の時間、つまりカーネルの投入にかかった時間です。カーネル起動は非同期なので、この値が小さいことだけでは投入待ちが無いとは言えません。投入待ちを疑うときは、同じ出力の CUDA API Summary で同期系の API に時間が乗っていないかを見て、必要なら `.nsys-rep` を GUI で開いてカーネルの間隔を確認します。
 
-事実が出たら、次の一手は knowledge MCP から得ます。症状を `search_knowledge` に投げると、関連する playbook がランク付きで返ります。次はツールの使い方を示す例で、上のトレースの診断結果ではありません。
+事実が出たら、次に何をするかは knowledge MCP から得ます。症状を `search_knowledge` に投げると、関連する playbook がランク付きで返ります。次はツールの使い方を示す例で、上のトレースの診断結果ではありません。
 
 ```jsonc
 // search_knowledge("memory bound but occupancy is high", chip="gpu")
@@ -362,7 +362,7 @@ analysis MCP には 4 節で取得した自分の run の `run_id` (`$RUN_ID` �
   { "id": "gpu/memory-and-fusion", "score": 7.0, "title": "Memory bound kernels and fusion" } ]}
 ```
 
-上位に出た `get_topic("gpu/roofline")` を開くと、症状から原因、確認点、次の一手までが読めます。analysis MCP が返した事実 (どこが遅いか) と、knowledge MCP が返した指針 (次に何を変えるか) を突き合わせて次の実験を決める、というのが本基盤の使い方です。
+上位に出た `get_topic("gpu/roofline")` を開くと、症状から原因、確認点、次にすることまでが読めます。analysis MCP が返した事実 (どこが遅いか) と、knowledge MCP が返した指針 (次に何を変えるか) を突き合わせて次の実験を決める、というのが本基盤の使い方です。
 
 ## 9. 継続的に回すときの運用
 
@@ -451,7 +451,7 @@ terraform apply teardown.tfplan
 
 # まとめ
 
-本章では、基盤の導入からプロファイルの記録、そして分析 MCP と knowledge MCP を使った分析までを実機で通しました。導入は 1 コマンド、プロファイルを取得するのも 1 コマンドで、どちらもバケット名やマネージド MLflow の ARN を人が運ぶ必要はありません。日々の実験では、自分のイメージとコマンドを渡せばプロファイルが記録され、以降は MCP 経由で分析と次の一手の提示を受け取れます。実務で重要なのは、区間を絞ること、`--profile none` のベースラインを置くこと、そして alias をキャンペーン単位で設計することの 3 点です。設計思想の全体像は冒頭のブログにまとめてあります。
+本章では、基盤の導入からプロファイルの記録、そして分析 MCP と knowledge MCP を使った分析までを実機で通しました。導入は 1 コマンド、プロファイルを取得するのも 1 コマンドで、どちらもバケット名やマネージド MLflow の ARN を利用者が持ち回る必要はありません。日々の実験では、自分のイメージとコマンドを渡せばプロファイルが記録され、以降は MCP 経由で分析と次の一手の提示を受け取れます。実務で重要なのは、区間を絞ること、`--profile none` のベースラインを置くこと、そして alias をキャンペーン単位で設計することの 3 点です。設計思想の全体像は冒頭のブログにまとめてあります。
 
 # 参考資料
 

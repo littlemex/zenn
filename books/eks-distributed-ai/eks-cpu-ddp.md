@@ -52,7 +52,7 @@ Kubeflow Trainer v2 の API はまだ `v1alpha1`（アルファ）です。将�
 |---|---|---|
 | API | `kubeflow.org/v1` | `trainer.kubeflow.org/v1alpha1` |
 | ジョブの型 | フレームワークごとに別 CRD（PyTorchJob / TFJob / MPIJob …） | 単一の TrainJob と Runtime の組（PyTorch も他フレームワークも同じ型） |
-| 待ち合わせ（rendezvous） | 基本は operator が配線。elastic 構成では方式（etcd/c10d など）を利用者が選ぶ | Trainer が自動設定するため、利用者側の選択・設定が不要 |
+| 待ち合わせ（rendezvous） | 基本は operator が設定。elastic 構成では方式（etcd/c10d など）を利用者が選ぶ | Trainer が自動設定するため、利用者側の選択・設定が不要 |
 | 実行を担う仕組み | operator 単体 | JobSet の上に構築 |
 | 成熟度 | 安定（ただしレガシー） | アルファ（API 変更あり得る） |
 | 変わらないもの | `ddp.py` と `torchrun` の実行モデル | 同左 |
@@ -97,7 +97,7 @@ TrainJob 側が指定するのは、台数（`numNodes`）とノードあたり�
 
 以降のコマンドは Basic01 で clone したリポジトリのルート（`infra/eks` の親）で実行する前提です。`kubectl` が Basic01 のクラスタを指していること、MNIST データセットを取得するためのアウトバウンド通信やノードの ECR pull 権限は、いずれも Basic01 の構築で用意済みです。
 
-Basic01 step 2 の 4 行を実行済みで、`k` がこのクラスタの `distai` namespace を向いている前提です（ターミナルを開き直した場合はその 4 行をもう一度実行してください）。作業用 namespace を冪等に用意しておきます（すでに存在していてもエラーになりません）。
+Basic01 手順 2 の 4 行を実行済みで、`k` がこのクラスタの `distai` namespace を向いている前提です（ターミナルを開き直した場合はその 4 行をもう一度実行してください）。作業用 namespace を冪等に用意しておきます（すでに存在していてもエラーになりません）。
 
 ```bash
 k create namespace distai --dry-run=client -o yaml | k apply -f -
@@ -194,7 +194,7 @@ k get pvc shared-claim
 
 `ddp.py` を 2 ノードにまたがる TrainJob で動かします。`torchrun` を通常の `batch/v1` Job で単一ノードに動かす場合は 1 Pod 内で複数プロセスが立ちますが、TrainJob で複数ノードに広げると **rank ごとに別々の Pod、別々のノード**に分かれます。rank 0 と rank 1 は同じコンテナのプロセスではなく、ネットワーク越しに通信する別々の Pod です。
 
-`numNodes=2` がノード数、`nprocPerNode=1` が各ノード内のプロセス数です（Helm の `nprocPerNode` は TrainJob の `numProcPerNode` に対応します）。本書がクラスタに用意した Runtime（[`torch-distributed-eks`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/clustertrainingruntime-eks.yaml)）に `topologyKey: kubernetes.io/hostname` の podAntiAffinity が入っているので、2 つの Pod は必ず別ノードに分かれて配置されます。PVC は step 3 で作った `shared-claim` を使います。
+`numNodes=2` がノード数、`nprocPerNode=1` が各ノード内のプロセス数です（Helm の `nprocPerNode` は TrainJob の `numProcPerNode` に対応します）。本書がクラスタに用意した Runtime（[`torch-distributed-eks`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/clustertrainingruntime-eks.yaml)）に `topologyKey: kubernetes.io/hostname` の podAntiAffinity が入っているので、2 つの Pod は必ず別ノードに分かれて配置されます。PVC は 手順 3 で作った `shared-claim` を使います。
 
 同名の TrainJob が残っていると変更箇所によっては apply が拒否されるので、作り直すときは先に削除します（初回は存在しなくても `--ignore-not-found` で安全です）。
 
