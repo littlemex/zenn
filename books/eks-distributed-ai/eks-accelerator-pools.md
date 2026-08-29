@@ -212,11 +212,11 @@ k logs -f --tail=-1 -l "$SEL"
 
 ## 4. (任意) GPU スモークテストで確認する
 
-Basic01 で紹介したインフラ層のスモークテストには、GPU ノードを実際に起動して確認する `--with-gpu` モードがあります。アクセラレータプールを定義した本章の段階で初めて実行できます。Basic01 の基盤テストと違い、Karpenter が GPU ノードを起動するため 5〜10 分かかります。
+Basic01 で紹介したインフラ層のスモークテストには、GPU ノードを実際に起動して確認する `--with-gpu` モードがあります。アクセラレータプールを定義した本章の段階で初めて実行できます。Basic01 の基盤テストと違い、Karpenter が GPU ノードを起動するため 5〜10 分かかります。`--namespace` を明示するのは Basic01 と同じ理由です。このシェルには `NAMESPACE` が入っているので、渡さないとテストが作業 namespace を自分のものと解釈して停止します。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks/tests
-./run-tests.sh --with-gpu --gpu-count 1
+./run-tests.sh --with-gpu --gpu-count 1 --namespace distai-test
 ```
 
 ```text
