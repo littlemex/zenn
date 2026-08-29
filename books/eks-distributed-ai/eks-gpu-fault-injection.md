@@ -54,7 +54,7 @@ resource "aws_eks_addon" "node_monitoring_agent" {
 
 渡している `local.dcgm_server_tolerations` は、`nvidia.com/gpu` と `capacity-reservation` に、利用者が `accelerator_pools` で定義した taint の分を足したものです。GPU ノードに付く taint の台帳と同じ場所で組み立てているので、プールに新しい taint を足したときに片方だけ更新されることがありません。ここを `nvidia.com/gpu` だけにすると、前払いしている Capacity Block の GPU ノードにこそ `dcgm-server` が載らず `Pending` のままになり、そのノードの `AcceleratedHardwareReady` が `False` に張り付いて延々とアラートが鳴ります。無条件の `Exists` にはせず対象を並べているのは、無関係な taint 付きノードにまで載らないようにするためです。
 
-エージェント本体はデフォルトで全 taint を tolerate するため、明示的に与えるのは `dcgm-server` の toleration だけに絞っています。これは NMA 側の設計上の見落とし（エージェント本体は全 taint を許容するのに `dcgm-server` だけ許容しない）と考えられ、将来 upstream の既定が修正されればこの `configuration_values` は不要になります。
+エージェント本体は既定で全 taint を tolerate するため、明示的に与えるのは `dcgm-server` の toleration だけに絞っています。これは [NMA](https://docs.aws.amazon.com/eks/latest/userguide/node-monitoring-agent.html) 側の設計上の見落とし（エージェント本体は全 taint を許容するのに `dcgm-server` だけ許容しない）と考えられ、将来 upstream の既定が修正されればこの `configuration_values` は不要になります。
 
 ## なぜ auto-repair を有効にしないか
 

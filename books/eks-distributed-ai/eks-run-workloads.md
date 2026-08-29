@@ -15,7 +15,7 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 
 ## 全体構成
 
-この book で構築する基盤のうち、本章は Karpenter が spot 優先（on-demand フォールバックあり）で起動する GPU ノード 1 台に、推論サーバー（vLLM）の Pod を載せる構成です。
+本書で構築する基盤のうち、本章は Karpenter が spot 優先（on-demand フォールバックあり）で起動する GPU ノード 1 台に、推論サーバー（vLLM）の Pod を載せる構成です。
 
 ![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 
@@ -27,7 +27,7 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 
 本章では、vLLM の公式イメージ `vllm/vllm-openai` を Kubernetes の `Deployment` として GPU ノードに載せ、軽量モデル `Qwen/Qwen2.5-0.5B-Instruct`（ゲートなし・小型で 1 枚の GPU に収まる）をサービングします。Helm チャート [`charts/experiments`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/charts/experiments) の `gpuServingVllm` ワークロードが GPU 向けの雛形で、`nodeSelector` でアクセラレータプールに載せ、`nvidia.com/gpu: 1` をリクエストします。ゲート付きモデルを使う場合は、事前に `hf-token` という Secret を作っておくと、コンテナが `HF_TOKEN` 環境変数として自動的に読み込みます（未作成でも Pod は起動し、ゲートなしモデルでは何も参照されません）。
 
-推論は 1 ノードで完結するため、EFA も Capacity Block も要りません。Basic04 で `accelerator_pools` に GPU プールを定義してあれば、そのプールに Pod を投げるだけで Karpenter が GPU ノードを 1 台起動し、その上で vLLM が立ち上がります。
+推論は 1 ノードで完結するため、EFA も Capacity Block も要りません。Basic04 で `accelerator_pools` に GPU プールを定義してあれば、そのプールに Pod を投入するだけで Karpenter が GPU ノードを 1 台起動し、その上で vLLM が立ち上がります。
 
 # ワークショップ実施
 
@@ -77,7 +77,7 @@ k create secret generic hf-token -n "$NAMESPACE" --from-literal=token=<HuggingFa
 
 ## 3. vLLM の Deployment を投入する
 
-この章では vLLM の公式イメージ `vllm/vllm-openai` をそのまま使うため、自前でのイメージビルドは不要です（`charts/experiments` の `gpuServingVllm.image` の既定値が公式イメージを指しています）。チャートをレンダリングして適用します。`nodeRole` には GPU プール名を渡します。プール名は `terraform.tfvars` の `accelerator_pools` の map キーで、Karpenter がそれを `node-role=<プール名>` としてノードに付けるため、この値でプールを指定できます。以下は Basic04 で定義した `gpu-ddp` をそのまま使う例です。プール名を変えている場合は以降も読み替えてください。
+この章では vLLM の公式イメージ `vllm/vllm-openai` をそのまま使うため、自前でのイメージビルドは不要です（`charts/experiments` の `gpuServingVllm.image` の既定値が公式イメージを指しています）。チャートをレンダリングして適用します。`nodeRole` には GPU プール名を渡します。プール名は `terraform.tfvars` の [`accelerator_pools`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/variables.tf) の map キーで、Karpenter がそれを [`node-role=<プール名>`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/karpenter-resources.tf) としてノードに付けるため、この値でプールを指定できます。以下は Basic04 で定義した `gpu-ddp` をそのまま使う例です。プール名を変えている場合は以降も読み替えてください。
 
 投入コマンドの前に、この Deployment が指定する `memory` と `shmSize` が「何のメモリなのか」を押さえておきます。
 
@@ -93,11 +93,11 @@ LLM のサービングでは、性質の異なる 2 つのメモリが登場し�
 
 `shmSize` は `/dev/shm`（共有メモリ）のサイズを指定するパラメータです。`/dev/shm` は Linux のプロセス間共有メモリで、実体はノードの RAM 上に作られる tmpfs です。ファイルのように見えますが、中身は RAM を消費します。vLLM（の下で動く PyTorch）は、ワーカープロセス間でテンソルを受け渡す経路や NCCL の共有メモリトランスポートに `/dev/shm` を使います。複数 GPU にまたがるテンソル並列で特に大量に必要になり、単一 GPU の本章では使用量はわずかです。
 
-ここで問題になるのが、コンテナランタイムが用意する `/dev/shm` の既定サイズは **64 MiB しかない**という点です。vLLM にはこれでは不足することがありますが、Kubernetes には `docker run --shm-size` に相当するフィールドがありません。そこで **`emptyDir: {medium: Memory}` を `/dev/shm` にマウントして広げる**のが定石で、本チャートの `shmSize` はその `emptyDir` の `sizeLimit` を設定するパラメータです。`medium: Memory` の `emptyDir` は tmpfs なので、その使用量もノードの RAM を実際に消費します。
+ここで問題になるのが、コンテナランタイムが用意する `/dev/shm` の既定サイズは **64 MiB しかない**という点です。vLLM にはこれでは不足することがありますが、Kubernetes には `docker run --shm-size` に相当するフィールドがありません。そこで **[`emptyDir: {medium: Memory}`](https://kubernetes.io/docs/concepts/storage/volumes/#emptydir) を `/dev/shm` にマウントして広げる**のが定石で、本チャートの `shmSize` はその `emptyDir` の `sizeLimit` を設定するパラメータです。`medium: Memory` の `emptyDir` は tmpfs なので、その使用量もノードの RAM を実際に消費します。
 
 ### チャートの既定値と、このプールに載らない理由
 
-これらのリクエスト値は本 book の Helm チャート `charts/experiments` の `values.yaml` にあり、`gpuServingVllm.memory` の既定は `48Gi`、`gpuServingVllm.shmSize` の既定は `8Gi` です。これは大きめの GPU ノードでの利用も想定した保守的な既定値で、本章の小型プール `gpu-ddp` には大きすぎます。
+これらのリクエスト値は本書の Helm チャート `charts/experiments` の [`values.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/values.yaml) と [`gpu-serving-vllm.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/gpu-serving-vllm.yaml) にあり、`gpuServingVllm.memory` の既定は `48Gi`、`gpuServingVllm.shmSize` の既定は `8Gi` です。これは大きめの GPU ノードでの利用も想定した保守的な既定値で、本章の小型プール `gpu-ddp` には大きすぎます。
 
 Pod の `memory` リクエストがどこから確保されるかを押さえます。スケジューラや Karpenter が Pod の要求と突き合わせるのは、ノードの物理 RAM そのものではなく **allocatable** です。allocatable は、ノードの物理 RAM から kubelet が OS・kubelet 自身・退避（eviction）閾値のために予約する分を引いた「Pod に割り当ててよい上限」で、物理 16 GiB のノードでも約 12.3 GiB しかありません。さらにそこへ GPU Operator の各種 Pod や CNI などの DaemonSet が先に一部を占有します。
 
@@ -129,7 +129,7 @@ helm template exp charts/experiments -n "$NAMESPACE" \
 さらに厄介なのが、この乖離が Karpenter の起動ループを誘発する点です。
 
 :::message alert
-**メモリ不足の失敗の仕方は、CPU 不足とは異なります。** CPU リクエストがプール内の全タイプで allocatable を超えている場合、Karpenter は候補ゼロと判断してノードを起動しません。一方、メモリリクエストが境界的な値の場合、起動ループに陥ることがあります。Karpenter はノードを起こす前に、各インスタンスタイプの allocatable を推定してスケジューリングをシミュレーションします（この推定には `VM_MEMORY_OVERHEAD_PERCENT`、既定 7.5% などが使われます）。この推定 allocatable では「載る」と判定されても、実際に起動したノードの allocatable が推定より小さいと Pod は載らず、`Pending` が解消されないため「もう 1 台足せば載る」と解釈して起動を繰り返します。実際にこの種の設定で放置したところ **spot ノードが 11 台まで増えました**。spot でも課金は発生するため、`Pending` や再作成を繰り返す Pod を見つけたら NodeClaim の数を必ず確認してください。
+**メモリ不足の失敗の仕方は、CPU 不足とは異なります。** CPU リクエストがプール内の全タイプで allocatable を超えている場合、Karpenter は候補ゼロと判断してノードを起動しません。一方、メモリリクエストが境界的な値の場合、起動ループに陥ることがあります。Karpenter はノードを起こす前に、各インスタンスタイプの allocatable を推定してスケジューリングをシミュレーションします（この推定には [`VM_MEMORY_OVERHEAD_PERCENT`](https://karpenter.sh/docs/reference/settings/)、既定 7.5% などが使われます）。この推定 allocatable では「載る」と判定されても、実際に起動したノードの allocatable が推定より小さいと Pod は載らず、`Pending` が解消されないため「もう 1 台足せば載る」と解釈して起動を繰り返します。実際にこの種の設定で放置したところ **spot ノードが 11 台まで増えました**。spot でも課金は発生するため、`Pending` や再作成を繰り返す Pod を見つけたら NodeClaim の数を必ず確認してください。
 
 ```bash
 k get nodeclaims -l karpenter.sh/nodepool=gpu-ddp
@@ -265,7 +265,7 @@ k get nodeclaims -w
 
 # まとめ
 
-本章では、Capacity Block を使わずに spot 優先（on-demand フォールバックあり）の GPU ノード（g5 / g6 系）へ vLLM の OpenAI 互換サーバーをデプロイし、軽量モデルで推論が動くことを確認しました。単一 GPU で完結するため EFA は不要で、Basic04 で定義した GPU プールに Pod を投げるだけで Karpenter がノードを起動します。spot/on-demand どちらも容量が取れないときは AZ と instance type を複数許可する、メモリなどのリクエストをノードサイズに合わせる、動作確認が終わったら忘れずに Deployment を削除して GPU ノードを回収させる、という 3 点が実運用の勘所です。この上で大規模モデルやマルチノードの推論・学習に進む場合は、Basic05 の Capacity Block で GPU を確保します。
+本章では、Capacity Block を使わずに spot 優先（on-demand フォールバックあり）の GPU ノード（g5 / g6 系）へ vLLM の OpenAI 互換サーバーをデプロイし、軽量モデルで推論が動くことを確認しました。単一 GPU で完結するため EFA は不要で、Basic04 で定義した GPU プールに Pod を投入するだけで Karpenter がノードを起動します。spot/on-demand どちらも容量が取れないときは AZ と instance type を複数許可する、メモリなどのリクエストをノードサイズに合わせる、動作確認が終わったら忘れずに Deployment を削除して GPU ノードを回収させる、という 3 点が実運用の勘所です。この上で大規模モデルやマルチノードの推論・学習に進む場合は、Basic05 の Capacity Block で GPU を確保します。
 
 # 参考資料
 

@@ -34,19 +34,19 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 
 ### 層 0: ネットワーク基礎
 
-ECR のレイヤ実体は、リージョンによって S3 の presigned URL 経由で配られます。そのため VPC に **S3 gateway endpoint** が無いと、イメージの大部分を占めるレイヤが全て NAT を通り、帯域と課金の両面で律速します。ECR interface endpoint（`ecr.api` / `ecr.dkr`）も併せて用意しますが、こちらを通るのは認証トークンや manifest といった KB 単位のメタデータ往復であり、pull 速度そのものへの寄与は小さく、位置づけは「NAT 障害時に pull が死なない」という衛生面です。この基盤ではどちらも `vpc-endpoints.tf` で IaC 固定しています。
+ECR のレイヤ実体は、リージョンによって S3 の presigned URL 経由で配られます。そのため VPC に **S3 gateway endpoint** が無いと、イメージの大部分を占めるレイヤが全て NAT を通り、帯域と課金の両面で律速します。ECR interface endpoint（`ecr.api` / `ecr.dkr`）も併せて用意しますが、こちらを通るのは認証トークンや manifest といった KB 単位のメタデータ往復であり、pull 速度そのものへの寄与は小さく、位置づけは「NAT 障害時に pull が死なない」という衛生面です。この基盤ではどちらも [`vpc-endpoints.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/vpc-endpoints.tf) で IaC 固定しています。
 
 ### 層 A: pull 経路
 
-恒久ルールは **「ランタイムで参照するイメージは全て自アカウントの Amazon ECR 発とする」** です。BuildKit で焼く自前イメージは既にそうなっており、直接使う外部イメージ（vLLM 公式、NGC ベースなど）は CI で `crane copy` して自 ECR にミラーします。後の手順で使う `registry.k8s.io/pause` のように、本 book が説明のために外部レジストリを直に書いている箇所は、この恒久ルールから外れています。自分の環境で恒久的に置くものは自 ECR にミラーしてから参照してください。なお prewarm チャートもビルド Job も、イメージ参照が自 ECR かどうかは検査しません (prewarm が見るのは digest 指定かどうかだけです)。これは実装のガードではなく運用ルールです。
+恒久ルールは **「ランタイムで参照するイメージは全て自アカウントの Amazon ECR 発とする」** です。BuildKit で焼く自前イメージは既にそうなっており、直接使う外部イメージ（vLLM 公式、NGC ベースなど）は CI で `crane copy` して自 ECR にミラーします。後の手順で使う `registry.k8s.io/pause` のように、本書が説明のために外部レジストリを直に書いている箇所は、この恒久ルールから外れています。自分の環境で恒久的に置くものは自 ECR にミラーしてから参照してください。なお prewarm チャートもビルド Job も、イメージ参照が自 ECR かどうかは検査しません (prewarm が見るのは digest 指定かどうかだけです)。これは実装のガードではなく運用ルールです。
 
 補助的に ECR pull-through cache（PTC）を Docker Hub や `ghcr` などに設定できますが、位置づけは開発時の利便性とミラー漏れの保険にとどめます。GPU 基盤で最も引きたい上流である nvcr.io（NVIDIA NGC）が PTC 非対応であること、そして「未キャッシュの新規 digest かつ上流障害」では PTC でも pull 不能になることから、ランタイム経路を PTC に依存させるのは避けます。
 
 ### 層 B: ノード内保持
 
-accelerator プール（`terraform.tfvars` の `accelerator_pools` にコメントで例示されている `gpu-p5en` / `trn2` のような構成、この変数の既定値は空マップです）は概ね完成しています。nodeadm の `localStorage.strategy: Raid0` により containerd の data-root が NVMe instance store に載り、instance store は数 TB 級なので imageGC の既定閾値（85/80）に実質到達しません。ここは本実装ではすでに IaC 固定済みで、kubelet の `imageMaximumGCAge` を `168h` に明示設定し、多世代 digest の無限堆積を防いでいます（`karpenter-resources.tf` の `local.image_maximum_gc_age` を `accelerator_user_data` に注入）。この設定は**削除を追加する側**であることに注意してください。「未使用のまま 168 時間を超えたイメージを、ディスク閾値に達していなくても消す」という設定であり、閾値 GC（`imageGCHighThresholdPercent` の既定 85%）を置き換えたり抑止したりはしません。イメージを保護する設定ではないので、キャッシュを残したいイメージをこれで守ることはできません。
+accelerator プール（`terraform.tfvars` の `accelerator_pools` にコメントで例示されている `gpu-p5en` / `trn2` のような構成、この変数の既定値は空マップです）は概ね完成しています。nodeadm の `localStorage.strategy: Raid0` により containerd の data-root が NVMe instance store に載り、instance store は数 TB 級なので imageGC の既定閾値（85/80）に実質到達しません。ここは本実装ではすでに IaC 固定済みで、kubelet の `imageMaximumGCAge` を `168h` に明示設定し、多世代 digest の無限堆積を防いでいます（[`karpenter-resources.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/karpenter-resources.tf) の `local.image_maximum_gc_age` を `accelerator_user_data` に注入）。この設定は**削除を追加する側**であることに注意してください。「未使用のまま 168 時間を超えたイメージを、ディスク閾値に達していなくても消す」という設定であり、閾値 GC（`imageGCHighThresholdPercent` の既定 85%）を置き換えたり抑止したりはしません。イメージを保護する設定ではないので、キャッシュを残したいイメージをこれで守ることはできません。
 
-一方 cpu プールは NVMe を持たず、imagefs と nodefs が単一の gp3 に同居します。ここで見落とされがちな支配的ボトルネックは **gp3 のベースライン throughput 125MiB/s** です。イメージのダウンロードと展開で書き込みが二重に走り、ディスクだけで数分溶けます。ここもすでに IaC 固定済みで、CPU 用 EC2NodeClass の `blockDeviceMappings` に `throughput = 500` / `iops = 6000`（`variables.tf` の `cpu_node_volume_throughput` / `cpu_node_volume_iops` の既定値）を設定し、gp3 のベースラインより高いスループットを確保しています。
+一方 cpu プールは NVMe を持たず、imagefs と nodefs が単一の gp3 に同居します。ここで見落とされがちな支配的ボトルネックは **gp3 のベースライン throughput 125MiB/s** です。イメージのダウンロードと展開で書き込みが二重に走り、ディスクだけで数分溶けます。ここもすでに IaC 固定済みで、CPU 用 EC2NodeClass の `blockDeviceMappings` に `throughput = 500` / `iops = 6000`（[`variables.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/variables.tf) の `cpu_node_volume_throughput` / `cpu_node_volume_iops` の既定値）を設定し、gp3 のベースラインより高いスループットを確保しています。
 
 全プール共通で、kubelet の `serializeImagePulls: false` と `maxParallelImagePulls: 8`、containerd の `max_concurrent_downloads: 8` の引き上げも、`karpenter-resources.tf` の `accelerator_user_data` / `cpu_user_data` で nodeadm の NodeConfig にすでに注入済みです。宣言的でステートレスなので、失敗しても挙動が元に戻るだけです。
 
@@ -262,7 +262,7 @@ k get nodes -l node-role=cpu
 
 ここで優先度を上げて preempt を防ごうとしてはいけません。優先度を 0 以上にすれば確かに preempt されなくなりますが、代わりにノードを待っていたワークロードが Karpenter の起動を 1〜2 分待つことになり、消したかった待ち時間をワークロード側に押し付けるだけです。また `preemptionPolicy: Never` も対策になりません。これは「その Pod が他を preempt するか」の設定であって、preempt される側の耐性は一切変わりません。
 
-なお `do-not-disrupt` が止めるのは Karpenter が自発的に行う置き換え、つまり consolidation と drift です。ディスク逼迫による kubelet の eviction、Spot の中断、手動の削除はいずれも止まりません。満了 (`expireAfter`) も Karpenter v1 では強制なので止まらない側ですが、headroom を置く CPU プールは `expireAfter = "Never"` なので満了そのものが起きません (アクセラレータプールはプールごとに指定できます)。
+なお `do-not-disrupt` が止めるのは Karpenter が自発的に行う置き換え、つまり consolidation と drift です。ディスク逼迫による kubelet の eviction、Spot の中断、手動の削除はいずれも止まりません。満了 (`expireAfter`) も Karpenter v1 では[強制](https://karpenter.sh/docs/concepts/disruption/#forceful-disruption)なので止まらない側ですが、headroom を置く CPU プールは `expireAfter = "Never"` なので満了そのものが起きません (アクセラレータプールはプールごとに指定できます)。
 
 prewarm DaemonSet は、温めたいイメージを列挙して各ノードで pull させる仕組みです。ここでの設計判断は、**pull を `ctr` ではなく kubelet にやらせる**ことです。温めたいイメージを、何もせず居続けるだけのコンテナとして並べると、kubelet が通常のワークロードとまったく同じ経路で pull します。なぜ initContainer ではないのかは、この節の後半で扱います。
 
@@ -355,7 +355,7 @@ prewarm 済みノードでは `Pulling` イベントすら出ず、`Container im
 
 この結果は取得が支配的だったこの環境の数字です。手順 1 の計測で展開が支配的だと出た場合に限り、次の zstd 化に進んでください。
 
-zstd 化は BuildKit の出力で行います。Basic02 のクラスタ内ビルドがそのまま使えるので、`imageBuild.zstd=true` を足すだけ (ただしビルド Job が clone する ref は既定で `main` です。本 book のタグと同じソースから焼きたい場合は `--set imageBuild.gitRef=release/eks-distributed-ai/v0.2.0` も渡します)です。
+zstd 化は BuildKit の出力で行います。Basic02 のクラスタ内ビルドがそのまま使えるので、`imageBuild.zstd=true` を足すだけ (ただしビルド Job が clone する ref は既定で `main` です。本書のタグと同じソースから焼きたい場合は `--set imageBuild.gitRef=release/eks-distributed-ai/v0.2.0` も渡します)です。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks

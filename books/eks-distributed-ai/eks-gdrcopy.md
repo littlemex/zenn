@@ -31,7 +31,7 @@ GDRCopy は、この二つとは別のライブラリである。GPU の BAR1 �
 
 libfabric の EFA プロバイダは、受信したデータを GPU メモリへ書き込むときにコピー経路を選ぶ。GDRCopy が使える場合は CPU が BAR1 マッピング経由で直接コピーする。使えない場合は、EFA デバイス経由のループバック read でホストのバウンスバッファに一度受けてから GPU メモリへコピーする代替経路にフォールバックする。これは libfabric 公式のビルドドキュメントに明記されている挙動である（[Building the EFA provider](https://github.com/ofiwg/libfabric/blob/main/prov/efa/docs/building.md) の `--with-gdrcopy` の項）。
 
-ここで重要なのは、GDRCopy が効くのは小さいメッセージに限られるという点である。libfabric の EFA プロバイダは、GDRCopy を使う受信コピーのサイズ上限を環境変数で持ち、本書執筆時点のデフォルトは 32 KB 程度である。それより大きいバルク転送は GPUDirect RDMA が NIC から GPU メモリへ直接書き込むので、GDRCopy の有無に関係なく同じ経路を通る。したがって GDRCopy は小メッセージのコピーレイテンシを詰める補助であって、all-reduce のような大きなテンソルの集合通信の帯域には効かない。この点は本章の最後で実測して確かめる。
+ここで重要なのは、GDRCopy が効くのは小さいメッセージに限られるという点である。libfabric の EFA プロバイダは、GDRCopy を使う受信コピーのサイズ上限を環境変数で持ち、本書執筆時点の既定は 32 KB 程度である。それより大きいバルク転送は GPUDirect RDMA が NIC から GPU メモリへ直接書き込むので、GDRCopy の有無に関係なく同じ経路を通る。したがって GDRCopy は小メッセージのコピーレイテンシを詰める補助であって、all-reduce のような大きなテンソルの集合通信の帯域には効かない。この点は本章の最後で実測して確かめる。
 
 ## GPU Operator では入らない理由
 
@@ -150,7 +150,7 @@ terraform apply -var gdrcopy_mode=daemonset
 `terraform.tfvars` に `gdrcopy_mode = "userdata"` を書き込むのは、恒久的にこの方式へ切り替えると決めたときだけにする。tfvars に書くと EC2NodeClass の userData が変わり、既存ノードは drift 扱いになる。ただし置き換えが実際に走るかはプールしだいである。Capacity Block や EFA を使うプールは disruption budget が 0 ノードに固定されているので、drift と判定されても自発的な置き換えは起きない。置き換えが走るのは budget が既定 (10%) のままの on-demand / spot プールで、その場合は稼働中のノードが入れ替わる。いずれにせよ恒久的に切り替えると決めるまでは、本章の検証は `-var` の一時上書きだけで行う。
 :::
 
-これで `gdrdrv-loader` の DaemonSet が入る。GPU ノードがまだ 1 台も無ければ配布先が無く待機状態になる (Basic06 の EFA プールは空でもノードを保持する設定なので、ノードが残っている環境では apply の直後に既存ノード上で initContainer が走り、その場で `gdrdrv` がロードされる)が、次の手順以降で GPU Pod を投入すると Karpenter がノードを起こし、そのノードへ DaemonSet が自動配布されて initContainer が `gdrcopy-kmod` をインストールし `gdrdrv` をロードする。ロードの完了は、ノードが起動したあとに次で確認できる（2 ノードそろうのは手順 5 の測定 Pod を投入したあとになる）。
+これで `gdrdrv-loader` の DaemonSet が入る。GPU ノードがまだ 1 台も無ければ配布先が無いので待機状態になる。次の手順以降で GPU Pod を投入すると Karpenter がノードを起動し、そのノードへ DaemonSet が自動で配られて、initContainer が `gdrcopy-kmod` をインストールし `gdrdrv` をロードする。なお Basic06 の EFA プールは空でもノードを保持する設定なので、ノードが残っている環境では apply の直後に既存ノード上で initContainer が走り、その場で `gdrdrv` がロードされる。ロードの完了は、ノードが起動したあとに次で確認できる（2 ノードそろうのは手順 5 の測定 Pod を投入したあとになる）。
 
 ```bash
 k -n kube-system logs -l app=gdrdrv-loader -c load-gdrdrv --tail=-1 \
@@ -309,7 +309,7 @@ cd "$(git rev-parse --show-toplevel)"/infra/eks
 terraform apply -var gdrcopy_mode=off
 ```
 
-ただしこれは Terraform 管理リソースの撤去であって、ホストの原状回復ではない。ノードには `gdrcopy-kmod` パッケージと有効化された `gdrcopy.service` が残り、ロード済みの `gdrdrv` も残る。`gdrcopy.service` が有効なままなので、ノードを再起動しても `/dev/gdrdrv` は復活する。これらは無害なので、通常は Basic06 と同じ `04-teardown.sh` でノードプールごと退避すれば十分である。Capacity Block のノードは予約期間の終了時に AWS 側で回収されるため、モジュールがホストに残ることを気にする必要はない。
+ただしこれは Terraform 管理リソースの撤去であって、ホストの原状回復ではない。ノードには `gdrcopy-kmod` パッケージと有効化された `gdrcopy.service` が残り、ロード済みの `gdrdrv` も残る。`gdrcopy.service` が有効なままなので、ノードを再起動しても `/dev/gdrdrv` は復活する。これらは無害なので、通常は Basic06 と同じ [`04-teardown.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/04-teardown.sh) でノードプールごと退避すれば十分である。Capacity Block のノードは予約期間の終了時に AWS 側で回収されるため、モジュールがホストに残ることを気にする必要はない。
 
 手順 5 のように GDRCopy の有無を手作業で切り替えて測る場合にだけ、`gdrdrv` のアンロードが必要になる。その際は `/dev/gdrdrv` を開いている Pod を先にすべて消し（開いていると `Module is in use` で外せない）、`gdrdrv-loader` DaemonSet も止めてから、`CAP_SYS_MODULE` を持つ特権コンテキストで `rmmod gdrdrv` する。DaemonSet を止めるのは、稼働中の Pod が `rmmod` を検知して巻き戻すからではない。ロードは initContainer が 1 回だけ行うので、巻き戻るのは Pod が作り直されたとき (削除やノードの再起動) である。止めておかないとその再作成でロードが戻る。なお `/dev/gdrdrv` は `mknod` で作られるため `rmmod` では消えず、開けないだけのファイルが残ることがある。`hostPath` の `type: CharDevice` の検査は通ってしまうので、無効状態の測定では `/dev/gdrdrv` をマウントしない版の Pod を使う。
 

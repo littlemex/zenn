@@ -19,7 +19,7 @@ observability は `var.enable_observability = true`（既定で有効）で `ter
 
 ![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 
-アクセラレータノード（GPU）で動く DCGM exporter を起点に、`monitoring` namespace の Prometheus へメトリクスが流れ、Grafana がそれを可視化します。監視スタックは専用の Karpenter NodePool（`node-role=monitoring`）に常駐し、GPU ノードや system ノードの上では動きません。
+アクセラレータノード（GPU）で動く DCGM exporter を起点に、`monitoring` namespace の Prometheus へメトリクスが流れ、Grafana がそれを可視化します。監視スタックのうち Prometheus・Grafana・Operator・kube-state-metrics は専用の Karpenter NodePool（`node-role=monitoring`）に常駐し、GPU ノードや system ノードの上では動きません。例外は node-exporter で、こちらは各ノードの指標を採るための DaemonSet なので、アクセラレータノードを含む全ノードに載ります。
 
 ## これは何をするものか
 
@@ -31,7 +31,7 @@ GPU を使った分散学習・推論では、「GPU が本当に使われてい
 - **Prometheus**: 各 exporter からメトリクスを定期的に収集・時系列データ保持します
 - **Grafana**: Prometheus のデータをダッシュボードとして可視化します
 
-Prometheus と Grafana は [kube-prometheus-stack](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack) という Helm チャートでまとめて導入します。このチャートは Prometheus Operator・Grafana・node-exporter・kube-state-metrics・各種 Kubernetes ダッシュボードを一括で入れてくれます。この book では [`observability.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/observability.tf) がこのチャートを `helm_release` として管理し、GPU 用の ServiceMonitor・テナント別ダッシュボード・専用 NodePool までを一括で構築します。
+Prometheus と Grafana は [kube-prometheus-stack](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack) という Helm チャートでまとめて導入します。このチャートは Prometheus Operator・Grafana・node-exporter・kube-state-metrics・各種 Kubernetes ダッシュボードを一括で入れてくれます。本書では [`observability.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/observability.tf) がこのチャートを `helm_release` として管理し、GPU 用の ServiceMonitor・テナント別ダッシュボード・専用 NodePool までを一括で構築します。
 
 ## テナントごとに GPU を見る
 
@@ -90,7 +90,7 @@ Prometheus は PVC を持つ常駐の stateful なコンポーネントで、GPU
 
 NMA は障害を「検知して知らせる」だけで、Karpenter によるノードの自動修復（auto-repair、不健全なノードを自動で terminate して置き換える機能）は意図的に無効にしています。高価な GPU ノードを止める・置き換えるという不可逆な判断は、人間やジョブ層に委ねる方針です。
 
-NMA を GPU ノードで正しく動かすための設定、実際に GPU 障害を注入して検知が働くことをどう確かめるか、auto-repair を無効にした詳しい理由といった踏み込んだ話は、本 book では扱いません。本章のワークショップでは、監視スタックと NMA がすでに動いていることの確認までを行います。
+NMA を GPU ノードで正しく動かすための設定、実際に GPU 障害を注入して検知が働くことをどう確かめるか、auto-repair を無効にした詳しい理由といった踏み込んだ話は、本書では扱いません。本章のワークショップでは、監視スタックと NMA がすでに動いていることの確認までを行います。
 
 # ワークショップ実施
 
@@ -166,7 +166,7 @@ for s in r[:8]:
   tenant=(none)  node=ip-10-0-8-26.us-east-2.compute.internal  gpu=0
 ```
 
-各系列に `node` ラベルが付いており、これは前掲の `__meta_kubernetes_node_name` を `node` に変換する relabeling が効いていることを示します。一方 `tenant` ラベルは、そのノードがテナント単位の NodePool で起動された場合にだけ namespace 名が入ります（先に触れた `karpenter-tenant-pools` を使ってテナントごとにプールを切る構成のことで、本 book では Experiment01 として扱います）。Basic04/Basic07 で使う通常の GPU プール（`gpu-ddp`）のノードにはテナントラベルが無いため `(none)` になります。したがって tenant relabeling が実際に値を刻む様子と「GPU Utilization by Tenant」ダッシュボードでのテナント絞り込みは、Experiment01 のテナントプールでノードを起動して初めて確認できます。本手順の環境では tenant は `(none)` のみになる点に注意してください。
+各系列に `node` ラベルが付いており、これは前掲の `__meta_kubernetes_node_name` を `node` に変換する relabeling が効いていることを示します。一方 `tenant` ラベルは、そのノードがテナント単位の NodePool で起動された場合にだけ namespace 名が入ります（先に触れた `karpenter-tenant-pools` を使ってテナントごとにプールを切る構成のことで、本書では Experiment01 として扱います）。Basic04/Basic07 で使う通常の GPU プール（`gpu-ddp`）のノードにはテナントラベルが無いため `(none)` になります。したがって tenant relabeling が実際に値を刻む様子と「GPU Utilization by Tenant」ダッシュボードでのテナント絞り込みは、Experiment01 のテナントプールでノードを起動して初めて確認できます。本手順の環境では tenant は `(none)` のみになる点に注意してください。
 
 系列数は、クラスタに存在する GPU 総数（dcgm-exporter が動く GPU ノード上の GPU 枚数）と一致します。使用していない GPU も値 0 の系列として出ます。GPU ノードが 1 台も無ければ 0 系列になるので、その場合は `k get nodes -L node-role` で GPU ノードの有無を先に確認してください。なお GPU ノードが立った直後は、GPU Operator の dcgm-exporter が起動して初回 scrape が回るまで数分かかり、その間は 0 系列に見えることがあります。
 
@@ -196,7 +196,7 @@ curl -sf http://localhost:3000/api/health >/dev/null \
 
 アクセス手順は `terraform output grafana_access` にもワンライナーで出力されます。
 
-ログイン後、左メニューの Dashboards を開くと、kube-prometheus-stack が自動導入した Kubernetes 向けダッシュボード群に加えて、本 book が配布したダッシュボードが表示されます。`GPU` フォルダには自作の「GPU Utilization by Tenant」と NVIDIA 公式の「NVIDIA DCGM Exporter Dashboard」、`Nodes` フォルダにはノードの CPU・メモリ・ディスク・ネットワークを網羅する「Node Exporter Full」が入っています。いずれも `terraform apply` で自動的に配置され、手動インポートは不要です。
+ログイン後、左メニューの Dashboards を開くと、kube-prometheus-stack が自動導入した Kubernetes 向けダッシュボード群に加えて、本書が配布したダッシュボードが表示されます。`GPU` フォルダには自作の「GPU Utilization by Tenant」と NVIDIA 公式の「NVIDIA DCGM Exporter Dashboard」、`Nodes` フォルダにはノードの CPU・メモリ・ディスク・ネットワークを網羅する「Node Exporter Full」が入っています。いずれも `terraform apply` で自動的に配置され、手動インポートは不要です。
 
 「GPU Utilization by Tenant」ダッシュボードの上部にある `Tenant` ドロップダウンで自分の namespace を選ぶと、そのテナントの GPU だけの使用率・メモリ・SM クロック・温度・電力が表示されます。設定ファイルもクエリも書く必要はなく、ドロップダウンを選ぶだけです。`http://localhost:3000/d/gpu-tenant?var-tenant=team-a` のように URL に `var-tenant` を付ければ、選択済みの状態で共有もできます。
 
