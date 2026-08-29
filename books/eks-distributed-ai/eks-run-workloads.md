@@ -39,7 +39,7 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 
 本章は既存のプールと GPU Operator の上に vLLM の Deployment を載せるだけなので、新しくインフラを足す操作はありません。
 
-`gpu-ddp` プールと GPU Operator の有無を確認します。確認したいのは NodePool の存在です。Karpenter は要求があってからノードを起動するので、Basic04 のワークロードを消してあれば `k get nodes` が 0 台なのは正常で、本章の Deployment を投入した時点で起動します。
+`gpu-ddp` プールと GPU Operator の有無を確認します。確認したいのは NodePool の存在です。Karpenter は要求があってからノードを起動するので、Basic04 のワークロードを消してあれば、下のようにプール名で絞ったノード一覧が 0 台なのは正常で、本章の Deployment を投入した時点で起動します (絞り込みを外すと system と monitoring の常駐ノードが並びます)。
 
 ```bash
 POOL=gpu-ddp
@@ -254,7 +254,7 @@ port-forward はバックグラウンド（`&`）で起動したので、確認�
 もし次の Observability をそのまま実施する場合はこの後片付けは Basic08 の後に実施してください。
 :::
 
-推論サーバーを止めれば、GPU ノードは `consolidateAfter`（本構成の NodePool では 5 分に設定）のアイドル後に Karpenter が自動回収します。`gpu-ddp` は spot 優先で確保するため、使った分だけの課金です。Deployment・Service の名前は `--set` の値に関わらず変わらないため、`gpuServingVllm.enabled=true` と `nodeRole` だけを付けてレンダリングした結果を `k delete` に渡せば、投入時に指定した `model` や `memory` などの値を覚えておく必要なく、チャートが出力した全リソースを漏れなく削除できます。
+推論サーバーを止めれば、GPU ノードは [`consolidateAfter`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/karpenter-resources.tf)（本章で使う `gpu-ddp` プールでは 5 分）のアイドル後に Karpenter が自動回収します。`gpu-ddp` は spot 優先で確保するため、使った分だけの課金です。Deployment・Service の名前は `--set` の値に関わらず変わらないため、`gpuServingVllm.enabled=true` と `nodeRole` だけを付けてレンダリングした結果を `k delete` に渡せば、投入時に指定した `model` や `memory` などの値を覚えておく必要なく、チャートが出力した全リソースを漏れなく削除できます。
 
 ```bash
 helm template exp charts/experiments -n "$NAMESPACE" \

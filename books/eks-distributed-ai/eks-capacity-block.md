@@ -34,21 +34,21 @@ CB を使う最低限の運用フローは次のようになります。
 
 この章に付属する CB 関連の 補助スクリプト は [`00-check-cb-offerings.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/00-check-cb-offerings.sh)、[`01-purchase-cb.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/01-purchase-cb.sh)、[`02-post-purchase.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/02-post-purchase.sh)、[`04-teardown.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/04-teardown.sh) の 4 つです（`03-` は欠番で、そういうファイルはありません）。
 
-この構成には予約の終了時刻から自動的に期限アラートを組み立てる仕組みが入っています。プールに `cb_reservation_id` を書いておくと、Terraform がその予約の終了時刻を自動的に読み取り、Amazon EventBridge Scheduler の one-shot スケジュールを 1 プールにつき 1 つ作り、終了 1 時間前に Amazon SNS へ通知します。発火後はそのスケジュール自体が AWS 側から消えます。ここで素朴に作ると、次の `terraform apply` が消えたスケジュールを過去の時刻で作り直そうとして API に拒否され、以降 apply が通らなくなります。これを避けているのは自己削除ではなく Terraform 側の時刻フィルタで、通知時刻 (終了 1 時間前) がすでに過ぎたプールをスケジュールの対象から外しています。同じ仕組みを自分で組む場合は、この 2 つを対で用意しないと apply が毎回失敗します。例外は、通知時刻の直前に `plan` を作って直後に `apply` する場合です。このときは `plan` の時点では未来だった時刻が `apply` の時点で過去になっているため、その 1 回の apply が失敗します。`plan` を作り直せば解消します。この時刻フィルタには読者に見える帰結が 1 つあります。終了 1 時間前を過ぎてから初めて `apply` した場合、スケジュールも SNS トピックも作られません。後述の手順 5 で `cb_expiry_alert_schedule_exprs` が空の map、`cb_expiry_sns_topic_arn` が空文字になるのはこのケースで、設定の失敗ではありません。
+この構成には予約の終了時刻から自動的に期限アラートを組み立てる仕組みが入っています。プールに `cb_reservation_id` を書いておくと、Terraform がその予約の終了時刻を自動的に読み取り、Amazon EventBridge Scheduler の one-shot スケジュールを 1 プールにつき 1 つ作り、終了 1 時間前に Amazon SNS へ通知します。発火後はそのスケジュール自体が AWS 側から消えます。ここで素朴に作ると、次の `terraform apply` が消えたスケジュールを過去の時刻で作り直そうとして API に拒否され、以降 apply が通らなくなります。これを避けているのは自己削除ではなく Terraform 側の時刻フィルタで、通知時刻 (終了 1 時間前) がすでに過ぎたプールをスケジュールの対象から外しています。同じ仕組みを自分で組む場合は、この 2 つを対で用意しないと apply が毎回失敗します。例外は、通知時刻の直前に `plan` を作って直後に `apply` する場合です。このときは `plan` の時点では未来だった時刻が `apply` の時点で過去になっているため、その 1 回の apply が失敗します。`plan` を作り直せば解消します。この時刻フィルタには読者に見える帰結が 1 つあります。終了 1 時間前を過ぎたプールは、スケジュールの作成対象から外れます。SNS トピックはクラスタで 1 つを共有するので、通知時刻がまだ先の予約プールが 1 つでも残っていれば作られます。予約プールがこの 1 つだけ、あるいは全予約プールの通知時刻がすでに過ぎている場合に、後述の手順 5 で `cb_expiry_alert_schedule_exprs` が空の map、`cb_expiry_sns_topic_arn` が空文字になります。これは設定の失敗ではありません。
 
 プールの `cb_end_date` は、この自動導出された終了時刻を緊急時に上書きするための任意項目であり、通常は書く必要がありません。
 
 ## 予約 ID（cr-...）の安全な取り扱い
 
-CB は前払いで、購入した時点でその予約期間分の費用が確定します。途中で不要になっても取り消しや返金はできません。`infra/eks/scripts` の中にある `00-check-cb-offerings.sh` で CB 予約のオファリングを検索できます。
+CB は前払いで、購入した時点でその予約期間分の費用が確定します。途中で不要になっても取り消しや返金はできません。`infra/eks/scripts` の中にある [`00-check-cb-offerings.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/00-check-cb-offerings.sh) で CB 予約のオファリングを検索できます。
 
 `01-purchase-cb.sh` で CB を購入すると、標準出力に `cr-...` という Capacity Reservation ID が表示されます。これを `accelerator-pools.auto.tfvars`(Basic04 で作ったプール定義ファイル)の `accelerator_pools` 内、該当プールの `cb_reservation_id` に貼り付けるだけで、Terraform 側の設定は完了します。
 
 ```hcl
 # accelerator-pools.auto.tfvars（例、cr-... はプレースホルダ）
 accelerator_pools = {
-  gpu-p5en = {
-    instance_types    = ["p5en.48xlarge"]
+  gpu-p4d = {
+    instance_types    = ["p4d.24xlarge"]
     device_plugin     = "nvidia"
     capacity_type     = "reserved"
     cb_reservation_id = "cr-0123456789abcdef0" # zone はこの予約から導出される
@@ -85,7 +85,7 @@ check "capacity_block_ready" {
 
 1 つ目の assert は CB がまだ `scheduled`（開始前）や `expired`（終了後）のまま apply されようとしていないかを見ます。2 つ目は、プールに**明示指定した** `zone` と、予約が実際に確保している AZ が食い違っていないかを見ます。条件式の先頭が `p.zone == ""` で短絡している点が肝で、`zone` を書かない既定のプールでは `local.pool_zone` が予約の AZ をそのまま読み取るため食い違いようがなく、この assert は素通りします。警告が意味を持つのは、導出される AZ をあえて明示指定で上書きしようとして、その値が予約の AZ と矛盾した場合だけです。
 
-ここで重要なのは、**`check` ブロックは条件を満たさなくても plan/apply を WARNING で通す**という Terraform の仕様です。「アサーションだから当然 apply を止める」と考えると誤りで、この構成でもあえて「止めない」設計を選んでいます。理由はコメントにある通りで、もし CB の `state` を NodePool の `for_each` の条件に使ってハードゲート化すると、CB が後から `expired` に変わった瞬間に `for_each` の対象から外れて **NodePool ごと DESTROY される**という、警告よりもずっと悪い結果を招きます。したがって `check` ブロックはあくまで「気づくための仕掛け」であり、apply を止める防波堤ではありません。
+ここで重要なのは、**`check` ブロックは条件を満たさなくても plan/apply を WARNING で通す**という [Terraform の仕様](https://developer.hashicorp.com/terraform/language/checks)です。「アサーションだから当然 apply を止める」と考えると誤りで、この構成でもあえて「止めない」設計を選んでいます。理由はコメントにある通りで、もし CB の `state` を NodePool の `for_each` の条件に使ってハードゲート化すると、CB が後から `expired` に変わった瞬間に `for_each` の対象から外れて **NodePool ごと DESTROY される**という、警告よりもずっと悪い結果を招きます。したがって `check` ブロックはあくまで「気づくための仕掛け」であり、apply を止める防波堤ではありません。
 
 一方、同じモジュールの [`variables.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/variables.tf) にある `validation` ブロック（`cb_end_date` の UTC 必須や、`capacity_type` と `cb_reservation_id` の組み合わせチェックなど）は、こちらは条件を満たさないと **plan 自体を失敗させる**、正真正銘のフェイルファストです。同じ「CB がらみのチェック」でも、構造的に検証できるもの（tfvars の書き方の誤り）は `validation` でハードに止め、外部の実行時状態（CB の `state` や実際の AZ）に依存するものは `check` でソフトに警告する、という役割分担になっています。
 

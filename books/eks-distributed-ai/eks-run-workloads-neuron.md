@@ -31,7 +31,7 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 
 [vLLM Neuron plugin の解説](https://zenn.dev/tosshi/articles/be22d1ace136a5)
 
-vLLM Neuron plugin については上記の記事にまとめてあります。この plugin を同梱した AWS 公式 DLC (`public.ecr.aws/neuron/pytorch-inference-vllm-neuronx`) を Kubernetes の Deployment として trn2 ノードに載せ、Qwen3-VL モデルをサービングします。
+vLLM Neuron plugin については上記の記事にまとめてあります。この plugin を同梱した AWS 公式 DLC ([`public.ecr.aws/neuron/pytorch-inference-vllm-neuronx`](https://gallery.ecr.aws/neuron/pytorch-inference-vllm-neuronx)) を Kubernetes の Deployment として trn2 ノードに載せ、Qwen3-VL モデルをサービングします。
 
 GPU 版（Basic07）との対応関係は次のとおりです。
 
@@ -53,7 +53,7 @@ GPU 版（Basic07）との対応関係は次のとおりです。
 - Basic05 の手順で `terraform apply` で NodePool 作成済み
 - `k` と `KUBECONFIG` は Basic01 手順 2 の 4 行で設定済み
 
-trn2 の NodePool と、すでにノードが起動している場合の Neuron リソースを確認します。Karpenter は要求があってからノードを起動するので、手順 3 の Deployment を投入する前は `k get nodes` が空になるのが正常です。空だった場合は `k get nodepool` で NodePool の存在だけを確かめて手順 3 に進んでください。
+trn2 の NodePool と、すでにノードが起動している場合の Neuron リソースを確認します。Karpenter は要求があってからノードを起動するので、手順 3 の Deployment を投入する前は、下のようにインスタンスタイプで絞ったノード一覧が空になるのが正常です (絞り込みを外すと system と monitoring の常駐ノードが並びます)。空だった場合は `k get nodepool` で NodePool の存在だけを確かめて手順 3 に進んでください。
 
 ```bash
 k get nodes -l node.kubernetes.io/instance-type=trn2.3xlarge \
@@ -67,7 +67,7 @@ NAME                                             DEVICE   CORE
 ip-10-0-21-164.ap-southeast-4.compute.internal   1        4
 ```
 
-`trn2.3xlarge` は Trainium2 デバイスを 1 個持ち、device plugin はそれを「デバイス 1 個」（`aws.amazon.com/neuron: 1`）かつ「NeuronCore 4 個」（`aws.amazon.com/neuroncore: 4`）として同時に公開します。この 2 つの単位の違いが、手順 3 のチャート投入時に有効に働きます。
+`trn2.3xlarge` は Trainium2 デバイスを 1 個持ち、[device plugin](https://github.com/aws-neuron/neuron-helm-charts) はそれを「デバイス 1 個」（`aws.amazon.com/neuron: 1`）かつ「NeuronCore 4 個」（`aws.amazon.com/neuroncore: 4`）として同時に公開します。この 2 つの単位の違いが、手順 3 のチャート投入時に有効に働きます。
 
 :::message
 `CORE` が `4` になるのは、このノードが論理 NeuronCore 設定 LNC=2（環境変数 `NEURON_LOGICAL_NC_CONFIG=2` 相当）で動作しているためです。もし環境によって `CORE` が `8`（LNC=1）と表示された場合は、テンソル並列数を ノードが公開しているコア数（この例なら 8）に合わせます。チャートの既定は 4 なので、手順 3 のコマンドに `--set neuronVllmPlugin.tpSize=8` を足してください（この値がコンテナの `--tensor-parallel-size` になります）。

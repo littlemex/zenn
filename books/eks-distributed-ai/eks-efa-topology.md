@@ -87,7 +87,7 @@ multi-card レイアウトでは**カード 0 がノード IP を運ぶため EF
 - p5.48xlarge: 32 カード → schedulable EFA = **31**
 - g6e.12xlarge: 1 カード（single-card）→ schedulable EFA = **1**
 
-Pod が `vpc.amazonaws.com/efa: 16` をリクエストすると、15 しか広告されないため永久に Pending になります。このモジュールでは `terraform output accelerator_pool_efa_schedulable` でプールごとの正しい値を公開しています。
+Pod が `vpc.amazonaws.com/efa: 16` をリクエストすると、15 しか広告されないため永久に Pending になります。このモジュールでは `terraform output` の [`accelerator_pool_efa_schedulable`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/outputs.tf) でプールごとの正しい値を公開しています。
 
 ## networkInterfaces の自動生成
 
@@ -252,6 +252,8 @@ helm template exp charts/experiments -n "$NAMESPACE" \
   | k apply -f -
 ```
 
+`echo` が `efa=null` を出したら、そのプールキーが `terraform output` に無いということなので、Basic05 の apply に戻ります。そのまま helm に渡すと `vpc.amazonaws.com/efa: "null"` という不正な値になり apply が失敗します。
+
 投入後は Karpenter が 2 台を起動し、DLC イメージ（十数 GB 級）の pull に初回 10 分前後かかるため、しばらく Pod は `ContainerCreating` に留まります。これはノード起動失敗ではないので、`k get pod` の理由が `ContainerCreating` のうちは pull の完了を待ちます。起動したノードは Basic05 の `consolidateAfter: Never`（予約プールは自動で `protect` に解決）で保たれるため、TrainJob が終わっても手順 4・5 で参照できます。
 
 :::details hugepages を要求する方式（`ncclSshd` / Neuron）を使う場合の注意
@@ -284,7 +286,7 @@ Karpenter が起動時に付ける `node-role=<プール名>` を使えば、ノ
 
 `nccl-tests` のイメージは Open MPI 前提で `torchrun` を持たないため、Pod が即座に `exec: "torchrun": executable file not found in $PATH` で落ちます。これは失敗が明示されるので気づけます。
 
-危険なのは Basic02 でビルドした `ddp-sample` のイメージです。`torchrun` は持ちますがEFA を含まない PyTorch イメージなので EFA プラグインがありません。この場合 NCCL はエラーを出さず、自前の TCP ソケット通信に**エラーを出さずに切り替えます**。ベンチマークは完走し、それらしい数値も出るので、EFA を測ったつもりで実際には TCP を測っていたという結果になります。帯域の数値だけでは区別できないため、手順 6 で説明するログ行の確認が必須です。
+危険なのは Basic02 でビルドした `ddp-sample` のイメージです。`torchrun` は持ちますが EFA を含まない PyTorch イメージなので EFA プラグインがありません。この場合 NCCL はエラーを出さず、自前の TCP ソケット通信に**エラーを出さずに切り替えます**。ベンチマークは完走し、それらしい数値も出るので、EFA を測ったつもりで実際には TCP を測っていたという結果になります。帯域の数値だけでは区別できないため、手順 6 で説明するログ行の確認が必須です。
 
 `torchrun` と EFA プラグインの両方を持つイメージとして、[AWS Deep Learning Containers](https://docs.aws.amazon.com/deep-learning-containers/latest/devguide/deep-learning-containers-images.html) があります。利用可能なタグは次のように調べられます。
 
@@ -297,9 +299,12 @@ aws ecr describe-images --region "$AWS_REGION" --registry-id 763104351884 --repo
 
 ## 4. ノード上の EFA リソースを確認する
 
-手順 3 を投入したら、まずノードが起動して stage Job が終わるのを待ちます。
+手順 3 を投入したら、まずノードが起動して stage Job が終わるのを待ちます。`k wait` は実行した時点で対象が 1 つも無いと `no matching resources found` で即座に終わるので、ノードが現れるまで待つ行を前に置きます。
 
 ```bash
+until [ "$(k get nodes -l node-role=$POOL --no-headers 2>/dev/null | wc -l | tr -d ' ')" -ge 2 ]; do
+  sleep 15
+done
 k wait --for=condition=Ready node -l node-role=$POOL --timeout=20m
 k wait --for=condition=complete job/nccl-trainjob-stage -n "$NAMESPACE" --timeout=10m
 ```
@@ -308,7 +313,7 @@ k wait --for=condition=complete job/nccl-trainjob-stage -n "$NAMESPACE" --timeou
 
 なお手順 3 のレンダリングは、測定用の TrainJob だけでなく `nccl-trainjob-stage` という Job も作ります。測定スクリプト `bench.py` は ConfigMap として渡されますが、TrainJob の Runtime がマウントするのは `/shared` と `/dev/shm` で ConfigMap は含まれないため、この Job が CPU プール上で ConfigMap の内容を `/shared/nccl-bench/bench.py` にコピーします。TrainJob はそのパスを `torchrun` に渡すので、Job が `Completed` になっていることが測定の前提です。`k get pods -n $NAMESPACE` に busybox の Pod が現れるのはこのためで、測定 Pod が「スクリプトが無い」で落ちる場合はまずこの Job の状態を見てください。この Job は完了から 1 時間で自動削除される設定なので、時間をおいてから見に行くと存在しません。無くなっていることは失敗を意味しないので、その場合は `/shared/nccl-bench/bench.py` があるかどうかで判断します。ノードが `Ready` になっていれば、測定 Pod の `Running` を待たずにこの allocatable 確認を実行できます（測定 Pod は DLC イメージの pull で `ContainerCreating` に留まっていることがありますが、ノードの EFA allocatable はその前から確認できます）。
 
-`POOL` は Basic05 で `accelerator-pools.auto.tfvars` に貼り付けたプール名に置き換えます。表示された `efa` が `null` の場合は、そのプールが Basic05 でまだ apply されていません。先に戻って apply してから進んでください。
+`POOL` は Basic05 で `accelerator-pools.auto.tfvars` に貼り付けたプール名に置き換えます。ノードが 1 行も表示されない場合は、そのプールのノードがまだ起動していないか、プール自体が Basic05 でまだ apply されていません。
 
 ```bash
 POOL=gpu-p4d
@@ -385,7 +390,7 @@ nccl-trainjob-node-0-0:172:172 [0] NCCL INFO NET/OFI Using Libfabric version 2.4
 nccl-trainjob-node-0-1:172:172 [0] NCCL INFO NET/OFI Selected provider is efa, fabric is efa (found 3 nics)
 ```
 
-両ノードで `efa` プロバイダが選択され、3 NIC が認識されています。この `found 3 nics` が、手順 2 の `terraform output accelerator_pool_efa_schedulable` が CB プールについて返す値（p4d.24xlarge なら 3 = 4 − 1）と一致していることが重要です。手順 2 を実行した時点では `gpu-ddp` しか無いので 0 だけが出ますが、Basic05 の CB プールを apply したあとに同じコマンドを実行すると 3 が出ます。複数カードのインスタンスでは、カード枚数から 1 引いた値がそのまま NCCL が使う NIC 数になります (カード 0 はノードの IP を持つため要求できません)。カードが 1 枚のインスタンス、たとえば g6e.12xlarge では引き算はせず 1 が schedulable になります。
+両ノードで `efa` プロバイダが選択され、3 NIC が認識されています。この `found 3 nics` が、手順 2 の `terraform output accelerator_pool_efa_schedulable` が CB プールについて返す値（p4d.24xlarge なら 3 = 4 − 1）と一致していることが重要です。手順 2 に載せた実機出力は Basic04 の `gpu-ddp` だけを定義していた時点で採ったものなので 0 しか並んでいませんが、Basic05 の CB プールを apply 済みの読者が同じコマンドを実行すると 3 が出ます。複数カードのインスタンスでは、カード枚数から 1 引いた値がそのまま NCCL が使う NIC 数になります (カード 0 はノードの IP を持つため要求できません)。カードが 1 枚のインスタンス、たとえば g6e.12xlarge では引き算はせず 1 が schedulable になります。
 
 帯域の実測値:
 

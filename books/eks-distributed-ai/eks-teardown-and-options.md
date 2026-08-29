@@ -43,7 +43,7 @@ export AWS_REGION=us-east-2
 source infra/scripts/distai-env.sh
 ```
 
-この 3 行は Basic01 step 2 と同じもので、中身は [`distai-env.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/scripts/distai-env.sh) にあります。`CLUSTER_NAME` と `AWS_REGION` は自分のクラスタのものに読み替えます。特に `AWS_REGION` は手順 5 の孤児ボリュームの確認でそのまま使うので、ここが違っていると別のリージョンを照会して「残っていない」という答えが返ってきます。表示された context が破棄したいクラスタであることを確認してから進みます。
+この 4 行は Basic01 手順 2 と同じもので、中身は [`distai-env.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/scripts/distai-env.sh) にあります。`CLUSTER_NAME` と `AWS_REGION` は自分のクラスタのものに読み替えます。特に `AWS_REGION` は手順 5 の孤児ボリュームの確認でそのまま使うので、ここが違っていると別のリージョンを照会して「残っていない」という答えが返ってきます。表示された context が破棄したいクラスタであることを確認してから進みます。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
@@ -80,13 +80,16 @@ Accelerator nodes still registered:
 
 ## 3. アクセラレータノードのドレイン完了を確認する
 
+`POOL` は手順 2 の `Discovered accelerator NodePool(s):` に出たプール名です。複数あった場合は 1 つずつ見るか、`k get nodeclaims -w` で全体を見ます。
+
 ```bash
-k get nodeclaims -l karpenter.sh/nodepool=$POOL -w
+POOL=gpu-ddp
+k get nodeclaims -l "karpenter.sh/nodepool=$POOL" -w
 ```
 
 NodePool 削除の直後は、そのプールの NodeClaim が `Terminating` で残り、Karpenter が Amazon EC2 インスタンスの終了をバックグラウンドで進めます。単一ノードなら概ね 9 分前後で消えます。EFA を複数枚持つ大きなノードは ENI の解放に時間がかかり、さらに長くかかることがあります。
 
-ここで確認したいのは、手順 2 で削除したアクセラレータプールの NodeClaim が消えることです。observability の章を実施している場合は監視スタック用の `monitoring` NodePool の NodeClaim が残りますが、これは高価なアクセラレータではなく、次の手順 4 でクラスタごと破棄されるので、ここで 0 件になるのを待つ必要はありません。アクセラレータプールの NodeClaim が消えたら破棄に進みます。
+ここで確認したいのは、手順 2 で削除したアクセラレータプールの NodeClaim が消えることです。上のコマンドはプール名で絞っているので、observability の章を実施していて `monitoring` NodePool の NodeClaim が残っていても表示されません。それは高価なアクセラレータではなく、次の手順 4 でクラスタごと破棄されるので待つ必要がありません。絞り込んだ一覧が空になったら破棄に進みます。
 
 ## 4. クラスタ全体を破棄する
 
@@ -94,10 +97,10 @@ NodePool 削除の直後は、そのプールの NodeClaim が `Terminating` で
 ./04-teardown.sh --namespace "$NAMESPACE" --destroy
 ```
 
-`--destroy` を付けると、ワークロードとノードの片付けに続けて `terraform destroy` が走ります。ただし destroy を始める前に、この VPC の中に state が管理していないものが残っていないかを点検します。他チームの EFS マウントターゲットやロードバランサ、他の state が作ったセキュリティグループなどがあると、subnet や VPC の削除が拒否されて destroy が終盤で失敗します。それを 1 時間後のエラーで知るのではなく先に知るための点検で、見つかった場合は何がどれを使用しているかを名前付きで一覧して停止します。表示されたものが消えて構わないと判断できるなら `--ignore-vpc-dependents` を付けて続行します。なお destroy が失敗した場合は、EKS が自動作成して残ったセキュリティグループが残っていないかを見ます。実際に掃除できたときだけ 1 度再試行し、掃除するものが無ければ、このスクリプトでは解消できない失敗としてそのまま報告します。このとき `04-teardown.sh` は、手順 2 で消したアクセラレータプールに加えて、`monitoring` などクラスタに残っている Karpenter の NodePool もすべて先に削除します。これは、NodePool が残っていると Karpenter が Pod を載せるためにノードを作り続け、`terraform destroy` が内部で待つノードのドレイン完了がいつまでも来なくなるためです。すべての NodePool を止めたうえで `terraform destroy` に入り、Karpenter がノードを終了し終えるのを待ってから、Karpenter 本体やアクセラレータ関連のコントローラを破棄します。この順序により、アクセラレータノードが終了されないまま課金だけが残る事態を防ぎます。
+`--destroy` を付けると、ワークロードとノードの片付けに続けて `terraform destroy` が走ります。この VPC の中にこの state が管理していないもの (他チームの EFS マウントターゲットやロードバランサ、別の state が作ったセキュリティグループなど) があると、subnet や VPC の削除が拒否されて destroy は終盤で失敗します。スクリプトはこれを事前に点検しないので、失敗したら Terraform のエラーに出るリソース ID を手がかりに、残っているものを自分で確認して片付けてから再実行します。このとき `04-teardown.sh` は、手順 2 で消したアクセラレータプールに加えて、`monitoring` などクラスタに残っている Karpenter の NodePool もすべて先に削除します。これは、NodePool が残っていると Karpenter が Pod を載せるためにノードを作り続け、`terraform destroy` が内部で待つノードのドレイン完了がいつまでも来なくなるためです。すべての NodePool を止めたうえで `terraform destroy` に入り、Karpenter がノードを終了し終えるのを待ってから、Karpenter 本体やアクセラレータ関連のコントローラを破棄します。この順序により、アクセラレータノードが終了されないまま課金だけが残る事態を防ぎます。
 
 :::message alert
-ノードのドレイン待ちが進まない場合、よくある原因は `karpenter.sh/do-not-disrupt` を付けた Pod です。Karpenter はこの Pod を退去させないので、載っているノードが空になりません。手順 2 が片付けるのは `--namespace` で指定した namespace だけなので、それ以外の namespace に置いたものは残ります。Advanced01 の headroom Deployment (`kube-system`) がその例で、消し忘れると待ちが終わりません。待ちが 5 分を超えるとスクリプトが該当する Pod を名前付きで一覧するので、表示されたものを消してください。
+ノードのドレイン待ちが進まない場合、よくある原因は [`karpenter.sh/do-not-disrupt`](https://karpenter.sh/docs/concepts/disruption/#pod-level-controls) を付けた Pod です。Karpenter はこの Pod を退去させないので、載っているノードが空になりません。手順 2 が片付けるのは `--namespace` で指定した namespace だけなので、それ以外の namespace に置いたものは残ります。Advanced01 の headroom Deployment (`kube-system`) がその例で、消し忘れると待ちが終わりません。この待ちは `terraform destroy` の中で NodeClaim が 0 になるまで最大 30 分続き、原因の Pod を名前で教えてはくれません。0 にならなければ destroy は中断されるので、待ちが進まないときは `k get pods -A` に残っている Pod の annotation を見て、`do-not-disrupt` が付いたものを自分で消してください。
 
 `terraform destroy` の完了まで、ターミナルを閉じずに待ちましょう。途中で中断すると、アクセラレータノードが取り残されて課金が続く可能性があります。破棄が完了したら、Amazon EC2 コンソールや `aws ec2 describe-instances` で対象リソースが残っていないことを最終確認すると確実です。
 :::

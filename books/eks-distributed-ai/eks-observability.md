@@ -43,10 +43,10 @@ Prometheus と Grafana は [kube-prometheus-stack](https://github.com/prometheus
 
 ここで「ラベルを付ける側」と「ラベルを使う側」を分けて理解すると、仕組みがはっきりします。
 
-- **付ける側**、つまりノードにラベルを刻むのは observability ではなく、自作中の `karpenter-tenant-pools` CRD の役割です。テナントのプールで起動したノードに `tenantpools.dev/tenant=<namespace>` という**ノードラベル**を付けます。逆に言うと、`karpenter-tenant-pools` を使わずに起動したノードにはこのラベルは付かないので自分でつける必要があります。
+- **付ける側**、つまりノードにラベルを刻むのは observability ではなく、自作中の [`karpenter-tenant-pools`](https://github.com/littlemex/karpenter-tenant-pools) CRD の役割です。テナントのプールで起動したノードに `tenantpools.dev/tenant=<namespace>` という**ノードラベル**を付けます。逆に言うと、`karpenter-tenant-pools` を使わずに起動したノードにはこのラベルは付かないので自分でつける必要があります。
 - **使う側**、つまりメトリクスに写すのが observability の [`observability.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/observability.tf) が作る専用の DCGM ServiceMonitor です。ノードに付いている `tenantpools.dev/tenant` ラベルを読み取り、GPU メトリクスの `tenant` というラベルとして写します。ラベルを新たに生成しているのではなく、既にノードにあるラベルを拾ってメトリクスに転記しているだけです。
 
-ここで ServiceMonitor という言葉が出てきたので、実態を補足します。ServiceMonitor は kube-prometheus-stack に含まれる Prometheus Operator が用意する Kubernetes の CRD で、平たく言えば **Prometheus に対する「どの Service を、どのポートで、何秒間隔で収集し、収集したメトリクスにどんなラベルを足すか」を宣言する収集指示書**です。設定を書かない Prometheus は設定ファイルに収集対象を静的に書きますが、Prometheus Operator はこの ServiceMonitor という Kubernetes リソースを見て収集設定を自動生成します。
+ここで ServiceMonitor という言葉が出てきたので、実態を補足します。ServiceMonitor は kube-prometheus-stack に含まれる Prometheus Operator が用意する Kubernetes の CRD で、平たく言えば **Prometheus に対する「どの Service を、どのポートで、何秒間隔で収集し、収集したメトリクスにどんなラベルを足すか」を宣言する収集指示書**です。Prometheus Operator を使わない Prometheus では収集対象を設定ファイルに静的に書きますが、Prometheus Operator はこの ServiceMonitor という Kubernetes リソースを見て収集設定を自動生成します。
 
 したがって本章で「自前の ServiceMonitor」と呼んでいるのは、メトリクスを公開する dcgm-exporter は GPU Operator 同梱のものをそのまま使い、その exporter を **どう収集するか**という指示書だけを自分で書いた、という意味です。GPU Operator も標準の ServiceMonitor を出せますが、そこには後述の `attachMetadata` を指定できず `tenant` ラベルを写せないため、標準のものを無効化して、必要な relabeling を仕込んだ指示書に置き換えています。
 
@@ -82,13 +82,13 @@ Prometheus は PVC を持つ常駐の stateful なコンポーネントで、GPU
 - **system ノードには載せない**: system の managed nodegroup は「Karpenter が落ちてもクラスタが復旧できるための最小構成（kube-system と Karpenter controller）」だけを置く聖域です。Prometheus のような重い常駐物をここに載せると、この聖域の予測可能性が崩れます
 - **GPU ノードには載せない**: GPU ノードは Capacity Block の期限やワークロード終了で消えるため、監視ごと消えてしまいます
 
-そこで [`observability.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/observability.tf) は監視専用の Karpenter NodePool（`node-role=monitoring`）を作り、監視スタックをそこに固定します。この NodePool は `consolidationPolicy: WhenEmpty` で、Pod が完全に無くなったときだけノードを回収します。なおこのプールに taint は付けていません。`nodeSelector` は監視 Pod をこのノードに寄せる働きしかしないので、`nodeSelector` を持たない Pod がスケジューラの都合でこのノードに同居することは防げません。taint を付けない代わりに、監視スタックのリソース要求で必要分を確保する形にしています。
+そこで [`observability.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/observability.tf) は監視専用の Karpenter NodePool（`node-role=monitoring`）を作り、監視スタックをそこに固定します。この NodePool は `consolidationPolicy: WhenEmpty` で、Pod が完全に無くなったときだけノードを回収します。なおこのプールに taint は付けていません。`nodeSelector` は監視 Pod をこのノードに寄せる働きしかしないので、`nodeSelector` を持たない Pod がスケジューラの都合でこのノードに同居することは防げません。taint を付けていないのは、kube-prometheus-stack の各サブチャートすべてに toleration を維持する手間を避けるためです。このクラスタの他のワークロードはすべて自前の `node-role` やアクセラレータの selector を持つので、実際にこのノードへ入ってくるものはありません。ただし条件を何も持たない Pod を投入すれば同居し得るので、その場合は `node-role=monitoring` の taint と対応する toleration を足すことを検討します。
 
 ## ノード障害を検知する
 
-メトリクスの可視化とあわせて、この基盤には EKS の Node Monitoring Agent（NMA）も組み込んであります。NMA は各ノードの GPU・カーネル・ネットワークなどの健全性を監視し、NodeCondition 結果を書き込むエージェントです。この NodeCondition は kube-state-metrics 経由で Prometheus に流れるので、GPU 障害を検知して、これまでと同じ Prometheus/Grafana の仕組みでアラート条件として扱えます。ただしこの基盤は Alertmanager を無効にしてあります（通知先を決めずに有効化しても通知を捨てるだけなので）。発火は Prometheus UI の Alerts で見える状態までで、Slack やメールへ飛ぶわけではありません。通知が必要になったら Alertmanager を有効にして通知先を設定します。[`observability.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/observability.tf) には、そのためのアラートルールもあらかじめ入れてあります。
+メトリクスの可視化とあわせて、この基盤には [EKS の Node Monitoring Agent](https://docs.aws.amazon.com/eks/latest/userguide/node-health.html)（NMA）も組み込んであります。NMA は各ノードの GPU・カーネル・ネットワークなどの健全性を監視し、NodeCondition 結果を書き込むエージェントです。この NodeCondition は kube-state-metrics 経由で Prometheus に流れるので、GPU 障害を検知して、これまでと同じ Prometheus/Grafana の仕組みでアラート条件として扱えます。ただしこの基盤は Alertmanager を無効にしてあります（通知先を決めずに有効化しても通知を捨てるだけなので）。発火は Prometheus UI の Alerts で見える状態までで、Slack やメールへ飛ぶわけではありません。通知が必要になったら Alertmanager を有効にして通知先を設定します。[`observability.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/observability.tf) には、そのためのアラートルールもあらかじめ入れてあります。
 
-NMA は障害を「検知して知らせる」だけで、Karpenter によるノードの自動修復（auto-repair、不健全なノードを自動で terminate して置き換える機能）は意図的に無効にしています。高価な GPU ノードを止める・置き換えるという不可逆な判断は、人間やジョブ層に委ねる方針です。
+NMA は障害を「検知して知らせる」だけで、Karpenter によるノードの自動修復（[Node Auto Repair](https://karpenter.sh/docs/concepts/disruption/#node-auto-repair)、不健全なノードを自動で terminate して置き換える機能）は意図的に無効にしています。高価な GPU ノードを止める・置き換えるという不可逆な判断は、人間やジョブ層に委ねる方針です。
 
 NMA を GPU ノードで正しく動かすための設定、実際に GPU 障害を注入して検知が働くことをどう確かめるか、auto-repair を無効にした詳しい理由といった踏み込んだ話は、本書では扱いません。本章のワークショップでは、監視スタックと NMA がすでに動いていることの確認までを行います。
 
@@ -220,7 +220,7 @@ observability が不要なクラスタでは、`terraform.tfvars` で無効化�
 enable_observability = false
 ```
 
-この状態で `terraform apply` すると、kube-prometheus-stack・専用 NodePool・自前 DCGM ServiceMonitor・アラートルール・`monitoring` namespace （その中身ごと）といった observability 関連リソースがまとめて削除されます。`gp3` StorageClass は `observability_storage_class_create` が `true` のとき（既定）だけ削除対象で、既存のクラスを流用する設定にしていれば Terraform の管理外なので残ります。逆に、この構成が作った `gp3` を他のワークロードが使い始めていた場合、observability の無効化でそのクラスも消える点には注意してください。クラス名がクラスタ共通の名前なので起きうる巻き込みです。NMA は別の変数で制御しているため、これを止めるには `enable_node_monitoring_agent = false` も併せて設定します。GPU Operator 側の DCGM ServiceMonitor はもともと無効（`dcgmExporter.serviceMonitor.enabled = false`）のままで、こちらの変更は不要です。
+この状態で `terraform apply` すると、kube-prometheus-stack・専用 NodePool・自前 DCGM ServiceMonitor・アラートルール・`monitoring` namespace （その中身ごと）といった observability 関連リソースがまとめて削除されます。`gp3` StorageClass は [`observability_storage_class_create`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/variables.tf) が `true` のとき（既定）だけ削除対象で、既存のクラスを流用する設定にしていれば Terraform の管理外なので残ります。逆に、この構成が作った `gp3` を他のワークロードが使い始めていた場合、observability の無効化でそのクラスも消える点には注意してください。クラス名がクラスタ共通の名前なので起きうる巻き込みです。NMA は別の変数で制御しているため、これを止めるには `enable_node_monitoring_agent = false` も併せて設定します。GPU Operator 側の DCGM ServiceMonitor はもともと無効（`dcgmExporter.serviceMonitor.enabled = false`）のままで、こちらの変更は不要です。
 
 :::message alert
 GPU 障害の検知を自分で試す予定があるなら、本章の NMA とアラートルールが動いていることが前提になるので、この無効化は行わないでください。

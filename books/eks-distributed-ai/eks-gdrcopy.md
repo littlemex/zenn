@@ -55,7 +55,7 @@ GPUDirect RDMA（バルク転送の本体）は `gdrdrv` とは無関係に動�
 
 `gdrdrv` を載せる方法として、NVIDIA の GDRCopy ソースを取得してカーネルモジュールをビルドする道もあるが、Amazon Linux 2023 ではもっと簡単な経路がある。AL2023 の標準リポジトリが `gdrcopy-kmod` という DKMS パッケージを提供しており、`dnf install -y gdrcopy-kmod` するだけでモジュールがビルドされる。しかもこのパッケージは `gdrcopy.service` という systemd ユニットを同梱していて、インストール時に自動で有効化される。このユニットは NVIDIA モジュールがロードされたあとに `gdrdrv` をロードし、`/dev/gdrdrv` を作り直す処理を毎回のブートで実行する。ただし稼働中のノードに後から入れる場合は、インストールだけでその場のロードまで済むとは限らない。手で復旧するときは `dnf install` のあとに `/usr/libexec/gdrcopy/gdrcopy start` を実行し、`lsmod | grep gdrdrv` と `test -e /dev/gdrdrv` の両方で確かめる。後述の DaemonSet 方式がこの順で実行しているのはそのためである。
 
-この事実が実装を大きく単純化する。ノードに一度 `dnf install -y gdrcopy-kmod` を実行しさえすれば、モジュールのロードと再起動をまたいだ永続化は同梱の systemd ユニットが引き受ける。カーネルソースを自前でビルドする必要も、独自の modules-load 設定を書く必要もない。
+この事実が実装を大きく単純化する。ブート時の userdata で `dnf install -y gdrcopy-kmod` を実行すれば、そのあとのロードと再起動をまたいだ永続化は同梱の systemd ユニットが引き受ける。稼働中のノードに後から入れる場合だけ、`gdrcopy start` 相当の起動を別に呼ぶ必要があり、それを担うのが後述の DaemonSet 方式である。カーネルソースを自前でビルドする必要も、独自の modules-load 設定を書く必要もない。
 
 # 実装
 
@@ -109,7 +109,7 @@ EOSH
 ## 1. 前提を確認する
 
 - Basic05 で Capacity Block を確保済み（同一 AZ・2 台、EFA を複数枚持つ GPU インスタンス）。手順 5 の 2 ノード測定で必要
-- Basic04/05 で GPU プール（Basic05 の例では `gpu-p5en`）を `accelerator-pools.auto.tfvars` に定義し `terraform apply` 済み
+- Basic04/05 で GPU プール（Basic05 の例では `gpu-p4d`、本章の例では `gpu-p5`）を `accelerator-pools.auto.tfvars` に定義し `terraform apply` 済み
 - Basic06 で 2 ノードの EFA 通信が動くことを確認済み。本章はその通信の一部を最適化する GDRCopy を足す章で、EFA を有効にする操作ではない
 - `k` と向き先は Basic01 手順 2 の 4 行で設定済み（本章のコマンドは `k` で記述する）
 
@@ -123,7 +123,7 @@ ITYPE=p5.48xlarge
 
 ## 2. GDRCopy が無い状態を確認する
 
-まず現状で GDRCopy が入っていないことを確認する。この時点ではまだノードが 1 台も起動していないので、`/dev/gdrdrv` はノードに出て行って確認する段階ではない。代わりに、GDRCopy の導入方式を決める `gdrcopy_mode` が既定の `off` であること（`gdrdrv-loader` の DaemonSet が存在しないこと）を確認する。`gdrcopy_mode` は入力変数なので `terraform output` には出ない。現在値は `terraform console` で引くのが確実である。`gdrdrv-loader` の DaemonSet の不在は補助的な手がかりにとどまる。この DaemonSet は `gdrcopy_mode` が `daemonset` かつ GPU プールが定義済みのときだけ作られるので、GPU プールを定義していなければ `daemonset` を選んでいても存在しない。
+まず現状で GDRCopy が入っていないことを確認する。対象プールのノードが起動していない状態から始める場合は、`/dev/gdrdrv` をノードに出て行って確認する段階ではない (Basic06 の EFA プールは空でもノードを保持する設定なので、ノードが残っているならそこで `lsmod | grep gdrdrv` を見てもよい)。代わりに、GDRCopy の導入方式を決める `gdrcopy_mode` が既定の `off` であること（`gdrdrv-loader` の DaemonSet が存在しないこと）を確認する。`gdrcopy_mode` は入力変数なので `terraform output` には出ない。現在値は `terraform console` で引くのが確実である。`gdrdrv-loader` の DaemonSet の不在は補助的な手がかりにとどまる。この DaemonSet は `gdrcopy_mode` が `daemonset` かつ GPU プールが定義済みのときだけ作られるので、GPU プールを定義していなければ `daemonset` を選んでいても存在しない。
 
 `terraform console` が `"off"` を返し、`gdrdrv-loader` の DaemonSet が居なければ既定のままである。
 
@@ -259,7 +259,7 @@ NET/Libfabric : GPU Direct RDMA Enabled for HCA 0 'rdmap85s0'
 NET/Libfabric : GPU Direct RDMA Enabled for HCA 1 'rdmap87s0'
 ```
 
-このクラスタの GPU ノードでは、`nvidia-peermem` という別モジュールを使わずに、NVIDIA のオープンソースカーネルモジュール（`nvidia.ko`）自身が公開する GPU peer-to-peer DMA の関数を EFA ドライバが直接使って GPUDirect RDMA を確立している。ホスト側を覗くと、`nvidia-peermem` はロードされていないのに EFA ドライバが peer memory を獲得している。ホストのカーネルモジュール一覧とカーネルログはノード上でしか見えないので、`hostPID` と host ルートマウントを持つ使い捨ての特権 Pod を 1 つ起動して `chroot` で確認する（`NODE` は対象ノード名に読み替える）。
+このクラスタの GPU ノードでは、`nvidia-peermem` という別モジュールがロードされていないのに EFA ドライバが peer memory を獲得している。つまり peer memory の提供元は `nvidia-peermem` ではなく、NVIDIA のオープンソースカーネルモジュール（`nvidia.ko`）側だと分かる。ホスト側を覗くと、`nvidia-peermem` はロードされていないのに EFA ドライバが peer memory を獲得している。ホストのカーネルモジュール一覧とカーネルログはノード上でしか見えないので、`hostPID` と host ルートマウントを持つ使い捨ての特権 Pod を 1 つ起動して `chroot` で確認する（`NODE` は対象ノード名に読み替える）。
 
 ```bash
 NODE=$(k get nodes -l node-role=$POOL -o jsonpath='{.items[0].metadata.name}')
@@ -317,7 +317,7 @@ terraform apply -var gdrcopy_mode=off
 
 本章では、EFA のマルチノード通信における GDRCopy の位置づけを整理し、実際にノードへ導入して効果を測った。GPUDirect RDMA が NIC から GPU メモリへ直接 DMA してバルク転送の帯域を担うのに対し、GDRCopy は CPU が BAR1 マッピング経由で小メッセージをコピーするための補助であり、両者は独立した別の機構である。EFA/NCCL がノード間で帯域を出すこと自体には GPUDirect RDMA で足りる。
 
-導入面では、AMI プリインストールドライバの構成では GPU Operator の GDRCopy が使えないため、ノード側で `gdrdrv` を載せる必要があることを押さえた。AL2023 が `gdrcopy-kmod` を DKMS パッケージとして提供し、同梱の `gdrcopy.service` がロードと再起動をまたいだ永続化を引き受けるため、`dnf install` 一回で足りる。`infra/eks` ではこれを `gdrcopy_mode`（`userdata` / `daemonset`）で選べるようにした。
+導入面では、AMI プリインストールドライバの構成では GPU Operator の GDRCopy が使えないため、ノード側で `gdrdrv` を載せる必要があることを押さえた。AL2023 が `gdrcopy-kmod` を DKMS パッケージとして提供し、同梱の `gdrcopy.service` がロードと再起動をまたいだ永続化を引き受けるため、ブート時なら `dnf install` 一回で足りる (稼働中のノードへ後から入れる場合は起動も呼ぶ)。`infra/eks` ではこれを `gdrcopy_mode`（`userdata` / `daemonset`）で選べるようにした。
 
 実測では、GDRCopy 単体は `copylat` で 0.3 us オーダーの低レイテンシコピーとして確かに動作した。それでも p5 2 ノードの point-to-point と all-reduce では、GDRCopy の有無でレイテンシに差が出なかった。EFA のノード間レイテンシが 40 us 前後で、GDRCopy が入れ替える受信コピー経路の差分がその中に埋もれるためである。GDRCopy の恩恵はネットワークレイテンシに対してコピーコストの比率が大きい通信に限られる。分散学習の集合通信を実行するうえでは、GDRCopy を導入する前にまず `GPU Direct RDMA Enabled` が出ていることを確認するのが実務上の優先順位になる。
 
