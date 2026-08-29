@@ -258,14 +258,32 @@ port-forward はバックグラウンド（`&`）で起動したので、確認�
 
 ターミナルを開き直した場合は、`cd "$(git rev-parse --show-toplevel)"/infra/eks` で移動したうえで `export NAMESPACE=distai` と `POOL=gpu-ddp` を実行し直します。削除コマンドも `charts/experiments` を相対パスで参照するので、ディレクトリが違うとチャートが見つかりません。`gpuServingVllm.nodeRole` が空だとチャートが `nodeRole is required` で止まり、削除もできません。
 
-推論サーバーを止めれば、GPU ノードは [`consolidateAfter`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/karpenter-resources.tf)（本章で使う `gpu-ddp` プールでは 5 分）のアイドル後に Karpenter が自動回収します。`gpu-ddp` は spot 優先で確保するため、使った分だけの課金です。Deployment・Service の名前は `--set` の値に関わらず変わらないため、`gpuServingVllm.enabled=true` と `nodeRole` だけを付けてレンダリングした結果を `k delete` に渡せば、投入時に指定した `model` や `memory` などの値を覚えておく必要なく、チャートが出力した全リソースを漏れなく削除できます。
+本章はノードを直接消しません。Pod を消せば、GPU ノードは [`consolidateAfter`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/karpenter-resources.tf)（本章で使う `gpu-ddp` プールでは 5 分）のアイドル後に Karpenter が回収します。`gpu-ddp` は spot 優先で確保するため、使った分だけの課金です。**課金が止まったことは、この NodeClaim が消えたかどうかで判断します。** ノードが残り続ける場合は、同じプールに別の Pod が載っています。Basic04 の TrainJob や GPU スモークの Pod を消し忘れていないかを `k get pods -A -o wide` で確認してください。Deployment・Service の名前は `--set` の値に関わらず変わらないため、`gpuServingVllm.enabled=true` と `nodeRole` だけを付けてレンダリングした結果を `k delete` に渡せば、投入時に指定した `model` や `memory` などの値を覚えておく必要なく、チャートが出力した全リソースを漏れなく削除できます。
 
 ```bash
 helm template exp charts/experiments -n "$NAMESPACE" \
     --set gpuServingVllm.enabled=true --set gpuServingVllm.nodeRole=$POOL \
     | k delete -f -
-k get nodeclaims -w
+k get nodeclaims -l karpenter.sh/nodepool=$POOL -w
 ```
+
+ここで待つ時間は**合計で 10 分ほど**です。内訳は、空になってから `consolidateAfter` の 5 分を待って Karpenter が削除を決め、そこから drain と EC2 の終了で 5 分ほどです。実測では、ワークロードを消してから NodeClaim が消えるまで 10 分 5 秒でした。
+
+紛らわしいのは、その 10 分の間 `k get nodeclaims` の表示が変わらないことです。削除が決まってノードに `karpenter.sh/disrupted` の taint が付いても、NodeClaim は消える瞬間まで `READY=True` のままなので、画面上は何も起きていないように見えます。途中の進み方を確かめたいときはノード側の taint か Karpenter のログを見ます。
+
+```bash
+k get node -l node-role=$POOL -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.taints[*].key}{"\n"}{end}'
+k -n karpenter logs deploy/karpenter --tail=20 | grep -i disrupt
+```
+
+`disrupting node(s) ... Empty ... delete` の行が出ていれば、あとは終了を待つだけです。`-w` は watch なので、行が消えたのを見たら `Ctrl-C` で抜けます。プロンプトに戻る形で待ちたい場合は次を使います。
+
+```bash
+while k get nodeclaims -l karpenter.sh/nodepool=$POOL --no-headers 2>/dev/null | grep -q .; do sleep 15; done
+k get nodes -l node-role=$POOL
+```
+
+NodePool 自体は残しておいてかまいません。Karpenter は要求があってからノードを起動するので、プールが存在するだけでは課金されません。
 
 # まとめ
 
