@@ -180,6 +180,8 @@ env:
 - Capacity Block のノードは予約の AZ に立つので、共有ストレージ (単一 AZ の FSx for OpenZFS) と別の AZ になることがあります。NFS は AZ を跨いでもマウントできるため本手順は動きますが、`/shared` への読み書きに AZ 間のデータ転送料金と余分なレイテンシがかかります。本章が `/shared` に置くのは数 KB の測定スクリプトだけなので測定結果には影響しません
 - Basic02 で作った共有 PVC `shared-claim` が対象 namespace にあること (`ncclTrainjob` は `/shared` をマウントします。チャートが検査するのは PVC 名を渡したかどうかだけなので、PVC が実在しなくてもレンダリングと `kubectl apply` は通り、Pod が `Pending` のまま止まります。`k get pvc -n $NAMESPACE shared-claim` で `Bound` を先に確かめてください)
 - `k` と `KUBECONFIG` は Basic01 手順 2 の 4 行で設定済み
+- 手順 3 で `terraform output -json` の値を取り出すのに `jq` を使います。入っていない環境では `EFA` が空になり、チャートが `ncclTrainjob.efaCount is required` で失敗します
+- クラスタに入っている共有 Runtime (`torch-distributed-eks`) が、GPU を有効にしてレンダリングされたものであること。Basic04 で `trainjobTrain.gpu.enabled=true` を付けて適用していればそうなっています。GPU 無効で適用した Runtime には `nvidia.com/gpu` の toleration が入らないので、GPU ノードの taint を越えられず Pod が `Pending` のまま止まります
 
 EFA 関連のアドオン（EC2NodeClass の `networkInterfaces` 自動生成、EFA 用セキュリティグループ、`aws-efa-k8s-device-plugin`）は、EFA 対応プールが 1 つ以上あることを条件に前章までの `terraform apply` で導入済みです。本章はそれらが正しく効いているかを確認する章なので、新しくインフラを足す操作はありません。
 
@@ -302,11 +304,21 @@ aws ecr describe-images --region "$AWS_REGION" --registry-id 763104351884 --repo
 手順 3 を投入したら、まずノードが起動して stage Job が終わるのを待ちます。`k wait` は実行した時点で対象が 1 つも無いと `no matching resources found` で即座に終わるので、ノードが現れるまで待つ行を前に置きます。
 
 ```bash
-until [ "$(k get nodes -l node-role=$POOL --no-headers 2>/dev/null | wc -l | tr -d ' ')" -ge 2 ]; do
+for i in $(seq 1 80); do
+  [ "$(k get nodes -l node-role=$POOL --no-headers 2>/dev/null | wc -l | tr -d ' ')" -ge 2 ] && break
   sleep 15
 done
+k get nodes -l node-role=$POOL
 k wait --for=condition=Ready node -l node-role=$POOL --timeout=20m
 k wait --for=condition=complete job/nccl-trainjob-stage -n "$NAMESPACE" --timeout=10m
+```
+
+20 分待ってもノードが 2 台に届かない場合は、待ちを続けずに原因を見ます。予約がまだ `scheduled` のまま、`efa` の値が渡っていない、PVC が `Bound` でない、といった理由はすべて「ノードが増えない」という同じ見え方になります。
+
+```bash
+k -n "$NAMESPACE" get pods -o wide
+k -n "$NAMESPACE" describe pods -l jobset.sigs.k8s.io/jobset-name=nccl-trainjob | tail -30
+k get nodeclaims -l karpenter.sh/nodepool="$POOL"
 ```
 
 ノードが起動したら、手順 2 の値が実際にノードへ反映されているかを確認します。
@@ -368,7 +380,7 @@ EFA 対応ノード（p4d x2）それぞれに 1 Pod ずつ Running していれ
 TrainJob は投入した時点で走り始めるので、あらためて起動する操作はありません。進行と結果を Pod のログで確認します。
 
 ```bash
-k -n "$NAMESPACE" get trainjob nccl-trainjob
+k -n "$NAMESPACE" wait --for=condition=Complete trainjob/nccl-trainjob --timeout=40m
 k -n "$NAMESPACE" logs -l jobset.sigs.k8s.io/jobset-name=nccl-trainjob --tail=-1 \
   | grep -E "Selected provider|Using network|\[bench\]"
 ```
@@ -390,7 +402,7 @@ nccl-trainjob-node-0-0:172:172 [0] NCCL INFO NET/OFI Using Libfabric version 2.4
 nccl-trainjob-node-0-1:172:172 [0] NCCL INFO NET/OFI Selected provider is efa, fabric is efa (found 3 nics)
 ```
 
-両ノードで `efa` プロバイダが選択され、3 NIC が認識されています。この `found 3 nics` が、手順 2 の `terraform output accelerator_pool_efa_schedulable` が CB プールについて返す値（p4d.24xlarge なら 3 = 4 − 1）と一致していることが重要です。手順 2 に載せた実機出力は Basic04 の `gpu-ddp` だけを定義していた時点で採ったものなので 0 しか並んでいませんが、Basic05 の CB プールを apply 済みの読者が同じコマンドを実行すると 3 が出ます。複数カードのインスタンスでは、カード枚数から 1 引いた値がそのまま NCCL が使う NIC 数になります (カード 0 はノードの IP を持つため要求できません)。カードが 1 枚のインスタンス、たとえば g6e.12xlarge では引き算はせず 1 が schedulable になります。
+測定そのものは pull が終わってから数分で、`[bench] done` が最後に出ます。grep が空のままなら、まだ pull かランデブーの途中です。両ノードで `efa` プロバイダが選択され、3 NIC が認識されています。この `found 3 nics` が、手順 2 の `terraform output accelerator_pool_efa_schedulable` が CB プールについて返す値（p4d.24xlarge なら 3 = 4 − 1）と一致していることが重要です。手順 2 に載せた実機出力は Basic04 の `gpu-ddp` だけを定義していた時点で採ったものなので 0 しか並んでいませんが、Basic05 の CB プールを apply 済みの読者が同じコマンドを実行すると 3 が出ます。複数カードのインスタンスでは、カード枚数から 1 引いた値がそのまま NCCL が使う NIC 数になります (カード 0 はノードの IP を持つため要求できません)。カードが 1 枚のインスタンス、たとえば g6e.12xlarge では引き算はせず 1 が schedulable になります。
 
 帯域の実測値:
 
@@ -454,7 +466,9 @@ cd "$(git rev-parse --show-toplevel)"/infra/eks/scripts
 ./04-teardown.sh --namespace "$NAMESPACE" --nodepool "$POOL"
 ```
 
-`04-teardown.sh` は Deployment/StatefulSet/Job/TrainJob/MPIJob を削除し、GPU Pod が完全に終了したのを確認したうえで Karpenter の NodePool を削除します。CB のノード自体は予約期間の終了時に AWS 側で強制回収されるため、このスクリプトは「ワークロードを安全に退避させる」ところまでを担当します。クラスタ全体を破棄する `terraform destroy` は `--destroy` を明示した場合のみ実行されます。
+`04-teardown.sh` は Deployment/StatefulSet/Job/TrainJob/MPIJob を削除し、GPU Pod が完全に終了したのを確認したうえで Karpenter の NodePool を削除します。CB のノード自体は予約期間の終了時に AWS 側で強制回収されるため、このスクリプトは「ワークロードを安全に退避させる」ところまでを担当します。
+
+このスクリプトは `accelerator-pools.auto.tfvars` を書き換えません。定義が残っている限り、次に `terraform apply` を打った時点で NodePool は作り直されます。予約の期間が終わって使わなくなったら、Terraform 側も片付けます。CB プールのエントリを消して apply してください (`gpu-ddp` は Basic07 と Basic08 で使うので残します)。予約が期限切れで AWS 側から消えたあとも `cb_reservation_id` を残しておくと、以降すべての plan で `capacity_block_ready` の WARNING が出続けます。クラスタ全体を破棄する `terraform destroy` は `--destroy` を明示した場合のみ実行されます。
 
 # まとめ
 

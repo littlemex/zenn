@@ -159,7 +159,7 @@ for s in r[:8]:
 "
 ```
 
-実機出力（Basic07 の vLLM が `gpu-ddp` プールの GPU 1 枚で動いている状態）:
+実機出力（Basic07 の vLLM が `gpu-ddp` プールの GPU 1 枚で動いている状態。この出力は Basic07 の例とは別のクラスタで採ったのでリージョン名が違いますが、見るところは系列数とラベルです）:
 
 ```text
 系列数: 1
@@ -220,7 +220,7 @@ observability が不要なクラスタでは、`terraform.tfvars` で無効化�
 enable_observability = false
 ```
 
-この状態で `terraform apply` すると、kube-prometheus-stack・専用 NodePool・自前 DCGM ServiceMonitor・アラートルール・`monitoring` namespace （その中身ごと）といった observability 関連リソースがまとめて削除されます。`gp3` StorageClass は [`observability_storage_class_create`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/variables.tf) が `true` のとき（既定）だけ削除対象で、既存のクラスを流用する設定にしていれば Terraform の管理外なので残ります。逆に、この構成が作った `gp3` を他のワークロードが使い始めていた場合、observability の無効化でそのクラスも消える点には注意してください。クラス名がクラスタ共通の名前なので起きうる巻き込みです。NMA は別の変数で制御しているため、これを止めるには `enable_node_monitoring_agent = false` も併せて設定します。GPU Operator 側の DCGM ServiceMonitor はもともと無効（`dcgmExporter.serviceMonitor.enabled = false`）のままで、こちらの変更は不要です。
+この状態で `terraform apply` すると、kube-prometheus-stack・専用 NodePool・自前 DCGM ServiceMonitor・アラートルール・`monitoring` namespace （その中身ごと）といった observability 関連リソースがまとめて削除されます。ただし kube-prometheus-stack の CRD (`servicemonitors.monitoring.coreos.com` など) は chart の `crds/` に入っているので `helm uninstall` では消えず、クラスタに残ります。不要なら手で削除します。`gp3` StorageClass は [`observability_storage_class_create`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/variables.tf) が `true` のとき（既定）だけ削除対象で、既存のクラスを流用する設定にしていれば Terraform の管理外なので残ります。逆に、この構成が作った `gp3` を他のワークロードが使い始めていた場合、observability の無効化でそのクラスも消える点には注意してください。クラス名がクラスタ共通の名前なので起きうる巻き込みです。NMA は別の変数で制御しているため、これを止めるには `enable_node_monitoring_agent = false` も併せて設定します。GPU Operator 側の DCGM ServiceMonitor はもともと無効（`dcgmExporter.serviceMonitor.enabled = false`）のままで、こちらの変更は不要です。
 
 :::message alert
 GPU 障害の検知を自分で試す予定があるなら、本章の NMA とアラートルールが動いていることが前提になるので、この無効化は行わないでください。

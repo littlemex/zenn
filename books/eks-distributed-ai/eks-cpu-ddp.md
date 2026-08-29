@@ -63,7 +63,7 @@ TrainJob 側が指定するのは、台数（`numNodes`）とノードあたり�
 
 ## 学習結果の保存先と共有ストレージ
 
-本章のワークロード（`trainjobTrain`）は、MNIST のデータと学習スナップショットを共有ストレージに保存します。既定の保存先は単一 AZ の **Amazon FSx for OpenZFS** です。Basic01 で `DISTAI_SHARED_STORAGE=off` を付けて実行した場合はファイルシステムが作られていないため、先に `infra/eks/terraform.tfvars` の `fsx_enabled` と `openzfs_enabled` を `true` に直して [`distai-up.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/scripts/distai-up.sh) を実行し直してください。そのままでは後述の `terraform output -json shared_storage` が PV 名を返さず、`shared-claim` が `Bound` になりません。ストレージの詳細は後続の章で扱いますが、`openzfs_enabled` が既定で有効なため、`terraform apply` の時点でファイルシステムと静的 PersistentVolume（`openzfs-shared`）はすでに作られています。
+本章のワークロード（`trainjobTrain`）は、MNIST のデータと学習スナップショットを共有ストレージに保存します。既定の保存先は単一 AZ の **Amazon FSx for OpenZFS** です。Basic01 で `DISTAI_SHARED_STORAGE=off` を付けて実行した場合はファイルシステムが作られていないため、先に `infra/eks/terraform.tfvars` の `openzfs_enabled` を `true` に直して [`distai-up.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/scripts/distai-up.sh) を実行し直してください。そのままでは後述の `terraform output -json shared_storage` が PV 名を返さず、`shared-claim` が `Bound` になりません。ストレージの詳細は後続の章で扱いますが、`openzfs_enabled` が既定で有効なため、`terraform apply` の時点でファイルシステムと静的 PersistentVolume（`openzfs-shared`）はすでに作られています。
 
 この PV にバインドする PersistentVolumeClaim（`shared-claim`）は、Helm チャートは作りません。読者が `kubectl apply` で 1 回だけ作り、その名前を `--set sharedStorage.existingClaimName=shared-claim` で各ワークロードに渡します。なぜチャートに作らせないのかは、この後の「共有 PVC を用意する」ステップと、章末の「共有 PVC を消してみる」ステップで実際に手を動かしながら説明します。要点だけ先に言うと、静的 PV は同時に 1 つの PVC としか結びつきません。PVC の生成をワークロードのレンダリングに含めると、PVC の寿命がその都度の `apply`/`delete` に引きずられてしまい、PV 側の寿命（Terraform が管理する、基盤が続く限り存在するもの）とズレてしまいます。PVC の作成を「基盤を用意する」タイミングに切り離し、以降は何度ワークロードを消して作り直しても同じ PVC を使い続けられるようにするのが、ここで一度だけ手動で作る理由です。
 
@@ -95,7 +95,7 @@ TrainJob 側が指定するのは、台数（`numNodes`）とノードあたり�
 
 ## 1. 作業用 namespace を用意する
 
-以降のコマンドは Basic01 で clone したリポジトリのルート（`infra/eks` の親）で実行する前提です。`kubectl` が Basic01 のクラスタを指していること、MNIST データセットを取得するためのアウトバウンド通信やノードの ECR pull 権限は、いずれも Basic01 の構築で用意済みです。
+以降のコマンドは Basic01 で clone したリポジトリのルート、つまり `git rev-parse --show-toplevel` が返すディレクトリで実行する前提です。`infra/eks` に移る手順にはその都度 `cd` を書いています。`kubectl` が Basic01 のクラスタを指していること、MNIST データセットを取得するためのアウトバウンド通信やノードの ECR pull 権限は、いずれも Basic01 の構築で用意済みです。
 
 Basic01 手順 2 の 4 行を実行済みで、`k` がこのクラスタの `distai` namespace を向いている前提です（ターミナルを開き直した場合はその 4 行をもう一度実行してください）。作業用 namespace を冪等に用意しておきます（すでに存在していてもエラーになりません）。
 
@@ -139,6 +139,13 @@ k -n image-builder wait --for=condition=complete \
     job/build-ddp-sample-v1 --timeout=30m
 ```
 
+`wait` は `complete` だけを見るので、Job が失敗した場合は 30 分黙って待ったあと `timed out waiting for the condition` で終わります。10 分を過ぎても返らないときは、別のターミナルで進行と失敗を見てください。
+
+```bash
+k -n image-builder get job,pods
+k -n image-builder logs -l job-name=build-ddp-sample-v1 --tail=50
+```
+
 先頭の `delete job` は、同名のビルド Job が残っていると apply が `unchanged` でスキップされるためです。Job の spec は作成後に変更できないので、同じタグで作り直すときは先に削除します。初回は存在しなくても `--ignore-not-found` で安全に通ります。タグを v2 に上げれば Job 名も変わるので削除は要らず、`latest` 固定によるキャッシュによるトラブルも避けられます。最後の `wait` はビルド完了を待つもので、初回は CPU ノードの起動とベースイメージの pull で 10 分ほどかかります。
 
 なお、この Job を `kubectl apply` すると `Warning: would violate PodSecurity "baseline" ... seccompProfile` という警告が表示されます。これは rootless BuildKit が `seccompProfile: Unconfined` を必要とするための意図した設計上の警告で、ビルドは正常に進みます。
@@ -175,9 +182,10 @@ k get pods -n kubeflow-system
 
 本章のワークロード（`trainjobTrain`）は共有ストレージへの書き込みが要りますが、そのための PVC はチャートが作りません。ここで 1 回だけ、自分で `kubectl apply` して作ります。
 
-`infra/eks` にいる前提です。
+`infra/eks` で実行します。
 
 ```bash
+cd "$(git rev-parse --show-toplevel)"/infra/eks
 POOL_PV=$(terraform output -json shared_storage | jq -r '.fsx_openzfs.persistent_volume')
 echo "POOL_PV=$POOL_PV"
 sed "s/__VOLUME_NAME__/${POOL_PV}/" manifests/shared-pvc.yaml | k apply -f -
@@ -213,7 +221,7 @@ helm template exp charts/experiments -n distai \
     | k apply -f -
 ```
 
-TrainJob が展開する Pod は JobSet の規則で名付けられ、`<ジョブ名>-node-0-<index>-<ランダム>` になります。本章のジョブ名は `ddp-trainjob` なので、rank 0 の Pod は `ddp-trainjob-node-0-0-xxxxx`、rank 1 は `ddp-trainjob-node-0-1-xxxxx` という形です（末尾のランダムな 5 文字は実行のたびに変わるので、Pod 名を固定値で指定せずラベルで選ぶのが確実です）。本章は `nprocPerNode=1` なので 1 Pod に 1 rank が対応し、node index と rank が一致して `node-0-0` が rank 0 になります (GPU 枚数に合わせて `nprocPerNode` を増やすと 1 つの Pod の中に複数 rank が立つので、この対応は崩れます)。まず 2 つの Pod がそれぞれ別ノードに載っていることを確認します（`-o wide` の `NODE` 列が 2 つとも違えば OK です）。ジョブ名のラベルで全ノードの Pod をまとめて選べます。
+TrainJob が展開する Pod は JobSet の規則で名付けられ、`<ジョブ名>-node-0-<index>-<ランダム>` になります。本章のジョブ名は `ddp-trainjob` なので、rank 0 の Pod は `ddp-trainjob-node-0-0-xxxxx`、rank 1 は `ddp-trainjob-node-0-1-xxxxx` という形です（末尾のランダムな 5 文字は実行のたびに変わるので、Pod 名を固定値で指定せずラベルで選ぶのが確実です）。本章は `nprocPerNode=1` なので 1 Pod に 1 rank が対応し、node index と rank が一致して `node-0-0` が rank 0 になります (GPU 枚数に合わせて `nprocPerNode` を増やすと 1 つの Pod の中に複数 rank が立つので、この対応は崩れます)。まず 2 つの Pod がそれぞれ別ノードに載っていることを確認します（`-o wide` の `NODE` 列が 2 つとも違えば OK です）。ジョブ名のラベルで全ノードの Pod をまとめて選べます。初回は Karpenter が CPU ノードを 2 台起動してイメージを pull するので、Pod が `Pending` のまま、あるいは `NODE` 列が空のままで数分かかります。`-w` を付けて張り付いて待ち、10 分以上動かないときだけ `k describe pod -l jobset.sigs.k8s.io/jobset-name=ddp-trainjob` と `k get nodeclaims` を見てください。
 
 ```bash
 k get pods -o wide -l jobset.sigs.k8s.io/jobset-name=ddp-trainjob
@@ -229,11 +237,11 @@ rank 0 が載る Pod のログを追います。Pod 名は末尾のランダム�
 
 ```bash
 SEL="jobset.sigs.k8s.io/jobset-name=ddp-trainjob,batch.kubernetes.io/job-completion-index=0"
-k wait --for=condition=ready pod -l "$SEL" --timeout=15m
+until k get pods -l "$SEL" --no-headers 2>/dev/null | grep -q .; do sleep 5; done
 k logs -f --tail=-1 -l "$SEL"
 ```
 
-`k wait` は対象の Pod がまだ 1 つも作られていないと待たずに `no matching resources found` で即失敗します。上の `k get pods` / `k get trainjob -w` で Pod が作られたのを見てから実行してください（学習がごく短時間で完走済みだと Ready を待てず timeout することもあります。その場合は次の完了確認に進みます）。
+1 行目の `until` は Pod が現れるまで待つためのものです。`k wait --for=condition=ready` を使わないのは、学習が終わった Pod は `Succeeded` で `Ready` にはならず、直前の手順で `Complete` まで待ってから来るとその待ちが必ず時間切れになるからです。完了した Pod のログは `k delete` で消すまで取れるので、この順で問題ありません。
 
 単一ノードの `torchrun`（1 Pod 内で複数プロセス）ならログは 1 つのストリームに合流しますが、TrainJob では `node-0-0` と `node-0-1` が別々の Pod・別々のノードで動く独立したプロセスなので、`kubectl logs` も Pod ごとに別々に取ります。`node-0-0` では rank 0 が gloo backend で起動します。スナップショットの保存は rank 0 が担当するため、その行は `node-0-0` 側にのみ現れます。
 
@@ -283,6 +291,8 @@ k logs --tail=-1 -l "jobset.sigs.k8s.io/jobset-name=ddp-trainjob,batch.kubernete
 
 ログを追い損ねても、TrainJob が `Complete` になったことと、共有ストレージ上のスナップショットで完了を確認できます。`kubectl wait` の `--for=condition=Complete` が完了を待つ確実な方法です。
 
+ノードの起動からイメージの pull、20 エポックの学習まで含めて、初回は 15〜25 分が目安です。`wait` は `Complete` だけを見るので、TrainJob が `Failed` になった場合もタイムアウトまで黙って待ちます。返らないときは `k get trainjob ddp-trainjob` の状態と両 rank のログを見てください。
+
 ```bash
 k wait --for=condition=Complete trainjob/ddp-trainjob --timeout=30m
 k run peek --rm -it --pod-running-timeout=5m --restart=Never --image=busybox:1.36 \
@@ -300,6 +310,7 @@ k delete trainjob ddp-trainjob
 最後に、step 3 で触れた「なぜチャートが PVC を自動生成しないのか」を実際に確かめます。ワークロード（Job/TrainJob）を消すのと同じ感覚で、共有 PVC 自体を消してみましょう。
 
 ```bash
+cd "$(git rev-parse --show-toplevel)"/infra/eks
 POOL_PV=$(terraform output -json shared_storage | jq -r '.fsx_openzfs.persistent_volume')
 k delete pvc shared-claim
 k get pv "$POOL_PV"
@@ -335,12 +346,22 @@ k get pvc shared-claim
 
 次章以降でこの学習イメージや共有データを使わない場合は、残ったリソースを片付けます。共有 PVC（`shared-claim`）と共有ストレージ上の MNIST データ・スナップショットは、後続の章でも使うため残して構いません。
 
+途中でやめる場合も、TrainJob は必ず削除してください。Pod が残っている間はノードが空にならず、CPU ノード 2 台の課金が続きます。
+
 ```bash
+k delete trainjob ddp-trainjob --ignore-not-found
 k delete pod peek -n distai --ignore-not-found
 k delete job build-ddp-sample-v1 -n image-builder --ignore-not-found
+k get nodes -l node-role=cpu
 ```
 
-ECR に push した `ddp-sample:v1` イメージは、再利用しないなら ECR コンソールから削除します。
+ECR に push した `ddp-sample:v1` イメージは、Basic04 以降でも同じものを使うので普通は残します。もう使わないなら次で消せます。
+
+```bash
+cd "$(git rev-parse --show-toplevel)"/infra/eks
+REPO_NAME=$(terraform output -raw ddp_sample_ecr_url | sed 's#^[^/]*/##')
+aws ecr batch-delete-image --repository-name "$REPO_NAME" --image-ids imageTag=v1
+```
 
 # まとめ
 

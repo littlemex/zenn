@@ -5,7 +5,7 @@ free: true
 
 GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0)
 
-本章では、Basic04 で `accelerator_pools` に用意しておいた `capacity_type = "reserved"` という選択肢を実際に使い、Capacity Block(CB) で確保したリソースを Amazon EKS クラスタに組み込みます。予約の検索・購入から `accelerator-pools.auto.tfvars` への反映、NodePool と EC2NodeClass が正しく作られるところまでの確認、期限管理までを扱います (実際にノードが起動するのは次章 Basic06 です)。確保したノードで実際にマルチノード通信が出ているかの検証は、次章の Basic06 で行います。
+本章では、Basic04 で導入した `accelerator_pools` の仕組みに、ここで初めて `capacity_type = "reserved"` のプールを足し、Capacity Block(CB) で確保したリソースを Amazon EKS クラスタに組み込みます。予約の検索・購入から `accelerator-pools.auto.tfvars` への反映、NodePool と EC2NodeClass が正しく作られるところまでの確認、期限管理までを扱います (実際にノードが起動するのは次章 Basic06 です)。確保したノードで実際にマルチノード通信が出ているかの検証は、次章の Basic06 で行います。
 
 本章がこの位置にあるのは、次章で EFA のマルチノード通信を検証するために、EFA を複数枚持つインスタンスが 2 台以上必要になるためです。この規模のインスタンスは On-Demand ではなかなか確保できず、しかも EFA の OS バイパス通信は同一サブネットに限られるので、2 台を同じ AZ に揃える必要があります (クラスタプレイスメントグループはレイテンシを詰めるための推奨で、EFA の必須条件ではありません)。Capacity Block はこれらを満たす現実的な手段です。
 
@@ -131,6 +131,8 @@ cd "$(git rev-parse --show-toplevel)"/infra/eks/scripts
 
 ## 2. CB を購入する（ここで課金が発生する）
 
+`--offering-id` には手順 1 の検索結果に出た自分の OfferingId を渡します。下の値は例です。オファリングは在庫に連動するので、検索から時間が経つと無効になります。その場合は手順 1 の検索からやり直します。
+
 ```bash
 ./01-purchase-cb.sh \
   --offering-id cb-0785c7267b6908e72 \
@@ -181,7 +183,28 @@ gpu-p4d = {
 
 `zone` は含まれません。前述のとおり `reserved` プールの AZ は予約から導出されるため、スクリプトは `zone` 行を出しません。特定の AZ に固定したい場合だけ、貼り付け後に自分で `zone = "<az>"` を足します。`cb_end_date` は末尾が `Z` の UTC 表記でなければ `variables.tf` の validation が plan を落とします (`+00:00` のようなオフセット表記は EventBridge のスケジュールで UTC と誤解されるため)。スクリプトは予約が返す時刻をこの形式に正規化して出力するので、貼り付けたままなら問題ありません。この値は予約が返す実際の終了時刻を自動で埋めていますが、`capacity-block.tf` は tfvars に `cb_end_date` が無くても予約 ID から終了時刻を導出するため、この行を消してもアラートは機能します。書いておくとその値が予約側の `EndDate` より優先される緊急上書きとして働くので、予約を更新したら `cb_end_date` も併せて更新してください（更新し忘れるとアラートが古い時刻のまま固定されます）。Basic04 では `capacity_types = ["spot", "on-demand"]` とリストで書きましたが、CB のプールは `capacity_type = "reserved"` と単数形で書きます。綴りの誤りではなく、実装が両方の書き方を受け取って内部で同じ形に正規化しているためです。予約を使うプールは単数形と `cb_reservation_id` の組で書く、と覚えておけば足ります。
 
-出力されたブロックを `accelerator-pools.auto.tfvars` の `accelerator_pools` に貼り付けます。同じファイルを `cat >` で完全形に上書きするのが冪等で確実ですが、ここでいう完全形とは **Basic04 で定義した `gpu-ddp` も含めた全プール** です。CB のプールだけを書いて上書きすると、次の `apply` で `gpu-ddp` の NodePool が destroy され、それを前提にしている Basic07 と Basic08 が進められなくなります。
+出力されたブロックを `accelerator-pools.auto.tfvars` の `accelerator_pools` に貼り付けます。同じファイルを `cat >` で完全形に上書きするのが冪等で確実ですが、ここでいう完全形とは **Basic04 で定義した `gpu-ddp` も含めた全プール** です。CB のプールだけを書いて上書きすると、次の `apply` で `gpu-ddp` の NodePool が destroy され、それを前提にしている Basic07 と Basic08 が進められなくなります。Basic04 の例のまま進めている場合、完全形は次のようになります (`cb_reservation_id` は自分の予約 ID に読み替えます)。
+
+```bash
+cat > accelerator-pools.auto.tfvars <<'EOF'
+accelerator_pools = {
+  gpu-ddp = {
+    instance_types  = ["g6.2xlarge", "g5.2xlarge", "g6.xlarge", "g5.xlarge"]
+    device_plugin   = "nvidia"
+    capacity_types  = ["spot", "on-demand"]
+    efa_interface_count = 0
+    labels          = { workload = "ddp-basic04" }
+  }
+  gpu-p4d = {
+    instance_types    = ["p4d.24xlarge"]
+    device_plugin     = "nvidia"
+    capacity_type     = "reserved"
+    cb_reservation_id = "cr-0123456789abcdef0"
+    volume_size       = "500Gi"
+  }
+}
+EOF
+```
 
 ## 4. apply して NodePool を確認する
 
@@ -191,6 +214,8 @@ terraform apply
 k get nodepool $POOL
 k get ec2nodeclass $POOL
 ```
+
+シェルを開き直した場合は、Basic01 手順 2 の 4 行と `export POOL=<プール名>` を先に実行し直します。CB の開始時刻より前に apply すると、予約が `scheduled` のままなので `capacity_block_ready` の WARNING が出ます。定義の作成自体は成功しているので、これは異常ではありません。ワークロードの投入 (Basic06 の手順 3) は予約の開始時刻を過ぎてから行います。
 
 apply が作るのは NodePool と EC2NodeClass の定義であって、この時点ではまだノードは起動しません。Karpenter は GPU を要求する Pod（Pending）が現れて初めてノードを起動します（Karpenter 自体のインストールと NodePool 生成の仕組みは Basic04 で構築済みという前提です）。実際にノードが起動するのは、次章 Basic06 で CB プールをターゲットにした検証ワークロードを投入したときなので、ここで確認するのは定義が正しく作られたことまでです。
 

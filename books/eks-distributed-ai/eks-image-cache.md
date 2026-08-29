@@ -416,11 +416,11 @@ kubectl -n "$NAMESPACE" patch daemonset image-prewarm-gpu-ddp \
 kubectl -n "$NAMESPACE" get ds image-prewarm-gpu-ddp
 ```
 
-`DESIRED` が 0 になり Pod が消えたことを確認します。そのうえで新規ノードを誘発します。手順 1 と同じやり方で、対象プールのノードを消してから `coldpull` Pod を作り直せば、prewarm の居ないノードで pull が走ります。同じ名前の Pod が残っていると `apply` では作り直されないので、`kubectl -n "$NAMESPACE" delete pod coldpull --ignore-not-found` を先に実行します。prewarm を経由しない Pod が `Running` になることを確認します。検証が終わったら `nodeSelector` のパッチを外して元に戻します。
+`DESIRED` が 0 になり Pod が消えたことを確認します。そのうえで新規ノードを誘発します。手順 1 と同じやり方で、対象プールのノードを消してから `coldpull` Pod を作り直せば、prewarm の居ないノードで pull が走ります。同じ名前の Pod が残っていると `apply` では作り直されないので、`kubectl -n "$NAMESPACE" delete pod coldpull --ignore-not-found` を先に実行します。prewarm を経由しない Pod が `Running` になることを確認します。検証が終わったら `nodeSelector` を元の値に戻します。注入したキーだけを消すと `nodeSelector` が空になり、prewarm が CPU ノードまで広がって GPU 用イメージを引き始めるので、消すのではなく `node-role` を書き戻します。
 
 ```bash
 kubectl -n "$NAMESPACE" patch daemonset image-prewarm-gpu-ddp \
-  --type json -p '[{"op":"remove","path":"/spec/template/spec/nodeSelector/prewarm-disabled"}]'
+  -p '{"spec":{"template":{"spec":{"nodeSelector":{"node-role":"gpu-ddp"}}}}}'
 ```
 
 `kubectl scale` を試すと `Error from server (NotFound): the server could not find the requested resource` になります。DaemonSet に scale サブリソースが無いためで、パッチを使う理由がこれです。
@@ -432,6 +432,7 @@ kubectl -n "$NAMESPACE" patch daemonset image-prewarm-gpu-ddp \
 常設の基盤として置き続けるならこのままで構いませんが、試しただけならこの章で作ったものを消します。**特に headroom floor は消し忘れるとクラスタの破棄が止まります。** `do-not-disrupt` を付けた Pod は Karpenter が退去させないので、そのノードが空にならず、Basic11 の `terraform destroy` が NodeClaim の待ちで停滞します。しかも headroom は `kube-system` に置くので、Basic11 の片付けスクリプトが対象にする namespace の外にいて、掃除されません。実際にこれで destroy が 18 分止まり、手で消して初めて先に進みました。
 
 ```bash
+kubectl -n "$NAMESPACE" delete pod coldpull --ignore-not-found
 kubectl -n "$NAMESPACE" delete daemonset image-prewarm-gpu-ddp --ignore-not-found
 kubectl -n kube-system delete deployment cache-headroom --ignore-not-found
 kubectl delete priorityclass cache-headroom --ignore-not-found
