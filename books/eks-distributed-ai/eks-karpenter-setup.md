@@ -17,7 +17,7 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 
 ## これは何をするものか
 
-Karpenter は、スケジュールできずに `Pending` のままになっている Pod のリソース要求を監視し、それを満たす Amazon EC2 インスタンスを自動的に起動・終了させる Kubernetes コントローラです。ノードを事前にまとめて用意しておく Amazon EKS Managed Node Group とは発想が逆で、Pod が要求してから初めてノードが起動する「demand-driven」なプロビジョニングを行います。
+Karpenter は、スケジュールできずに `Pending` のままになっている Pod のリソース要求を監視し、それを満たす Amazon EC2 インスタンスを自動的に起動・終了させる Kubernetes コントローラです。ノードを事前にまとめて用意しておく Amazon EKS Managed Node Group とは発想が逆で、Pod が要求してから初めてノードが起動する形でプロビジョニングを行います。
 
 この構成で Managed Node Group ではなく Karpenter を選ぶ理由は 2 つあります。1 つは、この基盤で使うアクセラレータの型が `g6e` 系 GPU、`p5en` 系 GPU、`trn2` 系 Neuron など多様で、ワークロードごとに必要な型が変わることです。Managed Node Group でも 1 つのグループに複数のインスタンスタイプを指定できますが、GPU 数やアーキテクチャの異なる型を混ぜるとスケジューリングやスケールの判断がうまく機能しなくなるため、実務では型ファミリーごとにグループを分けるのが定石で、型の種類が増えるほど管理コストが大きく増えます。もう 1 つは、アクセラレータインスタンスは時間単価が高く、常時起動しておくコストが大きいことです。Karpenter は Pod が要求したときだけノードを起動し、不要になれば consolidation で終了させられるので、オンデマンドや Spot のノードを使った分だけの課金に近づけられます。特にバッチ的な学習・推論ジョブでは、ジョブのある間だけノードが立ち、終われば自動で回収される運用に向いています。ただしこれは購入オプションによって変わります。Capacity Block for ML は予約した時間ぶんを固定で確保する（=その間は起動していなくても課金される）ため、consolidation で「使った分だけ」には縮みません。Karpenter はこうした Capacity Block・オンデマンド・Spot を同じ NodePool で併記でき、予約枠を優先しつつ足りない分を Spot やオンデマンドで補うといったリソース増強の使い分けもできます。
 
@@ -212,7 +212,7 @@ data "aws_iam_policy_document" "karpenter_node_s3" {
 
 ## Karpenter は DRA にまだ対応していない
 
-DRA が GA になったからといって、本書の構成にそのまま持ち込めるわけではありません。[Amazon EKS の GPU デバイス管理に関する AWS 公式ドキュメント](https://docs.aws.amazon.com/eks/latest/userguide/device-management-nvidia.html) は、Kubernetes 1.34 以降で EKS マネージド型ノードグループやセルフマネージド型ノードグループを使う新規デプロイには NVIDIA DRA driver を推奨しています。ただし制約も明示されています。NVIDIA DRA driver は Karpenter と EKS Auto Mode では現状サポートされていません。この 2 つでは引き続き NVIDIA device plugin を使う必要があるという制約です。同ドキュメントはこの制約の追跡先として upstream の [KEP-5004](https://github.com/kubernetes/enhancements/issues/5004) を挙げています。
+DRA が GA になったからといって、本書の構成にそのまま持ち込めるわけではありません。[Amazon EKS の GPU デバイス管理に関する AWS 公式ドキュメント](https://docs.aws.amazon.com/eks/latest/userguide/device-management-nvidia.html) は、Kubernetes 1.34 以降で EKS マネージド型ノードグループやセルフマネージド型ノードグループを使う新規デプロイには NVIDIA DRA driver を推奨しています。ただし制約も明示されています。NVIDIA DRA driver は Karpenter と EKS Auto Mode では現状サポートされていません。この 2 つでは引き続き NVIDIA device plugin を使う必要があるという制約です。同ドキュメントはこの制約の追跡先として Kubernetes 側の [KEP-5004](https://github.com/kubernetes/enhancements/issues/5004) を挙げています。
 
 [KEP-5004](https://github.com/kubernetes/enhancements/issues/5004) は正式には「DRA: Handle extended resource requests via DRA Driver」という提案で、DRA ドライバが公開するデバイスを、device plugin を介さずに `nvidia.com/gpu` のような従来の拡張リソース API 経由でも要求できるようにすることを目指しています。この仕組みが実現すると、同じクラスタの一部のノードが device plugin を使い、別の一部のノードが DRA ドライバを使うという混在運用や、既存の Pod マニフェストを書き換えずに DRA へ段階的に移行することが可能になる、という位置づけです。この仕組みに伴い、cluster-autoscaler 側が新設される `NodeInfo` の `DynamicResources` フィールドなどを認識してスケール判断に反映できるようにするための連携も、KEP 本文で考慮事項として触れられています（ただし Karpenter については言及がなく、この KEP 自体がオートスケーラーに実装を加えるものでもありません）。KEP のマイルストーンは次のとおりです: Alpha が Kubernetes 1.34、Beta が 1.35 から 1.36 に後ろ倒しされ、Stable（GA）の目標は 1.37 とされています。ただしこれは KEP が置いている目標であり、他の多くの KEP と同様に確定したスケジュールではないため、実際のリリースタイミングは前後する可能性がある点は留保しておきます。
 
@@ -270,7 +270,7 @@ cpu          cpu          0       True    3m21s
 monitoring   monitoring   1       True    6m23s
 ```
 
-一方 `kubectl get nodes` から `cpu` プールのノードは消えています（Basic02 で起動した cpu ノードは、ワークロードが終わったあと `consolidateAfter` で回収されています）。残っているのは Basic01 の System ノードと、監視スタックを有効にしている場合は監視 Pod を載せた `monitoring` プールのノードです。後者は Pod が常駐するため回収されません。NodePool が存在しても、それを要求する Pod がなければノードは立ちません。これが 要求に応じてノードを起動するプロビジョニングの動作確認になります。
+一方 `kubectl get nodes` から `cpu` プールのノードは消えています（Basic02 で起動した cpu ノードは、ワークロードが終わったあと `consolidateAfter` で回収されています）。残っているのは Basic01 の System ノードと、監視スタックを有効にしている場合は監視 Pod を載せた `monitoring` プールのノードです。後者は Pod が常駐するため回収されません。NodePool が存在しても、それを要求する Pod がなければノードは起動しません。これが 要求に応じてノードを起動するプロビジョニングの動作確認になります。
 
 `cpu` の `NODES` 列が 0 であることと、`READY` が `True`（= Karpenter がこの NodePool を受理して起動待機している）ことの両方を確認してください。`monitoring` の `NODES` が 1 なのは、監視 Pod が常駐しているためで正常です。
 

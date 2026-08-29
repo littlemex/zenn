@@ -192,7 +192,7 @@ k get nodepool $POOL
 k get ec2nodeclass $POOL
 ```
 
-apply が作るのは NodePool と EC2NodeClass の定義であって、この時点ではまだノードは立ちません。Karpenter は GPU を要求する Pod（Pending）が現れて初めてノードを起動します（Karpenter 自体のインストールと NodePool 生成の仕組みは Basic04 で構築済みという前提です）。実際にノードが起動するのは、次章 Basic06 で CB プールをターゲットにした検証ワークロードを投入したときなので、ここで確認するのは定義が正しく作られたことまでです。
+apply が作るのは NodePool と EC2NodeClass の定義であって、この時点ではまだノードは起動しません。Karpenter は GPU を要求する Pod（Pending）が現れて初めてノードを起動します（Karpenter 自体のインストールと NodePool 生成の仕組みは Basic04 で構築済みという前提です）。実際にノードが起動するのは、次章 Basic06 で CB プールをターゲットにした検証ワークロードを投入したときなので、ここで確認するのは定義が正しく作られたことまでです。
 
 ノードが立ったあと、それが予約から起動したことを確かめるコマンドを先に示しておきます。実行するのは Basic06 の手順 3 でワークロードを投入したあとです。
 
@@ -225,7 +225,7 @@ cb_expiry_alert_schedule_exprs = {
 cb_expiry_sns_topic_arn = "arn:aws:sns:<region>:<account>:<cluster_name>-cb-expiry-alert"
 ```
 
-予約から自動導出された終了時刻（または `cb_end_date` で明示的に上書きした終了時刻）の 1 時間前に `at()` 式の Amazon EventBridge Scheduler スケジュールが 1 つ作られ、共有 Amazon SNS トピックにメール通知が届きます。通知が来たらワークロードの graceful drain を開始します。
+予約から自動導出された終了時刻（または `cb_end_date` で明示的に上書きした終了時刻）の 1 時間前に `at()` 式の Amazon EventBridge Scheduler スケジュールが 1 つ作られ、共有 Amazon SNS トピックにメール通知が届きます。通知が来たら、ワークロードを安全に退避させる作業を始めます。
 
 メールを受け取るには、通知先アドレスを `terraform.tfvars` の [`cb_alert_email_addresses`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/variables.tf) に設定して apply しておきます。設定すると Terraform が SNS トピックへの email サブスクリプションを作成しますが、AWS から確認メールが届くので、その中のリンクを一度クリックして承認するまで通知は届きません（SNS の仕様です）。
 

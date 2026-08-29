@@ -37,7 +37,7 @@ libfabric の EFA プロバイダは、受信したデータを GPU メモリへ
 
 このワークショップのクラスタは、NVIDIA ドライバが AMI にプリインストールされた Capacity Block の GPU AMI を使う。そのため NVIDIA GPU Operator は `driver.enabled=false`（ドライバを Operator が管理しない）で動かしている。[Basic04](eks-accelerator-pools) で導入したこの構成が、GDRCopy にそのまま響く。
 
-GPU Operator にも GDRCopy を有効化する `gdrcopy.enabled` というオプションがある。しかしこの GDRCopy コンポーネントは、Operator が管理するドライバ用 DaemonSet の中のサイドカーコンテナとして実装されている。ドライバを Operator が管理しない構成では、そのドライバ DaemonSet 自体が存在しないため、GDRCopy のサイドカーも起動しない。つまりこのフラグは反映されない。しかも構成によっては、単に効かないだけで済まない。`gdrdrv` が無い状態で Operator の gdrcopy 検証が走ると、その検証が終わらず device plugin が GPU を advertise しなくなる。GPU がクラスタから見えなくなるので、影響は「GDRCopy が入らない」ではなく「GPU が使えない」になる。この基盤がこのフラグを既定で無効にしているのはそのためである。この挙動は執筆時点で検証した GPU Operator のバージョンでのもので、将来変わる可能性はあるが、サイドカーがドライバ DaemonSet に同居する構造そのものは NVIDIA が [GPU Operator のドキュメント](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/) で説明している。
+GPU Operator にも GDRCopy を有効化する `gdrcopy.enabled` というオプションがある。しかしこの GDRCopy コンポーネントは、Operator が管理するドライバ用 DaemonSet の中のサイドカーコンテナとして実装されている。ドライバを Operator が管理しない構成では、そのドライバ DaemonSet 自体が存在しないため、GDRCopy のサイドカーも起動しない。つまりこのフラグは反映されない。しかも構成によっては、単に効かないだけで済まない。`gdrdrv` が無い状態で Operator の gdrcopy 検証が走ると、その検証が終わらず device plugin が GPU をノードの利用可能リソースとして公開しなくなる。GPU がクラスタから見えなくなるので、影響は「GDRCopy が入らない」ではなく「GPU が使えない」になる。この基盤がこのフラグを既定で無効にしているのはそのためである。この挙動は執筆時点で検証した GPU Operator のバージョンでのもので、将来変わる可能性はあるが、サイドカーがドライバ DaemonSet に同居する構造そのものは NVIDIA が [GPU Operator のドキュメント](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/) で説明している。
 
 つまり AMI プリインストールドライバの構成では、GDRCopy はノード側で別途ロードするしかない。これが本章で扱う実装の出発点である。
 
@@ -157,7 +157,7 @@ k -n kube-system logs -l app=gdrdrv-loader -c load-gdrdrv --tail=-1 \
   | grep -E "verified|retrying"
 ```
 
-各ノードで `verified: gdrdrv loaded, /dev/gdrdrv present` が出れば成功である。すでにロード済みのノードでも同じメッセージに合流するので、出るのはこの 1 種類だけである。失敗した場合は `gdrdrv not loaded or /dev/gdrdrv missing; retrying` が出て initContainer が終了し、kubelet が繰り返し起動し直す。ロードできるまで進ませない fail-closed の作りなので、grep が空振りするときは Pod が `Init:CrashLoopBackOff` になっていないかを `k -n kube-system get pods -l app=gdrdrv-loader` で確認する。
+各ノードで `verified: gdrdrv loaded, /dev/gdrdrv present` が出れば成功である。すでにロード済みのノードでも同じメッセージに合流するので、出るのはこの 1 種類だけである。失敗した場合は `gdrdrv not loaded or /dev/gdrdrv missing; retrying` が出て initContainer が終了し、kubelet が繰り返し起動し直す。ロードできるまで先に進ませない作りなので、grep が空振りするときは Pod が `Init:CrashLoopBackOff` になっていないかを `k -n kube-system get pods -l app=gdrdrv-loader` で確認する。
 
 :::message
 Basic06 では hugepages を要求しない warmup Pod で先にノードを起動していたが、本章で使う GPU Pod（手順 4 の `copylat` プローブと手順 5 の torchrun 測定）はどちらも hugepages を要求しないので、warmup を挟まずそのままノードを起こせる。hugepages を要求する `ncclSshd` などを使う場合に warmup が要る理由と段取りは、Basic06 の details にまとめてある。

@@ -55,7 +55,7 @@ aws ec2 describe-instance-types --instance-types $INSTANCE_TYPE \
 }
 ```
 
-この知識を静的テーブルとしてコードに埋め込むと、新しい世代（g8e など）が出るたびに手で追記が必要になり、追記を忘れた型はビルドが失敗するか、あるいは黙って EFA が無効化されるという負債になります。
+この知識を静的テーブルとしてコードに埋め込むと、新しい世代（g8e など）が出るたびに手で追記が必要になり、追記を忘れた型はビルドが失敗するか、あるいは気づかないまま EFA が無効化されるという問題を抱えます。
 
 そこでこのモジュールでは、[`karpenter-resources.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/karpenter-resources.tf) で `data.aws_ec2_instance_type` を使い、pool の `instance_types` の EFA 情報を plan 時に EC2 の DescribeInstanceTypes API から取得します。
 
@@ -163,7 +163,7 @@ env:
 
 後半の 4 つは測定のための設定です。`FI_EFA_USE_DEVICE_RDMA` は EFA デバイスの RDMA 経路を使わせ、`FI_EFA_FORK_SAFE` はプロセスが fork したときに libfabric が登録済みメモリを壊さないようにします。`NCCL_DEBUG` を `INFO` にしているのは、EFA が実際に選ばれた証拠となる `NET/OFI Selected provider is efa` の行がこのレベルでしか出ないためで、`NCCL_DEBUG_SUBSYS` でその判断に必要な範囲までログ量を絞っています。
 
-要点は `NCCL_SOCKET_IFNAME` を `^` で始まる除外パターンで書くことです。`efa0,efa1,...` のような許可リスト方式で名指しすると bootstrap に失敗します。NCCL は起動時の rank 間ランデブーを TCP ソケットで行いますが、`efa-only` インターフェースは IP を持たないため、これらを名指しすると bootstrap 用の到達可能なインターフェースが見つからず接続できません。除外パターンで `lo` やコンテナ仮想 NIC（`docker`／`veth`）を外し、ノードの IP を持つインターフェースを NCCL に選ばせるのが正しい書き方です。
+要点は `NCCL_SOCKET_IFNAME` を `^` で始まる除外パターンで書くことです。`efa0,efa1,...` のような許可リスト方式で明示的に指定すると bootstrap に失敗します。NCCL は起動時の rank 間ランデブーを TCP ソケットで行いますが、`efa-only` インターフェースは IP を持たないため、これらを明示的に指定すると bootstrap 用の到達可能なインターフェースが見つからず接続できません。除外パターンで `lo` やコンテナ仮想 NIC（`docker`／`veth`）を外し、ノードの IP を持つインターフェースを NCCL に選ばせるのが正しい書き方です。
 
 この値は本書のチャートでは 1 か所、[`values.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/values.yaml) の `ncclSocketIfname` に既定として持たせています。本章で使う TrainJob の [`nccl-trainjob.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/nccl-trainjob.yaml)、単ノードの sanity 用 [`nccl-probe.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/nccl-probe.yaml)、`mpirun` 方式の [`nccl-sshd.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/nccl-sshd.yaml) の 3 つが、いずれもそこから `NCCL_SOCKET_IFNAME` としてコンテナに渡します。特定のワークロードだけ別のパターンにしたい場合は `--set ncclProbe.socketIfname=...` のように個別に上書きできます。自分でワークロードを書く場合も、Pod の `env` にこの 1 行を同じ形でインストールします。
 
@@ -284,7 +284,7 @@ Karpenter が起動時に付ける `node-role=<プール名>` を使えば、ノ
 
 `nccl-tests` のイメージは Open MPI 前提で `torchrun` を持たないため、Pod が即座に `exec: "torchrun": executable file not found in $PATH` で落ちます。これは失敗が明示されるので気づけます。
 
-危険なのは Basic02 でビルドした `ddp-sample` のイメージです。`torchrun` は持ちますがEFA を含まない PyTorch イメージなので EFA プラグインがありません。この場合 NCCL はエラーを出さず、自前の TCP ソケット通信に**黙って切り替えます**。ベンチマークは完走し、それらしい数値も出るので、EFA を測ったつもりで実際には TCP を測っていたという結果になります。帯域の数値だけでは区別できないため、手順 6 で説明するログ行の確認が必須です。
+危険なのは Basic02 でビルドした `ddp-sample` のイメージです。`torchrun` は持ちますがEFA を含まない PyTorch イメージなので EFA プラグインがありません。この場合 NCCL はエラーを出さず、自前の TCP ソケット通信に**エラーを出さずに切り替えます**。ベンチマークは完走し、それらしい数値も出るので、EFA を測ったつもりで実際には TCP を測っていたという結果になります。帯域の数値だけでは区別できないため、手順 6 で説明するログ行の確認が必須です。
 
 `torchrun` と EFA プラグインの両方を持つイメージとして、[AWS Deep Learning Containers](https://docs.aws.amazon.com/deep-learning-containers/latest/devguide/deep-learning-containers-images.html) があります。利用可能なタグは次のように調べられます。
 

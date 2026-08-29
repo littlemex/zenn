@@ -17,7 +17,7 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 
 ![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 
-本章で扱うのは、この図のうち Karpenter の NodePool / EC2NodeClass を「誰がどう定義するか」の部分です。ノードが起動したあとの EFA・GPU・共有ストレージといった要素は Basic シリーズで作ったものをそのまま使います。変えるのは、プール定義の入り口を Terraform の共有変数から、namespace に属する CRD に置き換える点だけです。
+本章で扱うのは、この図のうち Karpenter の NodePool / EC2NodeClass を「誰がどう定義するか」の部分です。ノードが起動したあとの EFA・GPU・共有ストレージといった要素は Basic シリーズで作ったものをそのまま使います。変えるのは、プールを定義する窓口を Terraform の共有変数から、namespace に属する CRD に置き換える点だけです。
 
 ## これは何をするものか
 
@@ -25,13 +25,13 @@ Karpenter の `NodePool` と `EC2NodeClass` はどちらもクラスタスコー
 
 `karpenter-tenant-pools`（以降 operator）は、namespace に属する `AcceleratorPool` という CRD を 1 つ受け取り、それを Karpenter の `NodePool` + `EC2NodeClass` のペアに変換します。テナント分離は、VAP を有効にした既定構成で、かつ除外ラベルを付ける権限を管理している限り、仕組みとして迂回できない形で強制されます。テナントを表す taint とラベルは CR の namespace から導出され（ユーザ入力からは決して作られません）、プール名は namespace と CR 名から一意に導出され（ハッシュサフィックス付きで、なりすましや衝突ができません）、同梱の `ValidatingAdmissionPolicy`（VAP）が「別テナントのノードを狙う toleration を持つ Pod」を拒否します。チームは namespace の RBAC さえ持てばプールを自己申請でき、`karpenter.sh` の API への書き込み権限を一切渡さずに済みます。
 
-operator 自身は AWS を呼びません。EC2 を起動するのは Karpenter の仕事であり、operator は CRD から CRD へ変換するだけなので、仮に operator が侵害されても AWS のリソースが直接作られることはありません。ただし Kubernetes 側の権限は必要で、Karpenter の NodePool と EC2NodeClass、そして自身が扱う `AcceleratorPool` への書き込み権限を持ちます。つまり「AWS の権限は持たないが、Karpenter に何を作らせるかは書ける」という位置づけです。この「credential-free」な設計が、権限を絞ったままセルフサービスを実現する前提になっています。
+operator 自身は AWS を呼びません。EC2 を起動するのは Karpenter の仕事であり、operator は CRD から CRD へ変換するだけなので、仮に operator が侵害されても AWS のリソースが直接作られることはありません。ただし Kubernetes 側の権限は必要で、Karpenter の NodePool と EC2NodeClass、そして自身が扱う `AcceleratorPool` への書き込み権限を持ちます。つまり「AWS の権限は持たないが、Karpenter に何を作らせるかは書ける」という位置づけです。このクラウドの認証情報を持たない設計が、権限を絞ったままセルフサービスを実現する前提になっています。
 
 ## AcceleratorClass と AcceleratorPool の分担
 
 operator が扱う CRD は 2 種類あり、責務がはっきり分かれています。
 
-`AcceleratorClass`（クラスタスコープ、管理者が所有）は、プラットフォーム側の既定値を持ちます。ノードの IAM ロール、AMI セレクタ、サブネット／セキュリティグループのセレクタ、タグ、そして「どの namespace がプールを作ってよいか」の allowlist とクォータ（テナント表）を定義します。ここに書かれる値はすべて管理者が管理する信頼された情報で、テナントは触れません。
+`AcceleratorClass`（クラスタスコープ、管理者が所有）は、プラットフォーム側の既定値を持ちます。ノードの IAM ロール、AMI セレクタ、サブネット／セキュリティグループのセレクタ、タグ、そして「どの namespace がプールを作ってよいか」の 許可リスト とクォータ（テナント表）を定義します。ここに書かれる値はすべて管理者が管理する信頼された情報で、テナントは触れません。
 
 `AcceleratorPool`（namespace スコープ、テナントが所有）は、テナントが実際に欲しいプールを宣言します。アクセラレータの種類（`nvidia` か `neuron`）、インスタンスファミリ、購入オプション（On-Demand / Spot / Reserved）、AZ、上限（`limits`）、参照する Capacity Block の ID を書きます。ロールや AMI やサブネットといったプラットフォーム値は一切書きません。それらは `classRef` で参照する `AcceleratorClass` から来ます。
 
@@ -43,15 +43,15 @@ operator が扱う CRD は 2 種類あり、責務がはっきり分かれてい
 
 1 つ目は生成物の側です。operator が作る NodePool には、CR の namespace から導出した 既定では `tenantpools.dev/tenant=<namespace>` という taint が必ず載ります (キーは `tenantLabelKey` で変えられます)。つまりこのプールのノードには、同じ値の toleration を持つ Pod しか載れません。
 
-2 つ目は Pod の側です。taint に対応する toleration は Pod が自由に書けてしまうので、それだけでは「別テナントの値を勝手に tolerate する Pod」を止められません。そこで operator は `ValidatingAdmissionPolicy` を同梱し、Pod が自分の namespace 以外のテナント値を tolerate しようとした場合、あるいはワイルドカードの toleration を持つ場合に、その Pod の作成を拒否します。この検査は作成だけでなく更新にも当たるので、すでに走っている Pod でも、条件に触れる状態のまま更新しようとすると拒否されます。taint（スケジューラ側）と VAP（admission 側）の両方がそろって初めて、境界が塞がれます。
+2 つ目は Pod の側です。taint に対応する toleration は Pod が自由に書けてしまうので、それだけでは「別テナントの値を勝手に tolerate する Pod」を止められません。そこで operator は `ValidatingAdmissionPolicy` を同梱し、Pod が自分の namespace 以外のテナント値を tolerate しようとした場合、あるいはワイルドカードの toleration を持つ場合に、その Pod の作成を拒否します。この検査は作成だけでなく更新にも当たるので、すでに走っている Pod でも、条件に触れる状態のまま更新しようとすると拒否されます。taint（スケジューラ側）と VAP（admission 側）の両方がそろって初めて、境界の抜け穴がなくなります。
 
-なお、`aws-node` や device plugin のような system 系の DaemonSet はワイルドカードの toleration を持つため、VAP をそのまま全 namespace に適用すると新規ノードに CNI が載らず永久に `NotReady` になります。この意図しない動作を避けるため、VAP のバインディングは既定で `kube-system` などの system namespace を名前で除外しています。あわせて、任意の namespace に `tenantpools.dev/excluded=true` ラベルを付けると除外できる仕組みもあります。運用上の逃げ道として必要なものですが、テナント境界を素通りさせる手段でもあるので、このラベルを誰が付けられるかは境界そのものと同じ重みで管理する必要があります。
+なお、`aws-node` や device plugin のような system 系の DaemonSet はワイルドカードの toleration を持つため、VAP をそのまま全 namespace に適用すると新規ノードに CNI が載らず永久に `NotReady` になります。この意図しない動作を避けるため、VAP のバインディングは既定で `kube-system` などの system namespace を名前で除外しています。あわせて、任意の namespace に `tenantpools.dev/excluded=true` ラベルを付けると除外できる仕組みもあります。運用上の例外的な除外手段として必要なものですが、テナント境界を迂回できてしまう手段でもあるので、このラベルを誰が付けられるかは境界そのものと同じ重みで管理する必要があります。
 
 ## この本の Terraform 版との関係
 
 Basic04 の Terraform 版と本章の operator 版は、最終的にどちらも Karpenter の `NodePool` + `EC2NodeClass` を作る点は同じで、生成される requirements（`instance-gpu-manufacturer` や `capacity-type` など）もほぼ同じ形になります。違うのは「誰がプール定義を書き、どう境界を守るか」です。Terraform 版は管理者が共有変数を一元管理する集中型、operator 版はテナントが namespace ごとに自己申請する分散型です。
 
-operator は Karpenter 本体・device plugin・Capacity Block の購入には関与しません。Karpenter のインストールは公式チャートで（Basic03 で完了済み）、device plugin の導入と CB の購入は引き続き利用者の責務であり、CB は Basic05 と同じ手順で購入します。本章はあくまで「プール定義の入り口」を CRD に置き換える実験です。
+operator は Karpenter 本体・device plugin・Capacity Block の購入には関与しません。Karpenter のインストールは公式チャートで（Basic03 で完了済み）、device plugin の導入と CB の購入は引き続き利用者の責務であり、CB は Basic05 と同じ手順で購入します。本章はあくまで「プールを定義する窓口」を CRD に置き換える実験です。
 
 # ワークショップ実施
 
@@ -81,7 +81,7 @@ public.ecr.aws/karpenter/controller:1.13.0@sha256:...
 ReservedCapacity=true,SpotToSpotConsolidation=false,NodeRepair=false,NodeOverlay=false,StaticCapacity=false
 ```
 
-`ReservedCapacity=true` が確認できれば、CB を参照するプールも動きます。あわせて、ノードを起動する IAM ロール名と、サブネット／セキュリティグループを選ぶための discovery タグを控えておきます。これらは次の手順で `AcceleratorClass` に渡します。この本の Terraform 構成では、ロールは `<cluster>-karpenter-node`、discovery タグは `karpenter.sh/discovery: <cluster>` です。
+`ReservedCapacity=true` が確認できれば、CB を参照するプールも動作します。あわせて、ノードを起動する IAM ロール名と、サブネット／セキュリティグループを選ぶための discovery タグを控えておきます。これらは次の手順で `AcceleratorClass` に渡します。この本の Terraform 構成では、ロールは `<cluster>-karpenter-node`、discovery タグは `karpenter.sh/discovery: <cluster>` です。
 
 ```bash
 k get ec2nodeclass gpu-p5 \
@@ -104,7 +104,7 @@ subnet={"karpenter.sh/discovery":"distai-eks-0807"}
 
 ## 2. operator を helm で導入する
 
-operator は Helm チャートで導入します。CRD もチャートに同梱されています。なおこの operator は早期開発中で、CRD の API バージョンは `v1alpha1` です。今後 API が変わりうるので、本章の手順は長期運用の前提としては読まないでください。既定で VAP が有効になるため、クラスタは Kubernetes 1.30 以上である必要があります（VAP が GA になったバージョン。手順 1 で確認済みです）。1.29 以下では `helm install` の時点でチャートが明示的に失敗します。どうしても古いクラスタで試す場合は `--set policies.validating.enabled=false` で VAP を切れますが、その場合 Pod 側の境界は taint だけになり、後述の admission による拒否は働きません。
+operator は Helm チャートで導入します。CRD もチャートに同梱されています。なおこの operator は早期開発中で、CRD の API バージョンは `v1alpha1` です。今後 API が変わりうるので、本章の手順は長期運用の前提としては読まないでください。既定で VAP が有効になるため、クラスタは Kubernetes 1.30 以上である必要があります（VAP が GA になったバージョン。手順 1 で確認済みです）。1.29 以下では `helm install` の時点でチャートが明示的に失敗します。どうしても古いクラスタで試す場合は `--set policies.validating.enabled=false` で VAP を無効化できますが、その場合 Pod 側の境界は taint だけになり、後述の admission による拒否は働きません。
 
 ```bash
 helm install ktp oci://ghcr.io/littlemex/karpenter-tenant-pools/chart \
@@ -162,7 +162,7 @@ operator の Deployment と Pod が `Running`、2 つの CRD、そして pod-bou
 
 ## 3. AcceleratorClass を作る（管理者）
 
-管理者は、プラットフォーム側の既定値を持つ `AcceleratorClass` を 1 つ作ります。ここで手順 1 で控えた IAM ロールと discovery タグを渡します。`tenants` の allowlist に、プールを作ってよい namespace（ここでは `team-gpu`）を登録します。既定は `Deny` なので、登録しない namespace はプールを作れません。
+管理者は、プラットフォーム側の既定値を持つ `AcceleratorClass` を 1 つ作ります。ここで手順 1 で控えた IAM ロールと discovery タグを渡します。`tenants` の 許可リスト に、プールを作ってよい namespace（ここでは `team-gpu`）を登録します。既定は `Deny` なので、登録しない namespace はプールを作れません。
 
 ```bash
 k apply -f - <<'EOF'
@@ -196,11 +196,11 @@ k create namespace team-gpu --dry-run=client -o yaml | k apply -f -
 テナントは自分の namespace（`team-gpu`）に `AcceleratorPool` を作ります。ここでは Basic04 で作った小型 GPU の On-Demand プールに相当するものを作ります (Basic04 は g6 と g5 を並べていますが、ここでは g5 に絞ります)。ロールや AMI は書きません。書くのは「nvidia の g5 を On-Demand で、GPU 上限 8 まで」という要望だけです。
 
 :::message
-本章の検証は、`AcceleratorPool` から NodePool / EC2NodeClass が正しく生成されるところ（Karpenter に受理される control-plane の契約）と、テナント境界が admission で機能するところまでを対象にします。実際に GPU ノードが起動する挙動は Basic04 と同じで、GPU を要求する Pod（テナント taint を tolerate するもの）を投入すると Karpenter がノードを起動します。ノード起動には後述の device plugin の注意（手順 6 の後）が関わるため、本章ではノードを起こさずに定義と境界の確認までを行います。
+本章の検証は、`AcceleratorPool` から NodePool / EC2NodeClass が正しく生成されるところ（生成されたリソースが Karpenter に正しく受理されること）と、テナント境界が admission で機能するところまでを対象にします。実際に GPU ノードが起動する挙動は Basic04 と同じで、GPU を要求する Pod（テナント taint を tolerate するもの）を投入すると Karpenter がノードを起動します。ノード起動には後述の device plugin の注意（手順 6 の後）が関わるため、本章ではノードを起こさずに定義と境界の確認までを行います。
 :::
 
 :::message alert
-Basic04 の Terraform 版で作った GPU プール（テナント taint を持たない従来の NodePool）がクラスタに残っていると、GPU を要求する Pod がそちらの旧プールに載ってしまい、テナント境界を素通りする可能性があります。operator 版のテナント分離を正しく検証したい場合は、Terraform 版の GPU プールを削除するか `limits` を 0 にして、operator が作るプールだけが GPU ノードを起動する状態にしてください。
+Basic04 の Terraform 版で作った GPU プール（テナント taint を持たない従来の NodePool）がクラスタに残っていると、GPU を要求する Pod がそちらの旧プールに載ってしまい、テナント境界の検査を受けずに通る可能性があります。operator 版のテナント分離を正しく検証したい場合は、Terraform 版の GPU プールを削除するか `limits` を 0 にして、operator が作るプールだけが GPU ノードを起動する状態にしてください。
 :::
 
 ```bash
@@ -290,11 +290,11 @@ Ready=True
 
 `Ready=True` は、AMI・サブネット・セキュリティグループ・インスタンスプロファイルがすべて解決できたことを示します。ここで 1 点、`role` 指定が動く前提があります。Basic04 の Terraform 版は EC2NodeClass に `instanceProfile` を直接与えていましたが、operator は `role`（IAM ロール名）だけを与え、そのロールに対応するインスタンスプロファイルを Karpenter に作らせます。これには Karpenter コントローラのロールに `iam:CreateInstanceProfile` と `iam:AddRoleToInstanceProfile` の権限が必要です。この本の Terraform 構成の Karpenter コントローラにはこれらの権限が付与済みなので、`role` 指定でそのまま Ready になります。自前のクラスタでこれらの権限が無い場合、EC2NodeClass は Ready にならず、ノード起動時に失敗します。
 
-ここまでで NodePool と EC2NodeClass の定義ができました。Basic04 の Terraform 版と同じく、この時点ではまだノードは立ちません。Karpenter は GPU を要求する Pod（Pending）が現れて初めてノードを起動します。実際にノードを起動するときは、テナント taint を tolerate する GPU Pod を投入します (生成された NodePool の taints に出ているとおり、実ノードを起動して載せる場合は `nvidia.com/gpu` のデバイス taint への toleration も併せて必要です)（この toleration は自分の namespace の値なので VAP に通ります。次の手順で確認します）。
+ここまでで NodePool と EC2NodeClass の定義ができました。Basic04 の Terraform 版と同じく、この時点ではまだノードは起動しません。Karpenter は GPU を要求する Pod（Pending）が現れて初めてノードを起動します。実際にノードを起動するときは、テナント taint を tolerate する GPU Pod を投入します (生成された NodePool の taints に出ているとおり、実ノードを起動して載せる場合は `nvidia.com/gpu` のデバイス taint への toleration も併せて必要です)（この toleration は自分の namespace の値なので VAP に通ります。次の手順で確認します）。
 
-## 5. p5 の Capacity Block プールを作る（管理者が allowlist、テナントが参照）
+## 5. p5 の Capacity Block プールを作る（管理者が 許可リスト、テナントが参照）
 
-Basic05 で購入した p5.48xlarge の Capacity Block を、operator 経由で使います。Capacity Block へのアクセスは、テナントが勝手に参照できてはならないため、管理者が `AcceleratorClass` の該当 namespace エントリに CB の ID を明示的に allowlist した場合にだけ許可されます。まず管理者が Class に CB を追加します。
+Basic05 で購入した p5.48xlarge の Capacity Block を、operator 経由で使います。Capacity Block へのアクセスは、テナントが勝手に参照できてはならないため、管理者が `AcceleratorClass` の該当 namespace エントリに CB の ID を明示的に 許可リストに登録した場合にだけ許可されます。まず管理者が Class に CB を追加します。
 
 ```bash
 k apply -f - <<'EOF'
@@ -384,11 +384,11 @@ karpenter.sh/capacity-type=[reserved]
 topology.kubernetes.io/zone=[us-east-2a]
 ```
 
-Basic05 では `cb_reservation_id` を Terraform の tfvars に書いて apply していました。operator 版では、CB の ID は管理者が Class の allowlist に載せ、テナントがプールから参照する形になります。CB の購入自体は Basic05 と同じ手順で、operator は購入には関与しません。
+Basic05 では `cb_reservation_id` を Terraform の tfvars に書いて apply していました。operator 版では、CB の ID は管理者が Class の 許可リストに登録し、テナントがプールから参照する形になります。CB の購入自体は Basic05 と同じ手順で、operator は購入には関与しません。
 
 ## 6. テナント境界を確認する
 
-ここで試すのは他テナントの toleration と未許可の Capacity Block ですが、VAP が閉じている経路はそれだけではありません。テナントのラベルを狙う `nodeSelector`、`nodeAffinity` の一部、そして `spec.nodeName` の直接指定も拒否されます。`nodeAffinity` について見ているのは `requiredDuringSchedulingIgnoredDuringExecution` の値だけなので、`preferred` 側や `Exists` や `NotIn` のように値だけでは意味が決まらない条件は、この検査では捕まりません (そこは taint による分離が受け持ちます)。特に `spec.nodeName` はスケジューラを丸ごと飛ばすので、taint による分離が働きません。デバッグのために `nodeName` を書いた既存の Pod がここで落ちるのは、この経路を閉じているためです。
+ここで試すのは他テナントの toleration と未許可の Capacity Block ですが、VAP が検査している操作はそれだけではありません。テナントのラベルを狙う `nodeSelector`、`nodeAffinity` の一部、そして `spec.nodeName` の直接指定も拒否されます。`nodeAffinity` について見ているのは `requiredDuringSchedulingIgnoredDuringExecution` の値だけなので、`preferred` 側や `Exists` や `NotIn` のように値だけでは意味が決まらない条件は、この検査では捕まりません (そこは taint による分離が受け持ちます)。特に `spec.nodeName` はスケジューラを丸ごと飛ばすので、taint による分離が働きません。デバッグのために `nodeName` を書いた既存の Pod がここで落ちるのは、この操作を検査しているためです。
 
 境界が実際に効いていることを確かめます。まず、別テナントの taint を tolerate する Pod を `team-gpu` に作ろうとすると、VAP が admission の段階で拒否します。
 
@@ -448,7 +448,7 @@ EOF
 pod/own-tenant created (server dry run)
 ```
 
-次に、Class の allowlist に無い CB を参照するプールを作ると、operator はそのプールを `Validated=False` のままにし、NodePool を生成しません。
+次に、Class の 許可リスト に無い CB を参照するプールを作ると、operator はそのプールを `Validated=False` のままにし、NodePool を生成しません。
 
 ```bash
 k apply -f - <<'EOF'
@@ -481,10 +481,10 @@ Ready=False (ReservationNotAllowed)
 No resources found
 ```
 
-taint（スケジューラ）、VAP（admission）、CB allowlist（reconcile）の 3 つがそろって、テナント境界が仕組み上迂回できない形で守られていることが確認できました。ここで前提になっているのは、VAP を有効にした既定構成であることと、除外ラベルが付いていない namespace であることです。VAP を切れば admission の層が抜け、Pod 側は taint だけで守ることになります。
+taint（スケジューラ）、VAP（admission）、CB の許可リスト検査 (operator がリソースを処理するときのチェック)の 3 つがそろって、テナント境界が仕組み上迂回できない形で守られていることが確認できました。ここで前提になっているのは、VAP を有効にした既定構成であることと、除外ラベルが付いていない namespace であることです。VAP を無効化すれば admission の層が抜け、Pod 側は taint だけで守ることになります。
 
 :::message alert
-このプールで実際に GPU ノードを起動する前に、device plugin がテナント taint を tolerate できるかを必ず確認してください。operator が生成する NodePool には `tenantpools.dev/tenant=<namespace>` の taint が載りますが、Basic04 で導入した NVIDIA device plugin（GPU Operator）の DaemonSet は、既定では `nvidia.com/gpu` などを tolerate するだけで、このテナント taint を tolerate しません。実機の DaemonSet の toleration を確認すると、次のようにテナント taint が含まれていないことが分かります。
+このプールで実際に GPU ノードを起動する前に、device plugin がテナント taint を tolerate できるかを必ず確認してください。operator が生成する NodePool には `tenantpools.dev/tenant=<namespace>` の taint が付与されますが、Basic04 で導入した NVIDIA device plugin（GPU Operator）の DaemonSet は、既定では `nvidia.com/gpu` などを tolerate するだけで、このテナント taint を tolerate しません。実機の DaemonSet の toleration を確認すると、次のようにテナント taint が含まれていないことが分かります。
 
 ```bash
 k get ds -n gpu-operator nvidia-device-plugin-daemonset \
@@ -499,9 +499,9 @@ vpc.amazonaws.com/efa Exists NoSchedule
 capacity-reservation Exists NoSchedule
 ```
 
-この状態でテナント taint 付きのノードを起動すると、device plugin の Pod がそのノードに載れず、GPU が advertise されないため、GPU を要求するワークロードは永久に `Pending` になります。device plugin にはテナント taint を tolerate させる必要があります。ただし `operator: Exists` のワイルドカードを足すのは行き止まりです。VAP は「テナントキーに触る toleration は `operator: Equal` かつ値が自分の namespace と一致するものだけ」を通すので、ワイルドカードは VAP 自身に `Forbidden` で拒否されます。DaemonSet の更新自体は通っても、そこから生まれる Pod の作成が弾かれ、症状は変わりません。単一の DaemonSet に全テナントの値を `Equal` で列挙するのも現実的ではありません。
+この状態でテナント taint 付きのノードを起動すると、device plugin の Pod がそのノードに載れず、GPU がノードの利用可能リソースとして公開されないため、GPU を要求するワークロードは永久に `Pending` になります。device plugin にはテナント taint を tolerate させる必要があります。ただし `operator: Exists` のワイルドカードを追加しても解決しません。VAP は「テナントキーに触る toleration は `operator: Equal` かつ値が自分の namespace と一致するものだけ」を通すので、ワイルドカードは VAP 自身に `Forbidden` で拒否されます。DaemonSet の更新自体は通っても、そこから生まれる Pod の作成が弾かれ、症状は変わりません。単一の DaemonSet に全テナントの値を `Equal` で列挙するのも現実的ではありません。
 
-実装が用意している逃げ道は namespace 単位の除外です。device plugin が動く namespace (GPU Operator なら `gpu-operator`) に `tenantpools.dev/excluded=true` ラベルを付けると、その namespace の Pod は VAP の対象から外れ、ワイルドカード toleration を持てるようになります。既定で名前指定で除外されているのは `kube-system`、`kube-node-lease`、`kube-public` の 3 つだけなので、それ以外の namespace で動く device plugin には自分でこのラベルを付けます。除外した namespace はテナント境界の外側になるので、`kubectl get ns -l tenantpools.dev/excluded` で誰が除外されているかを追えるようにしてあります。
+実装が用意している除外手段は namespace 単位の除外です。device plugin が動く namespace (GPU Operator なら `gpu-operator`) に `tenantpools.dev/excluded=true` ラベルを付けると、その namespace の Pod は VAP の対象から外れ、ワイルドカード toleration を持てるようになります。既定で名前指定で除外されているのは `kube-system`、`kube-node-lease`、`kube-public` の 3 つだけなので、それ以外の namespace で動く device plugin には自分でこのラベルを付けます。除外した namespace はテナント境界の外側になるので、`kubectl get ns -l tenantpools.dev/excluded` で誰が除外されているかを追えるようにしてあります。
 :::
 
 ## 7. 後始末をする
@@ -519,11 +519,11 @@ operator 自体を外す場合は `helm uninstall ktp -n tenantpools-system` を
 
 # まとめ
 
-本章では、Basic04 と Basic05 で Terraform の共有変数として書いていた g5 の On-Demand プールと p5 の Capacity Block プールを、`karpenter-tenant-pools` の CRD から立ち上げました。管理者は `AcceleratorClass` にロール・AMI・セレクタ・テナント allowlist を集約し、テナントは自分の namespace の `AcceleratorPool` に「欲しいプールの要望」だけを書きます。生成される NodePool / EC2NodeClass は Basic04 の Terraform 版とほぼ同じ形になり、`READY=True` で Karpenter に受理されました。
+本章では、Basic04 と Basic05 で Terraform の共有変数として書いていた g5 の On-Demand プールと p5 の Capacity Block プールを、`karpenter-tenant-pools` の CRD から立ち上げました。管理者は `AcceleratorClass` にロール・AMI・セレクタ・テナント 許可リスト を集約し、テナントは自分の namespace の `AcceleratorPool` に「欲しいプールの要望」だけを書きます。生成される NodePool / EC2NodeClass は Basic04 の Terraform 版とほぼ同じ形になり、`READY=True` で Karpenter に受理されました。
 
-テナント境界は 3 つの経路で仕組み上迂回できない形で守られます。生成 NodePool には namespace から導出したテナント taint が必ず載り、同梱の VAP が別テナントやワイルドカードの toleration を持つ Pod を admission で拒否し、Capacity Block へのアクセスは管理者が Class の allowlist に載せた場合にだけ許可されます。allowlist に無い CB を参照したプールは `Validated=False` に留まり NodePool を生成しない、という挙動も実機で確認しました。
+テナント境界は 3 つの経路で仕組み上迂回できない形で守られます。生成 NodePool には namespace から導出したテナント taint が必ず載り、同梱の VAP が別テナントやワイルドカードの toleration を持つ Pod を admission で拒否し、Capacity Block へのアクセスは管理者が Class の 許可リストに登録した場合にだけ許可されます。許可リスト に無い CB を参照したプールは `Validated=False` に留まり NodePool を生成しない、という挙動も実機で確認しました。
 
-operator は AWS を一切呼ばず、EC2 の起動は Karpenter に委ねます。そのためクラウドの認証情報を 1 つも必要としません。チャートには Capacity Block の実在確認のために `ec2:DescribeCapacityReservations` を読むための `awsLookup` という値が用意されていますが、現時点の Deployment はこの値を operator に渡していないので、有効にしても挙動は変わりません。したがって Karpenter・device plugin・Capacity Block の購入は引き続き Basic シリーズの手順で行い、operator はあくまで「プール定義の入り口」を集中管理から namespace 単位のセルフサービスに置き換える層として機能します。単一チームで運用する分には Basic04 の Terraform 版で十分ですが、複数チームが独立にプールを足す運用に踏み込むなら、この構築的な境界が効いてきます。
+operator は AWS を一切呼ばず、EC2 の起動は Karpenter に委ねます。そのためクラウドの認証情報を 1 つも必要としません。チャートには Capacity Block の実在確認のために `ec2:DescribeCapacityReservations` を読むための `awsLookup` という値が用意されていますが、現時点の Deployment はこの値を operator に渡していないので、有効にしても挙動は変わりません。したがって Karpenter・device plugin・Capacity Block の購入は引き続き Basic シリーズの手順で行い、operator はあくまで「プールを定義する窓口」を集中管理から namespace 単位のセルフサービスに置き換える層として機能します。単一チームで運用する分には Basic04 の Terraform 版で十分ですが、複数チームが独立にプールを追加する運用に踏み込むなら、この構築的な境界が有効に働きます。
 
 # 参考資料
 
