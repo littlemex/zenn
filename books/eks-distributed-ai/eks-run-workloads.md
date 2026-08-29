@@ -256,7 +256,7 @@ port-forward はバックグラウンド（`&`）で起動したので、確認�
 もし次の Observability をそのまま実施する場合はこの後片付けは Basic08 の後に実施してください。その間ずっと GPU ノードの課金は続くので、Basic08 を後日に回すならここで片付けてください (Basic08 の手順 3 で GPU のメトリクスが 0 系列になるのは、その場合の想定どおりです)。
 :::
 
-ターミナルを開き直した場合は、`export NAMESPACE=distai` と `POOL=gpu-ddp` を先に実行し直します。`gpuServingVllm.nodeRole` が空だとチャートが `nodeRole is required` で止まり、削除もできません。
+ターミナルを開き直した場合は、`cd "$(git rev-parse --show-toplevel)"/infra/eks` で移動したうえで `export NAMESPACE=distai` と `POOL=gpu-ddp` を実行し直します。削除コマンドも `charts/experiments` を相対パスで参照するので、ディレクトリが違うとチャートが見つかりません。`gpuServingVllm.nodeRole` が空だとチャートが `nodeRole is required` で止まり、削除もできません。
 
 推論サーバーを止めれば、GPU ノードは [`consolidateAfter`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/karpenter-resources.tf)（本章で使う `gpu-ddp` プールでは 5 分）のアイドル後に Karpenter が自動回収します。`gpu-ddp` は spot 優先で確保するため、使った分だけの課金です。Deployment・Service の名前は `--set` の値に関わらず変わらないため、`gpuServingVllm.enabled=true` と `nodeRole` だけを付けてレンダリングした結果を `k delete` に渡せば、投入時に指定した `model` や `memory` などの値を覚えておく必要なく、チャートが出力した全リソースを漏れなく削除できます。
 

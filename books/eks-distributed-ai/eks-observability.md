@@ -198,7 +198,7 @@ curl -sf http://localhost:3000/api/health >/dev/null \
 
 ログイン後、左メニューの Dashboards を開くと、kube-prometheus-stack が自動導入した Kubernetes 向けダッシュボード群に加えて、本書が配布したダッシュボードが表示されます。`GPU` フォルダには自作の「GPU Utilization by Tenant」と NVIDIA 公式の「NVIDIA DCGM Exporter Dashboard」、`Nodes` フォルダにはノードの CPU・メモリ・ディスク・ネットワークを網羅する「Node Exporter Full」が入っています。いずれも `terraform apply` で自動的に配置され、手動インポートは不要です。
 
-「GPU Utilization by Tenant」ダッシュボードの上部にある `Tenant` ドロップダウンで自分の namespace を選ぶと、そのテナントの GPU だけの使用率・メモリ・SM クロック・温度・電力が表示されます。設定ファイルもクエリも書く必要はなく、ドロップダウンを選ぶだけです。`http://localhost:3000/d/gpu-tenant?var-tenant=team-a` のように URL に `var-tenant` を付ければ、選択済みの状態で共有もできます。
+「GPU Utilization by Tenant」ダッシュボードの上部にある `Tenant` ドロップダウンで自分の namespace を選ぶと、そのテナントの GPU だけの使用率・メモリ・SM クロック・温度・電力が表示されます。ここに namespace が並ぶのは、ノードに `tenantpools.dev/tenant` ラベルが付いている場合だけです。Basic04 や Basic07 の `gpu-ddp` プールのノードにはこのラベルが無いので、この時点では `Tenant` は `(none)` だけになります。namespace を選べる状態を見たい場合は Experiment01 のテナントプールで起動したノードで確認してください。設定ファイルもクエリも書く必要はなく、ドロップダウンを選ぶだけです。`http://localhost:3000/d/gpu-tenant?var-tenant=team-a` のように URL に `var-tenant` を付ければ、選択済みの状態で共有もできます。
 
 ダッシュボードがどう見えるかの参考として実画面を載せます。以下は、今回のワークショップ手順の A10G 1 枚構成とは異なり、Capacity Block で確保した p5en.48xlarge（H200 x8）の 1 ノードで GPU ワークロードを流しているときのものです。8 枚の GPU（GPU 0〜7）それぞれの温度・電力・SM クロック・使用率が個別に可視化されているのが読み取れます。
 
@@ -220,7 +220,15 @@ observability が不要なクラスタでは、`terraform.tfvars` で無効化�
 enable_observability = false
 ```
 
-この状態で `terraform apply` すると、kube-prometheus-stack・専用 NodePool・自前 DCGM ServiceMonitor・アラートルール・`monitoring` namespace （その中身ごと）といった observability 関連リソースがまとめて削除されます。ただし kube-prometheus-stack の CRD (`servicemonitors.monitoring.coreos.com` など) は chart の `crds/` に入っているので `helm uninstall` では消えず、クラスタに残ります。不要なら手で削除します。`gp3` StorageClass は [`observability_storage_class_create`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/variables.tf) が `true` のとき（既定）だけ削除対象で、既存のクラスを流用する設定にしていれば Terraform の管理外なので残ります。逆に、この構成が作った `gp3` を他のワークロードが使い始めていた場合、observability の無効化でそのクラスも消える点には注意してください。クラス名がクラスタ共通の名前なので起きうる巻き込みです。NMA は別の変数で制御しているため、これを止めるには `enable_node_monitoring_agent = false` も併せて設定します。GPU Operator 側の DCGM ServiceMonitor はもともと無効（`dcgmExporter.serviceMonitor.enabled = false`）のままで、こちらの変更は不要です。
+この状態で `terraform apply` すると、kube-prometheus-stack・専用 NodePool・自前 DCGM ServiceMonitor・アラートルール・`monitoring` namespace （その中身ごと）といった observability 関連リソースがまとめて削除されます。ただし kube-prometheus-stack の CRD (`servicemonitors.monitoring.coreos.com` など) は chart の `crds/` に入っているので `helm uninstall` では消えず、クラスタに残ります。不要なら手で削除します。`monitoring` namespace を消せば Prometheus と Grafana の PVC も消え、`gp3` は `reclaimPolicy: Delete` なので EBS も削除されます。念のため、無効化のあとに残っていないかを見ておきます。
+
+```bash
+k get pv | grep -E 'monitoring|prometheus|grafana' || echo "(残っていません)"
+aws ec2 describe-volumes --region "$AWS_REGION" --filters "Name=status,Values=available" \
+  --query 'Volumes[].[VolumeId,Size,Tags[?Key==`Name`]|[0].Value]' --output text
+```
+
+`gp3` StorageClass は [`observability_storage_class_create`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/variables.tf) が `true` のとき（既定）だけ削除対象で、既存のクラスを流用する設定にしていれば Terraform の管理外なので残ります。逆に、この構成が作った `gp3` を他のワークロードが使い始めていた場合、observability の無効化でそのクラスも消える点には注意してください。クラス名がクラスタ共通の名前なので起きうる巻き込みです。NMA は別の変数で制御しているため、これを止めるには `enable_node_monitoring_agent = false` も併せて設定します。GPU Operator 側の DCGM ServiceMonitor はもともと無効（`dcgmExporter.serviceMonitor.enabled = false`）のままで、こちらの変更は不要です。
 
 :::message alert
 GPU 障害の検知を自分で試す予定があるなら、本章の NMA とアラートルールが動いていることが前提になるので、この無効化は行わないでください。

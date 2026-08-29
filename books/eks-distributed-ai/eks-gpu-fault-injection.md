@@ -174,6 +174,8 @@ for i in $(seq 1 12); do
 done
 ```
 
+反転しないまま手順 4 に進まないでください。手順 4 のアラートは、この条件が `False` になって 2 分続いて初めて発火します。反転しない場合は、手順 2 の注入が成功したか (`dcgmi` の出力) と `dcgm-server` のログを先に見ます。
+
 実機出力です。注入した XID 79 を NMA が検知し、`AcceleratedHardwareReady` が `False` に反転しました。
 
 ```text

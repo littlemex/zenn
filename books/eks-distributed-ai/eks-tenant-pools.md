@@ -84,6 +84,7 @@ ReservedCapacity=true,SpotToSpotConsolidation=false,NodeRepair=false,NodeOverlay
 `ReservedCapacity=true` が確認できれば、CB を参照するプールも動作します。あわせて、ノードを起動する IAM ロール名と、サブネット／セキュリティグループを選ぶための discovery タグを控えておきます。これらは次の手順で `AcceleratorClass` に渡します。この本の Terraform 構成では、ロールは `<cluster>-karpenter-node`、discovery タグは `karpenter.sh/discovery: <cluster>` です。
 
 ```bash
+k get ec2nodeclass
 k get ec2nodeclass gpu-p5 \
   -o jsonpath='role={.spec.role}{"\n"}instanceProfile={.spec.instanceProfile}{"\n"}subnet={range .spec.subnetSelectorTerms[*]}{.tags}{end}{"\n"}'
 ```
@@ -96,7 +97,12 @@ instanceProfile=distai-eks-0807-karpenter-node
 subnet={"karpenter.sh/discovery":"distai-eks-0807"}
 ```
 
-ここで参照した `gpu-p5` は Basic04/05 で定義したプール名の一例です。読者の環境では別名のことがあるので、`k get ec2nodeclass` で存在する名前を確認して読み替えてください。この本の Terraform 版は `instanceProfile` を直接指定しているため `role` は空ですが、operator の `AcceleratorClass` は `role`（IAM ロール名）を受け取り、そのロールから Karpenter がインスタンスプロファイルを作ります。この検証環境では、インスタンスプロファイル `distai-eks-0807-karpenter-node` の背後にある同名の IAM ロール `distai-eks-0807-karpenter-node` がそのロールにあたります。次の手順ではこのロール名と discovery タグ `karpenter.sh/discovery: distai-eks-0807` を `AcceleratorClass` に渡します。以降のマニフェストに出てくる `distai-eks-0807` はこの検証環境のクラスタ名なので、**自分のクラスタ名に置き換えてから** apply してください。operator は AWS を呼ばないため、実在しないロールやタグでも apply 自体は成功し、手順 4 で生成される EC2NodeClass が Karpenter 側で解決できず `Ready=False` になって初めて分かります。
+ここで参照した `gpu-p5` は Basic04/05 で定義したプール名の一例です。読者の環境では別名のことがあるので、`k get ec2nodeclass` で存在する名前を確認して読み替えてください。この本の Terraform 版は `instanceProfile` を直接指定しているため `role` は空ですが、operator の `AcceleratorClass` は `role`（IAM ロール名）を受け取り、そのロールから Karpenter がインスタンスプロファイルを作ります。この検証環境では、インスタンスプロファイル `distai-eks-0807-karpenter-node` の背後にある同名の IAM ロール `distai-eks-0807-karpenter-node` がそのロールにあたります。名前が同じとは限らないので、自分の環境では次で確かめた値を使ってください。
+
+```bash
+aws iam get-instance-profile --instance-profile-name <上で出た instanceProfile> \
+  --query 'InstanceProfile.Roles[0].RoleName' --output text
+```次の手順ではこのロール名と discovery タグ `karpenter.sh/discovery: distai-eks-0807` を `AcceleratorClass` に渡します。以降のマニフェストに出てくる `distai-eks-0807` はこの検証環境のクラスタ名なので、**自分のクラスタ名に置き換えてから** apply してください。operator は AWS を呼ばないため、実在しないロールやタグでも apply 自体は成功し、手順 4 で生成される EC2NodeClass が Karpenter 側で解決できず `Ready=False` になって初めて分かります。
 
 :::message
 本書は作業用 namespace を `distai` に統一していますが、本章はテナント分離のデモが目的のため、テナント役の専用 namespace `team-gpu` を使います（`distai` 統一ルールの意図的な例外です）。
@@ -531,6 +537,14 @@ operator 自体を外す場合は `helm uninstall ktp -n tenantpools-system` を
 ```bash
 k get acceleratorclass -o yaml > acceleratorclasses.yaml
 k get acceleratorpool -A -o yaml > acceleratorpools.yaml
+```
+
+**この章を試しただけなら、operator も必ず外してください。** 同梱の VAP は全 namespace の Pod の作成と更新に当たるので、残しておくと後の章や別の作業で、ワイルドカードの toleration を持つ Pod や `spec.nodeName` を書いた Pod が `Forbidden` で作れなくなります。除外ラベルを付けた namespace だけが対象外です。
+
+```bash
+helm uninstall ktp -n tenantpools-system
+k delete namespace tenantpools-system --ignore-not-found
+k get validatingadmissionpolicy | grep tenantpools || echo "(VAP は残っていません)"
 ```
 
 # まとめ
