@@ -125,7 +125,7 @@ ITYPE=p5.48xlarge
 
 まず現状で GDRCopy が入っていないことを確認する。対象プールのノードが起動していない状態から始める場合は、`/dev/gdrdrv` をノードに出て行って確認する段階ではない (Basic06 の EFA プールは空でもノードを保持する設定なので、ノードが残っているならそこで `lsmod | grep gdrdrv` を見てもよい)。代わりに、GDRCopy の導入方式を決める `gdrcopy_mode` が既定の `off` であること（`gdrdrv-loader` の DaemonSet が存在しないこと）を確認する。`gdrcopy_mode` は入力変数なので `terraform output` には出ない。現在値は `terraform console` で引くのが確実である。`gdrdrv-loader` の DaemonSet の不在は補助的な手がかりにとどまる。この DaemonSet は `gdrcopy_mode` が `daemonset` かつ GPU プールが定義済みのときだけ作られるので、GPU プールを定義していなければ `daemonset` を選んでいても存在しない。
 
-`terraform console` が `"off"` を返し、`gdrdrv-loader` の DaemonSet が居なければ既定のままである。
+`terraform console` が返すのは変数ファイル上の値であって、`-var` で一時的に上書きして apply した値ではない。クラスタの実際の状態は DaemonSet の有無で見る。両方が `off` と「居ない」で揃っていれば既定のままである。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
@@ -196,6 +196,8 @@ k wait --for=condition=ready pod/gdrcopy-probe -n "$NAMESPACE" --timeout=10m
 k exec gdrcopy-probe -n "$NAMESPACE" -- copylat
 ```
 
+プールに `accelerator_pools` の `taints` で独自の taint を足している場合は、この Pod と後述の `p2p-check` の `tolerations` にもその taint を足す。足さないとスケジュールされず、`k wait` が時間切れになる。ノードが起動していない状態から始めると、ノードの起動と DLC の pull で 10 分を超えることがある。時間切れになっても `k get pod gdrcopy-probe -n "$NAMESPACE"` が `ContainerCreating` なら失敗ではないので、待ってから `k exec` に進む。
+
 `image` は Basic06 の NCCL 測定で使った DLC に読み替える。レジストリのアカウント ID は同じで、リージョンとタグのバージョンサフィックスは自分の環境に合わせる。ここでは `copylat` を実行できればよい。本章で使ったタグには含まれていたが、DLC のバージョンによって同梱の有無や PATH は変わりうる。`copylat: command not found` になる場合は [NVIDIA/gdrcopy](https://github.com/NVIDIA/gdrcopy) からビルドして持ち込む。`hostPath` でマウントしたキャラクタデバイス `/dev/gdrdrv` にコンテナ内からアクセスするため `privileged: true` を与えている点に注意する。実機出力は次のとおり。
 
 ```text
@@ -247,7 +249,11 @@ all-reduce（16 GPU）の結果を次に示す。
 
 ## 6. GPUDirect RDMA が機能していることを確認する
 
-GDRCopy の有無に関わらず、EFA のバルク転送を支える GPUDirect RDMA が機能していることは NCCL のログで確認できる。この確認は NCCL ジョブを一度実行したあとに行う。`GPU Direct RDMA Enabled` は NCCL が GPU メモリを NIC に登録したときに出るログなので、ジョブを走らせる前や登録前のノードでは出ない。Basic06 の NCCL 測定ジョブ（`ncclTrainjob`）を流したあとに、その Pod のログを見る。
+GDRCopy の有無に関わらず、EFA のバルク転送を支える GPUDirect RDMA が機能していることは NCCL のログで確認できる。この確認は NCCL ジョブを一度実行したあとに行う。`GPU Direct RDMA Enabled` は NCCL が GPU メモリを NIC に登録したときに出るログなので、ジョブを走らせる前や登録前のノードでは出ない。Basic06 の NCCL 測定ジョブ（`ncclTrainjob`）を流したあとに、その Pod のログを見る。この章の手順だけを打ってきた場合は Pod が無いので、まず存在を確かめる。無ければ Basic06 の手順 3 を実行してから戻る。grep が空のときに「GPUDirect RDMA が無効」と読み違えないためである。
+
+```bash
+k -n "$NAMESPACE" get pods -l jobset.sigs.k8s.io/jobset-name=nccl-trainjob
+```
 
 ```bash
 k -n "$NAMESPACE" logs -l jobset.sigs.k8s.io/jobset-name=nccl-trainjob --tail=-1 \
@@ -300,6 +306,13 @@ efa: Acquired peer memory using P2P
 
 ```bash
 k delete pod gdrcopy-probe p2p-check -n "$NAMESPACE" --ignore-not-found
+```
+
+Pod を消してもノードは残る。EFA を持つプールや予約のプールは `consolidateAfter: Never` なので、空になっても回収されない。この章のために起こしたノードを落とすなら、Basic11 の [`04-teardown.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/04-teardown.sh) に `--nodepool` でそのプールを渡す。予約のノードは前払いなので追加の課金は無いが、オンデマンドのプールで試した場合はここで落とさないと課金が続く。
+
+```bash
+k get nodes -l node-role=$POOL
+k get nodeclaims -l karpenter.sh/nodepool=$POOL
 ```
 
 `gdrcopy_mode` を `off` に戻すと、Terraform が管理する `gdrdrv-loader` DaemonSet は消える。

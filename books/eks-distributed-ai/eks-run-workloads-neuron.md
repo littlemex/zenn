@@ -119,8 +119,11 @@ trn2 ノードは Trainium デバイスが 1 個しかないため、Deployment 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
 helm dependency build charts/experiments
+POOL=<Basic05 で作った trn2 プール名>
+k get nodepool "$POOL"
 helm template exp charts/experiments -n "$NAMESPACE" \
     --set neuronVllmPlugin.enabled=true \
+    --set neuronVllmPlugin.nodeRole="$POOL" \
     | k apply -f -
 ```
 
@@ -242,8 +245,14 @@ curl -s localhost:8000/v1/chat/completions \
 推論サーバーを削除します。Capacity Block for ML の場合、インスタンスは期限で自動的に削除されます。手順 5 の port-forward はバックグラウンドに残るので、`jobs` で確認して `kill %<n>` で止めます。残したままにすると、次に 8000 番を使うときに `address already in use` になります。
 
 ```bash
-k delete deploy/neuron-vllm svc/neuron-vllm -n "$NAMESPACE"
+cd "$(git rev-parse --show-toplevel)"/infra/eks
+helm template exp charts/experiments -n "$NAMESPACE" \
+    --set neuronVllmPlugin.enabled=true \
+    --set neuronVllmPlugin.nodeRole="$POOL" \
+    | k delete -f -
 ```
+
+Basic07 と同じく、投入に使ったのと同じ値でレンダリングして `k delete` に流します。こうするとチャートが出した分だけを確実に消せます。
 
 # まとめ
 
