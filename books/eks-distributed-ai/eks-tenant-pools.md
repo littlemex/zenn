@@ -43,7 +43,7 @@ operator が扱う CRD は 2 種類あり、責務がはっきり分かれてい
 
 1 つ目は生成物の側です。operator が作る NodePool には、CR の namespace から導出した `tenantpools.dev/tenant=<namespace>` という taint が必ず載ります。つまりこのプールのノードには、同じ値の toleration を持つ Pod しか載れません。
 
-2 つ目は Pod の側です。taint に対応する toleration は Pod が自由に書けてしまうので、それだけでは「別テナントの値を勝手に tolerate する Pod」を止められません。そこで operator は `ValidatingAdmissionPolicy` を同梱し、Pod が自分の namespace 以外のテナント値を tolerate しようとした場合、あるいはワイルドカードの toleration を持つ場合に、その Pod の作成そのものを拒否します。taint（スケジューラ側）と VAP（admission 側）の両方がそろって初めて、境界が塞がれます。
+2 つ目は Pod の側です。taint に対応する toleration は Pod が自由に書けてしまうので、それだけでは「別テナントの値を勝手に tolerate する Pod」を止められません。そこで operator は `ValidatingAdmissionPolicy` を同梱し、Pod が自分の namespace 以外のテナント値を tolerate しようとした場合、あるいはワイルドカードの toleration を持つ場合に、その Pod の作成を拒否します。この検査は作成だけでなく更新にも当たるので、すでに走っている Pod でも、条件に触れる状態のまま更新しようとすると弾かれます。taint（スケジューラ側）と VAP（admission 側）の両方がそろって初めて、境界が塞がれます。
 
 なお、`aws-node` や device plugin のような system 系の DaemonSet はワイルドカードの toleration を持つため、VAP をそのまま全 namespace に適用すると新規ノードに CNI が載らず永久に `NotReady` になります。この事故を避けるため、VAP のバインディングは既定で `kube-system` などの system namespace を名前で除外しています。あわせて、任意の namespace に `tenantpools.dev/excluded=true` ラベルを付けると除外できる仕組みもあります。運用上の逃げ道として必要なものですが、テナント境界を素通りさせる手段でもあるので、このラベルを誰が付けられるかは境界そのものと同じ重みで管理する必要があります。
 

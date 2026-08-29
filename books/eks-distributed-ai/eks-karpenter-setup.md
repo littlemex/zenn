@@ -265,13 +265,14 @@ k get nodes
 `k get nodepool` には `cpu` が表示されます。これは `cpu_nodepool_enabled`（既定 `true`）によって Basic01 の apply で作られたもので、Basic02 の CPU DDP がこのプールにノードを起こしていました。監視スタックを既定のまま有効にしている場合は、これに加えて `monitoring` も表示されるので 2 つになります。Basic02 の補足にある `image_builder_dedicated_pool` を有効にしている場合は `image-builder` も並びます。アクセラレータ用の NodePool は `accelerator_pools` が空のままなのでまだ存在せず、次章で定義します。
 
 ```text
-NAME   NODECLASS   NODES   READY   AGE
-cpu    cpu         0       True    2d
+NAME         NODECLASS    NODES   READY   AGE
+cpu          cpu          0       True    3m21s
+monitoring   monitoring   1       True    6m23s
 ```
 
 一方 `kubectl get nodes` から `cpu` プールのノードは消えています（Basic02 で起きた cpu ノードは、ワークロードが終わったあと `consolidateAfter` で回収されています）。残っているのは Basic01 の System ノードと、監視スタックを有効にしている場合は監視 Pod を載せた `monitoring` プールのノードです。後者は Pod が常駐するため回収されません。NodePool が存在しても、それを要求する Pod がなければノードは立ちません。これが demand-driven なプロビジョニングの動作確認になります。
 
-`NODES` 列が 0 であることと、`READY` が `True`（= Karpenter がこの NodePool を受理して起動待機している）ことの両方を確認してください。
+`cpu` の `NODES` 列が 0 であることと、`READY` が `True`（= Karpenter がこの NodePool を受理して起動待機している）ことの両方を確認してください。`monitoring` の `NODES` が 1 なのは、監視 Pod が常駐しているためで正常です。
 
 # まとめ
 

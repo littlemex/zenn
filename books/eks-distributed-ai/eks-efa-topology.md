@@ -176,7 +176,7 @@ env:
 ## 1. 前提を確認する
 
 - Basic05 で EFA 対応インスタンスの Capacity Block を確保済み。
-- リポジトリ同梱の NCCL 測定用 TrainJob チャート（`infra/eks/charts/experiments` の `ncclTrainjob`）
+- リポジトリ同梱の NCCL 測定用 TrainJob チャート（`infra/eks/charts/experiments` の `ncclTrainjob`）。Basic04 では `trainjobTrain.nodeRole` が Runtime ごと再レンダリングされましたが、こちらは方式が違います。Runtime はクラスタ全体で共有される 1 つなので、`ncclTrainjob.nodeRole` は Runtime を書き換えず、この TrainJob だけに `nodeSelector` を重ねる形 (`runtimePatches`) で載せ先を決めます
 - Capacity Block のノードは予約の AZ に立つので、共有ストレージ (単一 AZ の FSx for OpenZFS) と別の AZ になることがあります。NFS は AZ を跨いでもマウントできるため本手順は動きますが、`/shared` への読み書きに AZ 間のデータ転送料金と余分なレイテンシがかかります。本章が `/shared` に置くのは数 KB の測定スクリプトだけなので測定結果には影響しません
 - Basic02 で作った共有 PVC `shared-claim` が対象 namespace にあること (`ncclTrainjob` は `/shared` をマウントします。チャートが検査するのは PVC 名を渡したかどうかだけなので、PVC が実在しなくてもレンダリングと `kubectl apply` は通り、Pod が `Pending` のまま止まります。`k get pvc -n $NAMESPACE shared-claim` で `Bound` を先に確かめてください)
 - `k` と `KUBECONFIG` は Basic01 step 2 の 4 行で設定済み
@@ -192,7 +192,7 @@ cd "$(git rev-parse --show-toplevel)"/infra/eks
 terraform output accelerator_pool_efa_schedulable
 ```
 
-Basic04 の `gpu-ddp` プールだけを定義した状態での出力:
+Basic04 の `gpu-ddp` プールだけを定義した状態での出力です。Basic05 で CB プールを追加して apply したあとに実行すると、そのプール (たとえば `gpu-p4d = 3`) も並びます。
 
 ```text
 {
@@ -200,7 +200,7 @@ Basic04 の `gpu-ddp` プールだけを定義した状態での出力:
 }
 ```
 
-0 になるのは、`gpu-ddp` が並べている g6.2xlarge / g5.2xlarge が EFA 非対応だからです。これは推測ではなく EC2 API が返す事実で、次のコマンドで直接確認できます（`$AWS_REGION` は Basic01 step 2 の 4 行で解決済みのクラスタのリージョンです。インスタンスタイプの EFA 情報自体はリージョンによらずほぼ同じですが、クラスタと同じリージョンを指定しておくと以降の手順と揃います）。
+この 0 は、Basic04 の tfvars で `gpu-ddp` に `efa_interface_count = 0` を明示しているためです。プール側で明示した値は API 値より優先されるので、ここに出ているのは自分が書いた値です。結果の数字が同じなのは、`gpu-ddp` が並べている g6.2xlarge / g5.2xlarge がそもそも EFA 非対応だからで、明示しなければ API から 0 が導出されます。API 側の事実は次のコマンドで直接確認できます（`$AWS_REGION` は Basic01 step 2 の 4 行で解決済みのクラスタのリージョンです。インスタンスタイプの EFA 情報自体はリージョンによらずほぼ同じですが、クラスタと同じリージョンを指定しておくと以降の手順と揃います）。
 
 ```bash
 aws ec2 describe-instance-types --instance-types g6.2xlarge g5.2xlarge g6e.12xlarge \
@@ -299,7 +299,7 @@ aws ecr describe-images --region "$AWS_REGION" --registry-id 763104351884 --repo
 
 手順 3 でノードが起動したら、手順 2 の値が実際にノードへ反映されているかを確認します。
 
-なお手順 3 のレンダリングは、測定用の TrainJob だけでなく `nccl-trainjob-stage` という Job も作ります。測定スクリプト `bench.py` は ConfigMap として渡されますが、TrainJob の Runtime がマウントするのは `/shared` だけで ConfigMap ではないため、この Job が CPU プール上で ConfigMap の内容を `/shared/nccl-bench/bench.py` にコピーします。TrainJob はそのパスを `torchrun` に渡すので、Job が `Completed` になっていることが測定の前提です。`k get pods -n $NAMESPACE` に busybox の Pod が現れるのはこのためで、測定 Pod が「スクリプトが無い」で落ちる場合はまずこの Job の状態を見てください。ノードが `Ready` になっていれば、測定 Pod の `Running` を待たずにこの allocatable 確認を実行できます（測定 Pod は DLC イメージの pull で `ContainerCreating` に留まっていることがありますが、ノードの EFA allocatable はその前から確認できます）。
+なお手順 3 のレンダリングは、測定用の TrainJob だけでなく `nccl-trainjob-stage` という Job も作ります。測定スクリプト `bench.py` は ConfigMap として渡されますが、TrainJob の Runtime がマウントするのは `/shared` と `/dev/shm` で ConfigMap は含まれないため、この Job が CPU プール上で ConfigMap の内容を `/shared/nccl-bench/bench.py` にコピーします。TrainJob はそのパスを `torchrun` に渡すので、Job が `Completed` になっていることが測定の前提です。`k get pods -n $NAMESPACE` に busybox の Pod が現れるのはこのためで、測定 Pod が「スクリプトが無い」で落ちる場合はまずこの Job の状態を見てください。この Job は完了から 1 時間で自動削除される設定なので、時間をおいてから見に行くと存在しません。無くなっていることは失敗を意味しないので、その場合は `/shared/nccl-bench/bench.py` があるかどうかで判断します。ノードが `Ready` になっていれば、測定 Pod の `Running` を待たずにこの allocatable 確認を実行できます（測定 Pod は DLC イメージの pull で `ContainerCreating` に留まっていることがありますが、ノードの EFA allocatable はその前から確認できます）。
 
 `POOL` は Basic05 で `accelerator-pools.auto.tfvars` に貼り付けたプール名に置き換えます。
 
