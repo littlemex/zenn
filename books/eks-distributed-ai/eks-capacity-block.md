@@ -161,12 +161,13 @@ CR ID を指定して tfvars に貼り付ける設定を出力します。
 
 ```bash
 export POOL=gpu-p4d
+export CR_ID=cr-023f18e20d3829f4e
 ./02-post-purchase.sh \
-  --cr-id cr-023f18e20d3829f4e \
-  --pool $POOL
+  --cr-id "$CR_ID" \
+  --pool "$POOL"
 ```
 
-必須の引数は `--cr-id` だけです。インスタンスタイプ・AZ・終了時刻は、スクリプトが `describe-capacity-reservations` で予約 ID から自動で解決するため、手で渡す必要はありません（`--pool` は貼り付け先のプール名で、省略すると `gpu-cb` になります）。
+`CR_ID` は 1 つ前のコマンドで表示された自分の予約 ID に読み替えます。必須の引数は `--cr-id` だけです。インスタンスタイプ・AZ・終了時刻は、スクリプトが `describe-capacity-reservations` で予約 ID から自動で解決するため、手で渡す必要はありません（`--pool` は貼り付け先のプール名で、省略すると `gpu-cb` になります）。
 
 ```hcl
 gpu-p4d = {
@@ -183,23 +184,23 @@ gpu-p4d = {
 
 `zone` は含まれません。前述のとおり `reserved` プールの AZ は予約から導出されるため、スクリプトは `zone` 行を出しません。特定の AZ に固定したい場合だけ、貼り付け後に自分で `zone = "<az>"` を足します。`cb_end_date` は末尾が `Z` の UTC 表記でなければ `variables.tf` の validation が plan を落とします (`+00:00` のようなオフセット表記は EventBridge のスケジュールで UTC と誤解されるため)。スクリプトは予約が返す時刻をこの形式に正規化して出力するので、貼り付けたままなら問題ありません。この値は予約が返す実際の終了時刻を自動で埋めていますが、`capacity-block.tf` は tfvars に `cb_end_date` が無くても予約 ID から終了時刻を導出するため、この行を消してもアラートは機能します。書いておくとその値が予約側の `EndDate` より優先される緊急上書きとして働くので、予約を更新したら `cb_end_date` も併せて更新してください（更新し忘れるとアラートが古い時刻のまま固定されます）。Basic04 では `capacity_types = ["spot", "on-demand"]` とリストで書きましたが、CB のプールは `capacity_type = "reserved"` と単数形で書きます。綴りの誤りではなく、実装が両方の書き方を受け取って内部で同じ形に正規化しているためです。予約を使うプールは単数形と `cb_reservation_id` の組で書く、と覚えておけば足ります。
 
-出力されたブロックを `accelerator-pools.auto.tfvars` の `accelerator_pools` に貼り付けます。同じファイルを `cat >` で完全形に上書きするのが冪等で確実ですが、ここでいう完全形とは **Basic04 で定義した `gpu-ddp` も含めた全プール** です。CB のプールだけを書いて上書きすると、次の `apply` で `gpu-ddp` の NodePool が destroy され、それを前提にしている Basic07 と Basic08 が進められなくなります。Basic04 の例のまま進めている場合、完全形は次のようになります (`cb_reservation_id` は自分の予約 ID に読み替えます)。
+出力されたブロックを `accelerator-pools.auto.tfvars` の `accelerator_pools` に貼り付けます。同じファイルを `cat >` で完全形に上書きするのが冪等で確実ですが、ここでいう完全形とは **Basic04 で定義した `gpu-ddp` も含めた全プール** です。CB のプールだけを書いて上書きすると、次の `apply` で `gpu-ddp` の NodePool が destroy され、それを前提にしている Basic07 と Basic08 が進められなくなります。Basic04 の例のまま進めている場合、完全形は次のようになります。予約 ID は上で設定した `CR_ID` から入るので、同じシェルで実行してください。
 
 ```bash
-cat > accelerator-pools.auto.tfvars <<'EOF'
+cat > accelerator-pools.auto.tfvars <<EOF
 accelerator_pools = {
   gpu-ddp = {
-    instance_types  = ["g6.2xlarge", "g5.2xlarge", "g6.xlarge", "g5.xlarge"]
-    device_plugin   = "nvidia"
-    capacity_types  = ["spot", "on-demand"]
+    instance_types      = ["g6.2xlarge", "g5.2xlarge", "g6.xlarge", "g5.xlarge"]
+    device_plugin       = "nvidia"
+    capacity_types      = ["spot", "on-demand"]
     efa_interface_count = 0
-    labels          = { workload = "ddp-basic04" }
+    labels              = { workload = "ddp-basic04" }
   }
   gpu-p4d = {
     instance_types    = ["p4d.24xlarge"]
     device_plugin     = "nvidia"
     capacity_type     = "reserved"
-    cb_reservation_id = "cr-0123456789abcdef0"
+    cb_reservation_id = "${CR_ID}"
     volume_size       = "500Gi"
   }
 }

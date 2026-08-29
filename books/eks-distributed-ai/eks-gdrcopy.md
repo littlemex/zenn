@@ -182,7 +182,7 @@ spec:
     - { key: capacity-reservation, operator: Exists, effect: NoSchedule }
   containers:
     - name: probe
-      image: 763104351884.dkr.ecr.us-east-2.amazonaws.com/pytorch-training:2.10.0-gpu-py313-cu130-ubuntu22.04-ec2
+      image: 763104351884.dkr.ecr.$AWS_REGION.amazonaws.com/pytorch-training:2.10.0-gpu-py313-cu130-ubuntu22.04-ec2
       command: ["sleep", "3600"]
       securityContext: { privileged: true }
       resources: { limits: { nvidia.com/gpu: "1" } }

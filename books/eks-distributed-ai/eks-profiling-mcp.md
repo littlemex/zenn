@@ -7,47 +7,55 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 
 # 解説
 
-## 全体構成
+## この章のゴールを先に決める
 
-Basic01 から Basic11 で構築した Amazon EKS クラスタの上に、GPU のプロファイルを収集し、Model Context Protocol (MCP) 経由で分析する仕組みを動かします。producer が実ワークロードにプロファイル収集を組み込んでバケットに書き、分析 MCP が MLflow で run を特定し、S3 Files マウント越しにプロファイルをその場で読んで、アナライザの結果をテキストで返します。
+やりたいのは、自分の学習ジョブをいつもどおり 1 コマンドで走らせるだけでプロファイルが記録され、その結果を Claude に読ませて「次に何を変えるか」まで持っていくことです。
 
-## これは何をするものか
+そのために必要なものは 3 つあります。記録を受ける場所、プロファイルを取る仕組み、取れたものを読んで答える口です。取る仕組みは producer Job で、自分のイメージの外側から profiler を注入して包むので、プロファイルを取るためにイメージを作り直さずに済みます。読んで答える口が MCP サーバで、トレースをクラスタ側で読むので手元にはテキストしか来ません。
 
-設計思想と全体像、なぜこの形なのかは別記事「[プロファイリングを楽にしたい](https://zenn.dev/littlemex/articles/8ab01bc40f627a)」で解説済みです。本章はそれを読んだ前提で、実際に手を動かして GPU プロファイルの分析までを通します。予約タグや `volumeHandle` の書式、読み取り専用マウント、digest 固定といった設計上の要点の詳細はブログに譲り、本章では手順の中で必要な箇所に絞って触れます。
+```mermaid
+flowchart LR
+    W["自分のワークロード<br/>イメージはそのまま"] --> P["producer Job<br/>nsys で包んで記録する"]
+    P --> S["記録先<br/>MLflow と trace バケット"]
+    S --> A["分析 MCP<br/>その場で読んでテキストで返す"]
+    A --> C["MCP クライアント<br/>Claude など"]
+```
 
-本章の開始状態は、クラスタが `terraform apply` 済み (Basic01 から Basic11 まで進めた `infra/eks` が稼働中) で、かつプロファイル基盤のデータ層 (`infra/data-layer`) はまだ適用していない状態です。導入は `infra/scripts/install-profiling.sh` の 1 コマンドで、データ層の適用からクラスタ側の設定、MCP サーバのデプロイまでを行います。ただし MCP サーバのイメージは自分の ECR から digest で引くので、初回は `DEV_BUILD=1` を付けてクラスタ内でビルドします (付けないと `no analysis image digest available` で停止します)。このビルドは Basic02 で触れたクラスタ内 image builder (`image_builder_enabled = true`) が前提で、無効なクラスタでは先にそれを有効化するか、既知の digest を `ANALYSIS_DIGEST` で渡します。プロファイルをとる側は `infra/eks/bin/kubectl-accelprof` の 1 コマンドで、自分のイメージとコマンドを渡すだけです。
+依存は一方向です。記録先が無ければ producer は書き込めず、producer が書いていなければ分析は読めないので、導入も記録先から始まります。この順序は導入スクリプト 1 本が持っているので、読者が並べる必要はありません。
+
+本章は手を動かして分析まで通すことを目的にしているので、実行の判断に必要な理由だけを扱います。なぜこの設計なのかという背景まで知りたい場合は、別記事「[プロファイリングを楽にしたい](https://zenn.dev/littlemex/articles/8ab01bc40f627a)」を補足として読んでください。
+
+本章の開始状態は、クラスタが `terraform apply` 済み (Basic01 から Basic11 まで進めた `infra/eks` が稼働中) で、プロファイル基盤のデータ層 (`infra/data-layer`) はまだ適用していない状態です。
 
 :::message alert
 マネージド MLflow と S3 Files は課金リソースです。演習が終わったら本章末尾の後片付けを必ず実施してください。EFS ベースのファイルシステムはマウントターゲットが残っていると削除できないため、撤去順は必ず `infra/eks` を先、`infra/data-layer` を後にします。
 :::
 
-## コマンドの裏で何が起きているか
+## 導入スクリプトが順序を持っている
 
-1 コマンドにまとめてある部分を、あとから自分の環境に合わせて変えられるように、中で何をしているかを先に押さえます。
+導入は [`infra/scripts/install-profiling.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/scripts/install-profiling.sh) の 1 コマンドです。前節の依存関係がそのままフェーズの順序になっています。
 
-### 導入スクリプトのフェーズ
+- Phase 1: 前提を確認する
+- Phase 2: データ層を適用する (記録先を作る)
+- Phase 3: クラスタ側を配線する (S3 Files のマウント、`mcp` namespace、Pod Identity、ECR)
+- Phase 4: イメージを解決する
+- Phase 5 と 5b: MCP サーバをデプロイし、各 namespace に契約を配る
+- Phase 6: マウントを確認する
+- Phase 7: 受け入れを確認する
 
-`infra/scripts/install-profiling.sh` は 7 つのフェーズを順に実行します。次の 7 つに分かれています。
+利用者が渡すのは、プロファイル収集を許可する namespace のリストと、記録先をどう選ぶかだけです (具体的な変数は手順 3 で挙げます)。クラスタ名とリージョンは手順 2 で解決した値を使い、バケット名、MLflow の ARN、ServiceAccount 名、S3 Files のマウント先 AZ、イメージの digest は、すべてスクリプトが Terraform の出力や AWS API から解決します。どのフェーズも冪等か「状態を見てから動く」形なので、途中で失敗しても原因を直して再実行すれば正しい状態になります。失敗しても自動でロールバックや destroy はしません。
 
-- Phase 1: 前提確認
-- Phase 2: データ層の適用
-- Phase 3: クラスタ側の設定 (S3 Files のマウント、`mcp` namespace、Pod Identity の紐付け、ECR)
-- Phase 4: イメージの解決
-- Phase 5 と 5b: MCP サーバのデプロイと、namespace への配布
-- Phase 6: マウントの確認
-- Phase 7: 受け入れ確認
+::::details マウント先 AZ を渡せない理由と、plan を 4 つに分類する理由を説明します
 
-どのフェーズも冪等か「状態を見てから動く」形なので、途中で失敗しても原因を直して再実行すれば正しい状態になります。失敗時に自動でロールバックや destroy はしません。
+マウント先 AZ を渡せないのは意図的です。この実装は S3 Files の mount target を 1 つの subnet にだけ作り、そのマウントはその AZ からしか到達できないので、手で渡した値が実体とずれると PersistentVolume の nodeAffinity が到達不能なノードを指します。
 
-定常運用で利用者が渡すのは 3 つだけです。クラスタ名、リージョン、そしてプロファイル収集を許可する namespace のリストです (初回だけは、どのデータ層に記録するかの名前 `DATA_LAYER_NAME` と、それを新規に作ってよいという意思表示 `CREATE_DATA_LAYER=1` も要ります。2 回目以降はレジストリから解決されます)。バケット名やマネージド MLflow の ARN、ServiceAccount 名、S3 Files のマウント先 AZ、イメージの digest はすべてスクリプトが Terraform の出力や AWS API から解決します。特にマウント先 AZ を変数にしていないのは意図的です。この実装は S3 Files の mount target を 1 つの subnet にだけ作り、そのマウントはその AZ からしか到達できないので、手で渡した値が実体とずれると PersistentVolume の nodeAffinity が到達不能なノードを指します。
+このスクリプトは `terraform apply` を無条件には実行しません。plan を作って変更を 4 つに分類し、消してはいけない記録の削除は上書き手段なしで拒否します。対象は trace バケット、MLflow アーティファクトバケット、SageMaker MLflow 本体、KMS キー、S3 Files のファイルシステムとアクセスポイント、そしてそれらのバージョニング・ライフサイクル・暗号化の設定です。設定まで含めているのは、保持期間や暗号化の変更だけでも記録済みのものを失い得るからです。置き換えも削除を含むので同じ扱いです。同じリソースへの**変更**は 2 つ目の分類で、`ALLOW_RECORD_UPDATES=1` を渡さない限り停止します。3 つ目が profiling 基盤自身の変更で、これは適用します。4 つ目がそれ以外で、停止して一覧を表示します。長く運用したクラスタには無関係な差分が溜まるので、それを確認なしに適用しないための線引きです。
 
-### apply の前に必ず plan を分類する
+一方で作成は拒否しません。plan は「state に一度も無かった」と「state が見失った」を区別できず、初回導入と失敗した導入の再開が同じ形で現れるためです。主要な記録リソースは state が見失っていても plan の前に import して取り込むので、作成としては現れません。
 
-このスクリプトは `terraform apply` を無条件に実行しません。まず plan を作り、変更を 4 つに分類します。1 つ目が「消してはいけない記録の削除」で、対象は trace バケット、MLflow アーティファクトバケット、SageMaker MLflow 本体 (tracking server と app の両方)、KMS キー、S3 Files のファイルシステムとアクセスポイント、そしてそれらのバージョニング・ライフサイクル・暗号化の設定です。設定を含めているのは、保持期間や暗号化の変更だけでも記録済みのものを失い得るからです。これらの削除は上書き手段なしで拒否します。置き換えも削除を含むので同じ扱いです。2 つ目が同じ消してはいけない記録に対する**変更**で、これは `ALLOW_RECORD_UPDATES=1` を渡さない限り停止します。削除ではないので 1 つ目とは分けていますが、保持期間の短縮やポリシーの絞り込みは更新として現れ、それでも記録済みのものを失い得るからです。データ層のライフサイクル設定に差分がある状態で再実行するとこのエラーに当たるので、plan を読んで意図した変更であることを確かめてからこのフラグを付けます。
+::::
 
-一方で作成は拒否しません。plan は「state に一度も無かった」と「state が見失った」を区別できず、初回導入と失敗した導入の再開が同じ形の差分として現れるためです。バケット、KMS キー、MLflow、S3 Files のファイルシステムといった主要な記録リソースは、state が見失っていても plan を作る前に import して取り込む (adoption) ので、作成としては現れません。S3 Files のアクセスポイントのように adoption の対象外のものは、state が見失うと作成として現れます。3 つ目が profiling 基盤自身の変更で、これは適用します。4 つ目がそれ以外で、停止して一覧を表示します。長く運用したクラスタには profiling と無関係な差分が溜まるので、それを確認なしに適用しないための線引きです。基盤だけを適用したいときは `PROFILING_ONLY=1`、すべて受け入れるときは `ALLOW_UNRELATED=1` を渡します。
-
-### producer Job の中身
+## producer Job がワークロードを包む
 
 プロファイルを取得する Job は 3 つの部分でできています。
 
@@ -60,25 +68,17 @@ flowchart LR
 
 initContainer が基盤イメージから profiler と shim を共有ボリュームにコピーします。これがあるので、プロファイルを取得したいイメージを再ビルドする必要がありません。workload コンテナは指定したイメージそのままで、shim が `nsys` で包んで実行し、終了時に状態ファイルを書きます。recorder コンテナは基盤イメージで動き、その状態ファイルを待って、置かれたファイルを読んで MLflow に 1 run 記録します。
 
-記録を別コンテナに分けているのは技術的な理由です。accelprof の依存にはコンパイル済みの拡張が含まれ、特定の Python バージョンに固定されます。学習用のイメージに後から注入すると壊れるため、記録は基盤イメージの側で行い、ワークロードのイメージには Python も accelprof も要求しません。
+記録を別コンテナに分けているのは、accelprof の依存にコンパイル済みの拡張が含まれ、特定の Python バージョンに固定されるからです。学習用のイメージに後から注入すると壊れるため、記録は基盤イメージの側で行い、ワークロードのイメージには Python も accelprof も要求しません。
 
-### ワークロードとの約束はディレクトリ 1 つ
+ワークロード側が守るのは `/accelprof/out` というディレクトリ 1 つだけです。`metrics.json` に数値の JSON オブジェクトを書けば metrics として記録され、`params.json` と `tags.json` も同じ形式で記録されます。`artifacts/` に置いたファイルは run に添付されます。同じディレクトリの `traces/` と `status.json` は基盤が使う場所なので、ここには書かないでください。ライブラリの import は不要です。
 
-ワークロード側が守るのは `/accelprof/out` というディレクトリ 1 つだけです。`metrics.json` に数値の JSON オブジェクトを書けば metrics として記録され、`params.json` と `tags.json` も同じ形式で記録されます (`tags.json` の値は文字列化されます)。`artifacts/` に置いたファイルは run に添付されます。同じディレクトリの `traces/` と `status.json` は基盤が使う場所なので、ここには書かないでください。ライブラリの import は不要です。壊れた JSON は報告してスキップし、実行そのものは記録します。書き捨てのスクリプトの typo で完走した実験を失うほうが損失が大きいという判断です。
+::::details 壊れた JSON を無視する理由と、controller を作っていない理由を説明します
 
-### namespace ごとに配られる契約
+壊れた JSON は報告してスキップし、実行そのものは記録します。書き捨てのスクリプトの typo で完走した実験を失うほうが損失が大きいという判断です。
 
-導入スクリプトは、許可した namespace のそれぞれに 4 つを配ります。1 つ目は ConfigMap で、リージョン・trace バケット・MLflow の ARN・MLflow の UI の URL・基盤イメージの digest を持ちます。2 つ目は Role で、recorder が自分の Pod の状態を読み、Job に run id のアノテーションを書くために使います。ここで注意したいのは権限の広さです。Kubernetes の RBAC はリソース名を絞らない限り種類単位なので、実際にはその namespace の Pod の参照と Job の参照・更新ができます。共有 namespace で使う場合はこの範囲を前提に判断してください。3 つ目はその Role を recorder の ServiceAccount に結び付ける RoleBinding です。4 つ目は、記録されずに終わった Job を 1 時間ごとに報告する確認用の CronJob です。プロファイルを取得する人が基盤の値を 1 つも知らなくて済むのは、この ConfigMap があるからです。namespace がまだ存在しない場合、そこには何も配られず警告だけが出るので、後述のとおり namespace は導入スクリプトより先に作ります。
+この基盤には自作の controller がありません。producer Job が自分で記録するので収束させるべき状態がなく、Job そのものが Kubernetes の提供する controller です。カスタムリソースで得られる状態の書き戻しとライフサイクル管理は、それぞれ Job のアノテーションと `ttlSecondsAfterFinished` で足ります。Pod 内の部品では埋められない穴は、recorder が走る前に Pod ごと消える場合 (追い出しやノードの drain) だけで、これは各 namespace に配られる点検 CronJob が 1 時間ごとに報告します。
 
-### 記録の単位と後片付けの単位
-
-alias は MLflow の experiment 名と S3 の第 1 階層プレフィックスを兼ねます。つまり分析側から見える範囲と、掃除するときに人が数える単位が alias です。ただし alias 単位の削除や保持期間を実行してくれるコマンドは同梱していません。`kubectl accelprof` にあるのは `run` と `get` と `runs` (別名 `list`) だけで、S3 のライフサイクル (`trace_glacier_after_days` と `trace_expire_after_days`) もバケット全体にかかります。alias 単位の掃除は、MLflow の experiment 削除と `aws s3 rm --recursive s3://<trace バケット>/<alias>/` を人が対で実行する運用になります。実験キャンペーンごとに 1 つの alias を `テナント名-系列名` の形で付け、キャンペーン内の反復は `workload_id` と自由なパラメータで表します。反復ごとに alias を作ると削除単位が増えていき、キャンペーンを 1 手で片付けられなくなります。
-
-Job そのものは終了から 2 日後に Kubernetes が消します。run の記録は Job の寿命とは独立で、明示的に消すか保持ポリシーの対象になるまで残ります。run_id は recorder が Job のアノテーションに書き戻すので、Job がある間は `kubectl accelprof get` で引けます。消えたあとは MLflow を alias と `workload_id` で検索します。
-
-### なぜ controller を作っていないか
-
-この基盤には自作の controller がありません。producer Job が自分で記録するので、収束させるべき状態がなく、Job そのものが Kubernetes の提供する controller です。カスタムリソースで得られる状態の書き戻しとライフサイクル管理は、それぞれ Job のアノテーションと `ttlSecondsAfterFinished` で足ります。Pod 内の部品では埋められない穴は 1 つだけで、recorder が走る前に Pod ごと消える場合 (Pod の追い出しやノードの drain) です。これは各 namespace に配られる確認用の CronJob が 1 時間ごとに報告します。
+::::
 
 # ワークショップ実施
 
@@ -86,23 +86,38 @@ Job そのものは終了から 2 日後に Kubernetes が消します。run の
 
 本章は基盤リポジトリのリリース `release/eks-distributed-ai/v0.2.0` を前提にしています。本文のコマンドと出力例はこのバージョンで実機確認したものです。別のバージョンでは変数名やフラグが変わることがあるので、まずはこのタグで通してください。
 
-クラスタ (Basic01 から Basic11 相当) が稼働していること、`infra/eks` の Terraform がリモート state を使っていること、`terraform` と `kubectl` と `helm` と `aws` と `python3` と `git` と `curl` が手元にあること (後半の手順でトンネルの listen を確認するのに `lsof` も使います。`aws` は SageMaker MLflow app と S3 Files を知っているバージョンが必要で、`aws sagemaker list-mlflow-apps help` が通らない場合は先に更新します。古いままだと導入スクリプトが権限エラーのような見た目で止まります)、MCP クライアント (Claude Code など) が手元にあることを確認します。リモート state は Basic01 の [`distai-up.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/scripts/distai-up.sh) が作り、その場所はレジストリに記録されています。前提の 4 行はレジストリから `infra/eks/backend.hcl` を書き出すので、導入スクリプトはそれを読んで解決します。チェックアウトの外から実行する場合や fresh clone で `backend.hcl` が無い場合は、`TF_STATE_BUCKET` などで明示的に渡します。
+必要なものは 4 つです。
+
+- クラスタ (Basic01 から Basic11 相当) が稼働していること
+- `infra/eks` の Terraform がリモート state を使っていること
+- `terraform` と `kubectl` と `helm` と `aws` と `python3` と `git` と `curl` が手元にあること
+- MCP クライアント。本章は Claude Code の `claude` コマンドで進めるので、`claude --version` が通り、認証済みであること
+
+`claude` が未認証のままだと、手順 8 のコマンドは MCP に触れる前に認証を求めて止まります。先に `claude` を一度起動して認証を済ませてください。
+
+`aws` は SageMaker MLflow app と S3 Files を知っているバージョンが必要です。`aws sagemaker list-mlflow-apps help` が通らない場合は先に更新してください。古いままだと、導入スクリプトが権限エラーのような見た目で止まります。
+
+::::details state の場所をスクリプトがどう知るかを説明します
+
+リモート state は Basic01 の [`distai-up.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/scripts/distai-up.sh) が作り、その場所はレジストリに記録されています。手順 2 の 4 行がレジストリから `infra/eks/backend.hcl` を書き出すので、導入スクリプトはそれを読んで解決します。チェックアウトの外から実行する場合や、fresh clone で `backend.hcl` が無い場合は、`TF_STATE_BUCKET` と `TF_STATE_KEY` と `TF_STATE_REGION` を明示的に渡します。値は Basic01 で作った state の場所で、`aws ssm get-parameters-by-path --path /distai/v1/clusters/$CLUSTER_NAME/state` でも読めます。
+
+::::
 
 ## 2. プロファイルを取得する namespace を用意する
 
-導入スクリプトはテナントの namespace を作りません。作るのは Pod Identity の紐付けで、これは EKS コントロールプレーン上の `(namespace, ServiceAccount 名)` レコードなので、namespace や ServiceAccount の実在を要求しません。一方で ConfigMap と Role と点検は実在する namespace にしか配れないため、namespace と ServiceAccount は導入スクリプトより先に作ります。
+次の手順で導入するとき、スクリプトは許可した namespace のそれぞれに 4 つを配ります。ConfigMap (リージョン・trace バケット・MLflow の ARN と UI の URL・基盤イメージの digest)、recorder 用の Role、その RoleBinding、そして記録されずに終わった Job を 1 時間ごとに報告する点検 CronJob です。プロファイルを取る人が基盤の値を 1 つも知らずに済むのは、この ConfigMap があるからです。
 
-本章は作業 namespace が `distai` ではなく `team-a` なので、Basic01 手順 2 の 4 行を `DISTAI_NAMESPACE` 付きで実行し直しておきます。こうすると `k` と後述のプラグインの既定がこの namespace になり、以降のコマンドに `-n` を書かずに済みます。
+配れる先は実在する namespace だけなので、namespace は導入より先に作ります。Pod Identity の紐付けだけは EKS コントロールプレーン上の `(namespace, ServiceAccount 名)` レコードなので実在を要求せず、先に作られても待っていられますが、ConfigMap と Role が無い namespace ではプロファイルを取れません。
+
+本章は作業 namespace が `distai` ではなく `team-a` なので、Basic01 手順 2 の 4 行を `DISTAI_NAMESPACE` 付きで実行し直します。こうすると `k` と後述のプラグインの既定がこの namespace になり、以降のコマンドに `-n` を書かずに済みます。
 
 ```bash
 cd ~/distributed-ai-v0.2.0
-export CLUSTER_NAME=distai-eks
-export AWS_REGION=us-east-2
 export DISTAI_NAMESPACE=team-a
 source infra/scripts/distai-env.sh
 ```
 
-クラスタ名・リージョン・チェックアウトの場所は Basic01 で使った自分の値に読み替えます。ここに書いた名前が対象クラスタを決めるので、別の名前のクラスタを持っている読者がこの例のまま打つと、導入スクリプトが `cluster distai-eks not found` で止まります。
+`CLUSTER_NAME` と `AWS_REGION` はここで書き直しません。Basic01 手順 2 で設定した値がそのまま対象クラスタを決めます。新しいターミナルで始めた場合は、Basic01 手順 2 の 4 行をその 2 つの export ごと実行してから戻ってください。未設定のまま `source` すると `distai-env.sh` がその場で停止します。
 
 ```bash
 for ns in team-a team-b; do
@@ -113,11 +128,21 @@ done
 
 ここでは 2 つのテナントを想定して `team-a` と `team-b` を作り、以降の手順は `team-a` で進めます。ServiceAccount 名 `mcp-producer` は Pod Identity の紐付けが参照する固定値なので、変えられません。この ServiceAccount を持つ Pod が、trace バケットへの書き込みと MLflow への記録の権限を得ます。
 
+:::message
+共有 namespace で使う場合は、配られる Role の範囲を先に把握してください。Kubernetes の RBAC はリソース名を絞らない限り種類単位なので、この Role はその namespace の Pod の参照と Job の参照・更新ができます。recorder が自分の Pod の状態を読み、Job に run id を書くために必要な範囲です。
+:::
+
 ## 3. 基盤を導入する
 
-前節で作った namespace に対して、プロファイル収集を許可する宣言をしながら導入します。`PRODUCER_NAMESPACES` はこれから実験を回す namespace の一覧で、そのまま「trace バケットへの書き込みと run の記録を許可した範囲」の宣言になります。ここに書かれていない namespace のワークロードは記録できません。初回はデータ層がまだ無いので、作成を `CREATE_DATA_LAYER=1` で明示的に許可します。既定では既存のデータ層の再利用しかしないので、誤って 2 つ目のデータ層を作って基盤が二分されることがありません。
+この手順のゴールは、記録先とクラスタ側の配線と MCP サーバを一度に立てることです。渡す値は 4 つで、うち 2 つは初回だけです。
 
-導入は Basic01 で作ったチェックアウトから実行します。Basic01 step 2 のコマンドで自分のクラスタを解決してあれば、リージョンも state の場所も分かっているので、この章で渡すのは「どの namespace に許可するか」と、初回だけデータ層の名前です。クラスタ名をここで書き直さないのは、章ごとに書いた名前が Basic01 で解決した値を上書きして、別のクラスタを対象にしてしまうからです。
+渡す 1 つ目が `PRODUCER_NAMESPACES` で、プロファイル収集を許可する namespace の一覧です。これがそのまま「trace バケットへの書き込みと run の記録を許可した範囲」の宣言になり、ここに無い namespace のワークロードは記録できません。
+
+2 つ目が `DATA_LAYER_NAME` で、記録側の一式 (trace バケット、MLflow、S3 Files) に付ける名前です。データ層はクラスタごとに 1 つ立てる必要がなく、複数のクラスタで記録を共有できるので、どれに記録するのかを名前で指す必要があります。名前は state のキーとバケット名の接頭辞になるので、既に別のデータ層がある環境では必ず別名にしてください。3 つ目の `CREATE_DATA_LAYER=1` はその新規作成を明示的に許可するもので、既定では既存のデータ層の再利用しかしません。誤って 2 つ目を作ると記録が二分されるからです。導入が成功するとこのデータ層がクラスタに紐づいたことがレジストリに記録されるので、この 2 つは 2 回目以降は要りません。
+
+4 つ目が `MLFLOW_BACKEND` で、**これだけはあとから変更できません**。`app` は serverless で、止めるという概念がなく、使っていない期間はバケット以外の課金要素を持ちません。`server` は managed な tracking server で、起動している時間だけ課金され、停止すれば課金は止まって記録は残ります。既定は `app` です。変更できないのは、記録先の MLflow を切り替える plan が「いまの MLflow を破棄して空のものを作る」plan になり、run のメタデータがまとめて消えるからです。導入スクリプトは既存のデータ層が記録している側を優先し、違う側を要求されたら停止します。
+
+クラスタ名とリージョンは渡しません。手順 2 で解決した値を使います。章ごとに書いた名前が Basic01 で解決した値を上書きすると、別のクラスタを対象にしてしまうためです。
 
 ```bash
 export PRODUCER_NAMESPACES=team-a,team-b
@@ -127,31 +152,27 @@ export MLFLOW_BACKEND=app
 DEV_BUILD=1 ./infra/scripts/install-profiling.sh
 ```
 
-初回は全体で 20〜40 分程度かかります。長いのはデータ層の apply と、クラスタ内での 2 つのイメージのビルドです。`Phase N/7` の行が進んでいれば正常なので、terraform やビルドの出力が流れている間は待ちます。
+`DEV_BUILD=1` は初回だけ必要です。基盤イメージは自分の ECR から digest で引く作りなので、まだ何も無い状態では `no analysis image digest available` で止まります。このビルドは Basic02 で触れたクラスタ内 image builder (`image_builder_enabled = true`) を使うので、無効なクラスタでは先に有効化するか、既知の digest を `ANALYSIS_DIGEST` で渡します。2 回目以降は付けなくてよく、既にあるイメージを digest で使います。
 
-このスクリプトはクラスタに触るために自分専用の kubeconfig を作り、そこに context を書いて終了時に捨てます。手順 2 で `team-a` を既定にした状態はそのまま続きに使えます。`aws eks update-kubeconfig` は current-context を切り替える副作用を持つので、呼び出し元の kubeconfig に書くと、既定 namespace を持たない context に乗ったまま次の手順に進んで `namespace default is not wired for profiling` で止まります。そうならないように、書き込み先を分けてあります。
+初回は全体で 20〜40 分程度かかります。長いのはデータ層の apply と、クラスタ内での 2 つのイメージのビルドです。`Phase N/7` の行が進んでいれば正常なので、terraform やビルドの出力が流れている間は待ちます。最後に `acceptance OK` と接続情報が表示されれば導入完了です。
 
-`DEV_BUILD=1` は初回だけ必要です。基盤イメージは自分の ECR から digest で引く作りなので、まだ何も無い状態では `no analysis image digest available` で止まります。2 回目以降は付けなくてよく、既にあるイメージを digest で使います。
-
-`CLUSTER_NAME` が未設定だとここで止まります。その場合は Basic01 step 2 のコマンドを自分のクラスタ名で実行してから戻ってください。
-
-`MLFLOW_BACKEND` は記録を受ける SageMaker MLflow の種類で、初回だけ意味を持ちます。`app` は serverless で、止めるという概念がなく、使っていない期間はバケット以外の課金要素を持ちません。`server` は managed な tracking server で、起動している時間だけ課金されます。使わない期間は停止しておけば課金は止まり、記録は保持されます。既定は `app` です。
-
-この選択はあとから変更できません。データ層が記録している MLflow を切り替える plan は、いま存在する MLflow を破棄して空の MLflow を作る plan なので、run のメタデータがまとめて消えます。導入スクリプトは既存のデータ層が記録している側を優先し、違う側を要求されたら停止します。変えたい場合は別のデータ層を作ってください。
-
-種類によって 1 つだけ機能差があります。tracking server は「記録はできるが削除はできない」という粒度の IAM を書けますが、app のデータプレーンは `sagemaker:CallMlflowAppApi` という 1 つのアクションが REST API 全体を覆うため、MLflow を読めるロールは同時に削除もできてしまいます。分析側の reader はこれを受け入れる必要がありますが、削除を仕事にする janitor には app では MLflow の権限を一切与えていません。そのため app では孤児 trace の自動回収が働かず、保持はバケットのライフサイクルルールに委ねられます。
-
-`DATA_LAYER_NAME` はこの基盤の記録側 (trace バケット、MLflow、S3 Files) の一式に付ける名前で、初回だけ指定します。名前はバケット名の接頭辞になるので、既に別のデータ層がある環境では必ず別名にしてください。導入が成功すると、このデータ層がこのクラスタに紐づいたことがレジストリに記録されるので、2 回目以降は前提の 2 行が解決されます。`CREATE_DATA_LAYER=1` は新規作成の明示的な許可で、既定では既存のデータ層の再利用しかしません。誤って 2 つ目を作ると記録が二分されるからです。
-
-1 つのクラスタに複数のデータ層を紐づけることもできます。テナントごとに分けたい場合や保持期間を変えたい場合で、`infra/scripts/distai-attach-data-layer.sh -c <cluster> --list` で現在の一覧と既定を確認できます。
-
-2 回目以降は `CREATE_DATA_LAYER` を外して同じコマンドを実行します。最後に `acceptance OK` と接続情報が表示されれば導入完了です。何度実行しても同じ結果になるので、あとから namespace を増やすときは、その namespace と ServiceAccount を作ってから `PRODUCER_NAMESPACES` に追記して再実行します。
-
-データ層は MLflow と trace バケットを含む記録側の一式で、クラスタごとに 1 つ立てる必要はありません。名前が state のキーとバケット名の接頭辞になり、複数のクラスタで記録を共有するなら 2 つ目以降のクラスタでは同じ名前を渡して `CREATE_DATA_LAYER` は付けません。既定値は持たせていません。以前は `mcp` という既定があり、それが別リージョンのデータ層を警告なしに指した結果、消してはいけない記録を取り違える寸前まで進んだことがあります。いまは未指定ならレジストリに記録された既定を読み、それも無ければ「どのデータ層に記録するのか」を明示するよう停止します。
+手順 2 で `team-a` を既定にした状態は、導入後もそのまま使えます。スクリプトはクラスタに触るために自分専用の kubeconfig を作って終了時に捨てるので、呼び出し元の context は動きません。
 
 :::message
 既存クラスタに profiling と無関係な差分が溜まっている場合、スクリプトは一覧を表示して停止します。基盤だけを収束させるなら `PROFILING_ONLY=1` を付けて再実行し、表示された差分もすべて適用してよいなら `ALLOW_UNRELATED=1` を付けます。どちらを選ぶかは、表示された差分が今このタイミングで適用してよいものかどうかで判断します。判断できない差分を `ALLOW_UNRELATED=1` で押し通すと、profiling とは関係のない構成変更 (アドオンのバージョン更新など) が同時に走ります。
 :::
+
+2 回目以降は `CREATE_DATA_LAYER` を外して同じコマンドを実行します。何度実行しても同じ結果になるので、あとから namespace を増やすときは、その namespace と ServiceAccount を作ってから `PRODUCER_NAMESPACES` に追記して再実行します。
+
+::::details app と server の権限差、データ層を複数持つ場合、既定値を捨てた理由を説明します
+
+種類によって 1 つだけ機能差があります。tracking server は「記録はできるが削除はできない」という粒度の IAM を書けますが、app のデータプレーンは `sagemaker:CallMlflowAppApi` という 1 つのアクションが REST API 全体を覆うため、MLflow を読めるロールは同時に削除もできてしまいます。分析側の reader はこれを受け入れる必要がありますが、削除を仕事にする janitor には app では MLflow の権限を一切与えていません。そのため app では孤児 trace の自動回収が働かず、保持はバケットのライフサイクルルールに委ねられます。
+
+1 つのクラスタに複数のデータ層を紐づけることもできます。テナントごとに分けたい場合や保持期間を変えたい場合で、`infra/scripts/distai-attach-data-layer.sh -c "$CLUSTER_NAME" --list` で現在の一覧と既定を確認できます。複数のクラスタで記録を共有するなら、2 つ目以降のクラスタでは同じ名前を渡して `CREATE_DATA_LAYER` は付けません。
+
+`DATA_LAYER_NAME` に既定値を持たせていないのは事故の結果です。以前は `mcp` という既定があり、それが別リージョンのデータ層を警告なしに指して、消してはいけない記録を取り違える寸前まで進みました。いまは未指定ならレジストリに記録された既定を読み、それも無ければ明示するよう停止します。
+
+::::
 
 ## 4. プロファイルを取得して記録する
 
@@ -166,14 +187,20 @@ kubectl accelprof --help >/dev/null && echo "plugin ok"
 
 チェックアウトを持たない人 (プロファイルを取得するだけで基盤は触らない人) 向けの経路も 1 行あります。リポジトリを固定タグで `~/distributed-ai-v0.2.0` に取得し、プラグインを `~/.local/bin` に置きます。この経路も冒頭で `git`、`terraform`、`kubectl`、`helm`、`aws`、`python3`、`curl` の存在を確認し、欠けていればそこで止まります。プラグインの設置だけが目的でも `terraform` と `helm` は入れておいてください。
 
-この 1 行は、基盤を導入した本人ではなく、プラグインだけ欲しい人が別のマシンで打つものです。導入した本人と同じシェルで打つと `PRODUCER_NAMESPACES` を上書きしてしまい、その値のまま導入スクリプトを再実行すると、リストから外れた namespace の Pod Identity の紐付けが取り消されます (10 節で触れる「リストが唯一の宣言」の帰結です)。同じマシンで試すなら別のシェルで実行してください。
+::::details チェックアウトを持たない人がプラグインだけ取る方法を説明します
+
+プラグインだけ欲しい人は、リポジトリを clone せずに 1 行で取れます。取得スクリプトは導入スクリプトと前提チェックを共有しているので、`terraform` と `helm` も PATH にある必要があります。`PRODUCER_NAMESPACES` に自分が使う namespace を渡すと、その namespace に配られた ConfigMap を読んでプラグインを置きます。
 
 ```bash
-CLUSTER_NAME=distai-eks AWS_REGION=us-east-2 PRODUCER_NAMESPACES=team-a,team-b \
-  bash -c 'curl -fsSL https://raw.githubusercontent.com/littlemex/distributed-ai/refs/tags/release/eks-distributed-ai/v0.2.0/infra/scripts/get-profiling.sh | bash'
+export CLUSTER_NAME=distai-eks
+export AWS_REGION=us-east-2
+export PRODUCER_NAMESPACES=team-a,team-b
+curl -fsSL https://raw.githubusercontent.com/littlemex/distributed-ai/refs/tags/release/eks-distributed-ai/v0.2.0/infra/scripts/get-profiling.sh | bash
 ```
 
-URL のタグとスクリプトが固定するタグは同じものなので、コピーした 1 行と入るものがずれません。そのまま導入まで走らせるには `TF_STATE_BUCKET`、`TF_STATE_REGION`、`TF_STATE_KEY` と、クラスタの `terraform.tfvars` を指す `EKS_TFVARS` の 4 つが必要です。1 つでも欠けているとプラグインの設置だけで止まり、導入はチェックアウトから実行するよう案内されます。`~/.local/bin` が PATH に無い場合は通してください。
+クラスタ名とリージョンは自分の値に読み替えます。導入した本人がこれを打つ場合は、`PRODUCER_NAMESPACES` を上書きしたまま導入スクリプトを再実行しないでください。リストから外れた namespace の Pod Identity の紐付けが取り消されます。
+
+::::
 
 渡すのは alias と自分のイメージと、実行したいコマンドだけです。まずは基盤イメージ自身を workload として 1 本流し、経路が通っていることを確認します。イメージの URI は namespace に配られた ConfigMap から引けるので、レジストリやタグを手動で組み立てる必要はありません。
 
@@ -184,20 +211,43 @@ kubectl accelprof run --alias teama-smoke --image "$IMAGE" --wait \
   -- bash -lc 'python3 -c "print(sum(range(10**6)))"'
 ```
 
-指定はこれだけです。プロファイラは既定で動き、トレースまで残るので、この 1 本で投入から記録までの経路が通っていることを確認できます。基盤イメージには `nsys` が入っているので、この 1 本に限っては `--no-inject-nsys` を足して注入を省くこともできます (省いても結果は同じで、共有ボリュームへのコピーが減るだけです)。
+指定はこれだけです。プロファイラは既定で動き、トレースまで残るので、この 1 本で投入から記録までの経路が通っていることを確認できます。
 
-`--wait` を付けているのは、この 1 本の計算が数秒で終わるからです。ただし初回はノードの確保と基盤イメージの pull が先に走るので、待ちは数分になります。待っている間は表示が変わらないので、投入時に出た `logs:` の行のコマンドか `k get pods` で `Init:` や `ContainerCreating` を見て、pull 中であることを確かめてください。完了まで待って `run_id` まで表示してくれるので、確認が 1 コマンドで済みます。**数分以上かかる run には付けません。**投入したら手元のターミナルは閉じてよく、記録はクラスタの中で完結します。その場合は、あとから状態と `run_id` を引きます。
+`--wait` は**数分以上かかる run には付けません**。投入したら手元のターミナルは閉じてよく、記録はクラスタの中で完結します。ここで付けているのは、この 1 本の計算が数秒で終わり、`run_id` まで 1 コマンドで確認できるからです。初回はノードの確保とイメージの pull が先に走るので、待ち自体は数分になります。
+
+::::details 待っている間に表示が変わらないときにどこを見るかを説明します
+
+投入時に出た `logs:` の行のコマンドか `k get pods` で `Init:` や `ContainerCreating` を見れば、pull 中であることが分かります。基盤イメージには `nsys` が入っているので、この 1 本に限っては `--no-inject-nsys` を足して注入を省くこともできます (省いても結果は同じで、共有ボリュームへのコピーが減るだけです)。
+
+::::
+
+`--wait` を付けずに投入した run は、あとから状態と `run_id` を引きます。
 
 ```bash
 kubectl accelprof get --last --alias teama-smoke
 ```
 
-引数を省いた `kubectl accelprof get` でも同じですが、その意味は「この namespace で最も新しい run」なので、複数人が同じ namespace を共有している環境では他人の run を使用します。`--alias` を付けておけば自分のキャンペーンの中で最新を指します。どの run を見ているかは出力の 1 行目に必ず表示されます。特定の run を見たいときは `workload_id` を渡します。
+引数を省いた `kubectl accelprof get` でも同じですが、その意味は「この namespace で最も新しい run」なので、複数人が同じ namespace を共有している環境では他人の run を使用します。`--alias` を付けておけば自分のキャンペーンの中で最新を指します。どの run を見ているかは出力の 1 行目に必ず表示されます。
+
+キャンペーンに何が残っているかは一覧で見ます。
 
 ```bash
-kubectl accelprof get wl-260826043020-e69a3905
 kubectl accelprof runs --alias teama-smoke
 ```
+
+```text
+WORKLOAD-ID                ALIAS         RUN-ID                             COMPLETIONS   FAILED   AGE
+wl-260830052358-d267ef09   teama-smoke   0a1638331a7d4a40b003134254a062e4   1             <none>   2026-08-29T20:24:02Z
+```
+
+左端の `WORKLOAD-ID` が run を名前で指すときの値です。あとから新しい run を投入しても同じ 1 本を見続けたい場合は、いま最新のものを変数に取っておきます。値だけを出す `-o id` があるので、一覧から手で書き写す必要はありません。
+
+```bash
+export WORKLOAD_ID=$(kubectl accelprof get --last --alias teama-smoke -o id)
+kubectl accelprof get "$WORKLOAD_ID"
+```
+
+`workload_id` を自分で打つ場面はもう 1 つあります。同じ秒に 2 本以上を投入すると「最も新しい」が決まらないので、`get` は候補を並べ、それぞれを名前で指すコマンドをそのまま表示して停止します。表示されたものをそのまま実行すれば済みます。
 
 `run_id` を次の手順にそのまま渡したい場合は、値だけを取り出せます。
 
@@ -212,26 +262,6 @@ import json
 json.dump({"tokens_per_sec": tps, "loss": loss}, open("/accelprof/out/metrics.json", "w"))
 ```
 
-記録された run には、自分が渡した params と tags のほかに、基盤が付ける予約タグが並びます。以下は 6 節で GPU に対して取得した run から引いた実例です (値は run ごとに変わります)。
-
-```text
-exp.alias        = teama-gpu-nsys          # alias。experiment 名と S3 prefix を兼ねる
-workload_id      = wl-260826043020-e69a3905
-chip             = gpu
-region           = us-east-2
-status           = ok                      # 失敗時は failed
-exit_reason      = completed
-profiled         = true                    # profiler の経路を通ったか
-profile_mode     = nsys
-profiled_ranks   = 0
-contract_version = 1
-schema_version   = 1
-artifacts_uri    = s3://<trace バケット>/teama-gpu-nsys/<run_id>/
-pod              = profile-wl-260826043020-e69a3905-f5hdx
-```
-
-`chip` は**要求したデバイス**です。`--gpu` を付けた run は `gpu`、`--neuron` を付けた run と `--profile neuron` を指定した run は `neuron`、いずれも付けなければ `cpu` になります。ただし `chip` は記録上の分類であって、Kubernetes の Neuron デバイス要求と toleration が入るのは `--neuron` を付けた場合だけです。Neuron ノードで動かしたいなら `--neuron` も指定します。スケジューラがどのノードに載せたかではなく自分が要求したものが入るのは、これが run を探すときのキー (`alias` と組で run を指せる) であり、探す人の頭にあるのは自分が要求した値だからです。`profiled` は「profiler の経路を通ったか」を表します。shim は `nsys` を見つけた時点でこの値を立てるので、`nsys` の起動に失敗した実行でも true になり得ます。取得できたかどうかは `status` と `exit_reason`、そして次節以降で使う `stage_run` が返すファイルの一覧まで見て判断してください。`.nsys-rep` は MLflow のアーティファクトではなく `artifacts_uri` が指す trace バケットの prefix に置かれ、分析 MCP はこのタグを使って場所を解決します。
-
 失敗した実行も既定では記録され、`status=failed` と終了理由が残ります。遅い実行や落ちる実行こそプロファイルする価値があるという判断です。記録が不要だと分かっている試行だけ `--discard-on-fail` を付けます。
 
 ## 5. nsys がどう起動され、何が取れているか
@@ -242,9 +272,17 @@ shim (`infra/eks/images/accelprof/entry.sh`) が実行しているのは、次�
 nsys profile -t cuda,nvtx,osrt -o /accelprof/out/traces/rank-<index> --force-overwrite true <あなたのコマンド>
 ```
 
-`-t` で指定した 3 系統が収集対象です。`cuda` は CUDA API の呼び出しと GPU 上のカーネル実行やメモリ転送で、CUPTI 経由で収集されます。`nvtx` はコード側で付けた NVTX の区間とマーカーなので、付けていなければ何も出ません。`osrt` はファイル I/O や同期などの OS ランタイム呼び出しです。実際にこの既定で取得したトレースを `nsys-stats` にかけると、NVTX Range Summary、OS Runtime Summary、CUDA API Summary、CUDA GPU Kernel Summary の 4 つが返ります。基盤イメージは常に自分の ECR から digest で引かれ、Dockerfile が `nsight-systems-cli` をバージョン固定せずに取得するので、`nsys` のバージョンはそのイメージをいつビルドしたかで決まります。以下の実測値は著者環境の 2026.4.1 でのもので、自分の環境のバージョンは `nsys --version` で確かめてください。検証したノードの NVIDIA ドライバは 580.178.04、ワークロード側の CUDA は 12.4 でした。
+`-t` で指定した 3 系統が収集対象です。`cuda` は CUDA API の呼び出しと GPU 上のカーネル実行やメモリ転送で、CUPTI 経由で収集されます。`nvtx` はコード側で付けた NVTX の区間とマーカーなので、付けていなければ何も出ません。`osrt` はファイル I/O や同期などの OS ランタイム呼び出しです。この既定で取得したトレースを `nsys-stats` にかけると、NVTX Range Summary、OS Runtime Summary、CUDA API Summary、CUDA GPU Kernel Summary の 4 つが返ります。以下の実測値は `nsys` 2026.4.1、NVIDIA ドライバ 580.178.04、ワークロード側の CUDA 12.4 でのものです。自分の環境のバージョンは `nsys --version` で確かめてください。
 
-既定で取れないものも確認しておきます。第一に GPU のハードウェアメトリクス (SM の稼働率、Tensor Core の利用率、DRAM 帯域) は含まれません。これらは `--gpu-metrics-devices` の指定が必要で、さらに NVIDIA ドライバの性能カウンタ制限に触れるため、ノード側の設定か追加の権限が要ります。本基盤ではこの経路は未検証です。第二にカーネル単位の詳細 (occupancy の内訳、命令ミックス、メモリ階層のヒット率) は nsys の対象外で、Nsight Compute (`ncu`) が扱う範囲です。nsys で支配的なカーネルを特定し、そのカーネルを `ncu` で深掘りするのが定石です。第三に NCCL の通信は集合通信カーネルとしてカーネルの列には現れますが、どの集合操作がどのメッセージサイズで走ったかという意味づけは既定では付きません。
+取れないものも 1 つだけ押さえておきます。カーネル単位の詳細 (occupancy の内訳、命令ミックス、メモリ階層のヒット率) は nsys の対象外で、Nsight Compute (`ncu`) が扱う範囲です。nsys で支配的なカーネルを特定し、そのカーネルを `ncu` で深掘りするのが定石です。
+
+::::details ハードウェアメトリクスと NCCL について補足します
+
+GPU のハードウェアメトリクス (SM の稼働率、Tensor Core の利用率、DRAM 帯域) は既定では含まれません。`--gpu-metrics-devices` の指定が必要で、さらに NVIDIA ドライバの性能カウンタ制限に触れるため、ノード側の設定か追加の権限が要ります。本基盤ではこの経路は未検証です。
+
+NCCL の通信は集合通信カーネルとしてカーネルの列には現れますが、どの集合操作がどのメッセージサイズで走ったかという意味づけは既定では付きません。
+
+::::
 
 タイムラインを目で見たい場合は、`artifacts_uri` の `.nsys-rep` を手元に落として Nsight Systems の GUI で開きます。分析 MCP の `nsys-stats` はテキストの集計であり、タイムラインの目視を置き換えるものではありません。
 
@@ -252,9 +290,17 @@ nsys profile -t cuda,nvtx,osrt -o /accelprof/out/traces/rank-<index> --force-ove
 
 ここからが実務です。自分の学習イメージで取得するときに考えることを順に挙げます。
 
-ワークロードのイメージに要求するのは、注入された shim と `nsys` が動くことだけです。shim は POSIX shell スクリプトなので `/bin/sh` と `mkdir`、`date`、`cat`、`tr` といった基本コマンドが必要で、シェルを持たないイメージはそのままでは使えません。`nsys` はワークロードのイメージ側で実行されるので、x86-64 の glibc ベースであることも実質的な前提です。検証では `nsys` を含まない `pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime` をそのまま渡し、注入された `nsys` が動いて CUDA カーネルまでトレースに入ることを確認しました。それでも本番の学習を流す前には、自分のイメージで数十秒の軽いコマンドを 1 本流し、`profiled=true` の run が記録されることを確かめてから本題に入ってください。
+イメージに要求するのは、注入された shim と `nsys` が動くことだけです。shim は POSIX shell スクリプトなのでシェルを持たないイメージは使えず、`nsys` はワークロード側で実行されるので x86-64 の glibc ベースであることも実質的な前提です。本番の学習を流す前に、自分のイメージで数十秒の軽いコマンドを 1 本流し、`profiled=true` の run が記録されることを確かめてください。詰まったときに読むのは workload コンテナのログです。
 
-`nsys` とノードのドライバの整合も見ます。CUDA のトレースは CUPTI 経由なので、注入される `nsys` がワークロードの CUDA やノードのドライバに対して古すぎると、トレースが欠けるか収集に失敗します。切り分けの窓口は workload コンテナのログです。`nsys` は起動時の警告と収集の進行 (`Collecting data...`、区間を絞ったときは `Capture range started in the application.`) をここに出すので、短いコマンドで 1 本取得して `kubectl logs -n <namespace> job/<job 名> -c workload` を読めば、トレースが取れているのか、何も記録せず通過したのかが分かります。注入されたツリーの実体は `/accelprof/tools/nsys/target-linux-x64/nsys` にあり、イメージに適切な `nsys` が既に入っているなら `--no-inject-nsys` で注入を省略して、バージョンの変数を 1 つ減らせます。
+::::details イメージ互換で詰まったときにどこを見るかを説明します
+
+shim が要求する基本コマンドは `/bin/sh` と `mkdir`、`date`、`cat`、`tr` です。検証では `nsys` を含まない `pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime` をそのまま渡し、注入された `nsys` が動いて CUDA カーネルまでトレースに入ることを確認しました。
+
+CUDA のトレースは CUPTI 経由なので、注入される `nsys` がワークロードの CUDA やノードのドライバに対して古すぎると、トレースが欠けるか収集に失敗します。`nsys` は起動時の警告と収集の進行 (`Collecting data...`、区間を絞ったときは `Capture range started in the application.`) を workload コンテナのログに出すので、`kubectl logs -n <namespace> job/<job 名> -c workload` を読めば、トレースが取れているのか何も記録せず通過したのかが分かります。
+
+注入されたツリーの実体は `/accelprof/tools/nsys/target-linux-x64/nsys` にあります。イメージに適切な `nsys` が既に入っているなら `--no-inject-nsys` で注入を省略して、バージョンの変数を 1 つ減らせます。
+
+::::
 
 次が取得する区間です。`nsys` はイベントを記録し続けるので、トレースのサイズと後処理の時間はカーネル起動数と API 呼び出し数にほぼ比例して増えます。数時間の学習を頭から終わりまで取得すると、`.nsys-rep` が扱いにくいサイズになり、初期化やデータローダの立ち上げやチェックポイント保存が混ざって、見たい定常状態が埋もれます。診断に必要なのは定常状態の数十から数百イテレーションなので、そこだけを取得するのが基本です。絞り方は 3 段階あります。
 
@@ -266,30 +312,79 @@ nsys profile -t cuda,nvtx,osrt -o /accelprof/out/traces/rank-<index> --force-ove
 
 profiler のオプションは `--nsys-args` で渡しますが、これは既定値への追加ではなく全置換です。`-t` を含めて必要なものを自分で並べる必要があります。
 
+以降のコマンドで使うイメージを変数に入れます。自分の学習イメージがあるならその URI に置き換えてください。ここでは手元に用意がなくても進められるように、AWS が公開している PyTorch のイメージを使います。
+
 ```bash
-kubectl accelprof run --alias teama-gpu-nsys \
-  --image <自分の学習イメージ> --gpu 1 \
-  --nsys-args '-t cuda,nvtx --capture-range=cudaProfilerApi --capture-range-end=stop' \
-  -- python3 train.py
+export TRAIN_IMAGE=763104351884.dkr.ecr.$AWS_REGION.amazonaws.com/pytorch-training:2.10.0-gpu-py313-cu130-ubuntu22.04-ec2
 ```
 
-この例は `train.py` の中でウォームアップ後に `torch.cuda.profiler.start()` を呼び、取得したい区間の終わりで `stop()` を呼んでいることが前提です。呼んでいないと、区間が始まらないまま何も記録されません。
+学習スクリプトの代わりに、bf16 の 4096 角行列積を 300 回回すだけのコマンドを流します。ウォームアップ 20 回のあとに `torch.cuda.profiler.start()` を呼び、各反復を NVTX で囲み、最後に `stop()` を呼んで、スループットを `metrics.json` に書きます。区間を絞る指定 (`--capture-range=cudaProfilerApi`) が効くのはこの `start()` と `stop()` があるからで、呼んでいないスクリプトに同じ指定をすると区間が始まらないまま何も記録されません。
 
-オーバーヘッドは推測せず測ります。`--profile none` はプロファイラを動かさずに run だけを記録するモードで、同じ alias の中にこの実行を 1 本残しておくと、それがプロファイルなしのベースラインになり、`metrics.json` に書いた数値の差がそのまま計測コストの実測値になります。A10G 1 枚で bf16 の 4096 角行列積を 300 回回す (ウォームアップ 20 回は区間の外) という同じワークロードで 3 通り取得すると、次のようになりました。
+```bash
+kubectl accelprof run --alias teama-gpu-nsys \
+  --image "$TRAIN_IMAGE" --gpu 1 \
+  --nsys-args '-t cuda,nvtx --capture-range=cudaProfilerApi --capture-range-end=stop' \
+  -- python3 -c '
+import json, time, torch
+a = torch.randn(4096, 4096, device="cuda", dtype=torch.bfloat16)
+b = torch.randn(4096, 4096, device="cuda", dtype=torch.bfloat16)
+for _ in range(20):
+    a @ b
+torch.cuda.synchronize()
+torch.cuda.profiler.start()
+t0 = time.perf_counter()
+for _ in range(300):
+    torch.cuda.nvtx.range_push("step")
+    a @ b
+    torch.cuda.nvtx.range_pop()
+torch.cuda.synchronize()
+el = time.perf_counter() - t0
+torch.cuda.profiler.stop()
+tf = 300 * 2 * 4096 ** 3 / el / 1e12
+json.dump({"tflops": tf, "elapsed_s": el}, open("/accelprof/out/metrics.json", "w"))
+print("tflops=%.1f elapsed=%.3f" % (tf, el))
+'
+```
+
+GPU ノードの確保とイメージの pull が入るので、初回は 5 分前後かかります。完了すると workload のログの末尾に `tflops=62.3 elapsed=0.662` のような行が出ます。
+
+オーバーヘッドは推測せず測ります。`--profile none` はプロファイラを動かさずに run だけを記録するモードなので、同じ alias にこの実行を 1 本残しておくと、それがプロファイルなしのベースラインになり、`metrics.json` に書いた数値の差がそのまま計測コストの実測値になります。上のコマンドを 3 通り (`--profile none`、`--nsys-args` を付けない既定、上のとおり区間を絞ったもの) で流すと、A10G 1 枚では次のようになりました。
 
 | 実行 | 実測 TFLOPS | 区間の壁時計 | トレース | 記録されたカーネル数 |
 | --- | --- | --- | --- | --- |
 | `--profile none` (ベースライン) | 62.4 | 0.661 秒 | なし | - |
-| 既定の全区間キャプチャ | 62.1 | 0.664 秒 | 353.8 KiB | 320 |
-| `--capture-range=cudaProfilerApi` | 5.4 | 7.55 秒 | 96.5 KiB | 300 |
+| 既定の全区間キャプチャ | 62.3 | 0.661 秒 | 547 KiB | 320 |
+| `--capture-range=cudaProfilerApi` | 62.3 | 0.662 秒 | 116 KiB | 300 |
 
-読み方が 2 つあります。1 つ目は、このワークロードでは全区間を取得しても計測コストが 1 % 未満だったことです。カーネルが支配的で API 呼び出しが少ない形なら、まず既定のまま取得してよいという判断ができます。逆に、カーネルが細かく API 呼び出しが多い形では同じ比率にはならないので、自分のワークロードで測る必要があります。
+読み取れることが 2 つあります。1 つ目は、このワークロードでは取得の仕方によらず計測コストが差にならなかったことです。カーネルが支配的で API 呼び出しが少ない形なら、まず既定のまま取得してよいと判断できます。2 つ目は、区間を絞った効果がトレース側に出ていることです。ウォームアップの 20 回が除かれてカーネル数が 320 から 300 になり、トレースは 547 KiB から 116 KiB まで小さくなりました。区間を絞る目的はトレースを小さく的確にすることであって、速く走らせることではありません。
 
-2 つ目が重要で、`--capture-range=cudaProfilerApi` で絞った実行だけが約 11.4 倍の時間になりました。狙い通りウォームアップの 20 回は除かれて 300 回だけが記録され、トレースも小さくなっていますが、その代わりに区間内のホスト側の時間が伸びています。トレースに記録された GEMM 1 回の実行時間は両者で 2.201 ミリ秒と 2.202 ミリ秒で一致していたので、少なくとも個々のカーネルの実行時間は変わっていません。ただしカーネルの間隔を含むタイムライン全体が歪んでいないとまでは、この 2 つの数字からは言えません。分かるのは「アプリが自分で測ったスループットは、この設定では本来の性能として使えない」ということです。この挙動は `nsys` 2026.4.1 と A10G のこの組み合わせでの実測で、原因の切り分けは行っておらず、`--delay` や NVTX の区間でも同じことが起きるとは一般化できません。
-
-ここから引ける実務の結論は 2 つです。区間を絞る目的はトレースを小さく的確にすることであって、速く走らせることではありません。そして絞り方によっては計測値そのものが歪むので、`--profile none` のベースラインを必ず同じ alias に置き、性能の数値はベースラインから、カーネルの内訳はプロファイル付きの run から取る、と使い分けてください。
+この例でオーバーヘッドが見えなかったのは測ったから言えることで、ワークロードによって変わります。`--profile none` のベースラインを同じ alias に残しておけば、性能の数値はそこから、カーネルの内訳はプロファイル付きの run から取る、という使い分けがいつでもできます。
 
 物理的な置き場所も意識します。トレースは Pod の `emptyDir` に書かれてから recorder が S3 に上げるので、大きな区間を取得するとノードのエフェメラルストレージを消費します。大きく取得するときは `--patch` で `emptyDir` に `sizeLimit` を付けるか、そもそも区間を絞ります。また recorder がワークロードを待つ上限は既定で 1 日です。これを超える実行では `--recorder-timeout` を伸ばさないと、ワークロードの終了前に、その時点のファイルだけが `status=unknown` で記録されてしまいます (ワークロードが成功したのか失敗したのかを recorder が知らないまま打ち切るので、`failed` ではありません)。`status=failed` で探しても見つからないので注意してください。
+
+記録された run には、自分が渡した params と tags のほかに、基盤が付ける予約タグが並びます。以下はこの節で取得した GPU の run から引いた実測値です (値は run ごとに変わります)。
+
+```text
+exp.alias        = teama-gpu-nsys
+workload_id      = wl-260830065351-c356f674
+chip             = gpu
+region           = us-east-2
+status           = ok
+exit_reason      = completed
+profiled         = true
+profile_mode     = nsys
+profiled_ranks   = 0
+contract_version = 1
+schema_version   = 1
+artifacts_uri    = s3://<trace バケット>/teama-gpu-nsys/<run_id>/
+pod              = profile-wl-260830065351-c356f674
+```
+
+`exp.alias` は experiment 名と S3 prefix を兼ねる alias、`status` は失敗すると `failed` になる値、`profiled` は profiler の経路を通ったかどうかです。`artifacts_uri` のバケット名と `run_id` は環境ごとの値なので、ここでは伏せています。
+
+押さえるのは 2 点です。`chip` は**要求したデバイス**で、スケジューラが載せた先ではありません。`--gpu` を付ければ `gpu`、`--neuron` か `--profile neuron` なら `neuron`、いずれも付けなければ `cpu` です。Kubernetes のデバイス要求と toleration が入るのは `--neuron` を付けた場合だけなので、Neuron ノードで動かしたいなら `--profile neuron` ではなく `--neuron` を指定します。
+
+もう 1 点は `profiled` が信用しきれないことです。shim は `nsys` を見つけた時点でこの値を立てるので、`nsys` の起動に失敗した実行でも `true` になり得ます。取得できたかどうかは `status` と `exit_reason`、そして手順 8 で使う `stage_run` が返すファイルの一覧まで見て判断してください。`.nsys-rep` は MLflow のアーティファクトではなく `artifacts_uri` が指す trace バケットの prefix に置かれ、分析 MCP はこのタグを使って場所を解決します。
 
 ## 7. 分散ジョブでどの rank を取得するか
 
@@ -301,78 +396,136 @@ kubectl accelprof run --alias teama-gpu-nsys \
 
 ## 8. 分析する
 
-`mcp-host` は各 MCP エントリ名の Service を `mcp` 名前空間に作ります (ポート 8080)。どちらのサーバも streamable-http を素で話すので、MCP クライアントから見ると `http://localhost:<ポート>/mcp` の 2 台です。stdio との橋渡しは要りません。
+この手順のゴールは、取得した run の `run_id` を渡して「どこが遅いか」という事実を得て、続けて「次に何を変えるか」の指針を得ることです。事実を答えるのが analysis MCP、指針を答えるのが knowledge MCP で、どちらもクラスタの中で動いています。
 
-トンネルは 2 本必要です。前景で張ると 1 本目が端末を占有するので、2 本目を別のターミナルで開くことになり、順に貼り付けると 2 本目が実行されないまま先に進んでしまいます。ここでは背景に置き、**張れたことをその場で確認する**形にします。
+そのために必要なものは 2 つです。1 つは手元からクラスタ内のサーバに届く経路で、どちらのサーバも streamable HTTP を素で話すので転送されたポートがあれば足ります。もう 1 つは MCP クライアントへの登録で、クライアントはそのポートを URL として知る必要があります。
 
-```bash
-mkdir -p ~/tmp/distai
-pkill -f 'port-forward svc/analysis'; pkill -f 'port-forward svc/knowledge'
-kubectl port-forward svc/analysis  -n mcp 8080:8080 > ~/tmp/distai/pf-analysis.log 2>&1 &
-kubectl port-forward svc/knowledge -n mcp 8081:8080 > ~/tmp/distai/pf-knowledge.log 2>&1 &
-sleep 3
-lsof -nP -iTCP:8080 -sTCP:LISTEN
-lsof -nP -iTCP:8081 -sTCP:LISTEN
-```
-
-最後の 2 行で両方に `kubectl ... (LISTEN)` が出れば揃っています。`k` ではなく `kubectl` を直に呼んでいるのは、`k` がシェル関数で背景実行に乗らないからです。`KUBECONFIG` は環境変数なので背景のプロセスにも継承されます。
-
-:::message
-トンネルはこの先で落ちます。Pod が入れ替わったとき、ネットワークが切れたとき、アイドルが続いたときで、いずれも普通に起きます。落ちると MCP クライアント側には `ConnectionRefused` としか見えないので、そのときは上の `lsof` で listen が残っているかを見て、`~/tmp/distai/pf-*.log` に理由を読み、同じコマンドで張り直してください。
-:::
-
-MCP クライアントには、この 2 つの URL を登録します。多くのクライアントは設定にスコープ (全体かプロジェクト単位か) を持ち、プロジェクト単位で登録した場合は**そのディレクトリでクライアントを起動しないとサーバが見えません**。
-
-::::details Claude Code の場合
-
-`claude mcp add` は、実行したディレクトリに紐づくプロジェクト単位の設定として保存します。以降このディレクトリでセッションを開いてください。
+この 2 つは同時に成り立っていないと意味がありません。ポートを転送しても登録していなければクライアントは呼べず、登録してもポートを誰も保持していなければ接続に失敗します。手で両方を管理すると、サーバごとに端末を 1 つ占有した上で、トンネルが落ちたときにクライアント側には `ConnectionRefused` しか見えません。そこで `kubectl accelprof mcp exec` が、必要なトンネルを開き、その実際のポートから組んだ設定を環境変数に置き、コマンドを実行して、開けたものだけを閉じます。
 
 ```bash
-claude mcp add --transport http accelprof-analysis  http://localhost:8080/mcp
-claude mcp add --transport http accelprof-knowledge http://localhost:8081/mcp
-claude mcp list
+export RUN_ID=$(kubectl accelprof get --last --alias teama-smoke -o run-id)
+test -n "$RUN_ID" && echo "run_id=$RUN_ID"
+kubectl accelprof mcp exec -- sh -c 'claude -p "accelprof-analysis の stage_run と analyze を run_id=$RUN_ID で順に呼び、返ってきた事実だけを報告して" --mcp-config "$ACCELPROF_MCP_CONFIG" --strict-mcp-config --allowed-tools mcp__accelprof-analysis__stage_run mcp__accelprof-analysis__analyze'
 ```
 
-`claude mcp list` を同じディレクトリで実行して 2 台とも Connected になることを確認します。Failed になる場合はまず port-forward のターミナルを見てください。トンネルは Pod の再起動やネットワーク断で落ち、クライアント側にはつながらないことしか見えません。ツール一覧にそもそも出てこない場合は、起動したディレクトリが `claude mcp add` を実行したディレクトリと違います。ここに書いたコマンドはクライアント側の仕様に依存するので、変わっている場合はそのクライアントのドキュメントに従ってください。
+`sh -c` を挟んで単引用符にしているのは、`ACCELPROF_MCP_CONFIG` が `mcp exec` の内側で初めて決まるからです。外側の引用符で書くと、まだ空の変数が展開されます。`RUN_ID` は `export` してあるので、同じ理由で内側に届きます。空のまま進めると claude が run を特定できないので、`echo` で値が出ることを先に確かめています。記録が完了していない run では `-o run-id` が空になります。`--strict-mcp-config` は、そのディレクトリに登録済みの他の MCP サーバを混ぜないための指定です。
 
-::::
-
-analysis MCP には 4 節で取得した自分の run の `run_id` (`$RUN_ID` に入れた値) を渡します。`stage_run` で成果物を読める状態にしてから `analyze` を走らせます。`stage_run` はマウント上のディレクトリと読めるファイルを返します。以下の例は 6 節の GPU の run のものなので、値は自分の run のものに変わります。
+`stage_run` は成果物を読める状態にしてマウント上の場所を返し、`analyze` がその中身を読みます。claude が返すのは自然文の報告なので、run ごとに文面は変わります。判断の基準にするのは、その報告に `/traces/<alias>/<run_id>/` の場所と `.nsys-rep` の名前が出ていることです。ツール自身の返りを直接見ると次の形をしています。
 
 ```json
-{ "run_id": "8af3effe...", "chip": "gpu",
-  "dir": "/traces/teama-gpu-nsys/8af3effe.../", "files": ["rank-0.nsys-rep"], "count": 1 }
+{
+  "run_id": "0a1638331a7d4a40b003134254a062e4",
+  "chip": "cpu",
+  "dir": "/traces/teama-smoke/0a1638331a7d4a40b003134254a062e4/",
+  "files": ["rank-0.nsys-rep"],
+  "count": 1
+}
 ```
 
-`analyze(run_id, "nsys-stats")` が、その `.nsys-rep` を S3 Files マウント越しに読んで集計を返します。GPU のワークロードでまず読むのは CUDA GPU Kernel Summary で、次が自分で仕込んだ NVTX の区間です。以下は上の検証で実際に返ってきた出力です。
+```json
+{
+  "run_id": "0a1638331a7d4a40b003134254a062e4",
+  "chip": "cpu",
+  "analyzer": "inventory",
+  "dir": "/traces/teama-smoke/0a1638331a7d4a40b003134254a062e4/",
+  "advice": "inventory of /traces/teama-smoke/0a1638331a7d4a40b003134254a062e4/: rank-0.nsys-rep 80984 total_files=1 total_bytes=80984"
+}
+```
+
+`analyzer` が `inventory` になっているのは、これが `analyze` の既定だからです。ファイルの棚卸ししか返らないので、カーネルの集計を読むには `analyzer` に `nsys-stats` を指定します。手順 4 の run は CPU なので集計する対象もありません。手順 6 で取得した GPU の run に切り替えます。
+
+```bash
+export RUN_ID=$(kubectl accelprof get --last --alias teama-gpu-nsys -o run-id)
+kubectl accelprof mcp exec -- sh -c 'claude -p "accelprof-analysis の stage_run と analyze (analyzer は nsys-stats) を run_id=$RUN_ID で順に呼び、支配的なカーネルとその平均時間を報告して" --mcp-config "$ACCELPROF_MCP_CONFIG" --strict-mcp-config --allowed-tools mcp__accelprof-analysis__stage_run mcp__accelprof-analysis__analyze'
+```
+
+`nsys-stats` の `advice` には集計表が入ります。まず読むのは CUDA GPU Kernel Summary で、次が自分で仕込んだ NVTX の区間です。手順 6 の全区間キャプチャの run では次の表が返りました。
 
 ```text
  ** CUDA GPU Kernel Summary (cuda_gpu_kern_sum):
- Time (%)  Total Time (ns)  Instances  Avg (ns)   Med (ns)   ...  Name
- --------  ---------------  ---------  ---------  ---------  ...  ---------------------------------
-    100.0        704721548        320  2202254.8  2201780.0  ...  ampere_bf16_s16816gemm_bf16_256x128_ldg8_f2f_stages_32x3_nn
-      0.0           151553          2    75776.5    75776.5  ...  void at::native::distribution_elementwise_grid_stride_kernel
+
+ Time (%)  Total Time (ns)  Instances  Avg (ns)   Med (ns)   Min (ns)  Max (ns)  StdDev (ns)   Name
+ --------  ---------------  ---------  ---------  ---------  --------  --------  -----------   ----
+    100.0        705006251        320  2203144.5  2202583.0   2199319   2224951       3083.5   ampere_bf16_s16816gemm_bf16_256x128_ldg8_f2f_stages_32x3_nn
+      0.0           158560          2    79280.0    79280.0     79232     79328         67.9   void at::native::distribution_elementwise_grid_stride_kernel
 
  ** NVTX Range Summary (nvtx_sum):
- Time (%)  Total Time (ns)  Instances  Avg (ns)  Med (ns)  ...   Style   Range
- --------  ---------------  ---------  --------  --------  ...  -------  -----
-    100.0          8206975        300   27356.6   26330.0  ...  PushPop  :step
+
+ Time (%)  Total Time (ns)  Instances  Avg (ns)  Med (ns)  Min (ns)  Max (ns)  StdDev (ns)   Style   Range
+ --------  ---------------  ---------  --------  --------  --------  --------  -----------  -------  -----
+    100.0          8877208        300   29590.7   28742.0     26762     71904       4337.9  PushPop  :step
 ```
 
-上の表は、記録された GPU カーネル時間の内訳です。ここでは bf16 の GEMM が 320 回でそのほぼすべてを占め、1 回あたり 2.2 ミリ秒です (壁時計全体の内訳ではない点に注意してください)。下の表の 27 マイクロ秒は、NVTX で囲んだ範囲のホスト側の時間、つまりカーネルの投入にかかった時間です。カーネル起動は非同期なので、この値が小さいことだけでは投入待ちが無いとは言えません。投入待ちを疑うときは、同じ出力の CUDA API Summary で同期系の API に時間が乗っていないかを見て、必要なら `.nsys-rep` を GUI で開いてカーネルの間隔を確認します。
+上の表は記録された GPU カーネル時間の内訳で、壁時計全体の内訳ではありません。ここでは bf16 の GEMM が 320 回でそのほぼすべてを占め、1 回あたり 2.2 ミリ秒です。下の表の 29.6 マイクロ秒は、この出力では NVTX で囲んだ範囲のホスト側の時間として集計されており、カーネルの投入にかかった時間を表します。カーネル起動は非同期なので、この値が小さいことだけでは投入待ちが無いとは言えません。投入待ちを疑うときは同じ出力の CUDA API Summary で同期系の API に時間が乗っていないかを見て、必要なら `.nsys-rep` を GUI で開いてカーネルの間隔を確認します。
 
-事実が出たら、次に何をするかは knowledge MCP から得ます。症状を `search_knowledge` に投げると、関連する playbook がランク付きで返ります。次はツールの使い方を示す例で、上のトレースの診断結果ではありません。
+事実が出たら、次に何をするかは knowledge MCP に聞きます。症状を渡すと関連する playbook がランク付きで返り、`get_topic` で本文を開けます。
 
-```jsonc
-// search_knowledge("memory bound but occupancy is high", chip="gpu")
-{ "count": 2, "results": [
-  { "id": "gpu/roofline", "score": 12.0, "title": "Roofline diagnosis" },
-  { "id": "gpu/memory-and-fusion", "score": 7.0, "title": "Memory bound kernels and fusion" } ]}
+```bash
+kubectl accelprof mcp exec -- sh -c 'claude -p "accelprof-knowledge の search_knowledge で GPU の学習が遅い症状に近い playbook を探し、上位 3 件の topic_id と題名を挙げて" --mcp-config "$ACCELPROF_MCP_CONFIG" --strict-mcp-config --allowed-tools mcp__accelprof-knowledge__search_knowledge mcp__accelprof-knowledge__get_topic'
 ```
 
-上位に出た `get_topic("gpu/roofline")` を開くと、症状から原因、確認点、次にすることまでが読めます。analysis MCP が返した事実 (どこが遅いか) と、knowledge MCP が返した指針 (次に何を変えるか) を突き合わせて次の実験を決める、というのが本基盤の使い方です。
+実際に返った上位 3 件は次のものでした。
 
-## 9. 継続的に回すときの運用
+```text
+gpu/tensor-cores-and-occupancy   Tensor Core utilization and when occupancy is the wrong lever
+gpu/memory-and-fusion            Memory-bound elementwise, coalescing, and epilogue fusion
+gpu/roofline                     Roofline diagnosis - compute-bound vs memory-bound vs latency-bound
+```
+
+ここまでを 1 本にまとめると、この章のゴールがそのままコマンドになります。両方のサーバを許可して、事実と指針を分けて報告させます。
+
+```bash
+kubectl accelprof mcp exec -- sh -c 'claude -p "run_id=$RUN_ID について、accelprof-analysis の stage_run と analyze (analyzer は nsys-stats) で支配的なカーネルを特定し、続けて accelprof-knowledge の search_knowledge と get_topic でその症状に対応する playbook を開き、次に何を変えるべきかを報告して。事実と playbook の推奨を分けて書いて" --mcp-config "$ACCELPROF_MCP_CONFIG" --strict-mcp-config --allowed-tools mcp__accelprof-analysis__stage_run mcp__accelprof-analysis__analyze mcp__accelprof-knowledge__search_knowledge mcp__accelprof-knowledge__get_topic'
+```
+
+上の GPU の run に対して返ってきたのは、次の内容でした。
+
+- 事実: GPU 時間の 100 % が bf16 の GEMM で、標準偏差 3.1 マイクロ秒と均一
+- 事実: NVTX の区間は 29.6 マイクロ秒しかなく `cudaDeviceSynchronize` に 695 ミリ秒が乗っているので、CPU は投げて待つだけで GPU が律速
+- 事実: カーネル名が既に Tensor Core のパスに乗っている
+- 指針 (`gpu/tensor-cores-and-occupancy`): Tensor Core のパスは満たされているので、次に見るのはタイル量子化とウェーブ量子化
+- 指針: 占有率を上げる方向は、Nsight Compute で warp 不足を確認するまで触らない
+
+事実と指針が同じ 1 コマンドで並ぶので、次の実験をその場で決められます。これがこの基盤の使い方です。
+
+::::details 対話的なクライアントから使う場合の手順を説明します
+
+`mcp exec` はコマンドが終わるとトンネルを閉じるので、セッションを開いたまま何度も聞く使い方には向きません。その場合は `mcp up` でトンネルを保持します。`mcp up` は転送を背景に置いてプロンプトに戻るので、端末を占有しません。表示された URL をクライアントに登録して使います。
+
+```bash
+kubectl accelprof mcp up
+kubectl accelprof mcp status
+```
+
+この環境ではポート 8080 と 8081 が空いていたので、次の出力になりました。
+
+```text
+==> MCP servers are reachable from this machine
+    analysis     http://127.0.0.1:8080/mcp
+    knowledge    http://127.0.0.1:8081/mcp
+
+    close them with:  kubectl accelprof mcp down
+```
+
+`mcp up` は繰り返し実行して構いません。すでに MCP として応答しているトンネルはそのまま残します。ポートが埋まっていた場合は空いているポートに移るので、URL は毎回 `mcp status` で確認してください。`mcp status` は listen しているかではなく MCP として応答するかを見ます。kubectl は転送先の Pod が消えてもポートを開いたままにするので、この 2 つは別物です。
+
+Claude Code に登録する場合は、そのディレクトリに紐づくプロジェクト単位の設定として保存されるので、以降はそのディレクトリでセッションを開きます。ツール一覧に出てこない場合は、起動したディレクトリが登録したディレクトリと違います。
+
+```bash
+claude mcp add --transport http accelprof-analysis  http://127.0.0.1:8080/mcp
+claude mcp add --transport http accelprof-knowledge http://127.0.0.1:8081/mcp
+claude mcp list
+```
+
+使い終わったら閉じます。閉じ忘れたトンネルは動き続けるので、次に `mcp up` したときにポートが移る形で気づきます。
+
+```bash
+kubectl accelprof mcp down
+```
+
+::::
+
+## 9. 継続的に回すときにどう運用するか
 
 alias は調査キャンペーン 1 つに 1 つ付け、条件の違いは `--param`、コードや構成の違いは `--tag` で表します。S3 のプレフィックスと MLflow の experiment 名を兼ねるため、使える文字は `^[a-z0-9][a-z0-9-]{1,62}$` に制限されています。キャンペーンを始めるときは、6 節のとおり `--profile none` の run を 1 本置いてからプロファイル付きの run を回します。
 
@@ -380,7 +533,7 @@ alias は調査キャンペーン 1 つに 1 つ付け、条件の違いは `--p
 
 課金の主因は 3 つです。MLflow が tracking server の場合は起動している間課金されるので、使わない期間は後片付けの手順で停止します (停止は記録を保持します)。app の場合は停止という概念がなく、放置しても課金要素はバケットだけです。trace バケットは `.nsys-rep` の蓄積で単調に増えるので、終わったキャンペーンは alias 単位で掃除します。前述のとおりこれは自動では起きないので、MLflow の experiment 削除と S3 プレフィックスの削除を手で行います。そして GPU ノードそのものが最も高いので、プロファイル用の Job は短く保ちます。掃除のときに MLflow の experiment だけ、あるいは S3 のプレフィックスだけを消すと、片方だけが残って参照できない run ができます。必ず alias を単位にして両方を消します。
 
-## 10. 自分の環境に合わせて変えるときに触る場所
+## 10. 自分の環境に合わせて変えるときにどこを触るか
 
 導入したあとに変えたくなる箇所と、その持ち主を整理します。
 
@@ -394,7 +547,9 @@ alias は調査キャンペーン 1 つに 1 つ付け、条件の違いは `--p
 | Job を残す期間 | `--ttl` です。短くすると `kubectl accelprof get` で run_id を引ける期間も短くなります。恒久的な照会は MLflow 側です |
 | 記録のスキーマ (metrics の意味づけなど) | accelprof パッケージ側です。記録 API とファイルの取り決めの仕様はライブラリの持ち物で、いつどこで呼ぶかが基盤の持ち物という切り分けです |
 
-## 11. 後片付け
+## 11. 後片付けする
+
+新しいターミナルで始める場合は、Basic01 手順 2 の 4 行を先に実行してください。以下のコマンドは `k` と既定 namespace と `AWS_REGION` が解決済みであることを前提にしています。
 
 最初に選ぶのは、しばらく使わないだけなのか (A: 一時停止)、完全に撤去するのか (B: 完全撤去) です。A なら tracking server を停止するだけで課金が止まり、記録は保持されます。B は Terraform のトグルを戻して基盤を削除します。B を実行すると MLflow ごと消えるので、あとから A に戻ることはできません。迷ったら A を選んでください。
 
@@ -465,7 +620,7 @@ terraform apply teardown.tfplan
 
 # まとめ
 
-本章では、基盤の導入からプロファイルの記録、そして分析 MCP と knowledge MCP を使った分析までを実機で通しました。導入は 1 コマンド、プロファイルを取得するのも 1 コマンドで、どちらもバケット名やマネージド MLflow の ARN を利用者が持ち回る必要はありません。日々の実験では、自分のイメージとコマンドを渡せばプロファイルが記録され、以降は MCP 経由で分析と次の一手の提示を受け取れます。実務で重要なのは、区間を絞ること、`--profile none` のベースラインを置くこと、そして alias をキャンペーン単位で設計することの 3 点です。設計思想の全体像は冒頭のブログにまとめてあります。
+基盤の導入からプロファイルの記録、そして分析までを実機で通しました。導入も取得も 1 コマンドで、利用者がバケット名やマネージド MLflow の ARN を持ち回る必要はありません。実務では、区間を絞り、`--profile none` のベースラインを同じ alias に置き、alias をキャンペーン単位で設計する、の 3 点を押さえてください。
 
 # 参考資料
 

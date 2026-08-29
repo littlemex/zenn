@@ -55,7 +55,7 @@ operator は Karpenter 本体・device plugin・Capacity Block の購入には�
 
 # ワークショップ実施
 
-本章の実機検証は、Basic シリーズと同じ構成の検証用クラスタ（us-east-2、Karpenter v1.13、`ReservedCapacity` フィーチャゲート有効）で実施しました。g5 プールは On-Demand、p5 プールは購入済みの p5.48xlarge の Capacity Block（`cr-...`）を使います。以降のコマンド出力はこの構成の実測値で、Capacity Block の AZ（`us-east-2a`）は読者の予約に合わせて読み替えてください。
+本章の実機検証は、Basic シリーズと同じ構成の検証用クラスタ（us-east-2、Karpenter v1.13、`ReservedCapacity` フィーチャゲート有効）で実施しました。g5 プールは On-Demand、p5 プールは購入済みの p5.48xlarge の Capacity Block（`cr-...`）を使います。以降のコマンド出力はこの構成の実測値です。Capacity Block の AZ は予約から引くので、手で書き換える箇所はありません。
 
 ## 1. 前提を確認する
 
@@ -85,7 +85,8 @@ ReservedCapacity=true,SpotToSpotConsolidation=false,NodeRepair=false,NodeOverlay
 
 ```bash
 k get ec2nodeclass
-k get ec2nodeclass gpu-p5 \
+export POOL=gpu-p5
+k get ec2nodeclass "$POOL" \
   -o jsonpath='role={.spec.role}{"\n"}instanceProfile={.spec.instanceProfile}{"\n"}subnet={range .spec.subnetSelectorTerms[*]}{.tags}{end}{"\n"}'
 ```
 
@@ -97,12 +98,16 @@ instanceProfile=distai-eks-0807-karpenter-node
 subnet={"karpenter.sh/discovery":"distai-eks-0807"}
 ```
 
-ここで参照した `gpu-p5` は Basic04/05 で定義したプール名の一例です。読者の環境では別名のことがあるので、`k get ec2nodeclass` で存在する名前を確認して読み替えてください。この本の Terraform 版は `instanceProfile` を直接指定しているため `role` は空ですが、operator の `AcceleratorClass` は `role`（IAM ロール名）を受け取り、そのロールから Karpenter がインスタンスプロファイルを作ります。この検証環境では、インスタンスプロファイル `distai-eks-0807-karpenter-node` の背後にある同名の IAM ロール `distai-eks-0807-karpenter-node` がそのロールにあたります。名前が同じとは限らないので、自分の環境では次で確かめた値を使ってください。
+`POOL` に入れた `gpu-p5` は Basic04/05 で定義したプール名の一例です。読者の環境では別名のことがあるので、1 行目の `k get ec2nodeclass` で存在する名前を確認して読み替えてください。この本の Terraform 版は `instanceProfile` を直接指定しているため `role` は空ですが、operator の `AcceleratorClass` は `role`（IAM ロール名）を受け取り、そのロールから Karpenter がインスタンスプロファイルを作ります。この検証環境では、インスタンスプロファイル `distai-eks-0807-karpenter-node` の背後にある同名の IAM ロール `distai-eks-0807-karpenter-node` がそのロールにあたります。名前が同じとは限らないので、自分の環境では次で確かめた値を使ってください。
 
 ```bash
-aws iam get-instance-profile --instance-profile-name <上で出た instanceProfile> \
-  --query 'InstanceProfile.Roles[0].RoleName' --output text
-```次の手順ではこのロール名と discovery タグ `karpenter.sh/discovery: distai-eks-0807` を `AcceleratorClass` に渡します。以降のマニフェストに出てくる `distai-eks-0807` はこの検証環境のクラスタ名なので、**自分のクラスタ名に置き換えてから** apply してください。operator は AWS を呼ばないため、実在しないロールやタグでも apply 自体は成功し、手順 4 で生成される EC2NodeClass が Karpenter 側で解決できず `Ready=False` になって初めて分かります。
+export NODE_ROLE=$(aws iam get-instance-profile \
+  --instance-profile-name "$(k get ec2nodeclass "$POOL" -o jsonpath='{.spec.instanceProfile}')" \
+  --query 'InstanceProfile.Roles[0].RoleName' --output text)
+echo "$NODE_ROLE"
+```
+
+次の手順ではこのロール名と、discovery タグに使うクラスタ名を `AcceleratorClass` に渡します。以降のマニフェストは `$NODE_ROLE` と `$CLUSTER_NAME` を展開する形にしてあるので、この 2 つが同じシェルに入っていれば貼り付けたまま apply できます (`CLUSTER_NAME` は Basic01 手順 2 で設定したものです)。operator は AWS を呼ばないため、実在しないロールやタグでも apply 自体は成功し、手順 4 で生成される EC2NodeClass が Karpenter 側で解決できず `Ready=False` になって初めて分かります。値を手で書き換えて apply する場合は、この失敗の仕方を思い出してください。
 
 :::message
 本書は作業用 namespace を `distai` に統一していますが、本章はテナント分離のデモが目的のため、テナント役の専用 namespace `team-gpu` を使います（`distai` 統一ルールの意図的な例外です）。
@@ -181,13 +186,13 @@ kind: AcceleratorClass
 metadata:
   name: distai-default
 spec:
-  role: distai-eks-0807-karpenter-node
+  role: ${NODE_ROLE}
   amiSelectorTerms:
     - alias: al2023@latest
   subnetSelectorTerms:
-    - tags: { karpenter.sh/discovery: distai-eks-0807 }
+    - tags: { karpenter.sh/discovery: ${CLUSTER_NAME} }
   securityGroupSelectorTerms:
-    - tags: { karpenter.sh/discovery: distai-eks-0807 }
+    - tags: { karpenter.sh/discovery: ${CLUSTER_NAME} }
   tags: { Environment: dev, ManagedBy: karpenter-tenant-pools }
   tenants:
     defaultPolicy: Deny
@@ -321,30 +326,40 @@ Ready=True
 Basic05 で購入した p5.48xlarge の Capacity Block を、operator 経由で使います。Capacity Block へのアクセスは、テナントが勝手に参照できてはならないため、管理者が `AcceleratorClass` の該当 namespace エントリに CB の ID を明示的に 許可リストに登録した場合にだけ許可されます。まず管理者が Class に CB を追加します。
 
 ```bash
+export CR_ID=cr-023f18e20d3829f4e
+export CR_ZONE=$(aws ec2 describe-capacity-reservations --region "$AWS_REGION" \
+  --capacity-reservation-ids "$CR_ID" \
+  --query 'CapacityReservations[0].AvailabilityZone' --output text)
+echo "$CR_ID $CR_ZONE"
+```
+
+`CR_ID` は Basic05 で購入した自分の予約 ID に読み替えます。AZ を手で書かないのは、Capacity Block が単一 AZ で、その AZ は予約自身が持っている値だからです。ずれた AZ を書くと、プールは作れてもノードは起動しません。
+
+```bash
 k apply -f - <<EOF
 apiVersion: tenantpools.dev/v1alpha1
 kind: AcceleratorClass
 metadata:
   name: distai-default
 spec:
-  role: distai-eks-0807-karpenter-node
+  role: ${NODE_ROLE}
   amiSelectorTerms:
     - alias: al2023@latest
   subnetSelectorTerms:
-    - tags: { karpenter.sh/discovery: distai-eks-0807 }
+    - tags: { karpenter.sh/discovery: ${CLUSTER_NAME} }
   securityGroupSelectorTerms:
-    - tags: { karpenter.sh/discovery: distai-eks-0807 }
+    - tags: { karpenter.sh/discovery: ${CLUSTER_NAME} }
   tags: { Environment: dev, ManagedBy: karpenter-tenant-pools }
   tenants:
     defaultPolicy: Deny
     entries:
       - namespaces: ["${TENANT_NS}"]
         maxPools: 4
-        capacityReservationIDs: ["cr-0056555dd93a28dde"]
+        capacityReservationIDs: ["${CR_ID}"]
 EOF
 ```
 
-`cr-...` は自分の予約 ID に置き換えます。この ID は次に作る `AcceleratorPool` 側にも書くので、2 か所を必ず同じ値にします。片方だけ変えると許可リストと一致せず、手順 6 で意図的に見せるはずの `Validated=False` を先に踏みます。CB を持っていない場合、operator は予約の実在を確かめないので定義の生成までは確認できますが、そのプールからノードは起動しません。
+許可リストと `AcceleratorPool` の 2 か所に同じ ID が要るので、どちらも `CR_ID` から参照しています。片方だけ違う値になると許可リストと一致せず、手順 6 で意図的に見せるはずの `Validated=False` を先に踏みます。CB を持っていない場合、operator は予約の実在を確かめないので定義の生成までは確認できますが、そのプールからノードは起動しません。
 
 次にテナントが CB を参照するプールを作ります。Capacity Block は単一 AZ なので、`zones` を予約の AZ 1 つに絞ります（EFA を使うプールや CB を参照するプールは単一 AZ に解決される必要があります）。
 
@@ -361,8 +376,8 @@ spec:
   instances:
     families: ["p5"]
     capacityTypes: ["reserved"]
-    zones: ["us-east-2a"]
-  capacityReservationIDs: ["cr-0056555dd93a28dde"]
+    zones: ["${CR_ZONE}"]
+  capacityReservationIDs: ["${CR_ID}"]
   limits:
     nvidia.com/gpu: "8"
 EOF
@@ -490,7 +505,7 @@ spec:
   instances:
     families: ["p5"]
     capacityTypes: ["reserved"]
-    zones: ["us-east-2a"]
+    zones: ["${CR_ZONE}"]
   capacityReservationIDs: ["cr-0000000000deadbeef"]
   limits: { nvidia.com/gpu: "8" }
 EOF

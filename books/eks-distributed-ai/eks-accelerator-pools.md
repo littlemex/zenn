@@ -36,11 +36,11 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 ```hcl
 accelerator_pools = {
   gpu-ddp = {
-    instance_types  = ["g6.2xlarge", "g5.2xlarge", "g6.xlarge", "g5.xlarge"]
-    device_plugin   = "nvidia"
-    capacity_types  = ["spot", "on-demand"]
+    instance_types      = ["g6.2xlarge", "g5.2xlarge", "g6.xlarge", "g5.xlarge"]
+    device_plugin       = "nvidia"
+    capacity_types      = ["spot", "on-demand"]
     efa_interface_count = 0
-    labels          = { workload = "ddp-basic04" }
+    labels              = { workload = "ddp-basic04" }
   }
 }
 ```
@@ -108,11 +108,11 @@ aws ec2 describe-instance-type-offerings --region "$AWS_REGION" \
 cat > accelerator-pools.auto.tfvars <<'EOF'
 accelerator_pools = {
   gpu-ddp = {
-    instance_types  = ["g6.2xlarge", "g5.2xlarge", "g6.xlarge", "g5.xlarge"]
-    device_plugin   = "nvidia"
-    capacity_types  = ["spot", "on-demand"]
+    instance_types      = ["g6.2xlarge", "g5.2xlarge", "g6.xlarge", "g5.xlarge"]
+    device_plugin       = "nvidia"
+    capacity_types      = ["spot", "on-demand"]
     efa_interface_count = 0
-    labels          = { workload = "ddp-basic04" }
+    labels              = { workload = "ddp-basic04" }
   }
 }
 EOF
