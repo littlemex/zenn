@@ -86,7 +86,7 @@ Job そのものは終了から 2 日後に Kubernetes が消します。run の
 
 本章は基盤リポジトリのリリース `release/eks-distributed-ai/v0.2.0` を前提にしています。本文のコマンドと出力例はこのバージョンで実機確認したものです。別のバージョンでは変数名やフラグが変わることがあるので、まずはこのタグで通してください。
 
-クラスタ (Basic01 から Basic11 相当) が稼働していること、`infra/eks` の Terraform がリモート state を使っていること、`terraform` と `kubectl` と `helm` と `aws` と `python3` と `git` と `curl` が手元にあること (後半の手順でトンネルの listen を確認するのに `lsof` も使います)、MCP クライアント (Claude Code など) が手元にあることを確認します。リモート state は Basic01 の [`distai-up.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/scripts/distai-up.sh) が作り、その場所はレジストリに記録されています。前提の 4 行はレジストリから `infra/eks/backend.hcl` を書き出すので、導入スクリプトはそれを読んで解決します。チェックアウトの外から実行する場合や fresh clone で `backend.hcl` が無い場合は、`TF_STATE_BUCKET` などで明示的に渡します。
+クラスタ (Basic01 から Basic11 相当) が稼働していること、`infra/eks` の Terraform がリモート state を使っていること、`terraform` と `kubectl` と `helm` と `aws` と `python3` と `git` と `curl` が手元にあること (後半の手順でトンネルの listen を確認するのに `lsof` も使います。`aws` は SageMaker MLflow app と S3 Files を知っているバージョンが必要で、`aws sagemaker list-mlflow-apps help` が通らない場合は先に更新します。古いままだと導入スクリプトが権限エラーのような見た目で止まります)、MCP クライアント (Claude Code など) が手元にあることを確認します。リモート state は Basic01 の [`distai-up.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/scripts/distai-up.sh) が作り、その場所はレジストリに記録されています。前提の 4 行はレジストリから `infra/eks/backend.hcl` を書き出すので、導入スクリプトはそれを読んで解決します。チェックアウトの外から実行する場合や fresh clone で `backend.hcl` が無い場合は、`TF_STATE_BUCKET` などで明示的に渡します。
 
 ## 2. プロファイルを取得する namespace を用意する
 
@@ -101,6 +101,8 @@ export AWS_REGION=us-east-2
 export DISTAI_NAMESPACE=team-a
 source infra/scripts/distai-env.sh
 ```
+
+クラスタ名・リージョン・チェックアウトの場所は Basic01 で使った自分の値に読み替えます。ここに書いた名前が対象クラスタを決めるので、別の名前のクラスタを持っている読者がこの例のまま打つと、導入スクリプトが `cluster distai-eks not found` で止まります。
 
 ```bash
 for ns in team-a team-b; do
@@ -124,6 +126,10 @@ export CREATE_DATA_LAYER=1
 export MLFLOW_BACKEND=app
 DEV_BUILD=1 ./infra/scripts/install-profiling.sh
 ```
+
+初回は全体で 20〜40 分程度かかります。長いのはデータ層の apply と、クラスタ内での 2 つのイメージのビルドです。`Phase N/7` の行が進んでいれば正常なので、terraform やビルドの出力が流れている間は待ちます。
+
+このスクリプトは `aws eks update-kubeconfig --alias profiling-<クラスタ名>` を実行するので、kubectl の current-context が切り替わります。手順 2 で `team-a` を既定にした状態は失われるため、続きに進む前に手順 2 の 4 行 (`DISTAI_NAMESPACE=team-a` 付き) をもう一度 `source` してください。そうしないと次の手順で `namespace default is not wired for profiling` になります。
 
 `DEV_BUILD=1` は初回だけ必要です。基盤イメージは自分の ECR から digest で引く作りなので、まだ何も無い状態では `no analysis image digest available` で止まります。2 回目以降は付けなくてよく、既にあるイメージを digest で使います。
 
@@ -160,11 +166,11 @@ kubectl accelprof --help >/dev/null && echo "plugin ok"
 
 チェックアウトを持たない人 (プロファイルを取得するだけで基盤は触らない人) 向けの経路も 1 行あります。リポジトリを固定タグで `~/distributed-ai-v0.2.0` に取得し、プラグインを `~/.local/bin` に置きます。この経路も冒頭で `git`、`terraform`、`kubectl`、`helm`、`aws`、`python3`、`curl` の存在を確認し、欠けていればそこで止まります。プラグインの設置だけが目的でも `terraform` と `helm` は入れておいてください。
 
+この 1 行は、基盤を導入した本人ではなく、プラグインだけ欲しい人が別のマシンで打つものです。導入した本人と同じシェルで打つと `PRODUCER_NAMESPACES` を上書きしてしまい、その値のまま導入スクリプトを再実行すると、リストから外れた namespace の Pod Identity の紐付けが取り消されます (10 節で触れる「リストが唯一の宣言」の帰結です)。同じマシンで試すなら別のシェルで実行してください。
+
 ```bash
-export CLUSTER_NAME=distai-eks
-export AWS_REGION=us-east-2
-export PRODUCER_NAMESPACES=team-a
-curl -fsSL https://raw.githubusercontent.com/littlemex/distributed-ai/refs/tags/release/eks-distributed-ai/v0.2.0/infra/scripts/get-profiling.sh | bash
+CLUSTER_NAME=distai-eks AWS_REGION=us-east-2 PRODUCER_NAMESPACES=team-a,team-b \
+  bash -c 'curl -fsSL https://raw.githubusercontent.com/littlemex/distributed-ai/refs/tags/release/eks-distributed-ai/v0.2.0/infra/scripts/get-profiling.sh | bash'
 ```
 
 URL のタグとスクリプトが固定するタグは同じものなので、コピーした 1 行と入るものがずれません。そのまま導入まで走らせるには `TF_STATE_BUCKET`、`TF_STATE_REGION`、`TF_STATE_KEY` と、クラスタの `terraform.tfvars` を指す `EKS_TFVARS` の 4 つが必要です。1 つでも欠けているとプラグインの設置だけで止まり、導入はチェックアウトから実行するよう案内されます。`~/.local/bin` が PATH に無い場合は通してください。
@@ -180,7 +186,7 @@ kubectl accelprof run --alias teama-smoke --image "$IMAGE" --wait \
 
 指定はこれだけです。プロファイラは既定で動き、トレースまで残るので、この 1 本で投入から記録までの経路が通っていることを確認できます。基盤イメージには `nsys` が入っているので、この 1 本に限っては `--no-inject-nsys` を足して注入を省くこともできます (省いても結果は同じで、共有ボリュームへのコピーが減るだけです)。
 
-`--wait` を付けているのは、この 1 本が数秒で終わるからです。完了まで待って `run_id` まで表示してくれるので、確認が 1 コマンドで済みます。**数分以上かかる run には付けません。**投入したら手元のターミナルは閉じてよく、記録はクラスタの中で完結します。その場合は、あとから状態と `run_id` を引きます。
+`--wait` を付けているのは、この 1 本の計算が数秒で終わるからです。ただし初回はノードの確保と基盤イメージの pull が先に走るので、待ちは数分になります。待っている間は表示が変わらないので、投入時に出た `logs:` の行のコマンドか `k get pods` で `Init:` や `ContainerCreating` を見て、pull 中であることを確かめてください。完了まで待って `run_id` まで表示してくれるので、確認が 1 コマンドで済みます。**数分以上かかる run には付けません。**投入したら手元のターミナルは閉じてよく、記録はクラスタの中で完結します。その場合は、あとから状態と `run_id` を引きます。
 
 ```bash
 kubectl accelprof get --last --alias teama-smoke
@@ -402,7 +408,7 @@ export TRACKING_SERVER_NAME=$(k get configmap accelprof-config \
 aws sagemaker stop-mlflow-tracking-server --tracking-server-name "$TRACKING_SERVER_NAME" --region "$AWS_REGION"
 ```
 
-B の場合は以下に進みます。データ層は `terraform destroy` ではなく、トグルを `false` にした `terraform apply` で畳みます。trace バケットと MLflow アーティファクトのバケットには「消してはいけない記録」を守るために `prevent_destroy` が付いており、`terraform destroy` は plan 段階でこのバケット破棄を検出して操作全体を中断してしまうため、MLflow や S3 Files ファイルシステムまで実際には消えないからです。トグルを false にした apply なら、バケット (と中の成果物ファイル) は残したまま、MLflow と S3 Files ファイルシステムだけを破棄できます。
+B の場合は以下に進みます。データ層は `terraform destroy` ではなく、トグルを `false` にした `terraform apply` で畳みます。trace バケットと MLflow アーティファクトのバケットには「消してはいけない記録」を守るために `prevent_destroy` が付いており、`terraform destroy` は plan 段階でこのバケット破棄を検出して操作全体を中断してしまうため、MLflow や S3 Files ファイルシステムまで実際には消えないからです。トグルを false にした apply なら、バケット (と中の成果物ファイル) は残したまま、MLflow と S3 Files ファイルシステムだけを破棄できます。B を完走しても残るものが他にもあります。`DEV_BUILD=1` で焼いた基盤イメージの ECR リポジトリ、バケットの暗号化に使っている KMS キー (月額課金)、レジストリに記録したデータ層のアタッチ、kubeconfig に増えた `profiling-<クラスタ名>` コンテキストです。完全に消したい場合はこれらを個別に片付けます。
 
 :::message alert
 run のメタデータ (metrics、params、tags) は MLflow と一緒に消えます。成果物ファイルはバケットに残りますが、それがどの条件の実験だったかという情報は失われるので、残したい記録があれば先に取り出してください。
@@ -435,6 +441,8 @@ done
 :::message alert
 この 2 つの apply は導入スクリプトを通らないので、plan の分類も行われません。クラスタに溜まった profiling と無関係な差分も一緒に適用されます。そのため下では plan をファイルに保存し、内容を読んでからそのファイルを適用する形にしています。この plan は Basic01 で構築したチェックアウト、つまり `infra/eks/terraform.tfvars` があるディレクトリで作ってください。変数ファイルの無いクローンで作ると、クラスタの設定が既定値に戻った巨大な差分になります。想定外の変更が出たら適用せず、`-target` で範囲を絞るか差分の出どころを解消してからやり直してください。
 :::
+
+後片付けは日をまたぐことが多いので、新しいターミナルなら先に Basic01 手順 2 の 4 行を実行してチェックアウトに入り、`AWS_REGION` を解決しておきます。`AWS_REGION` が空のまま下の plan を作ると `trace_regions=[""]` を渡すことになり、実在する trace バケットを破棄する plan になります。plan の削除一覧にバケットが出たら apply せず、変数を確認してください。
 
 ```bash
 export DATA_LAYER_NAME=profiling

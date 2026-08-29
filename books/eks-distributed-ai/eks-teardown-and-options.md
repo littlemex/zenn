@@ -108,10 +108,12 @@ k get pvc -n "$NAMESPACE"
 
 PVC が 1 つも無ければ `--delete-pvcs` は不要です。逆に、自分で作った動的プロビジョニングの PVC が残っている場合、このフラグはその EBS ボリュームを中身ごと消すので、手順 2 の注意を読んでから付けてください。
 
-`--destroy` を付けると、ワークロードとノードの片付けに続けて `terraform destroy` が走ります。この VPC の中にこの state が管理していないもの (他チームの EFS マウントターゲットやロードバランサ、別の state が作ったセキュリティグループなど) があると、subnet や VPC の削除が拒否されて destroy は終盤で失敗します。スクリプトはこれを事前に点検しないので、失敗したら Terraform のエラーに出るリソース ID を手がかりに、残っているものを自分で確認して片付けてから再実行します。このとき `04-teardown.sh` は、手順 2 で消したアクセラレータプールに加えて、`monitoring` などクラスタに残っている Karpenter の NodePool もすべて先に削除します。これは、NodePool が残っていると Karpenter が Pod を載せるためにノードを作り続け、`terraform destroy` が内部で待つノードのドレイン完了がいつまでも来なくなるためです。すべての NodePool を止めたうえで `terraform destroy` に入り、Karpenter がノードを終了し終えるのを待ってから、Karpenter 本体やアクセラレータ関連のコントローラを破棄します。この順序により、アクセラレータノードが終了されないまま課金だけが残る事態を防ぎます。
+`--destroy` を付けると、ワークロードとノードの片付けに続けて `terraform destroy` が走ります。この VPC の中にこの state が管理していないもの (他チームの EFS マウントターゲットやロードバランサ、別の state が作ったセキュリティグループなど) があると、subnet や VPC の削除が拒否されて destroy は終盤で失敗します。スクリプトはこれを事前に点検しないので、失敗したら Terraform のエラーに出るリソース ID を手がかりに、残っているものを自分で確認して片付けます。この段階まで来ると EKS クラスタ自体はすでに消えているので、やり直しは `cd infra/eks && terraform destroy` を直に実行するのが確実です。このとき `04-teardown.sh` は、手順 2 で消したアクセラレータプールに加えて、`monitoring` などクラスタに残っている Karpenter の NodePool もすべて先に削除します。これは、NodePool が残っていると Karpenter が Pod を載せるためにノードを作り続け、`terraform destroy` が内部で待つノードのドレイン完了がいつまでも来なくなるためです。すべての NodePool を止めたうえで `terraform destroy` に入り、Karpenter がノードを終了し終えるのを待ってから、Karpenter 本体やアクセラレータ関連のコントローラを破棄します。この順序により、アクセラレータノードが終了されないまま課金だけが残る事態を防ぎます。
 
 :::message alert
 ノードのドレイン待ちが進まない場合、よくある原因は [`karpenter.sh/do-not-disrupt`](https://karpenter.sh/docs/concepts/disruption/#pod-level-controls) を付けた Pod です。Karpenter はこの Pod を退去させないので、載っているノードが空になりません。手順 2 が片付けるのは `--namespace` で指定した namespace だけなので、それ以外の namespace に置いたものは残ります。Advanced01 の headroom Deployment (`kube-system`) がその例で、消し忘れると待ちが終わりません。この待ちは `terraform destroy` の中で NodeClaim が 0 になるまで最大 30 分続き、原因の Pod を名前で教えてはくれません。0 にならなければ destroy は中断されるので、待ちが進まないときは `k get pods -A` に残っている Pod の annotation を見て、`do-not-disrupt` が付いたものを自分で消してください。
+
+スクリプトの `y/N` を通ったあと、最後に Terraform 自身が `Do you really want to destroy all resources?` と聞いてきます。ここで受け付けるのは `yes` という綴りだけで、`y` では取り消しになります。NodePool を消したあとで取り消すと、ノードは消えたのにクラスタが残る中途半端な状態になるので、`yes` と入力してください。破棄全体は 20〜30 分が目安です。
 
 `terraform destroy` の完了まで、ターミナルを閉じずに待ちましょう。途中で中断すると、アクセラレータノードが取り残されて課金が続く可能性があります。破棄が完了したら、Amazon EC2 コンソールや `aws ec2 describe-instances` で対象リソースが残っていないことを最終確認すると確実です。
 :::

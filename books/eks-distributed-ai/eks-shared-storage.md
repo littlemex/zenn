@@ -157,10 +157,10 @@ terraform output shared_storage
 ## 3. PersistentVolume を確認する
 
 ```bash
-k get pv
+k get pv fsx-training openzfs-shared
 ```
 
-既定で apply した直後の実機出力です。Amazon FSx for Lustre（`fsx-training`）と Amazon FSx for OpenZFS（`openzfs-shared`）の静的 PV が作られており、まだどの PVC も作っていないので `Available` です。
+既定で apply した直後の実機出力です。名前を指定せずに `k get pv` を打つと、Basic08 の監視スタックを入れている場合は Prometheus と Grafana の動的 PV (`pvc-` で始まる `Bound` の行) も並びます。ここで見るのはこの 2 本だけです。Amazon FSx for Lustre（`fsx-training`）と Amazon FSx for OpenZFS（`openzfs-shared`）の静的 PV が作られており、まだどの PVC も作っていないので `Available` です。
 
 ```text
 NAME             CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS      CLAIM   STORAGECLASS   VOLUMEATTRIBUTESCLASS   REASON   AGE
@@ -206,6 +206,8 @@ k delete pvc "$PVC_NAME" -n "$PVC_NS"
 k patch pv "$PV" --type=json \
   -p '[{"op":"remove","path":"/spec/claimRef/uid"},{"op":"remove","path":"/spec/claimRef/resourceVersion"}]'
 ```
+
+この形の patch は指定したパスが存在するときだけ成功します。2 回目は `doc is missing path` で失敗しますが、その場合はすでに外れているので気にしなくてよいです。
 
 別の namespace の PVC で使いたい場合は、`claimRef` 全体を外して完全な `Available` に戻します。`uid` だけ外しても `claimRef` の namespace と name が残っていると、別 namespace の PVC は拒否されます。
 
@@ -290,7 +292,7 @@ k logs fsx-test -n "$NAMESPACE"
 初回はイメージの取得とそのノードでの初回マウントに数十秒かかり、Pod はしばらく `ContainerCreating` にとどまります。これは正常な待ち時間なので、上の `k wait` で完了を待ってからログを見ます。`k wait` が `timed out waiting for the condition` で終わった場合はマウントに失敗しています。`k describe pod fsx-test -n "$NAMESPACE"` の Events を見ると、`FailedMount` や `NodeStageVolume` の行に `dnsname is not provided` (PV の `volumeAttributes` のキーが大文字になっている) や到達不能 (セキュリティグループ) といった原因が出ます。`k describe pvc fsx-claim -n "$NAMESPACE"` と `k describe pv fsx-training` も合わせて見ます。失敗した Pod は同じ名前では作り直せないので、`k delete pod fsx-test -n "$NAMESPACE" --ignore-not-found` を先に実行してからやり直します。Pod のログに `hello-fsx` が出れば、マウントと書き込みが成功しています。続いて Pod を削除し、別名の Pod から同じファイルを読み出します。
 
 ```bash
-k delete pod fsx-test -n "$NAMESPACE"
+k delete pod fsx-test fsx-test2 -n "$NAMESPACE" --ignore-not-found
 k run fsx-test2 -n "$NAMESPACE" --restart=Never --image=busybox \
     --overrides='{"spec":{"containers":[{"name":"fsx-test2","image":"busybox","command":["cat","/mnt/fsx/test.txt"],"volumeMounts":[{"name":"fsx","mountPath":"/mnt/fsx"}]}],"volumes":[{"name":"fsx","persistentVolumeClaim":{"claimName":"fsx-claim"}}]}}'
 k wait --for=jsonpath='{.status.phase}'=Succeeded pod/fsx-test2 -n "$NAMESPACE" --timeout=180s

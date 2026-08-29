@@ -132,6 +132,7 @@ export NAMESPACE=distai
 DIGEST=$(aws ecr describe-images \
   --repository-name "$(terraform output -raw ddp_sample_ecr_url | cut -d/ -f2-)" \
   --query 'sort_by(imageDetails[?imageTags],&imagePushedAt)[-1].imageDigest' --output text)
+echo "DIGEST=$DIGEST"
 
 IMAGE="$(terraform output -raw ddp_sample_ecr_url)@${DIGEST}"
 
@@ -163,7 +164,9 @@ kubectl -n "$NAMESPACE" get events --field-selector involvedObject.name=coldpull
   --sort-by=.lastTimestamp -o wide
 ```
 
-ここで読めるのは取得と展開の側です。`Pulling` から `Pulled` までがレイヤの取得と展開の合算で、`Pulled` から `Started` までがコンテナの作成と起動です。ノードの起動時間はここには出てきません。スケジューラが Pod をノードに割り当てるのはノードが Ready になったあとなので、Karpenter がノードを起動していた 1〜2 分は Pod の作成時刻から `Scheduled` までの区間に入ります。そこを見るには `kubectl -n "$NAMESPACE" get pod coldpull -o jsonpath='{.metadata.creationTimestamp}'` と `Scheduled` の時刻を突き合わせます。展開と取得の合算が大きな割合を占めているなら zstd や prewarm が有効で、Pod 作成から `Scheduled` までが大きな割合を占めているなら headroom floor が有効、という判断の材料になります。
+ここで読めるのは取得と展開の側です。`DIGEST` が `None` と出た場合は、Basic02 のビルドが終わっていないかタグ付きイメージが無い状態です。そのまま進めると `InvalidImageName` で Pod が起動せず、`wait` がタイムアウトするまで気づけません。`wait` が返らないときは `kubectl -n "$NAMESPACE" describe pod coldpull` の Events を見ます。
+
+`Pulling` から `Pulled` までがレイヤの取得と展開の合算で、`Pulled` から `Started` までがコンテナの作成と起動です。ノードの起動時間はここには出てきません。スケジューラが Pod をノードに割り当てるのはノードが Ready になったあとなので、Karpenter がノードを起動していた 1〜2 分は Pod の作成時刻から `Scheduled` までの区間に入ります。そこを見るには `kubectl -n "$NAMESPACE" get pod coldpull -o jsonpath='{.metadata.creationTimestamp}'` と `Scheduled` の時刻を突き合わせます。展開と取得の合算が大きな割合を占めているなら zstd や prewarm が有効で、Pod 作成から `Scheduled` までが大きな割合を占めているなら headroom floor が有効、という判断の材料になります。
 
 本書の検証では、Basic02 でビルドした 3.3 GB の学習イメージを digest 指定で起動し、次の数字が出ました。
 
@@ -203,7 +206,8 @@ spec:
 
 headroom floor は、低優先度の pause Deployment で cpu プールにノードを常時 1 台維持します。cpu プールを狙い撃ちする `nodeSelector: node-role: cpu`（`karpenter-resources.tf` の `nodepool_cpu` が付与するラベル）と、`karpenter.sh/do-not-disrupt: "true"` アノテーションの両方が必須です。アノテーションが守っている相手は consolidation ではありません。CPU NodePool は `consolidationPolicy: WhenEmpty` なので、pause Pod が載っているノードはそもそも「空」ではなく consolidation の対象外です。守る対象は drift で、ノードの AMI に新しいリリースが出ると Karpenter は稼働中のノードでも置き換えます。これが起きると温めたキャッシュごとノードが入れ替わり、headroom floor の目的が消えます。ここでは常時 1 台維持のコストを許容する前提を置き、作業時間帯だけに絞る CronJob 制御は行いません。
 
-```yaml
+```bash
+kubectl apply -f - <<'YAML'
 apiVersion: scheduling.k8s.io/v1
 kind: PriorityClass
 metadata:
@@ -239,9 +243,10 @@ spec:
             requests:
               cpu: "1"
               memory: 1Gi
+YAML
 ```
 
-上の 2 つのマニフェストを `kubectl apply -f -` で投入します。PriorityClass はこの後の prewarm が `prewarmPriorityClassName=cache-headroom` で参照するので、prewarm より先に作ります。投入したら次の 2 つで確認します。
+PriorityClass はこの後の prewarm が `prewarmPriorityClassName=cache-headroom` で参照するので、同じマニフェストの中で先に作っています。投入したら次の 2 つで確認します。
 
 ```bash
 kubectl -n kube-system rollout status deploy/cache-headroom --timeout=10m
@@ -303,6 +308,7 @@ kubelet に pull させる形なら、これらは 1 つも不要です。ECR �
 DIGEST=$(aws ecr describe-images \
   --repository-name "$(terraform output -raw ddp_sample_ecr_url | cut -d/ -f2-)" \
   --query 'sort_by(imageDetails[?imageTags],&imagePushedAt)[-1].imageDigest' --output text)
+echo "DIGEST=$DIGEST"
 
 helm template exp charts/experiments -n "$NAMESPACE" \
   --set "prewarm.gpu-ddp.images[0]=$(terraform output -raw ddp_sample_ecr_url)@${DIGEST}" \
@@ -311,7 +317,10 @@ helm template exp charts/experiments -n "$NAMESPACE" \
   | kubectl apply -f -
 
 kubectl -n "$NAMESPACE" rollout status ds/image-prewarm-gpu-ddp --timeout=10m
+kubectl -n "$NAMESPACE" get ds image-prewarm-gpu-ddp
 ```
+
+手順 1 のノードが `consolidateAfter` で消えていると、対象ノードが 0 台なので `DESIRED` が 0 のまま `rollout status` は即座に成功します。これは「何も温まっていない」状態で、次にそのプールのノードが起動したときに温まります。温まったことを確かめたいなら、`DESIRED` が 1 以上で Pod が `Running` になっているのを見ます。
 
 `helm template | kubectl apply` は Helm のリリース管理を通らないので、古いものが自動では消えません。プール名を変えたときや、あるプールの `images` を空にしたときは、対応する DaemonSet を明示的に削除してください。放っておくと「Neuron をやめたのに Neuron のイメージを全ノードで温め続ける」状態になります。
 
@@ -343,7 +352,7 @@ Capacity Block のプールを温める場合は toleration を 1 つ足す必�
 | 新規ノードで prewarm と同時に起動（同じ digest） | 1m9.3s |
 | prewarm 済みのノード | 0s（`already present on machine`） |
 
-prewarm 済みノードでは `Pulling` イベントすら出ず、`Container image ... already present on machine and can be accessed by the pod` になります。これが確認できれば効果測定は完了です。逆に `Pulling` が出る場合は、ノードが入れ替わって prewarm がまだ終わっていないか、digest がずれています。
+prewarm 済みノードでは `Pulling` イベントすら出ず、`Container image ... already present on machine and can be accessed by the pod` になります。これが確認できれば効果測定は完了です。この確認には時限があります。prewarm を入れたプールのノードは、ワークロードが終われば 5 分ほどで回収されるので、`kubectl -n "$NAMESPACE" get pods -o wide` で prewarm Pod が載っているノードが生きていることを見てから、`kubectl -n "$NAMESPACE" delete pod coldpull --ignore-not-found` と手順 1 の再 apply を続けて実行します。逆に `Pulling` が出る場合は、ノードが入れ替わって prewarm がまだ終わっていないか、digest がずれています。
 
 3 行目は「prewarm が新規ノードで走っている最中にワークロードが着地する」ケースで、Karpenter がノードを起動する経路では普通に起きます。prewarm が帯域を取ってワークロードを遅くするのではないか、という懸念がありますが、同じ digest を指している限りそうはなりません。kubelet は同一イメージの pull をまとめるので、両者は 1 回の pull を共有します。実測でも prewarm 側とワークロード側が同じ 1m9.3s を報告しており、単独のコールド pull より遅くなっていません。
 
@@ -364,12 +373,15 @@ helm template exp charts/experiments -n "$NAMESPACE" \
     --set imageBuild.repository="$ECR_URL" \
     --set imageBuild.tag=v2-zstd \
     --set imageBuild.zstd=true \
+    --set imageBuild.gitRef=release/eks-distributed-ai/v0.2.0 \
     -s templates/image-build-ddp-sample.yaml \
     | kubectl apply -f -
 
 kubectl -n image-builder wait --for=condition=complete \
     job/build-ddp-sample-v2-zstd --timeout=30m
 ```
+
+この `wait` も `complete` しか見ないので、ビルドが失敗した場合は 30 分待ってからタイムアウトします。進みが怪しいときは `kubectl -n image-builder get job,pods` と `kubectl -n image-builder logs job/build-ddp-sample-v2-zstd` を見ます。ログが何も無く終了コードが 137 なら OOM なので、`imageBuild.memory` を上げて焼き直します。
 
 これは BuildKit の出力指定に `compression=zstd,oci-mediatypes=true` を足したものです。`oci-mediatypes` は省略できません。zstd のレイヤは OCI のメディアタイプでしか表現できず、Docker v2 のマニフェストでは記述できないためです。
 
@@ -439,7 +451,7 @@ kubectl delete priorityclass cache-headroom --ignore-not-found
 kubectl get nodes -l node-role=cpu
 ```
 
-最後の確認で cpu ノードが `consolidateAfter` の経過後に消えていれば、headroom がノードを確保していない状態に戻っています。手順 1 で作った `coldpull` Pod も残っていれば消してください。
+最後の確認で cpu ノードが `consolidateAfter` の経過後に消えていれば、headroom がノードを確保していない状態に戻っています。他のワークロードが cpu プールに載っている間はノードが空にならないので消えません。その場合は `k get pods -A -o wide` でそのノードに何が載っているかを見ます。手順 1 で作った `coldpull` Pod も残っていれば消してください。
 
 # まとめ
 
