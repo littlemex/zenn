@@ -7,17 +7,17 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 
 # 本書について
 
-本書は、ML 分散学習・推論の実験を、Amazon EKS 上で回すための基盤を Terraform で構築するワークショップです。Amazon VPC・Amazon EKS・Karpenter といった基盤から始めて、アクセラレータノードの動的プロビジョニング、EFA によるマルチノード通信、Capacity Block の取得、共有ストレージなどを扱います。
+本書は、ML 分散学習・推論の実験を、Amazon EKS 上で回すための基盤を Terraform で構築するワークショップです。Amazon VPC・Amazon EKS・Karpenter といった基盤から始めて、アクセラレータノードの動的プロビジョニング、[EFA](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/efa.html) によるマルチノード通信、[Capacity Block](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/capacity-blocks-using.html) の取得、共有ストレージなどを扱います。
 
-この基盤は、AWS が公開する分散学習リファレンス集 [awslabs/awsome-distributed-ai](https://github.com/awslabs/awsome-distributed-ai) を参考にしながら組み立てています。まず NVIDIA GPU で動く構成を基本に据えつつ、AWS Trainium への対応も目指しています。
+この基盤は、AWS が公開する分散学習リファレンス集 [awslabs/awsome-distributed-ai](https://github.com/awslabs/awsome-distributed-ai) を参考にしながら組み立てています。まず NVIDIA GPU で動く構成を基本に据えつつ、[AWS Trainium](https://aws.amazon.com/ai/machine-learning/trainium/) への対応も目指しています。
 
 # 背景
 
-分散学習・推論の基盤というと、代表的な選択肢は Slurm ベースの HPC クラスタでしょう。実際、事前学習のような用途では Slurm は非常に強力です。ジョブスケジューラとして成熟しており、`sbatch` でジョブを投げれば計算資源を確保して実行されます。
+分散学習・推論の基盤というと、代表的な選択肢は [Slurm](https://slurm.schedmd.com/documentation.html) ベースの HPC クラスタでしょう。実際、事前学習のような用途では Slurm は非常に強力です。ジョブスケジューラとして成熟しており、`sbatch` でジョブを投げれば計算資源を確保して実行されます。
 
-近年の LLM 向け強化学習、たとえば GRPO などのアルゴリズムは、大きく 2 つのフェーズを繰り返し実行します。1 つは rollout と呼ばれる推論のフェーズで、現在のポリシーモデルを使い大量のサンプルを生成します。ここでは [SGLang](https://github.com/sgl-project/sglang) や [vLLM](https://github.com/vllm-project/vllm) のような推論エンジンが使われます。もう 1 つは学習のフェーズで、生成したサンプルと報酬を使ってモデルを更新します。ここでは [Megatron-LM](https://github.com/NVIDIA/Megatron-LM) のような学習フレームワークが使われます。
+近年の LLM 向け強化学習、たとえば [GRPO](https://arxiv.org/abs/2402.03300) などのアルゴリズムは、大きく 2 つのフェーズを繰り返し実行します。1 つは rollout と呼ばれる推論のフェーズで、現在のポリシーモデルを使い大量のサンプルを生成します。ここでは [SGLang](https://github.com/sgl-project/sglang) や [vLLM](https://github.com/vllm-project/vllm) のような推論エンジンが使われます。もう 1 つは学習のフェーズで、生成したサンプルと報酬を使ってモデルを更新します。ここでは [Megatron-LM](https://github.com/NVIDIA/Megatron-LM) のような学習フレームワークが使われます。
 
-つまり RL は、性質のまったく異なる 2 種類のワークロード、すなわち低レイテンシの推論サービングと、高スループットの分散学習を、同じクラスタ上で交互に、あるいは同時に動かす必要があります。さらに実運用では、推論エンジンと学習エンジンの間で重みを同期し続けます。こうした「推論エンジンと学習エンジンが混在し、動的に起動・停止する」ワークロードは、静的にノードを割り当ててバッチジョブを流す Slurm のが想定する使い方とは違ってきます。
+つまり RL は、性質のまったく異なる 2 種類のワークロード、すなわち低レイテンシの推論サービングと、高スループットの分散学習を、同じクラスタ上で交互に、あるいは同時に動かす必要があります。さらに実運用では、推論エンジンと学習エンジンの間で重みを同期し続けます。こうした「推論エンジンと学習エンジンが混在し、動的に起動・停止する」ワークロードは、静的にノードを割り当ててバッチジョブを流す Slurm が想定する使い方とは違ってきます。
 
 # 要求を整理する
 
@@ -31,7 +31,7 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 | 購入オプション | Spot/On Demand/Capacity Block などへの対応 |
 | 共有ストレージ | モデルやデータを複数 Pod で共有する |
 
-Kubernetes はもともと「多様なサービスを動的にスケジュールする」ためのプラットフォームです。推論サーバーは Deployment や [KubeRay](https://github.com/ray-project/kuberay) の Service として、学習ジョブは Job や MPIJob として、すべて同じクラスタ上で宣言的に扱えます。アクセラレータノードは Karpenter が Pod の要求に応じて動的に起動し、使い終われば自動で回収します。そのため、上の要求を一度に満たす基盤として Amazon EKS を選びました。一度この基盤を立てておけば、あとは Pod を投入するだけで、事前学習・ファインチューニング・推論サービング・強化学習のいずれも同じクラスタで実験できます。
+Kubernetes はもともと「多様なサービスを動的にスケジュールする」ためのプラットフォームです。推論サーバーは Deployment や [KubeRay](https://github.com/ray-project/kuberay) の Service として、学習ジョブは Job や [MPIJob](https://www.kubeflow.org/docs/components/trainer/legacy-v1/user-guides/mpi/) として、すべて同じクラスタ上で宣言的に扱えます。アクセラレータノードは Karpenter が Pod の要求に応じて動的に起動し、使い終われば自動で回収します。そのため、上の要求を一度に満たす基盤として Amazon EKS を選びました。一度この基盤を立てておけば、あとは Pod を投入するだけで、事前学習・ファインチューニング・推論サービング・強化学習のいずれも同じクラスタで実験できます。
 
 :::message
 Slurm が劣っているという話ではありません。Slurm ベースの構成のほうがシンプルなこともあります。本書は「推論と学習が同じ環境で動く実験を回したい」というユースケースに対して、Amazon EKS を基盤に選ぶ理由と、その具体的な作り方を示すものです。
@@ -43,7 +43,7 @@ Slurm が劣っているという話ではありません。Slurm ベースの�
 
 # インフラ層とアプリ層の境界
 
-基盤を作るうえで最初に決めたのが、どこまでを基盤が用意し、どこからを利用者が実装するか、という責務の境界です。この境界が曖昧だと、基盤が抱え込みすぎて変更しにくくなったり、逆に利用者が毎回インフラの毎回インフラ側の設定をする必要が出たりします。
+基盤を作るうえで最初に決めたのが、どこまでを基盤が用意し、どこからを利用者が実装するか、という責務の境界です。この境界が曖昧だと、基盤が抱え込みすぎて変更しにくくなったり、逆に利用者が毎回インフラ側の設定をする必要が出たりします。
 
 ![インフラ層とアプリ層の責務境界](/images/books/eks-distributed-ai/infra-app-boundary.png)
 

@@ -15,7 +15,7 @@ Basic01 から Basic11 で構築した Amazon EKS クラスタの上に、GPU �
 
 設計思想と全体像、なぜこの形なのかは別記事「[プロファイリングを楽にしたい](https://zenn.dev/littlemex/articles/8ab01bc40f627a)」で解説済みです。本章はそれを読んだ前提で、実際に手を動かして GPU プロファイルの分析までを通します。予約タグや `volumeHandle` の書式、読み取り専用マウント、digest 固定といった設計上の要点の詳細はブログに譲り、本章では手順の中で必要な箇所に絞って触れます。
 
-本章の開始状態は、クラスタが `terraform apply` 済み (Basic01 から Basic11 まで進めた `infra/eks` が稼働中) で、かつプロファイル基盤のデータ層 (`infra/data-layer`) はまだ適用していない状態です。導入は `infra/scripts/install-profiling.sh` の 1 コマンドで、データ層の適用からクラスタ側の設定、MCP サーバのデプロイまでを行います。ただし MCP サーバのイメージは自分の ECR から digest で引くので、初回は `DEV_BUILD=1` を付けてクラスタ内でビルドします (付けないと `no analysis image digest available` で停止します)。プロファイルをとる側は `infra/eks/bin/kubectl-accelprof` の 1 コマンドで、自分のイメージとコマンドを渡すだけです。
+本章の開始状態は、クラスタが `terraform apply` 済み (Basic01 から Basic11 まで進めた `infra/eks` が稼働中) で、かつプロファイル基盤のデータ層 (`infra/data-layer`) はまだ適用していない状態です。導入は `infra/scripts/install-profiling.sh` の 1 コマンドで、データ層の適用からクラスタ側の設定、MCP サーバのデプロイまでを行います。ただし MCP サーバのイメージは自分の ECR から digest で引くので、初回は `DEV_BUILD=1` を付けてクラスタ内でビルドします (付けないと `no analysis image digest available` で停止します)。このビルドは Basic02 で触れたクラスタ内 image builder (`image_builder_enabled = true`) が前提で、無効なクラスタでは先にそれを有効化するか、既知の digest を `ANALYSIS_DIGEST` で渡します。プロファイルをとる側は `infra/eks/bin/kubectl-accelprof` の 1 コマンドで、自分のイメージとコマンドを渡すだけです。
 
 :::message alert
 マネージド MLflow と S3 Files は課金リソースです。演習が終わったら本章末尾の後片付けを必ず実施してください。EFS ベースのファイルシステムはマウントターゲットが残っていると削除できないため、撤去順は必ず `infra/eks` を先、`infra/data-layer` を後にします。
@@ -35,15 +35,17 @@ Basic01 から Basic11 で構築した Amazon EKS クラスタの上に、GPU �
 - Phase 4: イメージの解決
 - Phase 5 と 5b: MCP サーバのデプロイと、namespace への配布
 - Phase 6: マウントの確認
-- Phase 7: 受け入れ確認どのフェーズも冪等か「状態を見てから動く」形なので、途中で失敗しても原因を直して再実行すれば正しい状態になります。失敗時に自動でロールバックや destroy はしません。
+- Phase 7: 受け入れ確認
 
-定常運用で利用者が渡すのは 3 つだけです。クラスタ名、リージョン、そしてプロファイル収集を許可する namespace のリストです (初回だけは、どのデータ層に記録するかの名前 `DATA_LAYER_NAME` と、それを新規に作ってよいという意思表示 `CREATE_DATA_LAYER=1` も要ります。2 回目以降はレジストリから解決されます)。バケット名やマネージド MLflow の ARN、ServiceAccount 名、S3 Files のマウント先 AZ、イメージの digest はすべてスクリプトが Terraform の出力や AWS API から解決します。特にマウント先 AZ を変数にしていないのは意図的で、S3 Files のマウントは単一 AZ からしか到達できないため、手で渡した値が実体とずれると PersistentVolume が到達不能になります。
+どのフェーズも冪等か「状態を見てから動く」形なので、途中で失敗しても原因を直して再実行すれば正しい状態になります。失敗時に自動でロールバックや destroy はしません。
+
+定常運用で利用者が渡すのは 3 つだけです。クラスタ名、リージョン、そしてプロファイル収集を許可する namespace のリストです (初回だけは、どのデータ層に記録するかの名前 `DATA_LAYER_NAME` と、それを新規に作ってよいという意思表示 `CREATE_DATA_LAYER=1` も要ります。2 回目以降はレジストリから解決されます)。バケット名やマネージド MLflow の ARN、ServiceAccount 名、S3 Files のマウント先 AZ、イメージの digest はすべてスクリプトが Terraform の出力や AWS API から解決します。特にマウント先 AZ を変数にしていないのは意図的です。この実装は S3 Files の mount target を 1 つの subnet にだけ作り、そのマウントはその AZ からしか到達できないので、手で渡した値が実体とずれると PersistentVolume の nodeAffinity が到達不能なノードを指します。
 
 ### apply の前に必ず plan を分類する
 
 このスクリプトは `terraform apply` を無条件に実行しません。まず plan を作り、変更を 4 つに分類します。1 つ目が「消してはいけない記録の削除」で、対象は trace バケット、MLflow アーティファクトバケット、SageMaker MLflow 本体 (tracking server と app の両方)、KMS キー、S3 Files のファイルシステムとアクセスポイント、そしてそれらのバージョニング・ライフサイクル・暗号化の設定です。設定を含めているのは、保持期間や暗号化の変更だけでも記録済みのものを失い得るからです。これらの削除は上書き手段なしで拒否します。置き換えも削除を含むので同じ扱いです。2 つ目が同じ消してはいけない記録に対する**変更**で、これは `ALLOW_RECORD_UPDATES=1` を渡さない限り停止します。削除ではないので 1 つ目とは分けていますが、保持期間の短縮やポリシーの絞り込みは更新として現れ、それでも記録済みのものを失い得るからです。データ層のライフサイクル設定に差分がある状態で再実行するとこのエラーに当たるので、plan を読んで意図した変更であることを確かめてからこのフラグを付けます。
 
-一方で作成は拒否しません。plan は「state に一度も無かった」と「state が見失った」を区別できず、初回導入と失敗した導入の再開が同じ形の差分として現れるためです。state が見失っただけの既存リソースは、plan を作る前に import して state に取り込む (adoption) ので、そもそも作成として現れません。3 つ目が profiling 基盤自身の変更で、これは適用します。4 つ目がそれ以外で、停止して一覧を表示します。長く運用したクラスタには profiling と無関係な差分が溜まるので、それを確認なしに適用しないための線引きです。基盤だけを適用したいときは `PROFILING_ONLY=1`、すべて受け入れるときは `ALLOW_UNRELATED=1` を渡します。
+一方で作成は拒否しません。plan は「state に一度も無かった」と「state が見失った」を区別できず、初回導入と失敗した導入の再開が同じ形の差分として現れるためです。バケット、KMS キー、MLflow、S3 Files のファイルシステムといった主要な記録リソースは、state が見失っていても plan を作る前に import して取り込む (adoption) ので、作成としては現れません。S3 Files のアクセスポイントのように adoption の対象外のものは、state が見失うと作成として現れます。3 つ目が profiling 基盤自身の変更で、これは適用します。4 つ目がそれ以外で、停止して一覧を表示します。長く運用したクラスタには profiling と無関係な差分が溜まるので、それを確認なしに適用しないための線引きです。基盤だけを適用したいときは `PROFILING_ONLY=1`、すべて受け入れるときは `ALLOW_UNRELATED=1` を渡します。
 
 ### producer Job の中身
 
@@ -56,7 +58,7 @@ flowchart LR
     R -->|"1 run"| M["MLflow + trace バケット"]
 ```
 
-initContainer が基盤イメージから profiler と shim を共有ボリュームにコピーします。これがあるので、プロファイルを取得したいイメージをイメージを再ビルドする必要がありません。workload コンテナは指定したイメージそのままで、shim が `nsys` で包んで実行し、終了時に状態ファイルを書きます。recorder コンテナは基盤イメージで動き、その状態ファイルを待って、置かれたファイルを読んで MLflow に 1 run 記録します。
+initContainer が基盤イメージから profiler と shim を共有ボリュームにコピーします。これがあるので、プロファイルを取得したいイメージを再ビルドする必要がありません。workload コンテナは指定したイメージそのままで、shim が `nsys` で包んで実行し、終了時に状態ファイルを書きます。recorder コンテナは基盤イメージで動き、その状態ファイルを待って、置かれたファイルを読んで MLflow に 1 run 記録します。
 
 記録を別コンテナに分けているのは技術的な理由です。accelprof の依存にはコンパイル済みの拡張が含まれ、特定の Python バージョンに固定されます。学習用のイメージに後から注入すると壊れるため、記録は基盤イメージの側で行い、ワークロードのイメージには Python も accelprof も要求しません。
 
@@ -66,17 +68,17 @@ initContainer が基盤イメージから profiler と shim を共有ボリュ�
 
 ### namespace ごとに配られる契約
 
-導入スクリプトは、許可した namespace のそれぞれに 3 つを配ります。1 つ目は ConfigMap で、リージョン・trace バケット・MLflow の ARN・MLflow の UI の URL・基盤イメージの digest を持ちます。2 つ目は Role で、recorder が自分の Pod の状態を読み、Job に run id のアノテーションを書くために使います。ここで注意したいのは権限の広さです。Kubernetes の RBAC はリソース名を絞らない限り種類単位なので、実際にはその namespace の Pod の参照と Job の参照・更新ができます。共有 namespace で使う場合はこの範囲を前提に判断してください。3 つ目は、記録されずに終わった Job を報告する1 時間ごとに動く確認用 CronJobです。プロファイルを取得する人が基盤の値を 1 つも知らなくて済むのは、この ConfigMap があるからです。namespace がまだ存在しない場合、そこには何も配られず警告だけが出るので、後述のとおり namespace は導入スクリプトより先に作ります。
+導入スクリプトは、許可した namespace のそれぞれに 4 つを配ります。1 つ目は ConfigMap で、リージョン・trace バケット・MLflow の ARN・MLflow の UI の URL・基盤イメージの digest を持ちます。2 つ目は Role で、recorder が自分の Pod の状態を読み、Job に run id のアノテーションを書くために使います。ここで注意したいのは権限の広さです。Kubernetes の RBAC はリソース名を絞らない限り種類単位なので、実際にはその namespace の Pod の参照と Job の参照・更新ができます。共有 namespace で使う場合はこの範囲を前提に判断してください。3 つ目はその Role を recorder の ServiceAccount に結び付ける RoleBinding です。4 つ目は、記録されずに終わった Job を 1 時間ごとに報告する確認用の CronJob です。プロファイルを取得する人が基盤の値を 1 つも知らなくて済むのは、この ConfigMap があるからです。namespace がまだ存在しない場合、そこには何も配られず警告だけが出るので、後述のとおり namespace は導入スクリプトより先に作ります。
 
 ### 記録の単位と後片付けの単位
 
-alias は MLflow の experiment 名と S3 の第 1 階層プレフィックスを兼ねます。つまり分析側から見える範囲と、掃除するときに人が数える単位が alias です。ただし alias 単位の削除や保持期間を実行してくれるコマンドは同梱していません。`kubectl accelprof` にあるのは `run` と `get` と `runs` だけで、S3 のライフサイクル (`trace_glacier_after_days` と `trace_expire_after_days`) もバケット全体にかかります。alias 単位の掃除は、MLflow の experiment 削除と `aws s3 rm --recursive s3://<trace バケット>/<alias>/` を人が対で実行する運用になります。実験キャンペーンごとに 1 つの alias を `テナント名-系列名` の形で付け、キャンペーン内の反復は `workload_id` と自由なパラメータで表します。反復ごとに alias を作ると削除単位が増えていき、キャンペーンを 1 手で片付けられなくなります。
+alias は MLflow の experiment 名と S3 の第 1 階層プレフィックスを兼ねます。つまり分析側から見える範囲と、掃除するときに人が数える単位が alias です。ただし alias 単位の削除や保持期間を実行してくれるコマンドは同梱していません。`kubectl accelprof` にあるのは `run` と `get` と `runs` (別名 `list`) だけで、S3 のライフサイクル (`trace_glacier_after_days` と `trace_expire_after_days`) もバケット全体にかかります。alias 単位の掃除は、MLflow の experiment 削除と `aws s3 rm --recursive s3://<trace バケット>/<alias>/` を人が対で実行する運用になります。実験キャンペーンごとに 1 つの alias を `テナント名-系列名` の形で付け、キャンペーン内の反復は `workload_id` と自由なパラメータで表します。反復ごとに alias を作ると削除単位が増えていき、キャンペーンを 1 手で片付けられなくなります。
 
 Job そのものは終了から 2 日後に Kubernetes が消します。run の記録は Job の寿命とは独立で、明示的に消すか保持ポリシーの対象になるまで残ります。run_id は recorder が Job のアノテーションに書き戻すので、Job がある間は `kubectl accelprof get` で引けます。消えたあとは MLflow を alias と `workload_id` で検索します。
 
 ### なぜ controller を作っていないか
 
-この基盤には自作の controller がありません。producer Job が自分で記録するので、収束させるべき状態がなく、Job そのものが Kubernetes の提供する controller です。カスタムリソースで得られる状態の書き戻しとライフサイクル管理は、それぞれ Job のアノテーションと `ttlSecondsAfterFinished` で足ります。Pod 内の部品では埋められない穴は 1 つだけで、recorder が走る前に Pod ごと消える場合 (Pod の追い出しやノードの drain) です。これは各 namespace の1 時間ごとに動く確認用 CronJobが報告します。
+この基盤には自作の controller がありません。producer Job が自分で記録するので、収束させるべき状態がなく、Job そのものが Kubernetes の提供する controller です。カスタムリソースで得られる状態の書き戻しとライフサイクル管理は、それぞれ Job のアノテーションと `ttlSecondsAfterFinished` で足ります。Pod 内の部品では埋められない穴は 1 つだけで、recorder が走る前に Pod ごと消える場合 (Pod の追い出しやノードの drain) です。これは各 namespace に配られる確認用の CronJob が 1 時間ごとに報告します。
 
 # ワークショップ実施
 
@@ -222,7 +224,7 @@ artifacts_uri    = s3://<trace バケット>/teama-gpu-nsys/<run_id>/
 pod              = profile-wl-260826043020-e69a3905-f5hdx
 ```
 
-`chip` は**要求したデバイス**です。`--gpu` を付けた run は `gpu`、`--neuron` を付けた run と `--profile neuron` を指定した run は `neuron`、いずれも付けなければ `cpu` になります (Neuron の profiler を要求することは Neuron を要求することと同じだからです)。スケジューラがどのノードに載せたかではなく自分が要求したものが入るのは、これが run を探すときのキー (`alias` と組で run を指せる) であり、探す人の頭にあるのは自分が要求した値だからです。`profiled` は「profiler の経路を通ったか」を表します。shim は `nsys` を見つけた時点でこの値を立てるので、`nsys` の起動に失敗した実行でも true になり得ます。取得できたかどうかは `status` と `exit_reason`、そして次節以降で使う `stage_run` が返すファイルの一覧まで見て判断してください。`.nsys-rep` は MLflow のアーティファクトではなく `artifacts_uri` が指す trace バケットの prefix に置かれ、分析 MCP はこのタグを使って場所を解決します。
+`chip` は**要求したデバイス**です。`--gpu` を付けた run は `gpu`、`--neuron` を付けた run と `--profile neuron` を指定した run は `neuron`、いずれも付けなければ `cpu` になります。ただし `chip` は記録上の分類であって、Kubernetes の Neuron デバイス要求と toleration が入るのは `--neuron` を付けた場合だけです。Neuron ノードで動かしたいなら `--neuron` も指定します。スケジューラがどのノードに載せたかではなく自分が要求したものが入るのは、これが run を探すときのキー (`alias` と組で run を指せる) であり、探す人の頭にあるのは自分が要求した値だからです。`profiled` は「profiler の経路を通ったか」を表します。shim は `nsys` を見つけた時点でこの値を立てるので、`nsys` の起動に失敗した実行でも true になり得ます。取得できたかどうかは `status` と `exit_reason`、そして次節以降で使う `stage_run` が返すファイルの一覧まで見て判断してください。`.nsys-rep` は MLflow のアーティファクトではなく `artifacts_uri` が指す trace バケットの prefix に置かれ、分析 MCP はこのタグを使って場所を解決します。
 
 失敗した実行も既定では記録され、`status=failed` と終了理由が残ります。遅い実行や落ちる実行こそプロファイルする価値があるという判断です。記録が不要だと分かっている試行だけ `--discard-on-fail` を付けます。
 
@@ -234,7 +236,7 @@ shim (`infra/eks/images/accelprof/entry.sh`) が実行しているのは、次�
 nsys profile -t cuda,nvtx,osrt -o /accelprof/out/traces/rank-<index> --force-overwrite true <あなたのコマンド>
 ```
 
-`-t` で指定した 3 系統が収集対象です。`cuda` は CUDA API の呼び出しと GPU 上のカーネル実行やメモリ転送で、CUPTI 経由で収集されます。`nvtx` はコード側で付けた NVTX の区間とマーカーなので、付けていなければ何も出ません。`osrt` はファイル I/O や同期などの OS ランタイム呼び出しです。実際にこの既定で取得したトレースを `nsys-stats` にかけると、NVTX Range Summary、OS Runtime Summary、CUDA API Summary、CUDA GPU Kernel Summary の 4 つが返ります。基盤イメージに入っている `nsys` のバージョンは、公開イメージを digest 指定で使う場合は 2026.4.1 です。`DEV_BUILD=1` で自分でビルドする場合は Dockerfile が `nsight-systems-cli` をバージョン固定せずに取得するため、ビルドした時期によって別のバージョンが入ります。以下の実測値はこのバージョンでのものです。検証したノードの NVIDIA ドライバは 580.178.04、ワークロード側の CUDA は 12.4 でした。
+`-t` で指定した 3 系統が収集対象です。`cuda` は CUDA API の呼び出しと GPU 上のカーネル実行やメモリ転送で、CUPTI 経由で収集されます。`nvtx` はコード側で付けた NVTX の区間とマーカーなので、付けていなければ何も出ません。`osrt` はファイル I/O や同期などの OS ランタイム呼び出しです。実際にこの既定で取得したトレースを `nsys-stats` にかけると、NVTX Range Summary、OS Runtime Summary、CUDA API Summary、CUDA GPU Kernel Summary の 4 つが返ります。基盤イメージは常に自分の ECR から digest で引かれ、Dockerfile が `nsight-systems-cli` をバージョン固定せずに取得するので、`nsys` のバージョンはそのイメージをいつビルドしたかで決まります。以下の実測値は著者環境の 2026.4.1 でのもので、自分の環境のバージョンは `nsys --version` で確かめてください。検証したノードの NVIDIA ドライバは 580.178.04、ワークロード側の CUDA は 12.4 でした。
 
 既定で取れないものも確認しておきます。第一に GPU のハードウェアメトリクス (SM の稼働率、Tensor Core の利用率、DRAM 帯域) は含まれません。これらは `--gpu-metrics-devices` の指定が必要で、さらに NVIDIA ドライバの性能カウンタ制限に触れるため、ノード側の設定か追加の権限が要ります。本基盤ではこの経路は未検証です。第二にカーネル単位の詳細 (occupancy の内訳、命令ミックス、メモリ階層のヒット率) は nsys の対象外で、Nsight Compute (`ncu`) が扱う範囲です。nsys で支配的なカーネルを特定し、そのカーネルを `ncu` で深掘りするのが定石です。第三に NCCL の通信は集合通信カーネルとしてカーネルの列には現れますが、どの集合操作がどのメッセージサイズで走ったかという意味づけは既定では付きません。
 
@@ -382,7 +384,7 @@ alias は調査キャンペーン 1 つに 1 つ付け、条件の違いは `--p
 | profiler のオプション | 実行ごとに `--nsys-args` で指定します。既定値への追加ではなく全置換で、既定を変えるならクライアント `infra/eks/bin/kubectl-accelprof` に埋め込まれた Job の環境変数です |
 | Job の形 (ボリューム、affinity、サイドカー) | 実行ごとなら `--patch` です。恒久的に変えるならクライアントに埋め込まれた Job を直し、`infra/eks/tests/run-render-tests.sh --update` で golden マニフェストを更新します。埋め込みにしているのは、クライアントを PATH にコピーしても動くようにするためです |
 | 取得する Pod (rank) | 既定は rank 0 の Pod だけです。`--profile-ranks` で広げますが、これは Pod 単位の指定です |
-| profiler や記録の実装そのもの | `infra/eks/images/accelprof/entry.sh` と [`recorder.py`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/images/accelprof/recorder.py) です。基盤イメージにイメージに含めてあるので、変更後は `infra/eks/scripts/build-profiling-images.sh` で焼き直してから導入スクリプトを再実行します |
+| profiler や記録の実装そのもの | `infra/eks/images/accelprof/entry.sh` と [`recorder.py`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/images/accelprof/recorder.py) です。基盤イメージに含めてあるので、変更後は [`build-profiling-images.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/build-profiling-images.sh) で焼き直してから導入スクリプトを再実行します |
 | Job を残す期間 | `--ttl` です。短くすると `kubectl accelprof get` で run_id を引ける期間も短くなります。恒久的な照会は MLflow 側です |
 | 記録のスキーマ (metrics の意味づけなど) | accelprof パッケージ側です。記録 API とファイルの取り決めの仕様はライブラリの持ち物で、いつどこで呼ぶかが基盤の持ち物という切り分けです |
 
@@ -406,10 +408,12 @@ B の場合は以下に進みます。データ層は `terraform destroy` では
 run のメタデータ (metrics、params、tags) は MLflow と一緒に消えます。成果物ファイルはバケットに残りますが、それがどの条件の実験だったかという情報は失われるので、残したい記録があれば先に取り出してください。
 :::
 
-まず実行中の producer Job が無いことを確認します。`ttlSecondsAfterFinished` は終了した Job だけを消すので、走り続けている Job は自動では消えません。
+まず実行中の producer Job が無いことを確認します。`ttlSecondsAfterFinished` は終了した Job だけを消すので、走り続けている Job は自動では消えません。`kubectl accelprof runs` は 1 つの namespace しか見ないので、許可した namespace を順に確認します。
 
 ```bash
-kubectl accelprof runs
+for ns in team-a team-b; do
+  kubectl accelprof runs -n "$ns"
+done
 ```
 
 Job と、導入スクリプトが namespace ごとに配った 4 つ (ConfigMap、Role、RoleBinding、点検 CronJob) を、`PRODUCER_NAMESPACES` に渡した namespace すべてから消します。`k` は既定 namespace にしか効かないので、namespace は明示します。特に `accelprof-orphan-check` CronJob は基盤イメージを参照したまま 1 時間ごとに起動し続けるので、基盤を撤去したあとに残すと失敗し続ける残骸になります。
@@ -435,7 +439,9 @@ done
 ```bash
 export DATA_LAYER_NAME=profiling
 helm uninstall mcp -n mcp
-k delete serviceaccount mcp-producer --ignore-not-found
+for ns in team-a team-b; do
+  kubectl -n "$ns" delete serviceaccount mcp-producer --ignore-not-found
+done
 cd "$(git rev-parse --show-toplevel)"/infra/eks
 terraform plan -out=teardown.tfplan -var s3files_enabled=false -var analysis_mcp_enabled=false
 terraform apply teardown.tfplan

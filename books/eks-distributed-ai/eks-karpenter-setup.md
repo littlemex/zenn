@@ -27,13 +27,13 @@ Karpenter は、スケジュールできずに `Pending` のままになって�
 
 導入の実装上のポイントは 3 つあります。
 
-1 つ目は CRD の管理方法です。Karpenter が使う `EC2NodeClass` / `NodePool` / `NodeClaim` の CRD は、コントローラ本体の Helm chart（`karpenter`）とは別の chart（[`karpenter-crd`](https://karpenter.sh/docs/upgrading/upgrade-guide/#crd-upgrades)）として提供されています。これは Helm の仕様上、chart の `crds/` ディレクトリに含まれる CRD は `helm upgrade` の対象外で、初回インストール時のスキーマのまま更新されないためです。`karpenter-crd` を同じバージョンで別チャートとして管理すれば、バージョンアップ時に CRD のスキーマも一緒に更新できます。
+1 つ目は CRD の管理方法です。Karpenter が使う `EC2NodeClass` / `NodePool` / `NodeClaim` の CRD は、コントローラ本体の Helm chart（`karpenter`）とは別の chart（[`karpenter-crd`](https://karpenter.sh/docs/upgrading/upgrade-guide/#crd-upgrades)）として提供されています。これは [Helm の仕様上](https://helm.sh/docs/chart_best_practices/custom_resource_definitions/)、chart の `crds/` ディレクトリに含まれる CRD は `helm upgrade` の対象外で、初回インストール時のスキーマのまま更新されないためです。`karpenter-crd` を同じバージョンで別チャートとして管理すれば、バージョンアップ時に CRD のスキーマも一緒に更新できます。
 
 2 つ目は認証方式です。Karpenter コントローラが Amazon EC2 の起動・終了などの AWS API を呼ぶために必要な権限は、Amazon EKS Pod Identity を使って付与します。Pod Identity は IAM ロールとの結び付けを ServiceAccount のアノテーションではなく EKS 側のリソース（Pod Identity Association）で完結させられるため、設定がシンプルになります。これが機能するには `eks-pod-identity-agent` アドオンが必要ですがこれは導入済みです。
 
-3 つ目は Spot 中断への対応です。Karpenter は SQS の interruption queue を経由して、Spot インスタンスの中断通知や AWS のヘルスイベント（スケジュールされた変更）などを受け、対象ノード上の Pod を強制終了ではなく 安全に退避させてから終了させます。なお rebalance recommendation もこの queue に届きますが、Karpenter はこれを能動的なノード置換のトリガーにはしません（drain の対象は Spot 中断警告・スケジュール変更ヘルスイベント・インスタンス停止/終了です）。この queue と、通知を queue に流す Amazon EventBridge ルールの作成も、Karpenter 導入の一部として行います。
+3 つ目は Spot 中断への対応です。Karpenter は SQS の interruption queue を経由して、Spot インスタンスの中断通知や AWS のヘルスイベント（スケジュールされた変更）などを受け、対象ノード上の Pod を強制終了ではなく安全に退避させてから終了させます。なお rebalance recommendation もこの queue に届きますが、Karpenter はこれを能動的なノード置換のトリガーにはしません（[drain の対象](https://karpenter.sh/docs/concepts/disruption/#interruption)は Spot 中断警告・スケジュール変更ヘルスイベント・インスタンスの停止と終了・ステータスチェック失敗です）。この queue と、通知を queue に流す Amazon EventBridge ルールの作成も、Karpenter 導入の一部として行います。
 
-drain で退去した Pod は削除され、それを管理する上位コントローラ（Deployment や Job／TrainJob など）が代替の Pod を作成します。その代替 Pod が `Pending` になり、これを Karpenter のプロビジョニングが検知して、要求を満たす新しいノードを自動で起動します（上位コントローラを持たない上位コントローラを持たない Pod は再作成されず、Job 系も restart 設定しだいでは代替が作られない点に注意します）。中断ハンドリング（消す側）とプロビジョニング（立てる側）は別々に動くため、明示的な再取得の指示は要りません。なお `terraform destroy` の側は、ノードが消えるのを待つだけではありません。待ちが終わらなくなるのを避けるため、全 namespace の TrainJob と全 NodePool を先に削除します。共有クラスタや別 namespace に手で置いた TrainJob も対象になる点は Basic11 で改めて扱います。次にどの購入オプションで再確保するかは NodePool の `karpenter.sh/capacity-type` に許可した値しだいで、`spot` だけなら在庫があれば再び Spot を、`spot` と `on-demand` を併記していれば Spot が確保できないときは on-demand にフォールバックして台数を満たします。ただし立ち上がるのは元と同じインスタンスではなく別ノードなので、途中結果は共有ストレージ上のスナップショットから resume する前提で組みます。Basic02 で `/shared/output/trainjob-cpu/snapshot.pt` に保存したものがこれにあたり、同じ TrainJob を作り直すと [`ddp.py`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/manifests/ddp-sample/ddp.py) が起動時にそのファイルを見つけて途中のエポックから再開します（Basic02 では保存されたことの確認までで、再開そのものを試す手順は置いていません）。中断そのものを避けたい長時間ジョブには、Spot のような突発的中断が起きない Capacity Block を選ぶ、という使い分けになります（Capacity Block も予約終了の 30 分前からインスタンスの回収が始まるため、終了処理やチェックポイントはそれを見込んで設計します）。
+drain で退去した Pod は削除され、それを管理する上位コントローラ（Deployment や Job／TrainJob など）が代替の Pod を作成します。その代替 Pod が `Pending` になり、これを Karpenter のプロビジョニングが検知して、要求を満たす新しいノードを自動で起動します（上位コントローラを持たない Pod は再作成されず、Job 系も restart 設定しだいでは代替が作られない点に注意します）。中断ハンドリング（消す側）とプロビジョニング（立てる側）は別々に動くため、明示的な再取得の指示は要りません。なお `terraform destroy` の側は、ノードが消えるのを待つだけではありません。待ちが終わらなくなるのを避けるため、全 namespace の TrainJob と全 NodePool に先に削除を出します。TrainJob の削除は 120 秒で打ち切り、NodePool は `--wait=false` で削除要求だけを出すので、実際にノードが消えたかどうかはその後の待機で確認します。共有クラスタや別 namespace に手で置いた TrainJob も対象になる点は Basic11 で改めて扱います。次にどの購入オプションで再確保するかは NodePool の `karpenter.sh/capacity-type` に許可した値しだいで、`spot` だけなら在庫があれば再び Spot を、`spot` と `on-demand` を併記していれば Spot が確保できないときは on-demand にフォールバックして台数を満たします。ただし立ち上がるのは元と同じインスタンスではなく別ノードなので、途中結果は共有ストレージ上のスナップショットから resume する前提で組みます。Basic02 で `/shared/output/trainjob-cpu/snapshot.pt` に保存したものがこれにあたり、同じ TrainJob を作り直すと [`ddp.py`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/manifests/ddp-sample/ddp.py) が起動時にそのファイルを見つけて途中のエポックから再開します（Basic02 では保存されたことの確認までで、再開そのものを試す手順は置いていません）。中断そのものを避けたい長時間ジョブには、Spot のような突発的中断が起きない Capacity Block を選ぶ、という使い分けになります（Capacity Block も[予約終了の 30 分前](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/capacity-blocks-using.html#capacity-blocks-considerations)からインスタンスの回収が始まるため、終了処理やチェックポイントはそれを見込んで設計します）。
 
 以降で実際の Terraform コードを引用しながら、なぜその値・その書き方にしているのかを見ていきます。対象ファイルは [`karpenter.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/karpenter.tf) と [`iam.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/iam.tf) です。
 
@@ -75,7 +75,7 @@ resource "helm_release" "karpenter_crd" {
 }
 ```
 
-**`aws.us_east_1` プロバイダエイリアスでトークンを取得する。** `oci://public.ecr.aws/karpenter` から chart を pull するには Amazon ECR Public の認証トークンが必要ですが、このトークンは AWS API の制約でリージョンを `us-east-1` に固定して取得しなければなりません。
+**`aws.us_east_1` プロバイダエイリアスでトークンを取得する。** `oci://public.ecr.aws/karpenter` から chart を pull するには Amazon ECR Public の認証トークンが必要ですが、このトークンは AWS CLI で取得するとき[リージョンを `us-east-1` に固定](https://docs.aws.amazon.com/AmazonECR/latest/public/public-registry-auth.html)しなければなりません。
 
 ## Karpenter コントローラの Helm リリース
 
@@ -262,7 +262,7 @@ k get nodepool
 k get nodes
 ```
 
-`k get nodepool` には `cpu` が表示されます。これは `cpu_nodepool_enabled`（既定 `true`）によって Basic01 の apply で作られたもので、Basic02 の CPU DDP がこのプールにノードを起動していました。監視スタックを既定のまま有効にしている場合は、これに加えて `monitoring` も表示されるので 2 つになります。Basic02 の補足にある `image_builder_dedicated_pool` を有効にしている場合は `image-builder` も並びます。アクセラレータ用の NodePool は `accelerator_pools` が空のままなのでまだ存在せず、次章で定義します。
+`k get nodepool` には `cpu` が表示されます。これは `cpu_nodepool_enabled`（既定 `true`）によって Basic01 の apply で作られたもので、Basic02 の CPU DDP がこのプールにノードを起動していました。監視スタックを既定のまま有効にしている場合は、これに加えて `monitoring` も表示されるので 2 つになります。Basic02 の補足にある `image_builder_dedicated_pool` を、`image_builder_enabled` とあわせて有効にしている場合は [`image-builder`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/image-builder.tf) も並びます。アクセラレータ用の NodePool は `accelerator_pools` が空のままなのでまだ存在せず、次章で定義します。
 
 ```text
 NAME         NODECLASS    NODES   READY   AGE

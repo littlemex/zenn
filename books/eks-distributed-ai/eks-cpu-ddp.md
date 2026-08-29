@@ -15,7 +15,7 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 
 ## 全体構成
 
-本書全体で構築する分散 AI 基盤のうち、本章は最小の入口にあたります。アクセラレータノードは使わず、Karpenter が要求に応じて立てる CPU ノード（`node-role=cpu` の NodePool）の上で分散学習を動かします。前章からの追加のリソースはありません。
+本書全体で構築する分散 AI 基盤のうち、本章は最小の入口にあたります。アクセラレータノードは使わず、Karpenter が要求に応じて立てる CPU ノード（`node-role=cpu` の NodePool）の上で分散学習を動かします。Terraform で常設する基盤リソースは前章から増えません。本章で作るのはビルド Job、共有 PVC、ClusterTrainingRuntime、TrainJob といったワークロード側の Kubernetes リソースだけです。
 
 ![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 
@@ -57,7 +57,7 @@ Kubeflow Trainer v2 の API はまだ `v1alpha1`（アルファ）です。将�
 | 成熟度 | 安定（ただしレガシー） | アルファ（API 変更あり得る） |
 | 変わらないもの | `ddp.py` と `torchrun` の実行モデル | 同左 |
 
-v2 の要点は「利用者は TrainJob で台数と中身だけを書き、接続情報の設定は Trainer に任せる」ことです。具体的には、Trainer の torch プラグインが各 Pod に `torchrun`（TorchElastic）が読む `PET_*` 環境変数（`PET_NNODES` / `PET_NPROC_PER_NODE` / `PET_NODE_RANK` / `PET_MASTER_ADDR` / `PET_MASTER_PORT`）を注入します。`PET_NODE_RANK` は Pod のインデックスから固定で決まるため、`node-0-0` が常に node rank 0（= rank 0）になります。`PET_MASTER_ADDR` は先頭ノードの Pod（JobSet が払い出す `<ジョブ名>-node-0-0` の headless DNS）を指し、そこが待ち合わせになります。`torchrun` はこれらを引数の既定値として読み（先頭ノード上の TCPStore を使う既定の rendezvous で動きます。参加順で rank が変わる動的方式ではありません）、各学習プロセスに `RANK` / `WORLD_SIZE` / `LOCAL_RANK` / `MASTER_ADDR` / `MASTER_PORT` を再エクスポートします。`ddp.py` はその値を env:// の rendezvous で読み取ります (`init_process_group` には backend だけを渡し、待ち合わせの情報は引数で渡しません)。
+v2 の要点は「利用者は TrainJob で台数と中身だけを書き、接続情報の設定は Trainer に任せる」ことです。具体的には、Trainer の torch プラグインが各 Pod に `torchrun`（TorchElastic）が読む `PET_*` 環境変数（`PET_NNODES` / `PET_NPROC_PER_NODE` / `PET_NODE_RANK` / `PET_MASTER_ADDR` / `PET_MASTER_PORT`）を注入します。`PET_NODE_RANK` は Pod の completion index から固定で決まるため、`node-0-0` が常に node rank 0 になります。本章のように `nprocPerNode` が 1 なら、これがそのままグローバル rank 0 です。`PET_MASTER_ADDR` は先頭ノードの Pod（JobSet が払い出す `<ジョブ名>-node-0-0` の headless DNS）を指し、そこが待ち合わせになります。`torchrun` はこれらを引数の既定値として読み（先頭ノード上の TCPStore を使う既定の rendezvous で動きます。参加順で rank が変わる動的方式ではありません）、各学習プロセスに `RANK` / `WORLD_SIZE` / `LOCAL_RANK` / `MASTER_ADDR` / `MASTER_PORT` を再エクスポートします。`ddp.py` はその値を env:// の rendezvous で読み取ります (`init_process_group` には backend だけを渡し、待ち合わせの情報は引数で渡しません)。
 
 TrainJob 側が指定するのは、台数（`numNodes`）とノードあたりのプロセス数（`numProcPerNode`）、イメージ、起動コマンド、そのノードに要求するリソース（`resourcesPerNode`）と、実行ごとに変えたい環境変数です。接続情報の設定や 1 ノード 1 Pod の配置といった共通側の設定は、本書がクラスタに用意した Runtime（[`torch-distributed-eks`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/clustertrainingruntime-eks.yaml)）が持っています。この Runtime を導入する Trainer v2 本体は Terraform の [`trainer.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/trainer.tf) が導入します。ただし Runtime そのものは Terraform では作られず、手順 4 で TrainJob と同じ `helm template` の出力に含まれる形で適用されます。この時点で `k get clustertrainingruntime` を実行しても何も出ないのは正常です。
 
@@ -89,7 +89,7 @@ TrainJob 側が指定するのは、台数（`numNodes`）とノードあたり�
 
 ## 実行時の注意点
 
-**CPU ノードは Karpenter に置き換えられることがあります。** 本章の CPU ノードは Karpenter の CPU NodePool が起動するもので、`consolidationPolicy` は `WhenEmpty` です。Pod が 1 つでも載っているノードは consolidation の対象にならないので、学習中のノードが「余剰」と判断されて消されることはありません。ただし Karpenter v1 の [drift](https://karpenter.sh/docs/concepts/disruption/#drift) は consolidation とは独立に動き、ノードの AMI に新しいリリースが出ると稼働中のノードでも置き換えの対象になります。学習の途中でこれが起きると成果物を失うため、Pod には `karpenter.sh/do-not-disrupt: "true"` アノテーションが必要です。これは本書がクラスタに用意した Runtime (`torch-distributed-eks`) が全 Pod に自動で付けるので、読者が手で足す操作はありません。Karpenter そのものは Basic03 で扱うので、ここでは「アイドルに見えるノードを自動で回収する仕組みがある」とだけ捉えてください。
+**CPU ノードは Karpenter に置き換えられることがあります。** 本章の CPU ノードは Karpenter の CPU NodePool が起動するもので、`consolidationPolicy` は `WhenEmpty` です。ワークロードの Pod が 1 つでも載っているノードは consolidation の対象にならないので、学習中のノードが「余剰」と判断されて消されることはありません (DaemonSet の Pod は「空」の判定に数えないので、DaemonSet だけのノードは回収されます)。ただし Karpenter v1 の [drift](https://karpenter.sh/docs/concepts/disruption/#drift) は consolidation とは独立に動き、ノードの AMI に新しいリリースが出ると稼働中のノードでも置き換えの対象になります。学習の途中でこれが起きると成果物を失うため、Pod には `karpenter.sh/do-not-disrupt: "true"` アノテーションが必要です。これは本書がクラスタに用意した Runtime (`torch-distributed-eks`) が全 Pod に自動で付けるので、読者が手で足す操作はありません。Karpenter そのものは Basic03 で扱うので、ここでは「アイドルに見えるノードを自動で回収する仕組みがある」とだけ捉えてください。
 
 # ワークショップ実施
 
@@ -109,7 +109,7 @@ k create namespace distai --dry-run=client -o yaml | k apply -f -
 
 ## 2. 学習用イメージを用意する
 
-本章のワークロード（`trainjobTrain`）は、MNIST MLP を DDP で学習する `ddp.py` を組み込んだ専用イメージ `ddp-sample` を使います。`ddp.py` は [awslabs/awsome-distributed-ai の DDP サンプル](https://github.com/awslabs/awsome-distributed-ai/tree/main/3.test_cases/pytorch/ddp) をベースに、保存先を保存先を共有 PVC に変えるよう手を加えたものです。Dockerfile はリポジトリの [`infra/eks/manifests/ddp-sample/`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/manifests/ddp-sample) に置いてあります。
+本章のワークロード（`trainjobTrain`）は、MNIST MLP を DDP で学習する `ddp.py` を組み込んだ専用イメージ `ddp-sample` を使います。`ddp.py` は [awslabs/awsome-distributed-ai の DDP サンプル](https://github.com/awslabs/awsome-distributed-ai/tree/main/3.test_cases/pytorch/ddp) をベースに、保存先を共有 PVC に変えるよう手を加えたものです。Dockerfile はリポジトリの [`infra/eks/manifests/ddp-sample/`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/manifests/ddp-sample) に置いてあります。
 
 このイメージのビルドは、上述した BuildKit で実施します。ビルド先の ECR URL は Terraform の出力から取得できます。イメージタグはワークショップ用に `v1` を使います（再ビルドするときは `v2` のようにタグを進めると、`latest` のキャッシュ問題を避けられます）。
 

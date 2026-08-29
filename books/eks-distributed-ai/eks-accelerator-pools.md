@@ -13,7 +13,7 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 
 ![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 
-本章で扱うのは、この図のうち **Karpenter が起動するアクセラレータノードのプール定義**です。Basic03 で入れた Karpenter が実際に GPU ノードを起動しられるようにするのがゴールです。
+本章で扱うのは、この図のうち **Karpenter が起動するアクセラレータノードのプール定義**です。Basic03 で入れた Karpenter が実際に GPU ノードを起動できるようにするのがゴールです。
 
 ## この章で試すこと
 
@@ -80,11 +80,11 @@ accelerator_pools = {
 - Karpenter が導入済み
 - Basic02 で作った `ddp-sample` イメージ(ECR に push 済み)
 
-NVIDIA GPU Operator は Basic03 の時点では入っていません。`accelerator_pools` に `device_plugin = "nvidia"` のプールが 1 つ以上あることを条件(`local.has_gpu_pool`)に導入されるため、本章で初めてインストールされます。
+NVIDIA GPU Operator は Basic03 の時点では入っていません。`accelerator_pools` に `device_plugin = "nvidia"` のプールが 1 つ以上あることを条件 ([`local.has_gpu_pool`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/locals.tf))に導入されるため、本章で初めてインストールされます。
 
 プール定義は `terraform.tfvars` に直接書かず、専用ファイル `accelerator-pools.auto.tfvars` に置きます。`accelerator_pools` は 1 つの map 変数なので、`terraform.tfvars` にも書くと定義が 2 か所になります。このときエラーにはならず、[読み込み順](https://developer.hashicorp.com/terraform/language/values/variables#variable-definition-precedence)で後になる `*.auto.tfvars` の値が黙って優先され、`terraform.tfvars` に書いたほうは何も言われずに無視されます。気づけない事故になるので、定義箇所をこの 1 ファイルに集約し、`terraform.tfvars` 側には `accelerator_pools` を書かないのがポイントです（変数の `default = {}` があるので、ファイルが無い章でも apply は成功します）。`*.auto.tfvars` は Terraform が自動で読み込むため、`-var-file` の指定も不要です。
 
-リポジトリにはコメント付きの雛形 `accelerator-pools.tfvars.example` があります。どんなプールが書けるかはこれを読むと分かるので、まず中身を眺めます。雛形は全プール例がコメントアウトされた空の map (`accelerator_pools = {}`) なので、これをそのままコピーして apply しても何も作られません。
+リポジトリにはコメント付きの雛形 [`accelerator-pools.tfvars.example`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/accelerator-pools.tfvars.example) があります。どんなプールが書けるかはこれを読むと分かるので、まず中身を眺めます。雛形は全プール例がコメントアウトされた空の map (`accelerator_pools = {}`) なので、これをそのままコピーして apply しても何も作られません。
 
 本章で作るファイルは次の手順の heredoc で作成するため、雛形のコピーは不要です。
 
@@ -224,7 +224,7 @@ PASS     gpu-fsx-mount                       12s
 PASS: 11  FAIL: 0  SKIP: 0  TOTAL: 11
 ```
 
-対象の NodePool は NVIDIA GPU のプールから自動選択されます（`--gpu-nodepool` で明示指定も可能）。スモーク Pod が要求するのは `nvidia.com/gpu` なので、Neuron のような非 NVIDIA のプールは候補になりません。`--gpu-count` には検証したい GPU 枚数を渡します（g6.2xlarge なら 1、g6e.12xlarge なら 4、p4d.24xlarge なら 8）。GPU テストで ICE（InsufficientInstanceCapacity）により起動できない場合は AWS 側のキャパシティ問題であり、インフラの不具合ではありません。
+対象の NodePool は [`resolve_gpu_nodepool`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/tests/lib/resolve.sh) が NVIDIA GPU のプールから自動選択します（`--gpu-nodepool` で明示指定も可能）。スモーク Pod が要求するのは `nvidia.com/gpu` なので、Neuron のような非 NVIDIA のプールは候補になりません。`--gpu-count` には検証したい GPU 枚数を渡します（g6.2xlarge なら 1、g6e.12xlarge なら 4、p4d.24xlarge なら 8）。GPU テストで ICE（InsufficientInstanceCapacity）により起動できない場合は AWS 側のキャパシティ問題であり、インフラの不具合ではありません。
 
 ## 5. 後片付け
 
@@ -232,10 +232,10 @@ PASS: 11  FAIL: 0  SKIP: 0  TOTAL: 11
 
 ```bash
 k delete trainjob ddp-trainjob
-k get nodeclaims -w
+k get nodeclaims -l karpenter.sh/nodepool=gpu-ddp -w
 ```
 
-Pod が消えると NodePool の `consolidationPolicy` に従って Karpenter がノードを回収します。`k get nodeclaims` が空になれば GPU の課金は止まります。回収は非同期で数分かかるので、空になるまで待ってから次章に進みます。ここで NodeClaim が残り続ける場合は、まだ Pod が残っているか、Pod に `karpenter.sh/do-not-disrupt` が付いたままかのどちらかなので、`k get pods` で確認します (`k` の既定 namespace は Basic01 手順 2 の 4 行で `distai` に設定済みです)。
+Pod が消えると NodePool の `consolidationPolicy` に従って Karpenter がノードを回収します。`gpu-ddp` の NodeClaim が無くなれば GPU の課金は止まります (フィルタを外すと CPU プールの NodeClaim も並ぶので、GPU の判定にはプール名で絞ります)。回収は非同期で数分かかるので、消えるまで待ってから次章に進みます。ここで NodeClaim が残り続けるのは、そのノードにまだ Pod が載っているときです (`karpenter.sh/do-not-disrupt` を付けた Pod が動き続けている場合も含みます)。`k get pods` で確認します (`k` の既定 namespace は Basic01 手順 2 の 4 行で `distai` に設定済みです)。
 
 NodePool 自体は残しておいてかまいません。Karpenter は要求があってからノードを起動するので、プールが存在するだけでは課金されません。Basic07 と Basic08 はこの `gpu-ddp` プールをそのまま使います。
 

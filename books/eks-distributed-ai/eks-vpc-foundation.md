@@ -167,7 +167,7 @@ module "eks" {
 
 **`before_compute = true` の 2 つのアドオン**: `vpc-cni` と `eks-pod-identity-agent` にこのフラグを付け、ワーカーノードが起動する前にアドオンを導入します。特に Pod Identity Agent は、Pod Identity で AWS 権限を得るコントローラ（Karpenter など）より先に存在していないと、それらが起動時に認証情報を取得できずクラッシュします。そのため順序を保証するためのフラグです。
 
-**System ノードグループの `karpenter.sh/controller` ラベル**: 既定では m5 系インスタンスを 2 台、固定で起動します。このノードグループは Karpenter が管理するのではなく、Amazon EKS Managed Node Group として常時稼働させます。`karpenter.sh/controller: "true"` というラベルを付けているのは、本章の apply で導入される Karpenter コントローラ自身をこのノードに載せるためです。Karpenter コントローラを Karpenter 管理下のノードに載せると、コントローラが自分の載るノードを消してしまうコントローラが自分の載っているノードを消しかねないため、推奨されません。そのため Karpenter 自身を動かすための、Karpenter が管理しないノードとして、Karpenter の管理外のノードグループが必要になります。もう 1 つの `node-role: system` は、後続の章で Karpenter の各プールが付ける `node-role=<プール名>` と同じキーです。ワークロードが「GPU でないノード」という消極的な条件で誤って system ノードに載るのを防ぎ、載せたい層を積極的に明示的に指定できるようにしています。
+**System ノードグループの `karpenter.sh/controller` ラベル**: 既定では m5 系インスタンスを 2 台、固定で起動します。このノードグループは Karpenter が管理するのではなく、Amazon EKS Managed Node Group として常時稼働させます。`karpenter.sh/controller: "true"` というラベルを付けているのは、本章の apply で導入される Karpenter コントローラ自身をこのノードに載せるためです。Karpenter コントローラを Karpenter 管理下のノードに載せると、コントローラが自分の載っているノードを消しかねないため、推奨されません。そのため Karpenter 自身を動かす場所として、Karpenter の管理外のノードグループが必要になります。もう 1 つの `node-role: system` は、後続の章で Karpenter の各プールが付ける `node-role=<プール名>` と同じキーです。ワークロードが「GPU でないノード」という消極的な条件で誤って system ノードに載るのを防ぎ、載せたい層を明示的に指定できるようにしています。
 
 ## Pod Identity による認証
 
@@ -229,7 +229,7 @@ export AWS_REGION=us-east-2
 
 名前付きプロファイルを使っている場合は、あわせて `export AWS_PROFILE=<自分のプロファイル名>` も置きます。プロファイル指定なしの `[default]` で認証している場合は不要です。存在しない名前を設定すると、スクリプトが `no usable AWS credentials. Sign in, or set AWS_PROFILE, before running this.` で停止します。AWS CLI 側の詳細メッセージは表示されないので、`aws sts get-caller-identity` を単独で実行して原因を見てください。
 
-コマンド自体は引数なしで実行します (自動化のために確認を飛ばす `-y` と、使い方を出す `-h` は受け付けます)。
+コマンド自体は引数なしで実行します (使い方を出す `-h` は受け付けます)。
 
 ```bash
 cd ~/distributed-ai-v0.2.0
@@ -238,9 +238,9 @@ cd ~/distributed-ai-v0.2.0
 
 分けてあるのは、`curl` をシェルに流す形の中で課金リソースを作らせないためです。理由は 3 つあります。取得と課金を別のコマンドにしておけば、何を取得して何に課金したかを後から追えます。パイプの中では stdin をスクリプト本体が使っているので、確認を求めても読者は答えられません。そして apply の前には `terraform plan` の内容を表示して明示的に確認を取りたいからです。ここで表示されるのは変更の件数と、変更のあるリソース名の先頭 40 件までです (作成だけでなく更新・置換・削除も同じ形で並び、40 件を超えた分は `... and N more` にまとめられます)。属性ごとの差分や置き換えの詳細は表示されないので、そこまで見たい場合は後述の 4 行を実行したうえで `infra/eks` で `terraform plan` を直に実行してください。
 
-`distai-up.sh` は 5 つのフェーズを順に実行します。前提確認、実行前の確認、state の作成とレジストリへの記録、変数ファイルの生成、そして plan の表示と apply です。実行前の確認では、その前の前提確認で表示されたアカウント・呼び出し元・リージョン・クラスタ名を確認したうえで**クラスタ名の入力**を求めます。y の 1 文字では、上に何が表示されていても押せてしまうからです。クラスタ名の入力は 2 回あります。1 回目がこの実行前の確認で、2 回目は plan を表示したあとの適用確認です。
+[`distai-up.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/scripts/distai-up.sh) は 5 つのフェーズを順に実行します。前提確認、実行前の確認、state の作成とレジストリへの記録、変数ファイルの生成、そして plan の表示と apply です。実行前の確認では、その前の前提確認で表示されたアカウント・呼び出し元・リージョン・クラスタ名を確認したうえで**クラスタ名の入力**を求めます。y の 1 文字では、上に何が表示されていても押せてしまうからです。クラスタ名の入力は 2 回あります。1 回目がこの実行前の確認で、2 回目は plan を表示したあとの適用確認です。
 
-変数ファイル (`infra/eks/terraform.tfvars`) はここで生成されます。中身はリージョン、クラスタ名、`expected_account_id`、そして `AWS_PROFILE` を設定している場合だけ `aws_profile` です (設定していなければこの行は書かれません)。最後のものは認証情報が別のアカウントを指したまま apply しようとしたときに plan の段階で停止させるための安全策で、アカウント ID はこの時点で判っているので自動で埋まります。生成後のファイルは自由に編集してよいので、AZ や CIDR を明示指定したいときはここに書き足します。
+変数ファイル (`infra/eks/terraform.tfvars`) はここで生成されます。中身はリージョン、クラスタ名、`expected_account_id`、そして `AWS_PROFILE` を設定している場合だけ `aws_profile` です (設定していなければこの行は書かれません)。`expected_account_id` は、認証情報が別のアカウントを指したまま apply しようとしたときに plan の段階で停止させるための安全策で、アカウント ID はこの時点で判っているので自動で埋まります。生成後のファイルは自由に編集してよいので、AZ や CIDR を明示指定したいときはここに書き足します。
 
 ```bash
 cat infra/eks/terraform.tfvars
@@ -252,7 +252,7 @@ cat infra/eks/terraform.tfvars
 `terraform apply` は state に記録されたリソースだけを管理し、state に無いリソースが AWS 側に存在するかどうかは確認しません。このため profile を取り違えると、名前に一意制約があるリソース (IAM ロール、KMS エイリアス、CloudWatch ロググループ) は作成時のエラーで失敗し、FSx ファイルシステムのように一意制約が無いものはエラーにならず二重作成されて課金が始まります。より危険なのは state にリソースが記録済みのまま別アカウントに profile が向くケースで、Terraform は「管理下のリソースがすべて消えた」と判断してエラーも出さずに丸ごと作り直します。`distai-up.sh` は実行前にアカウントと呼び出し元 ARN を表示し、生成する tfvars に `expected_account_id` を書き込むので、この事故は plan の段階で止まります。それでも表示されたアカウントが意図どおりかは自分の目で確かめてください。
 :::
 
-plan が表示されたあと、apply に入る前にもう一度クラスタ名の入力を求められます。apply には 20〜30 分程度かかります。`Cluster <クラスタ名> is applied and registered.` と、次の step で使う 4 行が表示されれば成功です。時間がかかるのはコントロールプレーンの起動と FSx ファイルシステムの作成で、いずれも単独で いずれも単独で 10〜15 分かかります。両者は VPC さえできれば並行して作られるので、2 つの合計にはなりません。
+plan が表示されたあと、apply に入る前にもう一度クラスタ名の入力を求められます。apply には 20〜30 分程度かかります。`Cluster <クラスタ名> is applied and registered.` と、次の step で使う 4 行が表示されれば成功です。時間がかかるのはコントロールプレーンの起動と FSx ファイルシステムの作成で、いずれも単独で 10〜15 分かかります。両者は VPC さえできれば並行して作られるので、2 つの合計にはなりません。
 
 ## 2. 以降の章の前提はこの 4 行
 
@@ -269,7 +269,7 @@ source infra/scripts/distai-env.sh
 
 これが解決するのは、リージョン、アカウント ID、state のバケットとキーとロックテーブルと暗号化キー、クラスタを作ったときのリリースタグと最後に適用したリリースタグ、そして紐づいているデータ層の一覧と既定です。ただしデータ層はプロファイリング基盤を導入したときに初めて紐づくので、Basic01 の時点ではこの項目は空です。バケット名や state のキーを章に書く必要がなくなり、別のマシンで clone し直した場合でも `backend.hcl` と、無ければ `backend.tf` もその場で用意されるので、`terraform output` がそのまま使えます (どちらもリポジトリには含まれないので、この生成が無いと `terraform init` が S3 の state を見ません)。
 
-この 4 行はレジストリの読み取りとクラスタの参照を行うので、`ssm:GetParametersByPath` と `eks:DescribeCluster` の権限が必要です。レジストリが読めないときは、この権限を疑ってください。
+この 4 行はレジストリの読み取り、呼び出し元アカウントの確認、クラスタの参照を行うので、`ssm:GetParametersByPath`、`sts:GetCallerIdentity`、`eks:DescribeCluster` の権限が必要です。レジストリが読めないときは、この権限を疑ってください。
 
 あわせて `kubectl` もこのクラスタに向けます。`aws eks update-kubeconfig` の実行、context の選択、既定 namespace の設定、`kubectl` を `k` と打つための定義が、この `source` に含まれています。章ごとにこれらを打ち直す必要はありません。実行内容は step 3 で確認します。
 
@@ -292,7 +292,7 @@ distai-env: k is kubectl --context distai-eks; KUBECONFIG is /home/ubuntu/.kube/
 
 この 1 行目は、kubeconfig から読んだ endpoint に加えて、実際に API サーバーへ 1 回問い合わせた結果を添えたものです。endpoint 自体は kubeconfig にあるので、問い合わせが失敗しても endpoint は表示されます。見るのは末尾で、`(unreachable: ...)` が付いていなければ到達性と認証まで確認できたことになります。末尾の `(the namespace does not exist yet)` は step 4 で作る `distai` namespace がまだ無いという意味なので、この時点では正常です。
 
-kubeconfig は既定の `~/.kube/config` ではなく、クラスタと namespace ごとの専用ファイルに書きます。既定の kubeconfig の current-context を書き換えると、別のターミナルで他のクラスタを触っている作業まで巻き込むためです。設定が有効なのは `source` したシェルの中だけなので、ターミナルを開き直したら step 2 の 4 行をもう一度実行します。`k` は、クラスタの解決に成功している間は `--context` を付けて `kubectl` を呼ぶ関数なので、後から current-context が変わっても向き先はずれません (解決に失敗して context が決まらなかった場合は`--context` を付けない `kubectl` として動くので、そのときは向き先が固定されません)。
+kubeconfig は既定の `~/.kube/config` ではなく、クラスタと namespace ごとの専用ファイルに書きます。既定の kubeconfig の current-context を書き換えると、別のターミナルで他のクラスタを触っている作業まで巻き込むためです。設定が有効なのは `source` したシェルの中だけなので、ターミナルを開き直したら step 2 の 4 行をもう一度実行します。`k` は、クラスタの解決に成功している間は `--context` を付けて `kubectl` を呼ぶ関数なので、後から current-context が変わっても向き先はずれません (一度解決に成功したシェルで再度の解決に失敗した場合は、`--context` を付けない `kubectl` として動くので向き先が固定されません。初回から解決に失敗した場合は `k` そのものが定義されません)。
 
 ```bash
 k get nodes
@@ -336,7 +336,7 @@ k config view --minify -o 'jsonpath={.contexts[0].context.namespace} @ {.cluster
 
 ## 6. (任意) スモークテストで動作確認する
 
-リポジトリの [`infra/eks/tests/`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/tests) にインフラ層のスモークテストが用意されています。テストは `kubectl` の向き先と `terraform output` から対象クラスタを解決するので、step 2 の 4 行を同じシェルで実行済みにしてから走らせてください。実行は任意ですが、初回構築後やモジュール変更後に回すと「apply は通ったが何かが壊れている」を早期に検出できます。基盤テストは GPU ノードを起動しません。下の実機出力の DETAIL 列を足すと 2 分弱で、時間のほとんどは共有ストレージのマウント確認に使われます。
+リポジトリの [`infra/eks/tests/`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/tests) にインフラ層のスモークテストが用意されています。テストは `kubectl` の向き先と `terraform output` から対象クラスタを解決するので、step 2 の 4 行を同じシェルで実行済みにしてから走らせてください。実行は任意ですが、初回構築後やモジュール変更後に回すと「apply は通ったが何かが壊れている」を早期に検出できます。基盤テストは GPU ノードを起動しません。下の実機出力の DETAIL 列を足すと 2 分弱で、長いのは共有ストレージのマウント確認 (storage-mount) と CSI ドライバの確認です。
 
 基盤テストが見るのは control-plane、system-nodes、karpenter、trainer、csi-drivers、device-plugins、storage-mount (FSx の読み書き) の 7 項目です。
 
@@ -364,7 +364,7 @@ PASS     storage-mount                       42s
 PASS: 7  FAIL: 0  SKIP: 0  TOTAL: 7
 ```
 
-全 PASS であれば、Karpenter・CSI ドライバ・Kubeflow Trainer・共有ストレージが正常に機能しており、Basic02 以降のワークショップに進む準備ができています。`device-plugins` は GPU/EFA/Neuron の device plugin の DaemonSet を見る項目で、該当プールが無い段階では対象が存在しないため「該当なし」として PASS します。
+全 PASS であれば、Karpenter・CSI ドライバ・Kubeflow Trainer・共有ストレージが正常に機能しており、Basic02 以降のワークショップに進む準備ができています。手順 1 で `DISTAI_SHARED_STORAGE=off` を選んだ場合は、複製元の PV が無いので `storage-mount` は FAIL ではなく SKIP になり、`PASS: 6 SKIP: 1` になります。`device-plugins` は GPU/EFA/Neuron の device plugin の DaemonSet を見る項目で、該当プールが無い段階では対象が存在しないため「該当なし」として PASS します。
 
 GPU ノードを起動して行う GPU スモークテストは、アクセラレータプールを定義する Basic04 で扱います。
 
