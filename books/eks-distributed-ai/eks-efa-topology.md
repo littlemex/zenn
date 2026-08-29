@@ -31,7 +31,7 @@ EFA は通常の ENI としての IP 通信も担いますが、それに加え�
 
 ### なぜ Karpenter は EFA を自動で付けないか
 
-Karpenter（karpenter-provider-aws v1.11 以降）の EC2NodeClass は、`spec.networkInterfaces` を省略すると単一のデフォルト ENA（IP 通信用）だけを作ります。EFA を使うにはこのフィールドで以下を明示宣言する必要があります（詳細は [Karpenter NodeClasses ドキュメントの spec.networkInterfaces](https://karpenter.sh/docs/concepts/nodeclasses/#specnetworkinterfaces) を参照してください）。
+Karpenter（karpenter-provider-aws v1.11 以降）の EC2NodeClass は、`spec.networkInterfaces` を省略すると単一の既定 ENA（IP 通信用）だけを作ります。EFA を使うにはこのフィールドで以下を明示宣言する必要があります（詳細は [Karpenter NodeClasses ドキュメントの spec.networkInterfaces](https://karpenter.sh/docs/concepts/nodeclasses/#specnetworkinterfaces) を参照してください）。
 
 - カード 0: `interfaceType: "interface"`（ノード IP 用、primary ENI）
 - カード 1〜N: `interfaceType: "efa-only"`（RDMA 専用、IP を持たない）
@@ -137,7 +137,7 @@ egress self-ref が無い場合の症状として、NCCL は bootstrap（TCP）�
 
 ## EFA device plugin の supportedInstanceLabels 自動導出
 
-EFA を Pod にリソースとして見せるのは `aws-efa-k8s-device-plugin` の DaemonSet です。この chart は `supportedInstanceLabels` に列挙されたインスタンスタイプにしか nodeAffinity でスケジュールされず、chart デフォルトの一覧には g6e.12xlarge のような一部の EFA 対応タイプが含まれていません。デフォルトのままだとそのタイプのノードにはプラグインが乗らず、`vpc.amazonaws.com/efa` が永久に広告されないという問題が起こり得ます。[`gpu-addons.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/gpu-addons.tf) はこれをクラスタが実際に使う pool から動的に導出することで防いでいます。
+EFA を Pod にリソースとして見せるのは `aws-efa-k8s-device-plugin` の DaemonSet です。この chart は [`supportedInstanceLabels`](https://github.com/aws/eks-charts/tree/master/stable/aws-efa-k8s-device-plugin) に列挙されたインスタンスタイプにしか nodeAffinity でスケジュールされず、chart 既定の一覧には g6e.12xlarge のような一部の EFA 対応タイプが含まれていません。既定のままだとそのタイプのノードにはプラグインが乗らず、`vpc.amazonaws.com/efa` が永久に広告されないという問題が起こり得ます。[`gpu-addons.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/gpu-addons.tf) はこれをクラスタが実際に使う pool から動的に導出することで防いでいます。
 
 ## EFA 関連の環境変数
 
@@ -165,9 +165,9 @@ env:
 
 要点は `NCCL_SOCKET_IFNAME` を `^` で始まる除外パターンで書くことです。`efa0,efa1,...` のような許可リスト方式で名指しすると bootstrap に失敗します。NCCL は起動時の rank 間ランデブーを TCP ソケットで行いますが、`efa-only` インターフェースは IP を持たないため、これらを名指しすると bootstrap 用の到達可能なインターフェースが見つからず接続できません。除外パターンで `lo` やコンテナ仮想 NIC（`docker`／`veth`）を外し、ノードの IP を持つインターフェースを NCCL に選ばせるのが正しい書き方です。
 
-この値は本書のチャートでは 1 か所、[`values.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/values.yaml) の `ncclSocketIfname` にデフォルトとして持たせています。本章で使う TrainJob の [`nccl-trainjob.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/nccl-trainjob.yaml)、単ノードの sanity 用 [`nccl-probe.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/nccl-probe.yaml)、`mpirun` 方式の [`nccl-sshd.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/nccl-sshd.yaml) の 3 つが、いずれもそこから `NCCL_SOCKET_IFNAME` としてコンテナに渡します。特定のワークロードだけ別のパターンにしたい場合は `--set ncclProbe.socketIfname=...` のように個別に上書きできます。自分でワークロードを書く場合も、Pod の `env` にこの 1 行を同じ形で入れます。
+この値は本書のチャートでは 1 か所、[`values.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/values.yaml) の `ncclSocketIfname` に既定として持たせています。本章で使う TrainJob の [`nccl-trainjob.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/nccl-trainjob.yaml)、単ノードの sanity 用 [`nccl-probe.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/nccl-probe.yaml)、`mpirun` 方式の [`nccl-sshd.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/nccl-sshd.yaml) の 3 つが、いずれもそこから `NCCL_SOCKET_IFNAME` としてコンテナに渡します。特定のワークロードだけ別のパターンにしたい場合は `--set ncclProbe.socketIfname=...` のように個別に上書きできます。自分でワークロードを書く場合も、Pod の `env` にこの 1 行を同じ形でインストールします。
 
-なお、AWS の [awsome-distributed-ai リポジトリの EFA Cheatsheet](https://github.com/awslabs/awsome-distributed-ai/blob/main/1.architectures/efa-cheatsheet.md) に、`NCCL_SOCKET_IFNAME` を含む EFA/NCCL 環境変数の推奨値がまとまっています。バージョンごとの推奨が変わるので、あわせて参照すると良いでしょう。
+一次情報としては、[NCCL の環境変数一覧](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html)、[EFA と libfabric の環境変数](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/efa-working-with.html)、[aws-ofi-nccl](https://github.com/aws/aws-ofi-nccl) を参照してください。あわせて AWS の [awsome-distributed-ai リポジトリの EFA Cheatsheet](https://github.com/awslabs/awsome-distributed-ai/blob/main/1.architectures/efa-cheatsheet.md) に、`NCCL_SOCKET_IFNAME` を含む EFA/NCCL 環境変数の推奨値がまとまっています。バージョンごとの推奨が変わるので、あわせて参照すると良いでしょう。
 
 # ワークショップ実施
 
@@ -262,7 +262,7 @@ hugepages は Linux が通常の 4 KB より大きい単位（2 MB など）で�
 これらの方式を使うときは、先に hugepages を要求しない GPU Pod（`sleep` するだけの使い捨て Pod で GPU を全数要求）で 2 台のノードを起こし、`Ready` を確認してからその Pod を削除し、そのうえで hugepages を要求する測定ワークロードを載せます。ノードは上記の `protect` preset で残るので、踏み台 Pod を消してもノードは回収されません。`ncclTrainjob` だけを使う本章の手順では、この段取りは不要です。
 :::
 
-`ncclTrainjob` は Basic02 と同じ Kubeflow Trainer v2 の TrainJob で、`torch.distributed` の `all_reduce` を 2 ノードにまたがって回します。ノードをまたぐ起動の段取り、つまり「どのプロセスが rank いくつで、どこに集合するか」は TrainJob が担います。Trainer が `PET_NNODES` / `PET_NPROC_PER_NODE` / `PET_NODE_RANK` / `PET_MASTER_ADDR` を各 Pod に注入し、`torchrun` がそれを既定値として読むという仕組みです。
+`ncclTrainjob` は Basic02 と同じ Kubeflow Trainer v2 の TrainJob で、`torch.distributed` の `all_reduce` を 2 ノードにまたがって回します。ノードをまたぐ起動の段取り、つまり「どのプロセスが rank いくつで、どこに集合するか」は TrainJob が担います。[Trainer](https://trainer.kubeflow.org/en/latest/) が `PET_NNODES` / `PET_NPROC_PER_NODE` / `PET_NODE_RANK` / `PET_MASTER_ADDR` を各 Pod に注入し、[`torchrun`](https://pytorch.org/docs/stable/elastic/run.html) がそれを既定値として読むという仕組みです。
 
 指定の要点は 3 つあります。
 
@@ -286,7 +286,7 @@ Karpenter が起動時に付ける `node-role=<プール名>` を使えば、ノ
 
 危険なのは Basic02 でビルドした `ddp-sample` のイメージです。`torchrun` は持ちますが素の PyTorch イメージなので EFA プラグインがありません。この場合 NCCL はエラーを出さず、自前の TCP ソケット通信に**黙って切り替えます**。ベンチマークは完走し、それらしい数値も出るので、EFA を測ったつもりで実際には TCP を測っていたという結果になります。帯域の数値だけでは区別できないため、手順 6 で説明するログ行の確認が必須です。
 
-`torchrun` と EFA プラグインの両方を持つイメージとして、AWS Deep Learning Containers があります。利用可能なタグは次のように調べられます。
+`torchrun` と EFA プラグインの両方を持つイメージとして、[AWS Deep Learning Containers](https://docs.aws.amazon.com/deep-learning-containers/latest/devguide/deep-learning-containers-images.html) があります。利用可能なタグは次のように調べられます。
 
 ```bash
 aws ecr describe-images --region "$AWS_REGION" --registry-id 763104351884 --repository-name pytorch-training \
@@ -297,11 +297,18 @@ aws ecr describe-images --region "$AWS_REGION" --registry-id 763104351884 --repo
 
 ## 4. ノード上の EFA リソースを確認する
 
-手順 3 でノードが起動したら、手順 2 の値が実際にノードへ反映されているかを確認します。
+手順 3 を投入したら、まずノードが上がって stage Job が終わるのを待ちます。
+
+```bash
+k wait --for=condition=Ready node -l node-role=$POOL --timeout=20m
+k wait --for=condition=complete job/nccl-trainjob-stage -n "$NAMESPACE" --timeout=10m
+```
+
+ノードが起動したら、手順 2 の値が実際にノードへ反映されているかを確認します。
 
 なお手順 3 のレンダリングは、測定用の TrainJob だけでなく `nccl-trainjob-stage` という Job も作ります。測定スクリプト `bench.py` は ConfigMap として渡されますが、TrainJob の Runtime がマウントするのは `/shared` と `/dev/shm` で ConfigMap は含まれないため、この Job が CPU プール上で ConfigMap の内容を `/shared/nccl-bench/bench.py` にコピーします。TrainJob はそのパスを `torchrun` に渡すので、Job が `Completed` になっていることが測定の前提です。`k get pods -n $NAMESPACE` に busybox の Pod が現れるのはこのためで、測定 Pod が「スクリプトが無い」で落ちる場合はまずこの Job の状態を見てください。この Job は完了から 1 時間で自動削除される設定なので、時間をおいてから見に行くと存在しません。無くなっていることは失敗を意味しないので、その場合は `/shared/nccl-bench/bench.py` があるかどうかで判断します。ノードが `Ready` になっていれば、測定 Pod の `Running` を待たずにこの allocatable 確認を実行できます（測定 Pod は DLC イメージの pull で `ContainerCreating` に留まっていることがありますが、ノードの EFA allocatable はその前から確認できます）。
 
-`POOL` は Basic05 で `accelerator-pools.auto.tfvars` に貼り付けたプール名に置き換えます。
+`POOL` は Basic05 で `accelerator-pools.auto.tfvars` に貼り付けたプール名に置き換えます。表示された `efa` が `null` の場合は、そのプールが Basic05 でまだ apply されていません。先に戻って apply してから進んでください。
 
 ```bash
 POOL=gpu-p4d
@@ -425,11 +432,11 @@ NET/OFI Failed to initialize GDRCopy: Failed to open gdr handle
 
 これはエラーではなく、GDRCopy という補助機構が使えなかったという通知です。EFA がノード間で GPU メモリのデータをやり取りするとき、NIC が GPU メモリへ直接データを読み書きする経路が二段構えになっています。大きなメッセージのバルク転送は GPUDirect RDMA が NIC から GPU メモリへ直接 DMA するので、この経路は GDRCopy とは無関係に動きます。一方で受信側の小さなメッセージのコピーには GDRCopy を使う道があり、これが無い場合は libfabric の EFA プロバイダが EFA デバイス経由のループバック read という代替経路でホストのバウンスバッファ越しにコピーします。つまり GDRCopy はマルチノード通信の小さなメッセージのレイテンシを詰めるための補助であって、EFA/NCCL がノード間で帯域を出すこと自体には必須ではありません。上の警告が出ていても、`Selected provider is efa` と高い `busbw` が出ていれば EFA は正しく効いています。
 
-GDRCopy を実際に有効にするには、ノードのカーネルに `gdrdrv` というモジュールをロードして `/dev/gdrdrv` を用意する必要があります。AMI にこれが標準で載っていない場合、載せる仕組みを別途用意することになります。その仕組みと、GDRCopy を有効にしたときにマルチノード通信のレイテンシが実際にどうなるのかの実測は、本 book では扱いません。上の警告が出ていても EFA の帯域が出ていれば、本章の検証としては合格です。
+GDRCopy を実際に有効にするには、ノードのカーネルに `gdrdrv` というモジュールをロードして `/dev/gdrdrv` を用意する必要があります。AMI にこれが標準で載っていない場合、載せる仕組みを別途用意することになります。その仕組みと、GDRCopy を有効にしたときにマルチノード通信のレイテンシが実際にどうなるのかの実測は、本書では扱いません。上の警告が出ていても EFA の帯域が出ていれば、本章の検証としては合格です。
 
 ## 7. teardown する
 
-検証が終わったら、ワークロードを退避します。`04-teardown.sh` は Deployment/StatefulSet/Job/TrainJob/MPIJob を削除対象に含むため、本章で投入した `ncclTrainjob` もこのスクリプトで消えます。TrainJob は配下に JobSet が管理する Pod を持ちますが、スクリプトは TrainJob の削除がタイムアウトした場合に finalizer を外して確実に消すフォールバックまで備えているので、Pod が残って NodePool の drain が引っかかることはありません。単独で先に消しておきたい場合は次のコマンドを使いますが、必須ではありません。
+検証が終わったら、ワークロードを退避します。[`04-teardown.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/04-teardown.sh) は Deployment/StatefulSet/Job/TrainJob/MPIJob を削除対象に含むため、本章で投入した `ncclTrainjob` もこのスクリプトで消えます。TrainJob は配下に JobSet が管理する Pod を持ちますが、スクリプトは TrainJob の削除がタイムアウトした場合に finalizer を外して確実に消すフォールバックまで備えているので、Pod が残って NodePool の drain が引っかかることはありません。単独で先に消しておきたい場合は次のコマンドを使いますが、必須ではありません。
 
 ```bash
 k delete trainjob nccl-trainjob -n "$NAMESPACE" --ignore-not-found

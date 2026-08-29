@@ -74,7 +74,7 @@ Amazon FSx for Lustre は Elastic Fabric Adapter（EFA）を有効にすると�
 | EFA 有効 | EFA | 700 Gbps |
 | EFA 有効 | EFA + GPUDirect Storage | 1200 Gbps |
 
-EFA は OS をバイパスし SRD プロトコルで RDMA 通信を行うため、CPU 負荷を下げつつスループットを上げ、テールレイテンシを縮めます。大規模モデルのチェックポイント読み込みのように、ファイルシステムのスループットがそのままジョブのコールドスタート時間に効く場面で価値が大きく、AWS は 10 GBps を超えるスループット容量を要する場合に EFA を推奨しています。ここで単位に注意が必要で、この 10 GBps はバイト毎秒で、ビット毎秒に直すと 80 Gbps にあたります。上の表の 100 Gbps などはビット毎秒なので、両者を混同しないでください。
+EFA は OS をバイパスし [SRD](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/efa-working-with.html) プロトコルで RDMA 通信を行うため、CPU 負荷を下げつつスループットを上げ、テールレイテンシを縮めます。大規模モデルのチェックポイント読み込みのように、ファイルシステムのスループットがそのままジョブのコールドスタート時間に効く場面で価値が大きく、AWS は 10 GBps を超えるスループット容量を要する場合に EFA を推奨しています。ここで単位に注意が必要で、この 10 GBps はバイト毎秒で、ビット毎秒に直すと 80 Gbps にあたります。上の表の 100 Gbps などはビット毎秒なので、両者を混同しないでください。
 
 表の 2 行目が示すとおり、ファイルシステムを EFA 有効にしても、クライアント側が EFA 対応でなければスループットは 100 Gbps に留まります。EFA の効果を得るにはファイルシステムとクライアントの両方の準備が要ります。なお EFA 有効時もメタデータサーバとの通信は TCP を使い、実データが EFA ネットワークを流れます。
 
@@ -106,7 +106,7 @@ GPU 分散学習では NCCL の集合通信も EFA を使います。Amazon FSx 
 ## 1. 前提を確認する
 
 - `terraform apply` 実行ずみ
-- `k` と `KUBECONFIG` は Basic01 step 2 の 4 行で設定済み
+- `k` と `KUBECONFIG` は Basic01 step 2 の 4 行で設定済み (別のターミナルを開いた場合は設定が残らないので、`k config current-context` が対象クラスタを返すかを確かめ、返らなければ 4 行を実行し直します)
 
 ```bash
 export NAMESPACE=distai
@@ -182,7 +182,7 @@ cd "$(git rev-parse --show-toplevel)"/infra/eks/scripts
 ./05-release-pv.sh --storage fsx
 ```
 
-`05-release-pv.sh` は、PVC が既に消えている残骸なら claimRef を外して `Available` に戻し、PVC がまだ生きている場合は誤って壊さないよう `--force` を要求します。`reclaimPolicy` が `Retain` 以外の PV は拒否するため、データを削除してしまう事故も防げます。以下は、このスクリプトが行っていることを手で行う場合の手順です。
+[`05-release-pv.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/05-release-pv.sh) は、PVC が既に消えている残骸なら claimRef を外して `Available` に戻し、PVC がまだ生きている場合は誤って壊さないよう `--force` を要求します。`reclaimPolicy` が `Retain` 以外の PV は拒否するため、データを削除してしまう事故も防げます。以下は、このスクリプトが行っていることを手で行う場合の手順です。
 :::
 
 手動で行う場合は、名前を直接書かず、PV から `claimRef` を引いて変数で扱います。
@@ -207,7 +207,7 @@ k patch pv "$PV" --type=json \
   -p '[{"op":"remove","path":"/spec/claimRef/uid"},{"op":"remove","path":"/spec/claimRef/resourceVersion"}]'
 ```
 
-別の namespace の PVC で使いたい場合は、`claimRef` 全体を外して完全な `Available` に戻します。`uid` だけ外しても `claimRef` の namespace と name が残っていると、別 namespace の PVC は弾かれます。
+別の namespace の PVC で使いたい場合は、`claimRef` 全体を外して完全な `Available` に戻します。`uid` だけ外しても `claimRef` の namespace と name が残っていると、別 namespace の PVC は拒否されます。
 
 ```bash
 k patch pv "$PV" --type=json -p '[{"op":"remove","path":"/spec/claimRef"}]'
@@ -252,12 +252,12 @@ k label namespace "$PVC_NS" tenantpools.dev/excluded-
 ::::
 
 :::message
-PersistentVolume と PersistentVolumeClaim の namespace の考え方を整理しておきます。PV はクラスタスコープのリソースで namespace を持ちません。namespace を持つのは PVC のほうで、Pod は自分と同じ namespace の PVC しか参照できません。つまり「PVC と、それをマウントする Pod は必ず同じ namespace に置く」「PV はどの namespace の PVC からでも `volumeName` でバインドできる共通の存在」と理解しておくと混乱しません。本 book は作業用 namespace を `distai` に統一しているので、PVC も Pod も `distai` に作ります。`default` などにうっかり作ると、Basic11 の `04-teardown.sh --namespace distai` が対象にせず消し漏らし、Bound な PV が残って `terraform destroy` を止める原因になります。
+PersistentVolume と PersistentVolumeClaim の namespace の考え方を整理しておきます。PV はクラスタスコープのリソースで namespace を持ちません。namespace を持つのは PVC のほうで、Pod は自分と同じ namespace の PVC しか参照できません。つまり「PVC と、それをマウントする Pod は必ず同じ namespace に置く」「PV はどの namespace の PVC からでも `volumeName` でバインドできる共通の存在」と理解しておくと混乱しません。本書は作業用 namespace を `distai` に統一しているので、PVC も Pod も `distai` に作ります。`default` などにうっかり作ると、Basic11 の `04-teardown.sh --namespace distai` が対象にせず消し漏らし、Bound な PV が残って `terraform destroy` を止める原因になります。
 :::
 
 ## 4. Amazon FSx for Lustre に書き込み、Pod を作り直してもデータが残ることを確認する
 
-PV は Terraform で作られていますが、PVC は手動で作ります。静的 PV に名前でバインドするため `volumeName` に PV 名を、`storageClassName` に空文字を指定します。
+PV は Terraform で作られていますが、PVC は手動で作ります。静的 PV に名前でバインドするため `volumeName` に PV 名を、`storageClassName` に空文字を指定します。学習ワークロードが使う共通の PVC は [`manifests/shared-pvc.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/manifests/shared-pvc.yaml) にテンプレートがあり、そちらも同じ書き方です。
 
 ```bash
 k apply -n "$NAMESPACE" -f - <<'EOF'
@@ -306,7 +306,7 @@ k delete pod fsx-test2 -n "$NAMESPACE" --ignore-not-found
 k delete pvc fsx-claim -n "$NAMESPACE" --ignore-not-found
 ```
 
-Pod を先に、PVC を後に消すこの順序が大事です。逆にすると `k delete pvc` が Pod の残るあいだファイナライザで止まります。namespace 内の PVC をまとめて片付けたい場合は、Basic11 の `04-teardown.sh` に `--delete-pvcs` を付けると、その namespace の PVC を storage の種類によらず一括削除できます。削除が止まったときの原因の切り分けは、手順 3 の details で示した Pod の調べ方と同じです。
+Pod を先に、PVC を後に消すこの順序が大事です。逆にすると `k delete pvc` が Pod の残るあいだファイナライザで止まります。namespace 内の PVC をまとめて片付けたい場合は、Basic11 の [`04-teardown.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/04-teardown.sh) に `--delete-pvcs` を付けると、その namespace の PVC を storage の種類によらず一括削除できます。削除が止まったときの原因の切り分けは、手順 3 の details で示した Pod の調べ方と同じです。
 
 PV 自体は Terraform が管理しているため、この削除では消えません。`reclaimPolicy` が `Retain` なので、Bound だった PVC を削除しても PV は `Released` になります。同じ PV に再びバインドしたい場合の復旧手順は Basic02 で扱ったものと同じです。
 
@@ -315,7 +315,7 @@ Amazon FSx for Lustre は有効な間、プロビジョニングした容量分�
 :::
 
 :::message
-マルチ AZ で ReadWriteMany のキャッシュが必要な場合は、opt-in の Amazon EFS を選べます。`terraform.tfvars` で `efs_enabled = true` にして apply すると、ファイルシステムと private subnet ごとのマウントターゲット、静的 PV が作られ、Karpenter がノードを別 AZ に入れ替えても同じキャッシュを読み続けられます。CSI ドライバ自体は既定で常設されています。有効化で追加されるのは、ファイルシステム本体とマウントターゲット、アクセスポイント、StorageClass、静的 PV です。無効に戻すとこれらも消えるので、Kubernetes 側の StorageClass や PV を参照しているものが無いか先に確かめてください。Amazon EFS の詳しい構成と用途は、マルチ AZ での NEFF キャッシュ共有が要点になる Neuron の章で扱います。
+マルチ AZ で ReadWriteMany のキャッシュが必要な場合は、任意で有効にできる Amazon EFS を選べます。`terraform.tfvars` で `efs_enabled = true` にして apply すると、ファイルシステムと private subnet ごとのマウントターゲット、静的 PV が作られ、Karpenter がノードを別 AZ に入れ替えても同じキャッシュを読み続けられます。CSI ドライバ自体は既定で常設されています。有効化で追加されるのは、ファイルシステム本体とマウントターゲット、アクセスポイント、専用のセキュリティグループ、StorageClass、静的 PV です。無効に戻すとこれらも消えるので、Kubernetes 側の StorageClass や PV を参照しているものが無いか先に確かめてください。Amazon EFS の詳しい構成と用途は、マルチ AZ での NEFF キャッシュ共有が要点になる Neuron の章で扱います。
 :::
 
 # まとめ

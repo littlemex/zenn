@@ -43,9 +43,9 @@ operator が扱う CRD は 2 種類あり、責務がはっきり分かれてい
 
 1 つ目は生成物の側です。operator が作る NodePool には、CR の namespace から導出した `tenantpools.dev/tenant=<namespace>` という taint が必ず載ります。つまりこのプールのノードには、同じ値の toleration を持つ Pod しか載れません。
 
-2 つ目は Pod の側です。taint に対応する toleration は Pod が自由に書けてしまうので、それだけでは「別テナントの値を勝手に tolerate する Pod」を止められません。そこで operator は `ValidatingAdmissionPolicy` を同梱し、Pod が自分の namespace 以外のテナント値を tolerate しようとした場合、あるいはワイルドカードの toleration を持つ場合に、その Pod の作成を拒否します。この検査は作成だけでなく更新にも当たるので、すでに走っている Pod でも、条件に触れる状態のまま更新しようとすると弾かれます。taint（スケジューラ側）と VAP（admission 側）の両方がそろって初めて、境界が塞がれます。
+2 つ目は Pod の側です。taint に対応する toleration は Pod が自由に書けてしまうので、それだけでは「別テナントの値を勝手に tolerate する Pod」を止められません。そこで operator は `ValidatingAdmissionPolicy` を同梱し、Pod が自分の namespace 以外のテナント値を tolerate しようとした場合、あるいはワイルドカードの toleration を持つ場合に、その Pod の作成を拒否します。この検査は作成だけでなく更新にも当たるので、すでに走っている Pod でも、条件に触れる状態のまま更新しようとすると拒否されます。taint（スケジューラ側）と VAP（admission 側）の両方がそろって初めて、境界が塞がれます。
 
-なお、`aws-node` や device plugin のような system 系の DaemonSet はワイルドカードの toleration を持つため、VAP をそのまま全 namespace に適用すると新規ノードに CNI が載らず永久に `NotReady` になります。この事故を避けるため、VAP のバインディングは既定で `kube-system` などの system namespace を名前で除外しています。あわせて、任意の namespace に `tenantpools.dev/excluded=true` ラベルを付けると除外できる仕組みもあります。運用上の逃げ道として必要なものですが、テナント境界を素通りさせる手段でもあるので、このラベルを誰が付けられるかは境界そのものと同じ重みで管理する必要があります。
+なお、`aws-node` や device plugin のような system 系の DaemonSet はワイルドカードの toleration を持つため、VAP をそのまま全 namespace に適用すると新規ノードに CNI が載らず永久に `NotReady` になります。この意図しない動作を避けるため、VAP のバインディングは既定で `kube-system` などの system namespace を名前で除外しています。あわせて、任意の namespace に `tenantpools.dev/excluded=true` ラベルを付けると除外できる仕組みもあります。運用上の逃げ道として必要なものですが、テナント境界を素通りさせる手段でもあるので、このラベルを誰が付けられるかは境界そのものと同じ重みで管理する必要があります。
 
 ## この本の Terraform 版との関係
 
@@ -59,13 +59,13 @@ operator は Karpenter 本体・device plugin・Capacity Block の購入には�
 
 ## 1. 前提を確認する
 
-operator は Karpenter v1 が入っているクラスタで動きます。既定で有効な VAP は Kubernetes 1.30 以上を要求するので、クラスタのバージョンも確認します。
+operator は Karpenter v1 が入っているクラスタで動きます。既定で有効な VAP は [Kubernetes 1.30 以上](https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/)を要求するので、クラスタのバージョンも確認します。
 
 ```bash
 k version -o json | jq -r .serverVersion.gitVersion
 ```
 
-Capacity Block を Reserved プールで使う場合は、Karpenter コントローラの `ReservedCapacity` フィーチャゲートが有効である必要があります（このフィーチャゲートを前提に、Capacity Block は Karpenter v1.6 以降、ODCR は v1.3 以降で使えます）。
+Capacity Block を Reserved プールで使う場合は、Karpenter コントローラの [`ReservedCapacity` フィーチャゲート](https://karpenter.sh/docs/reference/settings/)が有効である必要があります（このフィーチャゲートを前提に、Capacity Block は Karpenter v1.6 以降、ODCR は v1.3 以降で使えます）。
 
 ```bash
 k -n karpenter get deploy karpenter \

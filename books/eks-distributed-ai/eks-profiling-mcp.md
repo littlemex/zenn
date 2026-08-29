@@ -27,7 +27,15 @@ Basic01 から Basic11 で構築した Amazon EKS の土台の上に、GPU の�
 
 ### 導入スクリプトのフェーズ
 
-`infra/scripts/install-profiling.sh` は 7 つのフェーズを順に実行します。前提確認 (Phase 1)、データ層の適用 (Phase 2)、クラスタ側の配線 (Phase 3、S3 Files のマウントと `mcp` namespace と Pod Identity の紐付けと ECR)、イメージの解決 (Phase 4)、MCP サーバのデプロイと producer 契約の配布 (Phase 5 と 5b)、マウント probe (Phase 6)、受け入れ確認 (Phase 7) です。どのフェーズも冪等か「状態を見てから動く」形なので、途中で失敗しても原因を直して再実行すれば収束します。失敗時に自動でロールバックや destroy はしません。
+`infra/scripts/install-profiling.sh` は 7 つのフェーズを順に実行します。次の 7 つに分かれています。
+
+- Phase 1: 前提確認
+- Phase 2: データ層の適用
+- Phase 3: クラスタ側の設定 (S3 Files のマウント、`mcp` namespace、Pod Identity の紐付け、ECR)
+- Phase 4: イメージの解決
+- Phase 5 と 5b: MCP サーバのデプロイと、namespace への配布
+- Phase 6: マウントの確認
+- Phase 7: 受け入れ確認どのフェーズも冪等か「状態を見てから動く」形なので、途中で失敗しても原因を直して再実行すれば収束します。失敗時に自動でロールバックや destroy はしません。
 
 定常運用で利用者が渡すのは 3 つだけです。クラスタ名、リージョン、そしてプロファイル収集を許可する namespace のリストです (初回だけは、どのデータ層に記録するかの名前 `DATA_LAYER_NAME` と、それを新規に作ってよいという意思表示 `CREATE_DATA_LAYER=1` も要ります。2 回目以降はレジストリから解決されます)。バケット名やマネージド MLflow の ARN、ServiceAccount 名、S3 Files のマウント先 AZ、イメージの digest はすべてスクリプトが Terraform の出力や AWS API から解決します。特にマウント先 AZ を変数にしていないのは意図的で、S3 Files のマウントは単一 AZ からしか到達できないため、手で渡した値が実体とずれると PersistentVolume が到達不能になります。
 
@@ -58,7 +66,7 @@ initContainer が基盤イメージから profiler と shim を共有ボリュ�
 
 ### namespace ごとに配られる契約
 
-導入スクリプトは、許可した namespace のそれぞれに 3 つを配ります。リージョン・trace バケット・MLflow の ARN・MLflow の UI の URL・基盤イメージの digest を持つ ConfigMap、recorder が自分の Pod の状態を読み、Job に run id の注釈を書くための Role (Kubernetes の RBAC はリソース名を絞らない限り種類単位なので、実際の権限はその namespace の Pod の参照と Job の参照・更新になります。共有 namespace で使う場合はこの範囲を前提に判断してください)、そして記録されずに終わった Job を報告する時間ごとの点検です。プロファイルを撮る人が基盤の値を 1 つも知らなくて済むのは、この ConfigMap があるからです。namespace がまだ存在しない場合、そこには何も配られず警告だけが出るので、後述のとおり namespace は導入スクリプトより先に作ります。
+導入スクリプトは、許可した namespace のそれぞれに 3 つを配ります。1 つ目は ConfigMap で、リージョン・trace バケット・MLflow の ARN・MLflow の UI の URL・基盤イメージの digest を持ちます。2 つ目は Role で、recorder が自分の Pod の状態を読み、Job に run id の注釈を書くために使います。ここで注意したいのは権限の広さです。Kubernetes の RBAC はリソース名を絞らない限り種類単位なので、実際にはその namespace の Pod の参照と Job の参照・更新ができます。共有 namespace で使う場合はこの範囲を前提に判断してください。3 つ目は、記録されずに終わった Job を報告する時間ごとの点検です。プロファイルを撮る人が基盤の値を 1 つも知らなくて済むのは、この ConfigMap があるからです。namespace がまだ存在しない場合、そこには何も配られず警告だけが出るので、後述のとおり namespace は導入スクリプトより先に作ります。
 
 ### 記録の単位と後片付けの単位
 
@@ -76,7 +84,7 @@ Job そのものは終了から 2 日後に Kubernetes が消します。run の
 
 本章は基盤リポジトリのリリース `release/eks-distributed-ai/v0.2.0` を前提にしています。本文のコマンドと出力例はこのバージョンで実機確認したものです。別のバージョンでは変数名やフラグが変わることがあるので、まずはこのタグで通してください。
 
-クラスタ (Basic01 から Basic11 相当) が稼働していること、`infra/eks` の Terraform がリモート state を使っていること、`terraform` と `kubectl` と `helm` と `aws` と `python3` と `git` と `curl` が手元にあること (後半の手順でトンネルの listen を確認するのに `lsof` も使います)、MCP クライアント (Claude Code など) が手元にあることを確認します。リモート state は Basic01 の `distai-up.sh` が作り、その場所はレジストリに記録されています。前提の 4 行はレジストリから `infra/eks/backend.hcl` を書き出すので、導入スクリプトはそれを読んで解決します。チェックアウトの外から実行する場合や fresh clone で `backend.hcl` が無い場合は、`TF_STATE_BUCKET` などで明示的に渡します。
+クラスタ (Basic01 から Basic11 相当) が稼働していること、`infra/eks` の Terraform がリモート state を使っていること、`terraform` と `kubectl` と `helm` と `aws` と `python3` と `git` と `curl` が手元にあること (後半の手順でトンネルの listen を確認するのに `lsof` も使います)、MCP クライアント (Claude Code など) が手元にあることを確認します。リモート state は Basic01 の [`distai-up.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/scripts/distai-up.sh) が作り、その場所はレジストリに記録されています。前提の 4 行はレジストリから `infra/eks/backend.hcl` を書き出すので、導入スクリプトはそれを読んで解決します。チェックアウトの外から実行する場合や fresh clone で `backend.hcl` が無い場合は、`TF_STATE_BUCKET` などで明示的に渡します。
 
 ## 2. プロファイルを撮る namespace を用意する
 
@@ -125,7 +133,7 @@ DEV_BUILD=1 ./infra/scripts/install-profiling.sh
 
 種類によって 1 つだけ機能差があります。tracking server は「記録はできるが削除はできない」という粒度の IAM を書けますが、app のデータプレーンは `sagemaker:CallMlflowAppApi` という 1 つのアクションが REST API 全体を覆うため、MLflow を読めるロールは同時に削除もできてしまいます。分析側の reader はこれを受け入れる必要がありますが、削除を仕事にする janitor には app では MLflow の権限を一切与えていません。そのため app では孤児 trace の自動回収が働かず、保持はバケットのライフサイクルルールに委ねられます。
 
-`DATA_LAYER_NAME` はこの基盤の記録側 (trace バケット、MLflow、S3 Files) の一式に付ける名前で、初回だけ指定します。名前はバケット名の接頭辞になるので、既に別のデータ層がある環境では必ず別名にしてください。導入が成功すると、このデータ層がこのクラスタに紐づいたことがレジストリに記録されるので、2 回目以降は前提の 2 行が解決してくれます。`CREATE_DATA_LAYER=1` は新規作成の明示的な許可で、既定では既存のデータ層の再利用しかしません。誤って 2 つ目を作ると記録が二分されるからです。
+`DATA_LAYER_NAME` はこの基盤の記録側 (trace バケット、MLflow、S3 Files) の一式に付ける名前で、初回だけ指定します。名前はバケット名の接頭辞になるので、既に別のデータ層がある環境では必ず別名にしてください。導入が成功すると、このデータ層がこのクラスタに紐づいたことがレジストリに記録されるので、2 回目以降は前提の 2 行が解決されます。`CREATE_DATA_LAYER=1` は新規作成の明示的な許可で、既定では既存のデータ層の再利用しかしません。誤って 2 つ目を作ると記録が二分されるからです。
 
 1 つのクラスタに複数のデータ層を紐づけることもできます。テナントごとに分けたい場合や保持期間を変えたい場合で、`infra/scripts/distai-attach-data-layer.sh -c <cluster> --list` で現在の一覧と既定を確認できます。
 
@@ -374,7 +382,7 @@ alias は調査キャンペーン 1 つに 1 つ付け、条件の違いは `--p
 | profiler のオプション | 実行ごとに `--nsys-args` で指定します。既定値への追加ではなく全置換で、既定を変えるならクライアント `infra/eks/bin/kubectl-accelprof` に埋め込まれた Job の環境変数です |
 | Job の形 (ボリューム、affinity、サイドカー) | 実行ごとなら `--patch` です。恒久的に変えるならクライアントに埋め込まれた Job を直し、`infra/eks/tests/run-render-tests.sh --update` で golden マニフェストを更新します。埋め込みにしているのは、クライアントを PATH にコピーしても動くようにするためです |
 | 撮る Pod (rank) | 既定は rank 0 の Pod だけです。`--profile-ranks` で広げますが、これは Pod 単位の指定です |
-| profiler や記録の実装そのもの | `infra/eks/images/accelprof/entry.sh` と `recorder.py` です。基盤イメージに焼き込んであるので、変更後は `infra/eks/scripts/build-profiling-images.sh` で焼き直してから導入スクリプトを再実行します |
+| profiler や記録の実装そのもの | `infra/eks/images/accelprof/entry.sh` と [`recorder.py`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/images/accelprof/recorder.py) です。基盤イメージに焼き込んであるので、変更後は `infra/eks/scripts/build-profiling-images.sh` で焼き直してから導入スクリプトを再実行します |
 | Job を残す期間 | `--ttl` です。短くすると `kubectl accelprof get` で run_id を引ける期間も短くなります。恒久的な照会は MLflow 側です |
 | 記録のスキーマ (metrics の意味づけなど) | accelprof パッケージ側です。記録 API とファイル契約の仕様はライブラリの持ち物で、いつどこで呼ぶかが基盤の持ち物という切り分けです |
 

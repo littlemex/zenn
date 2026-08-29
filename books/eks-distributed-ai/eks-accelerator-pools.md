@@ -121,7 +121,7 @@ terraform apply
 
 Kubeflow Trainer v2 の TrainJob は、Pod への `nodeSelector` や `tolerations` をトップレベルの専用フィールドとしては持たず（`spec.podSpecOverrides` で上書きする口はありますが）、Pod スペックの土台は Basic02 で確認した `ClusterTrainingRuntime`(`torch-distributed-eks`)が持ちます。そこに焼き込まれた `nodeSelector: { node-role: <値> }` がどのプールに載せるかを決めます。本構成では上書きに頼らず、Helm の `trainjobTrain.nodeRole` を `gpu-ddp` に切り替えて `torch-distributed-eks` を再レンダリングすることで GPU プールへ載せ替えます。
 
-Basic02 と同じ `ddp.py`(CUDA が見えれば nccl backend を自動選択するコード)を、同じ `ddp-sample` イメージ(CUDA ベース)で動かすので、学習コード・イメージのどちらも変更不要です。変わるのは Helm に渡す値(`nodeRole`、`gpu.enabled`、`gpu.count`)だけです。
+Basic02 と同じ [`ddp.py`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/manifests/ddp-sample/ddp.py)(CUDA が見えれば nccl backend を自動選択するコード)を、同じ `ddp-sample` イメージ(CUDA ベース)で動かすので、学習コード・イメージのどちらも変更不要です。変わるのは Helm に渡す値(`nodeRole`、`gpu.enabled`、`gpu.count`)だけです。
 
 既存の TrainJob が残っていると spec が同一のため apply しても再実行されないので、作り直す前に削除します。イメージは Basic02 で push した `ddp-sample` で、`ECR_URL` の導出も Basic02 と同じです。
 
@@ -228,7 +228,7 @@ PASS: 11  FAIL: 0  SKIP: 0  TOTAL: 11
 
 ## 5. 後片付け
 
-本章で起動する GPU ノードは、この book で最初に触れる高額なリソースです。確認が済んだら TrainJob を削除して、ノードが回収されることまで見届けてください。
+本章で起動する GPU ノードは、本書で最初に触れる高額なリソースです。確認が済んだら TrainJob を削除して、ノードが回収されることまで見届けてください。
 
 ```bash
 k delete trainjob ddp-trainjob

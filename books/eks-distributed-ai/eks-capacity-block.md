@@ -32,7 +32,7 @@ CB を使う最低限の運用フローは次のようになります。
 3. `cr-...` を `accelerator_pools` の該当プールに書き込み `terraform apply` する
 4. 確保したノードでワークロードを動かす
 
-この章に付属する CB 関連の helper script は `00-check-cb-offerings.sh`、`01-purchase-cb.sh`、`02-post-purchase.sh`、`04-teardown.sh` の 4 つです（`03-` は欠番で、そういうファイルはありません）。
+この章に付属する CB 関連の helper script は [`00-check-cb-offerings.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/00-check-cb-offerings.sh)、[`01-purchase-cb.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/01-purchase-cb.sh)、[`02-post-purchase.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/02-post-purchase.sh)、[`04-teardown.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/04-teardown.sh) の 4 つです（`03-` は欠番で、そういうファイルはありません）。
 
 この構成には予約の終了時刻から自動的に期限アラートを組み立てる仕組みが入っています。プールに `cb_reservation_id` を書いておくと、Terraform がその予約の終了時刻を自動的に読み取り、Amazon EventBridge Scheduler の one-shot スケジュールを 1 プールにつき 1 つ作り、終了 1 時間前に Amazon SNS へ通知します。発火後はそのスケジュール自体が AWS 側から消えます。ここで素朴に作ると、次の `terraform apply` が消えたスケジュールを過去の時刻で作り直そうとして API に拒否され、以降 apply が通らなくなります。これを避けているのは自己削除ではなく Terraform 側の時刻フィルタで、通知時刻 (終了 1 時間前) がすでに過ぎたプールをスケジュールの対象から外しています。同じ仕組みを自分で組む場合は、この 2 つを対で用意しないと apply が毎回失敗します。例外は、通知時刻の直前に `plan` を作って直後に `apply` する場合です。このときは `plan` の時点では未来だった時刻が `apply` の時点で過去になっているため、その 1 回の apply が失敗します。`plan` を作り直せば解消します。この時刻フィルタには読者に見える帰結が 1 つあります。終了 1 時間前を過ぎてから初めて `apply` した場合、スケジュールも SNS トピックも作られません。後述の手順 5 で `cb_expiry_alert_schedule_exprs` が空の map、`cb_expiry_sns_topic_arn` が空文字になるのはこのケースで、設定の失敗ではありません。
 
@@ -227,7 +227,7 @@ cb_expiry_sns_topic_arn = "arn:aws:sns:<region>:<account>:<cluster_name>-cb-expi
 
 予約から自動導出された終了時刻（または `cb_end_date` で明示的に上書きした終了時刻）の 1 時間前に `at()` 式の Amazon EventBridge Scheduler スケジュールが 1 つ作られ、共有 Amazon SNS トピックにメール通知が届きます。通知が来たらワークロードの graceful drain を開始します。
 
-メールを受け取るには、通知先アドレスを `terraform.tfvars` の `cb_alert_email_addresses` に設定して apply しておきます。設定すると Terraform が SNS トピックへの email サブスクリプションを作成しますが、AWS から確認メールが届くので、その中のリンクを一度クリックして承認するまで通知は届きません（SNS の仕様です）。
+メールを受け取るには、通知先アドレスを `terraform.tfvars` の [`cb_alert_email_addresses`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/variables.tf) に設定して apply しておきます。設定すると Terraform が SNS トピックへの email サブスクリプションを作成しますが、AWS から確認メールが届くので、その中のリンクを一度クリックして承認するまで通知は届きません（SNS の仕様です）。
 
 ```hcl
 # terraform.tfvars

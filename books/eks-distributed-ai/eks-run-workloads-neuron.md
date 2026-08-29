@@ -114,7 +114,7 @@ trn2 ノードは Trainium デバイスが 1 個しかないため、Deployment 
 
 リソース要求も押さえておきます。このチャートは CPU を 8、メモリを request 24Gi / limit 96Gi で要求し、`/dev/shm` に 8Gi の tmpfs を割り当てます。Basic07 と同じく `/dev/shm` の使用量はコンテナのメモリ制限に計上されるので、Pod が `Pending` のときは Neuron デバイスの数だけでなく CPU とメモリの空きを、`OOMKilled` のときは `/dev/shm` を含む実使用を見てください。値は `--set neuronVllmPlugin.cpu=...` などで変えられます。
 
-以上の設定はチャート（`charts/experiments` の `values.yaml`、`neuronVllmPlugin`）に定義されています。有効化してレンダリングし、適用します。`model` などを変えたい場合は `--set neuronVllmPlugin.model=...` で上書きできます。
+以上の設定はチャート（`charts/experiments` の [`values.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/values.yaml)、`neuronVllmPlugin`）に定義されています。有効化してレンダリングし、適用します。`model` などを変えたい場合は `--set neuronVllmPlugin.model=...` で上書きできます。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
