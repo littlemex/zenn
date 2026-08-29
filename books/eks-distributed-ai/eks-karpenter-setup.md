@@ -31,7 +31,7 @@ Karpenter は、スケジュールできずに `Pending` のままになって�
 
 2 つ目は認証方式です。Karpenter コントローラが Amazon EC2 の起動・終了などの AWS API を呼ぶために必要な権限は、Amazon EKS Pod Identity を使って付与します。Pod Identity は IAM ロールとの結び付けを ServiceAccount のアノテーションではなく EKS 側のリソース（Pod Identity Association）で完結させられるため、設定がシンプルになります。これが機能するには `eks-pod-identity-agent` アドオンが必要ですがこれは導入済みです。
 
-3 つ目は Spot 中断への対応です。Karpenter は SQS の interruption queue を経由して、Spot インスタンスの中断通知や AWS のヘルスイベント（スケジュールされた変更）などを受け、対象ノード上の Pod を強制終了ではなく 安全に drain してから終了させます。なお rebalance recommendation もこの queue に届きますが、Karpenter はこれを能動的なノード置換のトリガーにはしません（drain の対象は Spot 中断警告・スケジュール変更ヘルスイベント・インスタンス停止/終了です）。この queue と、通知を queue に流す Amazon EventBridge ルールの作成も、Karpenter 導入の一部として行います。
+3 つ目は Spot 中断への対応です。Karpenter は SQS の interruption queue を経由して、Spot インスタンスの中断通知や AWS のヘルスイベント（スケジュールされた変更）などを受け、対象ノード上の Pod を強制終了ではなく 安全に退避させてから終了させます。なお rebalance recommendation もこの queue に届きますが、Karpenter はこれを能動的なノード置換のトリガーにはしません（drain の対象は Spot 中断警告・スケジュール変更ヘルスイベント・インスタンス停止/終了です）。この queue と、通知を queue に流す Amazon EventBridge ルールの作成も、Karpenter 導入の一部として行います。
 
 drain で退去した Pod は削除され、それを管理する上位コントローラ（Deployment や Job／TrainJob など）が代替の Pod を作成します。その代替 Pod が `Pending` になり、これを Karpenter のプロビジョニングが検知して、要求を満たす新しいノードを自動で起動します（上位コントローラを持たない上位コントローラを持たない Pod は再作成されず、Job 系も restart 設定しだいでは代替が作られない点に注意します）。中断ハンドリング（消す側）とプロビジョニング（立てる側）は別々に動くため、明示的な再取得の指示は要りません。なお `terraform destroy` の側は、ノードが消えるのを待つだけではありません。待ちが終わらなくなるのを避けるため、全 namespace の TrainJob と全 NodePool を先に削除します。共有クラスタや別 namespace に手で置いた TrainJob も対象になる点は Basic11 で改めて扱います。次にどの購入オプションで再確保するかは NodePool の `karpenter.sh/capacity-type` に許可した値しだいで、`spot` だけなら在庫があれば再び Spot を、`spot` と `on-demand` を併記していれば Spot が確保できないときは on-demand にフォールバックして台数を満たします。ただし立ち上がるのは元と同じインスタンスではなく別ノードなので、途中結果は共有ストレージ上のスナップショットから resume する前提で組みます。Basic02 で `/shared/output/trainjob-cpu/snapshot.pt` に保存したものがこれにあたり、同じ TrainJob を作り直すと [`ddp.py`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/manifests/ddp-sample/ddp.py) が起動時にそのファイルを見つけて途中のエポックから再開します（Basic02 では保存されたことの確認までで、再開そのものを試す手順は置いていません）。中断そのものを避けたい長時間ジョブには、Spot のような突発的中断が起きない Capacity Block を選ぶ、という使い分けになります（Capacity Block も予約終了の 30 分前からインスタンスの回収が始まるため、終了処理やチェックポイントはそれを見込んで設計します）。
 
@@ -220,7 +220,7 @@ DRA が GA になったからといって、本書の構成にそのまま持ち
 
 # ワークショップ実施
 
-Karpenter は Basic01 の `terraform apply` に含めて導入済みの構成です。ここでは導入結果を確認します。以降のコマンドは Basic01 step 2 の 4 行を実行済みの前提です（ターミナルを開き直した場合はその 4 行をもう一度実行してください）。
+Karpenter は Basic01 の `terraform apply` に含めて導入済みの構成です。ここでは導入結果を確認します。以降のコマンドは Basic01 手順 2 の 4 行を実行済みの前提です（ターミナルを開き直した場合はその 4 行をもう一度実行してください）。
 
 ## 1. Karpenter コントローラの起動を確認する
 

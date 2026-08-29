@@ -34,7 +34,7 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 ## 1. 前提を確認する
 
 - Basic04 で `gpu-ddp` プールを定義・apply 済みであること
-- `k` と `KUBECONFIG` は Basic01 step 2 の 4 行で設定済みであること
+- `k` と `KUBECONFIG` は Basic01 手順 2 の 4 行で設定済みであること
 - NVIDIA GPU Operator は Basic04 の apply で導入済みであること
 
 本章は既存のプールと GPU Operator の上に vLLM の Deployment を載せるだけなので、新しくインフラを足す操作はありません。

@@ -51,7 +51,7 @@ GPU 版（Basic07）との対応関係は次のとおりです。
 
 - Basic05 の手順で trn2.3xlarge の Capacity Block をメルボルンリージョンで確保ずみ
 - Basic05 の手順で `terraform apply` で NodePool 作成済み
-- `k` と `KUBECONFIG` は Basic01 step 2 の 4 行で設定済み
+- `k` と `KUBECONFIG` は Basic01 手順 2 の 4 行で設定済み
 
 trn2 の NodePool と、すでにノードが起動している場合の Neuron リソースを確認します。Karpenter は要求があってからノードを起動するので、手順 3 の Deployment を投入する前は `k get nodes` が空になるのが正常です。空だった場合は `k get nodepool` で NodePool の存在だけを確かめて手順 3 に進んでください。
 

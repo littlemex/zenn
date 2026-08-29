@@ -98,7 +98,7 @@ NMA を GPU ノードで正しく動かすための設定、実際に GPU 障害
 
 - `terraform apply` を実行済みであること
 - Basic04 で NVIDIA GPU Operator 導入済み、vLLM サーバー起動済みであること
-- `k` と `KUBECONFIG` が Basic01 step 2 の 4 行で設定済みであること
+- `k` と `KUBECONFIG` が Basic01 手順 2 の 4 行で設定済みであること
 - `jq` 導入済み
 
 ## 2. 監視スタックが動いていることを確認する

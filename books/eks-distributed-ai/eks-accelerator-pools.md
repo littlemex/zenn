@@ -5,7 +5,7 @@ free: true
 
 GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0)
 
-本章では、Basic02 で CPU だけだった分散学習(DDP)を GPU に載せ替えます。ここでは Karpenter の混在させた確保の実験も兼ねて、g5 と g6 を混ぜた spot+on-demand フォールバック構成で 2 ノード GPU DDP を実行してみます。なお spot を混ぜた DDP は本来、バッチ推論やデータ前処理に向くもので、大規模な分散学習では中断のたびに全 rank が最後のスナップショットからやり直しになるため実用的ではありません。本章はあくまで「すでに動かした DDP を GPU に載せ、Karpenter の混在させた確保を確かめる」実験としての位置づけです。
+本章では、Basic02 で CPU だけだった分散学習(DDP)を GPU に載せ替えます。ここでは Karpenter の混在させた確保の実験も兼ねて、g5 と g6 を混ぜた Spot とオンデマンドを組み合わせた構成で 2 ノード GPU DDP を実行してみます。なお Spot を混ぜた DDP は本来、バッチ推論やデータ前処理に向くもので、大規模な分散学習では中断のたびに全 rank が最後のスナップショットからやり直しになるため実用的ではありません。本章はあくまで「すでに動かした DDP を GPU に載せ、Karpenter の混在させた確保を確かめる」実験としての位置づけです。
 
 # 解説
 
@@ -17,12 +17,12 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 
 ## この章で試すこと
 
-この章で試すのは Karpenter の混在させた確保、すなわち複数のインスタンスタイプと購入オプション（spot／on-demand）を 1 つの NodePool に許可して、確保できるものからノードを起動する挙動です。単一のインスタンスタイプ・単一の購入オプションに絞ると、そのサイズや spot 在庫が足りないときに確保に失敗して先に進めなくなりますが、混在させておくと空いている組み合わせで埋められます。これは単発の実験ジョブなどでノードを確保したい場面で役に立ちます。ここではその挙動を、すでに動かした DDP を GPU に載せて確かめます。
+この章で試すのは Karpenter の混在させた確保、すなわち複数のインスタンスタイプと購入オプション（Spot とオンデマンド）を 1 つの NodePool に許可して、確保できるものからノードを起動する挙動です。単一のインスタンスタイプ・単一の購入オプションに絞ると、そのサイズや spot 在庫が足りないときに確保に失敗して先に進めなくなりますが、混在させておくと空いている組み合わせで埋められます。これは単発の実験ジョブなどでノードを確保したい場面で役に立ちます。ここではその挙動を、すでに動かした DDP を GPU に載せて確かめます。
 
 本章のアプローチは次の通りです。
 
 - g5(A10G)と g6(L4)を**異なる世代を混在させます**: 片方が取れなくても他方でノードが立ちます
-- spot を第一優先、on-demand をフォールバックにします: コストを抑えつつ 2 台確保します
+- Spot を第一優先、オンデマンドをフォールバックにします: コストを抑えつつ 2 台確保します
 - 単一 AZ に固定します: cross-AZ レイテンシの影響を避けます(マルチ AZ 構成も作り的には可能です)
 
 :::message
@@ -235,7 +235,7 @@ k delete trainjob ddp-trainjob
 k get nodeclaims -w
 ```
 
-Pod が消えると NodePool の `consolidationPolicy` に従って Karpenter がノードを回収します。`k get nodeclaims` が空になれば GPU の課金は止まります。回収は非同期で数分かかるので、空になるまで待ってから次章に進みます。ここで NodeClaim が残り続ける場合は、まだ Pod が残っているか、Pod に `karpenter.sh/do-not-disrupt` が付いたままかのどちらかなので、`k get pods` で確認します (`k` の既定 namespace は Basic01 step 2 の 4 行で `distai` に設定済みです)。
+Pod が消えると NodePool の `consolidationPolicy` に従って Karpenter がノードを回収します。`k get nodeclaims` が空になれば GPU の課金は止まります。回収は非同期で数分かかるので、空になるまで待ってから次章に進みます。ここで NodeClaim が残り続ける場合は、まだ Pod が残っているか、Pod に `karpenter.sh/do-not-disrupt` が付いたままかのどちらかなので、`k get pods` で確認します (`k` の既定 namespace は Basic01 手順 2 の 4 行で `distai` に設定済みです)。
 
 NodePool 自体は残しておいてかまいません。Karpenter は要求があってからノードを起動するので、プールが存在するだけでは課金されません。Basic07 と Basic08 はこの `gpu-ddp` プールをそのまま使います。
 
@@ -243,7 +243,7 @@ NodePool 自体は残しておいてかまいません。Karpenter は要求が�
 
 ここまでの `accelerator_pools`（Terraform の map 変数を専用 tfvars ファイルで管理する方式）は、一人ないし信頼できる少人数が同じ Terraform state を触る前提では十分に機能します。一方で、複数チームがひとつのクラスタを共有するマルチテナント運用に持ち込もうとすると、次の限界が見えてきます。
 
-::::details マルチテナントで tfvars 方式が破綻する理由
+::::details マルチテナントで tfvars 方式では足りなくなる理由
 - **ファイル単位の分離ができない**: `accelerator_pools` は単一の map 変数なので、チーム A とチーム B が別ファイルに `accelerator_pools = {...}` を書くと、本章冒頭で見たのと同じ重複代入エラーになります。結局ひとつのファイルを全員で編集することになり、プルリクエストが恒常的にコンフリクトします。
 - **RBAC で権限を絞れない**: Terraform state と AWS の認証情報を持つ人は、他チームのプール定義も含めて何でも書き換えられます。「チーム A は自分のプールだけ作れる」「Capacity Block の ID はプラットフォーム管理者が許可したものだけ使える」といった、Kubernetes の RBAC 相当の権限分離を tfvars では表現できません。
 - **ノードの分離境界を宣言できない**: あるチームのプールで立てたノードに、他チームの Pod が載らないようにする taint／label の対応関係を、テナント自身が勝手に書き換えられないよう固定する仕組みがありません。tfvars は「誰が書いたか」を区別しないため、境界フィールド（テナント taint や `capacity-type: reserved` のピン留め）を守れません。
@@ -262,4 +262,4 @@ NodePool 自体は残しておいてかまいません。Karpenter は要求が�
 - [Amazon EC2 スポットインスタンス](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-spot-instances.html)
 - [Kubeflow Trainer](https://www.kubeflow.org/docs/components/trainer/)
 - [対象モジュール infra/eks](https://github.com/littlemex/distributed-ai/tree/main/infra/eks)
-- [実験ワークロード chart（charts/experiments）](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/charts/experiments)
+- [実験ワークロードのチャート（charts/experiments）](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/charts/experiments)
