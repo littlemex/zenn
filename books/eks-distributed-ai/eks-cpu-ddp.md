@@ -237,7 +237,7 @@ k logs -f --tail=-1 -l "$SEL"
 
 単一ノードの `torchrun`（1 Pod 内で複数プロセス）ならログは 1 つのストリームに合流しますが、TrainJob では `node-0-0` と `node-0-1` が別々の Pod・別々のノードで動く独立したプロセスなので、`kubectl logs` も Pod ごとに別々に取ります。`node-0-0` では rank 0 が gloo backend で起動します。スナップショットの保存は rank 0 が担当するため、その行は `node-0-0` 側にのみ現れます。
 
-`downloading MNIST to /shared/mnist-data` の行は rank 0 と rank 1 の両方に出ます。`ddp.py` が全 rank から無条件に `download=True` を渡す実装になっているためです（rank 0 だけがダウンロードして他 rank を `dist.barrier()` で待たせる定石もありますが、ダウンロードが分散初期化のタイムアウトを超えるとデッドロックするため、`ddp.py` は全 rank ダウンロードを選んでいます）。初回はここで実際に共有ストレージ上の `/shared/mnist-data` に落ち、2 回目以降は torchvision 側が既にファイルが揃っていれば再取得をスキップするので、この行は「確認しただけ」を意味します。共有パスへ複数 rank がほぼ同時に初回ダウンロードするため、ごくまれにタイミング依存でダウンロードが失敗することがあります。その場合は TrainJob を作り直せば、多くはデータが揃った状態から先へ進みます。
+`downloading MNIST to /shared/mnist-data` の行は rank 0 と rank 1 の両方に出ます。`ddp.py` が全 rank から無条件に `download=True` を渡す実装になっているためです。rank 0 だけがダウンロードして他の rank を `dist.barrier()` で待たせる書き方もありますが、ダウンロードが分散初期化のタイムアウトを超えると停止してしまいます。そのため `ddp.py` は全 rank でダウンロードする形にしています。初回はここで実際に共有ストレージ上の `/shared/mnist-data` に落ち、2 回目以降は torchvision 側が既にファイルが揃っていれば再取得をスキップするので、この行は「確認しただけ」を意味します。共有パスへ複数 rank がほぼ同時に初回ダウンロードするため、ごくまれにタイミング依存でダウンロードが失敗することがあります。その場合は TrainJob を作り直せば、多くはデータが揃った状態から先へ進みます。
 
 ```
 [rank 0/2] backend=gloo cuda_available=False device_count=0

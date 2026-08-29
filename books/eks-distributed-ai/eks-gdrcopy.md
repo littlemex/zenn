@@ -31,13 +31,13 @@ GDRCopy は、この二つとは別のライブラリである。GPU の BAR1 �
 
 libfabric の EFA プロバイダは、受信したデータを GPU メモリへ書き込むときにコピー経路を選ぶ。GDRCopy が使える場合は CPU が BAR1 マッピング経由で直接コピーする。使えない場合は、EFA デバイス経由のループバック read でホストのバウンスバッファに一度受けてから GPU メモリへコピーする代替経路にフォールバックする。これは libfabric 公式のビルドドキュメントに明記されている挙動である（[Building the EFA provider](https://github.com/ofiwg/libfabric/blob/main/prov/efa/docs/building.md) の `--with-gdrcopy` の項）。
 
-ここで重要なのは、GDRCopy が役に立つのは小さいメッセージに限られるという点である。libfabric の EFA プロバイダは、GDRCopy を使う受信コピーのサイズ上限を環境変数で持ち、本書執筆時点の既定は 32 KB 程度である。それより大きいバルク転送は GPUDirect RDMA が NIC から GPU メモリへ直接書き込むので、GDRCopy の有無に関係なく同じ経路を通る。したがって GDRCopy は小メッセージのコピーレイテンシを詰める補助であって、all-reduce のような大きなテンソルの集合通信の帯域には効かない。この点は本章の最後で実測して確かめる。
+ここで重要なのは、GDRCopy が役に立つのは小さいメッセージに限られるという点である。libfabric の EFA プロバイダは、GDRCopy を使う受信コピーのサイズ上限を環境変数で持ち、執筆時点の既定は 32 KB 程度である。それより大きいバルク転送は GPUDirect RDMA が NIC から GPU メモリへ直接書き込むので、GDRCopy の有無に関係なく同じ経路を通る。したがって GDRCopy は小メッセージのコピーレイテンシを詰める補助であって、all-reduce のような大きなテンソルの集合通信の帯域には効かない。この点は本章の最後で実測して確かめる。
 
 ## GPU Operator では入らない理由
 
 このワークショップのクラスタは、NVIDIA ドライバが AMI にプリインストールされた Capacity Block の GPU AMI を使う。そのため NVIDIA GPU Operator は `driver.enabled=false`（ドライバを Operator が管理しない）で動かしている。[Basic04](eks-accelerator-pools) で導入したこの構成が、GDRCopy にそのまま響く。
 
-GPU Operator にも GDRCopy を有効化する `gdrcopy.enabled` というオプションがある。しかしこの GDRCopy コンポーネントは、Operator が管理するドライバ用 DaemonSet の中のサイドカーコンテナとして実装されている。ドライバを Operator が管理しない構成では、そのドライバ DaemonSet 自体が存在しないため、GDRCopy のサイドカーも起動しない。つまりこのフラグは効かない。しかも構成によっては、単に効かないだけで済まない。`gdrdrv` が無い状態で Operator の gdrcopy 検証が走ると、その検証が終わらず device plugin が GPU を advertise しなくなる。GPU がクラスタから見えなくなるので、影響は「GDRCopy が入らない」ではなく「GPU が使えない」になる。この基盤がこのフラグを既定で無効にしているのはそのためである。この挙動は執筆時点で検証した GPU Operator のバージョンでのもので、将来変わる可能性はあるが、サイドカーがドライバ DaemonSet に同居する構造そのものは NVIDIA が [GPU Operator のドキュメント](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/) で説明している。
+GPU Operator にも GDRCopy を有効化する `gdrcopy.enabled` というオプションがある。しかしこの GDRCopy コンポーネントは、Operator が管理するドライバ用 DaemonSet の中のサイドカーコンテナとして実装されている。ドライバを Operator が管理しない構成では、そのドライバ DaemonSet 自体が存在しないため、GDRCopy のサイドカーも起動しない。つまりこのフラグは反映されない。しかも構成によっては、単に効かないだけで済まない。`gdrdrv` が無い状態で Operator の gdrcopy 検証が走ると、その検証が終わらず device plugin が GPU を advertise しなくなる。GPU がクラスタから見えなくなるので、影響は「GDRCopy が入らない」ではなく「GPU が使えない」になる。この基盤がこのフラグを既定で無効にしているのはそのためである。この挙動は執筆時点で検証した GPU Operator のバージョンでのもので、将来変わる可能性はあるが、サイドカーがドライバ DaemonSet に同居する構造そのものは NVIDIA が [GPU Operator のドキュメント](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/) で説明している。
 
 つまり AMI プリインストールドライバの構成では、GDRCopy はノード側で別途ロードするしかない。これが本章で扱う実装の出発点である。
 
@@ -45,7 +45,7 @@ GPU Operator にも GDRCopy を有効化する `gdrcopy.enabled` というオプ
 
 GDRCopy が BAR1 マッピングを行うには、`gdrdrv` というカーネルモジュールがロードされ、そのインターフェースである `/dev/gdrdrv` というキャラクタデバイスが存在している必要がある。ユーザ空間のライブラリ（`libgdrapi`）はこのデバイスファイルを開いて GPU メモリの mmap をカーネルに要求する。EFA を使うとき、この GDRCopy の初期化を実際に行うのは libfabric の EFA プロバイダである。プロバイダは初期化時に `/dev/gdrdrv` を開けるかどうかで GDRCopy が使えるかを判定する。Basic06 のログに出た `Failed to open gdr handle` は、この `/dev/gdrdrv` が無くて初期化に失敗したという通知だった。
 
-`gdrdrv` はドライバ本体（`nvidia.ko`）とは別のモジュールで、GPU ドライバをインストールしても自動では載らない。EKS の AL2023 GPU AMI（本書執筆時点のバージョン）にも `gdrdrv` は含まれておらず、ブート時に自動ロードもされない。したがって GDRCopy を使うには、このモジュールを自分でノードに載せる仕組みが要る。
+`gdrdrv` はドライバ本体（`nvidia.ko`）とは別のモジュールで、GPU ドライバをインストールしても自動では載らない。EKS の AL2023 GPU AMI（執筆時点のバージョン）にも `gdrdrv` は含まれておらず、ブート時に自動ロードもされない。したがって GDRCopy を使うには、このモジュールを自分でノードに載せる仕組みが要る。
 
 :::message
 GPUDirect RDMA（バルク転送の本体）は `gdrdrv` とは無関係に動く。EFA カーネルドライバが `nvidia.ko` の提供する GPU peer-to-peer DMA の関数を使って GPU メモリへの直接 DMA を確立するため、`gdrdrv` が無くても NCCL のログには `GPU Direct RDMA Enabled for HCA` が出る。`gdrdrv` が要るのはあくまで GDRCopy の側である。
@@ -165,7 +165,7 @@ Basic06 では hugepages を要求しない warmup Pod で先にノードを起�
 
 ## 4. GDRCopy が単体で機能することを確認する（ポジティブコントロール）
 
-効果を測る前に、GDRCopy そのものが正しく動いていることを確かめておく。これをやらないと、後の比較で差が出なかったときに「効かない」のか「そもそも GDRCopy が動いていない」のかを区別できない。GDRCopy に付属する `copylat` は、CPU が BAR1 マッピング経由で GPU メモリへ書き込むレイテンシを測る。本章で使った GPU 向けの DLC イメージにはこのツールが入っていたので、`/dev/gdrdrv` をマウントした GPU Pod を 1 つ立てて実行する。
+効果を測る前に、GDRCopy そのものが正しく動いていることを確かめておく。これをやらないと、後の比較で差が出なかったときに「効かない」のか「そもそも GDRCopy が動いていない」のかを区別できない。GDRCopy に付属する `copylat` は、CPU が BAR1 マッピング経由で GPU メモリへ書き込むレイテンシを測る。本章で使った GPU 向けの DLC イメージにはこのツールが入っていたので、`/dev/gdrdrv` をマウントした GPU Pod を 1 つ起動して実行する。
 
 ```bash
 cat <<EOF | k apply -f -
@@ -196,7 +196,7 @@ k wait --for=condition=ready pod/gdrcopy-probe -n "$NAMESPACE" --timeout=10m
 k exec gdrcopy-probe -n "$NAMESPACE" -- copylat
 ```
 
-`image` は Basic06 の NCCL 測定で使った DLC に読み替える（レジストリのアカウント ID は同じで、リージョンとタグのバージョンサフィックスは自分の環境に合わせる。ここでは `copylat` を実行できればよい。本章で使ったタグには含まれていたが、DLC のバージョンによって同梱の有無や PATH は変わりうるので、`copylat: command not found` になる場合は [NVIDIA/gdrcopy](https://github.com/NVIDIA/gdrcopy) からビルドして持ち込む）。`hostPath` でマウントしたキャラクタデバイス `/dev/gdrdrv` にコンテナ内からアクセスするため `privileged: true` を与えている点に注意する。実機出力は次のとおり。
+`image` は Basic06 の NCCL 測定で使った DLC に読み替える。レジストリのアカウント ID は同じで、リージョンとタグのバージョンサフィックスは自分の環境に合わせる。ここでは `copylat` を実行できればよい。本章で使ったタグには含まれていたが、DLC のバージョンによって同梱の有無や PATH は変わりうる。`copylat: command not found` になる場合は [NVIDIA/gdrcopy](https://github.com/NVIDIA/gdrcopy) からビルドして持ち込む。`hostPath` でマウントしたキャラクタデバイス `/dev/gdrdrv` にコンテナ内からアクセスするため `privileged: true` を与えている点に注意する。実機出力は次のとおり。
 
 ```text
 Test                    Size(B)   Avg.Time(us)
@@ -239,15 +239,15 @@ all-reduce（16 GPU）の結果を次に示す。
 
 手順 4 で GDRCopy 単体は 0.3 us で動くことを確認したうえで、なぜマルチノード通信では差が消えるのか。理由は二つある。一つは、EFA のノード間 point-to-point レイテンシが 40 us 前後で、これは EFA/SRD のネットワーク往復が支配的な値だという点である。GDRCopy が入れ替えるのは受信側のコピー経路の一部で、その経路自体が 0.3 us オーダーで動く。GDRCopy 有効化で変わりうるのは、この経路をフォールバック（ループバック read でバウンスバッファ経由）から差し替えたときの差分だが、いずれの経路もマイクロ秒オーダーであり、40 us のネットワーク往復の中に埋もれてしまう。もう一つは、NCCL の集合通信は小さいメッセージでも独自の低レイテンシプロトコル（LL/LL128）や GPUDirect RDMA の直接書き込みを使い、libfabric の eager 受信コピー経路（GDRCopy が置き換わる箇所）がクリティカルパスに乗りにくいという点である。
 
-つまり GDRCopy は「入れておくと NCCL の初期化警告が消え、libfabric の小メッセージ受信コピーが速くなる」ものであって、all-reduce や NCCL の point-to-point のレイテンシを目に見えて改善する機構ではない。GDRCopy の効果が表に出るのは、EFA のネットワークレイテンシに対してコピーコストの比率が大きくなる場面である。具体的には、libfabric を直接叩く小メッセージ主体の通信や、MoE の all-to-all のように数十 KB 級のメッセージを大量にやり取りする通信、CPU 主導で GPU メモリの小規模な読み書きを繰り返す制御パスなどが該当する。標準的な分散学習の集合通信を実行するうえでは、GDRCopy を入れる前に、まず GPUDirect RDMA が効いていること（次の手順）を確認するほうが効果が大きい。
+つまり GDRCopy は「入れておくと NCCL の初期化警告が消え、libfabric の小メッセージ受信コピーが速くなる」ものであって、all-reduce や NCCL の point-to-point のレイテンシを目に見えて改善する機構ではない。GDRCopy の効果が表に出るのは、EFA のネットワークレイテンシに対してコピーコストの比率が大きくなる場面である。具体的には、libfabric を直接呼び出す小メッセージ主体の通信や、MoE の all-to-all のように数十 KB 級のメッセージを大量にやり取りする通信、CPU 主導で GPU メモリの小規模な読み書きを繰り返す制御パスなどが該当する。標準的な分散学習の集合通信を実行するうえでは、GDRCopy を導入する前に、まず GPUDirect RDMA が機能していること（次の手順）を確認するほうが効果が大きい。
 
 :::message
 本測定は本章の構成（p5.48xlarge 2 ノード、H100 × 16、この libfabric・aws-ofi-nccl のバージョン）での結果である。GDRCopy の効果はネットワークレイテンシとメッセージサイズの比で決まるため、レイテンシのより低いファブリックや、より小さいメッセージ主体のワークロードでは差が出る可能性がある。読者の環境で効果を確かめるには、手順 4 の `copylat` で GDRCopy 単体の動作を確認したうえで、自分の通信パターンで有効・無効を測るとよい。
 :::
 
-## 6. GPUDirect RDMA が効いていることを確認する
+## 6. GPUDirect RDMA が機能していることを確認する
 
-GDRCopy の有無に関わらず、EFA のバルク転送を支える GPUDirect RDMA が効いていることは NCCL のログで確認できる。この確認は NCCL ジョブを一度実行したあとに行う。`GPU Direct RDMA Enabled` は NCCL が GPU メモリを NIC に登録したときに出るログなので、ジョブを走らせる前や登録前のノードでは出ない。Basic06 の NCCL 測定ジョブ（`ncclTrainjob`）を流したあとに、その Pod のログを見る。
+GDRCopy の有無に関わらず、EFA のバルク転送を支える GPUDirect RDMA が機能していることは NCCL のログで確認できる。この確認は NCCL ジョブを一度実行したあとに行う。`GPU Direct RDMA Enabled` は NCCL が GPU メモリを NIC に登録したときに出るログなので、ジョブを走らせる前や登録前のノードでは出ない。Basic06 の NCCL 測定ジョブ（`ncclTrainjob`）を流したあとに、その Pod のログを見る。
 
 ```bash
 k -n "$NAMESPACE" logs -l jobset.sigs.k8s.io/jobset-name=nccl-trainjob --tail=-1 \
@@ -259,7 +259,7 @@ NET/Libfabric : GPU Direct RDMA Enabled for HCA 0 'rdmap85s0'
 NET/Libfabric : GPU Direct RDMA Enabled for HCA 1 'rdmap87s0'
 ```
 
-このクラスタの GPU ノードでは、`nvidia-peermem` という別モジュールを使わずに、NVIDIA のオープンソースカーネルモジュール（`nvidia.ko`）自身が公開する GPU peer-to-peer DMA の関数を EFA ドライバが直接使って GPUDirect RDMA を確立している。ホスト側を覗くと、`nvidia-peermem` はロードされていないのに EFA ドライバが peer memory を獲得している。ホストのカーネルモジュール一覧とカーネルログはノード上でしか見えないので、`hostPID` と host ルートマウントを持つ使い捨ての特権 Pod を 1 つ立てて `chroot` で確認する（`NODE` は対象ノード名に読み替える）。
+このクラスタの GPU ノードでは、`nvidia-peermem` という別モジュールを使わずに、NVIDIA のオープンソースカーネルモジュール（`nvidia.ko`）自身が公開する GPU peer-to-peer DMA の関数を EFA ドライバが直接使って GPUDirect RDMA を確立している。ホスト側を覗くと、`nvidia-peermem` はロードされていないのに EFA ドライバが peer memory を獲得している。ホストのカーネルモジュール一覧とカーネルログはノード上でしか見えないので、`hostPID` と host ルートマウントを持つ使い捨ての特権 Pod を 1 つ起動して `chroot` で確認する（`NODE` は対象ノード名に読み替える）。
 
 ```bash
 NODE=$(k get nodes -l node-role=$POOL -o jsonpath='{.items[0].metadata.name}')
@@ -292,7 +292,7 @@ nvidia              14422016  270 nvidia_uvm,gdrdrv,nvidia_modeset
 efa: Acquired peer memory using P2P
 ```
 
-`nvidia-peermem` の行が出ず、それでも `Acquired peer memory using P2P` が出ていれば、`nvidia.ko` 直結の経路で GPUDirect RDMA が効いている。GDRCopy とは独立にバルク転送が成立していることの裏付けになる。
+`nvidia-peermem` の行が出ず、それでも `Acquired peer memory using P2P` が出ていれば、`nvidia.ko` 直結の経路で GPUDirect RDMA が機能している。GDRCopy とは独立にバルク転送が成立していることの裏付けになる。
 
 ## 7. 後始末をする
 
@@ -319,6 +319,6 @@ terraform apply -var gdrcopy_mode=off
 
 導入面では、AMI プリインストールドライバの構成では GPU Operator の GDRCopy が使えないため、ノード側で `gdrdrv` を載せる必要があることを押さえた。AL2023 が `gdrcopy-kmod` を DKMS パッケージとして提供し、同梱の `gdrcopy.service` がロードと再起動をまたいだ永続化を引き受けるため、`dnf install` 一回で足りる。`infra/eks` ではこれを `gdrcopy_mode`（`userdata` / `daemonset`）で選べるようにした。
 
-実測では、GDRCopy 単体は `copylat` で 0.3 us オーダーの低レイテンシコピーとして確かに動作した。それでも p5 2 ノードの point-to-point と all-reduce では、GDRCopy の有無でレイテンシに差が出なかった。EFA のノード間レイテンシが 40 us 前後で、GDRCopy が入れ替える受信コピー経路の差分がその中に埋もれるためである。GDRCopy の恩恵はネットワークレイテンシに対してコピーコストの比率が大きい通信に限られる。分散学習の集合通信を実行するうえでは、GDRCopy を入れる前にまず `GPU Direct RDMA Enabled` が出ていることを確認するのが実務上の優先順位になる。
+実測では、GDRCopy 単体は `copylat` で 0.3 us オーダーの低レイテンシコピーとして確かに動作した。それでも p5 2 ノードの point-to-point と all-reduce では、GDRCopy の有無でレイテンシに差が出なかった。EFA のノード間レイテンシが 40 us 前後で、GDRCopy が入れ替える受信コピー経路の差分がその中に埋もれるためである。GDRCopy の恩恵はネットワークレイテンシに対してコピーコストの比率が大きい通信に限られる。分散学習の集合通信を実行するうえでは、GDRCopy を導入する前にまず `GPU Direct RDMA Enabled` が出ていることを確認するのが実務上の優先順位になる。
 
 参考資料として、libfabric の EFA プロバイダのビルドオプションは [Building the EFA provider](https://github.com/ofiwg/libfabric/blob/main/prov/efa/docs/building.md) を、GPUDirect RDMA と GDRCopy の詳細は [NVIDIA GPUDirect RDMA](https://docs.nvidia.com/cuda/gpudirect-rdma/index.html) と [NVIDIA GDRCopy](https://github.com/NVIDIA/gdrcopy) を参照するとよい。実装は [infra/eks](https://github.com/littlemex/distributed-ai/tree/main/infra/eks) にある。
