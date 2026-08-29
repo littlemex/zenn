@@ -7,9 +7,9 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 
 # 本書について
 
-本書は、ML 分散学習・推論の実験を、Amazon EKS 上で回すための基盤を Terraform で構築するワークショップです。Amazon VPC・Amazon EKS・Karpenter といった土台から始めて、アクセラレータノードの動的プロビジョニング、EFA によるマルチノード通信、Capacity Block の取得、共有ストレージ、などを扱います。
+本書は、ML 分散学習・推論の実験を、Amazon EKS 上で回すための基盤を Terraform で構築するワークショップです。Amazon VPC・Amazon EKS・Karpenter といった基盤から始めて、アクセラレータノードの動的プロビジョニング、EFA によるマルチノード通信、Capacity Block の取得、共有ストレージ、などを扱います。
 
-この基盤は、AWS が公開する分散学習リファレンス集 [awslabs/awsome-distributed-ai](https://github.com/awslabs/awsome-distributed-ai) を参考にしながら組み立てています。まず NVIDIA GPU で動く構成を土台に据えつつ、AWS Trainium への対応も目指しています。
+この基盤は、AWS が公開する分散学習リファレンス集 [awslabs/awsome-distributed-ai](https://github.com/awslabs/awsome-distributed-ai) を参考にしながら組み立てています。まず NVIDIA GPU で動く構成を基本に据えつつ、AWS Trainium への対応も目指しています。
 
 # 背景
 
@@ -31,10 +31,10 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 | Purchase Option | Spot/On Demand/Capacity Block などへの対応 |
 | 共有ストレージ | モデルやデータを複数 Pod で共有する |
 
-Kubernetes はもともと「多様なサービスを動的にスケジュールする」ためのプラットフォームです。推論サーバーは Deployment や [KubeRay](https://github.com/ray-project/kuberay) の Service として、学習ジョブは Job や MPIJob として、すべて同じクラスタ上で宣言的に扱えます。アクセラレータノードは Karpenter が Pod の要求に応じて動的に起動し、使い終われば自動で回収します。そのため、上の要求を一度に満たす土台として Amazon EKS を選びました。一度この基盤を立てておけば、あとは Pod を投入するだけで、事前学習・ファインチューニング・推論サービング・強化学習のいずれも同じクラスタで実験できます。
+Kubernetes はもともと「多様なサービスを動的にスケジュールする」ためのプラットフォームです。推論サーバーは Deployment や [KubeRay](https://github.com/ray-project/kuberay) の Service として、学習ジョブは Job や MPIJob として、すべて同じクラスタ上で宣言的に扱えます。アクセラレータノードは Karpenter が Pod の要求に応じて動的に起動し、使い終われば自動で回収します。そのため、上の要求を一度に満たす基盤として Amazon EKS を選びました。一度この基盤を立てておけば、あとは Pod を投入するだけで、事前学習・ファインチューニング・推論サービング・強化学習のいずれも同じクラスタで実験できます。
 
 :::message
-Slurm が劣っているという話ではありません。Slurm ベースの構成のほうがシンプルなこともあります。本書は「推論と学習が入り混じる実験を回したい」というユースケースに対して、Amazon EKS を土台に選ぶ理由と、その具体的な作り方を示すものです。
+Slurm が劣っているという話ではありません。Slurm ベースの構成のほうがシンプルなこともあります。本書は「推論と学習が入り混じる実験を回したい」というユースケースに対して、Amazon EKS を基盤に選ぶ理由と、その具体的な作り方を示すものです。
 :::
 
 以下は、AWS 公式が提供する Amazon SageMaker Hyperpod のガイドです。非常に参考になるので本書 と合わせて、もしくは先にこちらを実施しても良いと思います。

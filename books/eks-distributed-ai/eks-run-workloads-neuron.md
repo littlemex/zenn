@@ -53,7 +53,7 @@ GPU 版（Basic07）との対応関係は次のとおりです。
 - Basic05 の手順で `terraform apply` で NodePool 作成済み
 - `k` と `KUBECONFIG` は Basic01 step 2 の 4 行で設定済み
 
-trn2 の NodePool と、すでにノードが起動している場合の Neuron リソースを確認します。Karpenter は要求があってからノードを起こすので、手順 3 の Deployment を投入する前は `k get nodes` が空になるのが正常です。空だった場合は `k get nodepool` で NodePool の存在だけを確かめて手順 3 に進んでください。
+trn2 の NodePool と、すでにノードが起動している場合の Neuron リソースを確認します。Karpenter は要求があってからノードを起動するので、手順 3 の Deployment を投入する前は `k get nodes` が空になるのが正常です。空だった場合は `k get nodepool` で NodePool の存在だけを確かめて手順 3 に進んでください。
 
 ```bash
 k get nodes -l node.kubernetes.io/instance-type=trn2.3xlarge \
@@ -112,7 +112,7 @@ trn2 ノードは Trainium デバイスが 1 個しかないため、Deployment 
 - `securityContext.capabilities.add: ["IPC_LOCK"]`: Neuron ランタイムが要求します。
 - `progressDeadlineSeconds: 2400`: 初回は数 GB の DLC の pull、モデルのダウンロード、NEFF コンパイルが順に走り、Deployment 既定の進捗期限 600 秒を超えます。これを延ばしておかないと、後述の `rollout status` が待機途中で `ProgressDeadlineExceeded` により失敗します。
 
-リソース要求も押さえておきます。このチャートは CPU を 8、メモリを request 24Gi / limit 96Gi で要求し、`/dev/shm` に 8Gi の tmpfs を割り当てます。Basic07 と同じく `/dev/shm` の使用量はコンテナのメモリ制限に計上されるので、Pod が `Pending` のときは Neuron デバイスの数だけでなく CPU とメモリの空きを、`OOMKilled` のときは `/dev/shm` を含む実使用を見てください。値は `--set neuronVllmPlugin.cpu=...` などで変えられます。
+リソース要求も確認しておきます。このチャートは CPU を 8、メモリを request 24Gi / limit 96Gi で要求し、`/dev/shm` に 8Gi の tmpfs を割り当てます。Basic07 と同じく `/dev/shm` の使用量はコンテナのメモリ制限に計上されるので、Pod が `Pending` のときは Neuron デバイスの数だけでなく CPU とメモリの空きを、`OOMKilled` のときは `/dev/shm` を含む実使用を見てください。値は `--set neuronVllmPlugin.cpu=...` などで変えられます。
 
 以上の設定はチャート（`charts/experiments` の [`values.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/values.yaml)、`neuronVllmPlugin`）に定義されています。有効化してレンダリングし、適用します。`model` などを変えたい場合は `--set neuronVllmPlugin.model=...` で上書きできます。
 
@@ -149,7 +149,7 @@ INFO ... Application startup complete.
 
 Pod が `1/1 Running` になれば準備完了です。
 
-## 5. OpenAI 互換 API を叩く
+## 5. OpenAI 互換 API を呼び出す
 
 port-forward してモデル一覧と推論を確認します。
 
@@ -175,7 +175,7 @@ curl -s localhost:8000/v1/models | python3 -m json.tool
 }
 ```
 
-まずテキストのみの chat completion を叩きます。
+まずテキストのみの chat completion を呼び出します。
 
 ```bash
 curl -s localhost:8000/v1/chat/completions \

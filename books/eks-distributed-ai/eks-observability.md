@@ -8,7 +8,7 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 本章では、Basic07 で動かした GPU ワークロードを観測します。kube-prometheus-stack（Prometheus + Grafana）で、NVIDIA GPU Operator に同梱される DCGM exporter が公開する GPU メトリクス（使用率・温度・メモリなど）を Grafana の UI で確認し、あわせてノード障害の検知も見ていきます。
 
 :::message
-observability は `var.enable_observability = true`（既定で有効）で `terraform apply` に含まれます。Basic03 以降の apply を済ませていれば、`monitoring` namespace に Prometheus と Grafana がすでに立っています。
+observability は `var.enable_observability = true`（既定で有効）で `terraform apply` に含まれます。Basic03 以降の apply を済ませていれば、`monitoring` namespace に Prometheus と Grafana がすでに動いています。
 :::
 
 # 解説
@@ -27,7 +27,7 @@ GPU を使った分散学習・推論では、「GPU が本当に使われてい
 
 構成要素は 3 つです。
 
-- **DCGM exporter**: NVIDIA の Data Center GPU Manager が公開する GPU メトリクスを Prometheus 形式で公開する exporter です。NVIDIA GPU Operator に同梱されており、GPU ノードが立つと各ノードで自動的に動きます
+- **DCGM exporter**: NVIDIA の Data Center GPU Manager が公開する GPU メトリクスを Prometheus 形式で公開する exporter です。NVIDIA GPU Operator に同梱されており、GPU ノードが起動すると各ノードで自動的に動きます
 - **Prometheus**: 各 exporter からメトリクスを定期的に収集・時系列データ保持します
 - **Grafana**: Prometheus のデータをダッシュボードとして可視化します
 
@@ -46,7 +46,7 @@ Prometheus と Grafana は [kube-prometheus-stack](https://github.com/prometheus
 - **付ける側**、つまりノードにラベルを刻むのは observability ではなく、自作中の `karpenter-tenant-pools` CRD の役割です。テナントのプールで起動したノードに `tenantpools.dev/tenant=<namespace>` という**ノードラベル**を付けます。逆に言うと、`karpenter-tenant-pools` を使わずに起動したノードにはこのラベルは付かないので自分でつける必要があります。
 - **使う側**、つまりメトリクスに写すのが observability の [`observability.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/observability.tf) が作る専用の DCGM ServiceMonitor です。ノードに付いている `tenantpools.dev/tenant` ラベルを読み取り、GPU メトリクスの `tenant` というラベルとして写します。ラベルを新たに生成しているのではなく、既にノードにあるラベルを拾ってメトリクスに転記しているだけです。
 
-ここで ServiceMonitor という言葉が出てきたので、実態を補足します。ServiceMonitor は kube-prometheus-stack に含まれる Prometheus Operator が用意する Kubernetes の CRD で、平たく言えば **Prometheus に対する「どの Service を、どのポートで、何秒間隔で収集し、収集したメトリクスにどんなラベルを足すか」を宣言する収集指示書**です。素の Prometheus は設定ファイルに収集対象を静的に書きますが、Prometheus Operator はこの ServiceMonitor という Kubernetes リソースを見て収集設定を自動生成します。
+ここで ServiceMonitor という言葉が出てきたので、実態を補足します。ServiceMonitor は kube-prometheus-stack に含まれる Prometheus Operator が用意する Kubernetes の CRD で、平たく言えば **Prometheus に対する「どの Service を、どのポートで、何秒間隔で収集し、収集したメトリクスにどんなラベルを足すか」を宣言する収集指示書**です。設定を書かない Prometheus は設定ファイルに収集対象を静的に書きますが、Prometheus Operator はこの ServiceMonitor という Kubernetes リソースを見て収集設定を自動生成します。
 
 したがって本章で「自前の ServiceMonitor」と呼んでいるのは、メトリクスを公開する dcgm-exporter は GPU Operator 同梱のものをそのまま使い、その exporter を **どう収集するか**という指示書だけを自分で書いた、という意味です。GPU Operator も標準の ServiceMonitor を出せますが、そこには後述の `attachMetadata` を指定できず `tenant` ラベルを写せないため、標準のものを無効化して、必要な relabeling を仕込んだ指示書に置き換えています。
 

@@ -5,7 +5,7 @@ free: true
 
 GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0)
 
-本章では、変化し続けるコンテナイメージをノードを跨いで賢くキャッシュし、かつ破綻しないためのイメージキャッシュ層を、この分散 AI 基盤に恒久的に組み込む考え方を扱います。特定の 1 イメージを速くする小手先の話ではなく、「キャッシュが無くて毎回コールド pull で待たされるのも、キャッシュが詰まってノードが起動不能になるのも、どちらも困る」という要求に対して、退屈だが壊れない設計を選ぶ判断を示します。
+本章では、変化し続けるコンテナイメージをノードを跨いで賢くキャッシュし、かつ破綻しないためのイメージキャッシュ層を、この分散 AI 基盤に恒久的に組み込む考え方を扱います。特定の 1 イメージを速くする小手先の話ではなく、「キャッシュが無くて毎回コールド pull で待たされるのも、キャッシュがディスクを埋めてノードが起動不能になるのも、どちらも困る」という要求に対して、退屈だが壊れない設計を選ぶ判断を示します。
 
 # 解説
 
@@ -21,10 +21,10 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 
 素朴な発想では「キャッシュを足せば速くなる」と考えますが、この基盤には無視できない支配的な事実が 2 つあります。
 
-- **キャッシュの寿命はノードの寿命に等しくなります**。Karpenter のノード回収の挙動はプールごとに異なり（Basic03 で導入した Karpenter の disruption 設定です）、EFA や予約系のアクセラレータプール（Basic06 で作る `gpu-p4d` や Basic09 の `trn2` など）は `consolidateAfter: Never` でノードを維持しますが、非 EFA のアクセラレータプール（Basic04 の `gpu-ddp` など）と cpu プールは短い `consolidateAfter`（5m / 30s）でアイドルノードを回収します。ノード内のキャッシュをいくら磨いても、対象ノードが消えればキャッシュも消えます。検証反復のコールド pull の主因はキャッシュ層の不在ではなく、回収対象プールでのノードの入れ替わり（churn）です
+- **キャッシュの寿命はノードの寿命に等しくなります**。Karpenter のノード回収の挙動はプールごとに異なり（Basic03 で導入した Karpenter の disruption 設定です）、プールごとに明示指定していない場合の既定では、EFA や予約系のアクセラレータプール（Basic06 で作る `gpu-p4d` や Basic09 の `trn2` など）は `consolidateAfter: Never` でノードを維持し、非 EFA のアクセラレータプール（Basic04 の `gpu-ddp` など）と cpu プールは短い `consolidateAfter`（5m / 30s）でアイドルノードを回収します。プール側で値を書いた場合はそちらが優先されます。ノード内のキャッシュをいくら磨いても、対象ノードが消えればキャッシュも消えます。検証反復のコールド pull の主因はキャッシュ層の不在ではなく、回収対象プールでのノードの入れ替わり（churn）です
 - **digest pin 運用が最強のキャッシュの味方になります**。イメージをタグではなく digest で参照すると、参照はイミュータブルになり「stale キャッシュ」という故障クラスがほぼ消滅します。`imagePullPolicy: IfNotPresent` を安全に使えるようになります
 
-この 2 点を踏まえると、キャッシュ設計の目的は「速くすること」だけでは足りません。**速くする仕組みが失敗したときに、素のコールド pull に静かに戻るだけで済むこと**、つまり良性の故障モードに閉じることが同じくらい重要です。ノードが起動できなくなったり、実行中の学習ジョブが死んだりする故障を持ち込む高速化は、この基盤には入れません。
+この 2 点を踏まえると、キャッシュ設計の目的は「速くすること」だけでは足りません。**速くする仕組みが失敗したときに、通常のコールド pull に静かに戻るだけで済むこと**、つまり良性の故障モードに閉じることが同じくらい重要です。ノードが起動できなくなったり、実行中の学習ジョブが死んだりする故障を持ち込む高速化は、この基盤には入れません。
 
 ## キャッシュは物理的に 4 層しかない
 
@@ -34,17 +34,17 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 
 ### 層 0: ネットワーク基礎
 
-ECR のレイヤ実体は、リージョンによって S3 の presigned URL 経由で配られます。そのため VPC に **S3 gateway endpoint** が無いと、イメージの大部分を占めるレイヤが全て NAT を通り、帯域と課金の両面で律速します。ECR interface endpoint（`ecr.api` / `ecr.dkr`）も併せて用意しますが、こちらを通るのは認証トークンや manifest といった KB 単位のメタデータ往復であり、pull 速度そのものへの寄与は小さく、位置づけは「NAT 障害時に pull が死なない」という衛生面です。この基盤ではどちらも [`vpc-endpoints.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/vpc-endpoints.tf) で IaC 固定しています。
+ECR のレイヤ実体は、リージョンによって S3 の presigned URL 経由で配られます。レイヤが S3 経由になるリージョンでは、VPC に **S3 gateway endpoint** が無いと、イメージの大部分を占めるレイヤの取得が NAT 経由になり、帯域と課金の両面で律速します。ECR interface endpoint（`ecr.api` / `ecr.dkr`）も併せて用意しますが、こちらを通るのは認証トークンや manifest といった KB 単位のメタデータ往復であり、pull 速度そのものへの寄与は小さく、位置づけは「NAT 障害時に pull が死なない」という衛生面です。この基盤ではどちらも [`vpc-endpoints.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/vpc-endpoints.tf) で IaC 固定しています。
 
 ### 層 A: pull 経路
 
-恒久ルールは **「ランタイムで参照するイメージは全て自アカウントの Amazon ECR 発とする」** です。BuildKit で焼く自前イメージは既にそうなっており、直接使う外部イメージ（vLLM 公式、NGC ベースなど）は CI で `crane copy` して自 ECR にミラーします。後の手順で使う `registry.k8s.io/pause` のように、本書が説明のために外部レジストリを直に書いている箇所は、この恒久ルールから外れています。自分の環境で恒久的に置くものは自 ECR にミラーしてから参照してください。なお prewarm チャートもビルド Job も、イメージ参照が自 ECR かどうかは検査しません (prewarm が見るのは digest 指定かどうかだけです)。これは実装のガードではなく運用ルールです。
+恒久ルールは **「ランタイムで参照するイメージは全て自アカウントの Amazon ECR 発とする」** です。BuildKit で焼く自前イメージは既にそうなっており、直接使う外部イメージ（vLLM 公式、NGC ベースなど）は `crane copy` などで自 ECR にミラーしてから使います。これは運用として決めていることで、ミラーを自動化する仕組みや、外部レジストリの直接参照を止める検査はこの実装には入っていません。後の手順で使う `registry.k8s.io/pause` のように、本書が説明のために外部レジストリを直に書いている箇所は、この恒久ルールから外れています。自分の環境で恒久的に置くものは自 ECR にミラーしてから参照してください。なお prewarm チャートもビルド Job も、イメージ参照が自 ECR かどうかは検査しません (prewarm が見るのは digest 指定かどうかだけです)。これは実装のガードではなく運用ルールです。
 
 補助的に ECR pull-through cache（PTC）を Docker Hub や `ghcr` などに設定できますが、位置づけは開発時の利便性とミラー漏れの保険にとどめます。GPU 基盤で最も引きたい上流である nvcr.io（NVIDIA NGC）が PTC 非対応であること、そして「未キャッシュの新規 digest かつ上流障害」では PTC でも pull 不能になることから、ランタイム経路を PTC に依存させるのは避けます。
 
 ### 層 B: ノード内保持
 
-accelerator プール（`terraform.tfvars` の `accelerator_pools` にコメントで例示されている `gpu-p5en` / `trn2` のような構成、この変数の既定値は空マップです）は概ね完成しています。nodeadm の `localStorage.strategy: Raid0` により containerd の data-root が NVMe instance store に載り、instance store は数 TB 級なので imageGC の既定閾値（85/80）に実質到達しません。ここは本実装ではすでに IaC 固定済みで、kubelet の `imageMaximumGCAge` を `168h` に明示設定し、多世代 digest の無限堆積を防いでいます（[`karpenter-resources.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/karpenter-resources.tf) の `local.image_maximum_gc_age` を `accelerator_user_data` に注入）。この設定は**削除を追加する側**であることに注意してください。「未使用のまま 168 時間を超えたイメージを、ディスク閾値に達していなくても消す」という設定であり、閾値 GC（`imageGCHighThresholdPercent` の既定 85%）を置き換えたり抑止したりはしません。イメージを保護する設定ではないので、キャッシュを残したいイメージをこれで守ることはできません。
+accelerator プール（`terraform.tfvars` の `accelerator_pools` にコメントで例示されている `gpu-p5en` / `trn2` のような構成、この変数の既定値は空マップです）は概ね完成しています。nodeadm の `localStorage.strategy: Raid0` により、containerd の data-root が NVMe instance store に載ります。p5 や p5en、trn2 のように大容量の instance store を持つプールでは容量が数 TB 級になるので、imageGC の既定閾値（85/80）には届きにくくなります。どのインスタンスタイプを並べるかはプールの定義しだいなので、小容量のタイプではこの前提は成り立ちません。ここは本実装ではすでに IaC 固定済みで、kubelet の `imageMaximumGCAge` を `168h` に明示設定し、多世代 digest の無限堆積を防いでいます（[`karpenter-resources.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/karpenter-resources.tf) の `local.image_maximum_gc_age` を `accelerator_user_data` に注入）。この設定は**削除を追加する側**であることに注意してください。「未使用のまま 168 時間を超えたイメージを、ディスク閾値に達していなくても消す」という設定であり、閾値 GC（`imageGCHighThresholdPercent` の既定 85%）を置き換えたり抑止したりはしません。イメージを保護する設定ではないので、キャッシュを残したいイメージをこれで守ることはできません。
 
 一方 cpu プールは NVMe を持たず、imagefs と nodefs が単一の gp3 に同居します。ここで見落とされがちな支配的ボトルネックは **gp3 のベースライン throughput 125MiB/s** です。イメージのダウンロードと展開で書き込みが二重に走り、ディスクだけで数分溶けます。ここもすでに IaC 固定済みで、CPU 用 EC2NodeClass の `blockDeviceMappings` に `throughput = 500` / `iops = 6000`（[`variables.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/variables.tf) の `cpu_node_volume_throughput` / `cpu_node_volume_iops` の既定値）を設定し、gp3 のベースラインより高いスループットを確保しています。
 
@@ -56,10 +56,10 @@ accelerator プール（`terraform.tfvars` の `accelerator_pools` にコメン�
 
 この基盤の恒久コアは、次の 2 つだけで構成します。
 
-- **headroom floor**: 低優先度の pause Deployment で、cpu プールにノードを常時 1 台維持します。ノードが生きていればノード provisioning の待ち時間がゼロになるので、prewarm と組み合わせたときに効きます。ただし低優先度である以上、混雑時にはスケジューラに押し出されてノードごと入れ替わり得るため、これ単体ではキャッシュの永続性を保証しません（手順 2 で実測を示します）
-- **prewarm DaemonSet（素朴実装）**: 温めたいイメージを、何もせず居続けるだけのコンテナとして並べ、kubelet に pull させる DaemonSet です。ノードが新規参加すると自動で温まります。コントローラも CRD も不要で、認証も通常のワークロードと同じ経路なので追加の前提を 1 つも持ち込みません。pull が失敗してもワークロードは通常のコールド pull に落ちるだけという自明な故障挙動を持ちます
+- **headroom floor**: 低優先度の pause Deployment で、cpu プールにノードを常時 1 台維持します。ノードが生きていればノード provisioning の待ち時間がゼロになるので、prewarm と組み合わせたときに役に立ちます。ただし低優先度である以上、混雑時にはスケジューラに押し出されてノードごと入れ替わり得るため、これ単体ではキャッシュの永続性を保証しません（手順 2 で実測を示します）
+- **prewarm DaemonSet（素朴実装）**: 温めたいイメージを、何もせず居続けるだけのコンテナとして並べ、kubelet に pull させる DaemonSet です。ノードが新規参加すると自動で温まります。コントローラも CRD も不要で、認証も通常のワークロードと同じ経路なので追加の前提を 1 つも持ち込みません。prewarm を止めても壊しても、ワークロードは通常のコールド pull を使うだけで済みます (ただし digest の誤りや ECR の権限不足、レジストリ障害のように pull そのものが失敗する原因であれば、本命のワークロードも同じ理由で失敗します)
 
-この 2 つに共通する状態管理の原則は、**キャッシュの状態はノードローカルの containerd にしか持たせない**ことです。共有キャッシュサービスを置かないので、「詰まったらノードを入れ替えれば直る」という一点に復旧手順を固定できます。
+この 2 つに共通する状態管理の原則は、**キャッシュの状態はノードローカルの containerd にしか持たせない**ことです。共有キャッシュサービスを置かないので、「問題が起きたらノードを入れ替えれば直る」という一点に復旧手順を固定できます。
 
 :::message
 P2P registry mirror の Spegel は魅力的に見えますが、恒久コアからは外しています。Spegel は「既に温かいノードが複数居る」ことを前提とする技術で、この基盤の痛みである「ノードが 0 台から立ち上がる瞬間」とは前提が噛み合いません。しかも新規ノード起動直後に mirror 解決の遅延がレイヤごとに積み上がり、コールド pull を高速化するはずの部品がコールド pull を遅くする有害ケースがあります。大規模同時 scale-out で ECR 転送重複が支配的だと計測で示された場合に限り、再評価します。
@@ -71,11 +71,11 @@ P2P registry mirror の Spegel は魅力的に見えますが、恒久コアか�
 
 ## なぜ SOCI や Spegel を恒久コアに入れないか
 
-lazy pull の SOCI や P2P の Spegel は、技術記事では華やかに紹介されがちです。しかしこの基盤の要求は「速いこと」と同時に「詰まって壊れないこと」であり、両者はこの後半の要求と衝突します。
+lazy pull の SOCI や P2P の Spegel は、技術記事では華やかに紹介されがちです。しかしこの基盤の要求は「速いこと」と同時に「行き詰まって壊れないこと」であり、両者はこの後半の要求と衝突します。
 
 SOCI の lazy pull は、イメージの一部しか触らないワークロードで利得が最大化します。ところが学習イメージは起動直後に CUDA/Neuron ランタイムと Python パッケージ群の大半を実際に読むため、lazy はコストを「起動時」から「実行初期」へ移すだけで総転送量は減りません。さらに深刻なのは、**数日走る学習ジョブの途中にレイヤ span の Range GET 失敗が I/O エラーとしてコンテナ内へ噴出する**ことです。ネットワークの瞬断が「pod 起動リトライ」で済む世界から「学習ジョブ死亡」の世界に変わります。加えて soci-snapshotter は AMI に同梱されず、全ノードに自己管理の常駐デーモンを 1 個増やす決断になります。これが落ちれば pull も起動も不能になり、prewarm DaemonSet とは正反対の致命的な故障特性を持ちます。
 
-この基盤が高速化に採る各層は、いずれも「失敗しても素のコールド pull に退化するだけ」の良性故障モードに閉じています。ノード起動不能や学習中の死亡につながる常駐データパス（SOCI lazy、ステートフルミラー、snapshot 焼き込み）を恒久基盤から排除したことこそが、この設計の判断そのものです。
+この基盤が高速化に採る各層は、いずれも「失敗しても通常のコールド pull に戻るだけ」の良性故障モードに閉じています。ノード起動不能や学習中の死亡につながる常駐データパス（SOCI lazy、ステートフルミラー、snapshot 焼き込み）を恒久基盤から排除したことこそが、この設計の判断そのものです。
 
 ## AL2023 維持 vs Bottlerocket 移行
 
@@ -105,7 +105,7 @@ gp3 のベースライン 125MiB/s のままだと、NVMe を持たない cpu �
 
 **5. 高速化の層は必ず良性故障に閉じます**
 
-prewarm、並列化、zstd といった高速化は、全滅しても素のコールド pull に戻るだけであるべきです。ノード起動不能や学習中死亡につながる仕組みを高速化のために持ち込まないことを、採否判断の第一原則にします。
+prewarm、並列化、zstd といった高速化は、全滅しても通常のコールド pull に戻るだけであるべきです。ノード起動不能や学習中死亡につながる仕組みを高速化のために持ち込まないことを、採否判断の第一原則にします。
 
 # ワークショップ実施
 
@@ -163,7 +163,7 @@ kubectl -n "$NAMESPACE" get events --field-selector involvedObject.name=coldpull
   --sort-by=.lastTimestamp -o wide
 ```
 
-ここで読めるのは取得と展開の側です。`Pulling` から `Pulled` までがレイヤの取得と展開の合算で、`Pulled` から `Started` までがコンテナの作成と起動です。ノードの起動時間はここには出てきません。スケジューラが Pod をノードに割り当てるのはノードが Ready になったあとなので、Karpenter がノードを起こしていた 1〜2 分は Pod の作成時刻から `Scheduled` までの区間に入ります。そこを見るには `kubectl get pod coldpull -o jsonpath='{.metadata.creationTimestamp}'` と `Scheduled` の時刻を突き合わせます。展開と取得の合算が支配的なら zstd や prewarm が効き、Pod 作成から `Scheduled` までが支配的なら headroom floor が効く、という判断の土台になります。
+ここで読めるのは取得と展開の側です。`Pulling` から `Pulled` までがレイヤの取得と展開の合算で、`Pulled` から `Started` までがコンテナの作成と起動です。ノードの起動時間はここには出てきません。スケジューラが Pod をノードに割り当てるのはノードが Ready になったあとなので、Karpenter がノードを起動していた 1〜2 分は Pod の作成時刻から `Scheduled` までの区間に入ります。そこを見るには `kubectl get pod coldpull -o jsonpath='{.metadata.creationTimestamp}'` と `Scheduled` の時刻を突き合わせます。展開と取得の合算が支配的なら zstd や prewarm が有効で、Pod 作成から `Scheduled` までが支配的なら headroom floor が有効、という判断の材料になります。
 
 本書の検証では、Basic02 でビルドした 3.3 GB の学習イメージを digest 指定で起動し、次の数字が出ました。
 
@@ -173,7 +173,7 @@ Pulling   -> Pulled    1m35.9s   (3,337,948,590 bytes = 実効 35 MB/s 程度)
 Pulled    -> Started   1s 未満
 ```
 
-`Pulled` のイベントは `in 1m35.906s (1m35.906s including waiting)` のように取得と展開を合算した値を出します。括弧内の `including waiting` が同じ値であれば、他イメージの pull を待たされていない（並列化が効いている）ことを意味します。この環境では待ち時間ゼロで 1 分半以上かかっており、支配的なのは取得側でした。つまりこの基盤で効くのは zstd よりも prewarm だという判断になります。
+`Pulled` のイベントは `in 1m35.906s (1m35.906s including waiting)` のように取得と展開を合算した値を出します。括弧内の `including waiting` が同じ値であれば、他イメージの pull を待たされていない（並列化が効いている）ことを意味します。この環境では待ち時間ゼロで 1 分半以上かかっており、支配的なのは取得側でした。つまりこの基盤で有効なのは zstd よりも prewarm だという判断になります。
 
 計測でもう 1 つ分かることがあります。同じイメージを 2 回目に起動したのに、また 1m18.7s かかりました。1 回目のノードが consolidation で片付けられ、別のノードに載ったためです。**キャッシュはノードに付くので、ノードが入れ替わればキャッシュもゼロに戻ります**。これが次の手順で headroom floor と prewarm を対で入れる理由です。
 
@@ -254,7 +254,7 @@ k get nodes -l node-role=cpu
 
 `rollout status` が完了し、`node-role=cpu` のノードが 1 台 `Ready` で見えていれば、headroom floor は効いています。ワークロードを何も出していない状態でこのノードが居続けることが、この仕組みが買っているものです。
 
-この 2 つが買っているものは別です。headroom floor が消すのは**ノード起動の待ち時間**（Karpenter がノードを起こして Ready にするまでの 1〜2 分）で、prewarm が消すのは**イメージ取得の待ち時間**です。同じノードで両方を消したいなら、そのプールに両方を効かせる必要があります。本章の例では headroom を cpu プール、prewarm を GPU プールに置いていますが、これは説明のための分担です。実際にどちらの待ち時間も削りたいプールでは、そのプール名で両方を指定してください。
+この 2 つが買っているものは別です。headroom floor が消すのは**ノード起動の待ち時間**（Karpenter がノードを起動して Ready にするまでの 1〜2 分）で、prewarm が消すのは**イメージ取得の待ち時間**です。同じノードで両方を消したいなら、そのプールに両方を効かせる必要があります。本章の例では headroom を cpu プール、prewarm を GPU プールに置いていますが、これは説明のための分担です。実際にどちらの待ち時間も削りたいプールでは、そのプール名で両方を指定してください。
 
 ここで 1 つ実測から分かった落とし穴があります。`do-not-disrupt` は Karpenter の consolidation を確かに止めます（`DisruptionBlocked ... Pod has "karpenter.sh/do-not-disrupt" annotation` というイベントで確認できます）が、**止めるのは Karpenter だけ**です。PriorityClass を `-10` にした headroom pod は、優先度既定値 0 の普通の pod がノードに入りきらないときスケジューラに preempt されます。実機では検証用の pod を 1 つ投げただけで headroom pod が追い出され、別ノードに再スケジュールされて、温めたノードが空になり consolidation で消えました。
 
@@ -289,7 +289,7 @@ containers:
 
 `ctr -n k8s.io images pull` を使う書き方も広く見られますが、こちらを採りません。`ctr` は kubelet のクレデンシャルプロバイダを経由しないので、自アカウント ECR の digest を pull するには Pod Identity で IAM ロールを結んだ ServiceAccount と `aws ecr get-login-password` のトークン受け渡しが必要になり、さらに `containerd.sock` の hostPath マウント（ノードの root 相当の権限）と、`aws` CLI と `ctr` の両方を含む専用イメージまで要ります。キャッシュを温める道具自体がコールド pull される、という本末転倒も起きます。
 
-kubelet に pull させる形なら、これらは 1 つも要りません。ECR 認証はノードロールの権限がそのまま効き、ServiceAccount も Pod Identity も IAM ロールも `containerd.sock` も専用イメージも不要です。実機でも、ServiceAccount を作らずに自アカウント ECR の digest pull が通ることを確認しています。本章の第一原則「高速化のためにノードを危険にしない」を満たすのはこちらだけなので、恒久コアに置けるのは kubelet 経由の実装だと判断しました。
+kubelet に pull させる形なら、これらは 1 つも不要です。ECR 認証はノードロールの権限がそのまま使われ、ServiceAccount も Pod Identity も IAM ロールも `containerd.sock` も専用イメージも不要です。実機でも、ServiceAccount を作らずに自アカウント ECR の digest pull が通ることを確認しています。本章の第一原則「高速化のためにノードを危険にしない」を満たすのはこちらだけなので、恒久コアに置けるのは kubelet 経由の実装だと判断しました。
 
 ただしこの方式は「pull するだけ」ではなく、列挙したイメージのシェルを全ノードで実行します。イメージの既定 USER は多くの場合 root なので、`containerd.sock` を断った理屈と整合させるなら、ここも権限を落としておく必要があります。`sleep` を実行するだけなら何の権限も要らないので、上の例のように capability を全部落として root filesystem を読み取り専用にします。
 
@@ -301,7 +301,7 @@ kubelet に pull させる形なら、これらは 1 つも要りません。ECR
 
 参照実装では Helm chart 側のテンプレートとして持っています。イメージの一覧はワークロードのライフサイクルに属する（vLLM のバージョンを上げれば温める対象も変わる）ので、`terraform apply` ではなく `helm` の値で更新できる場所に置いています。
 
-温める対象はタグではなく digest で固定します。`imageTags` で絞るのは、失敗ビルドの残骸や中間イメージのような untagged な digest を拾わないためです。単に最後の push を取ると、それらや他人の push を掴むことがあります。
+温める対象はタグではなく digest で固定します。`imageTags` で絞るのは、失敗ビルドの残骸や中間イメージのような untagged な digest を拾わないためです。単に最後の push を取ると、それらや他人の push を選んでしまうことがあります。
 
 ```bash
 DIGEST=$(aws ecr describe-images \
@@ -332,7 +332,7 @@ kubectl -n "$NAMESPACE" delete ds image-prewarm-<やめたプール>
 
 Capacity Block のプールを温める場合は toleration を 1 つ足す必要があります。prewarm DaemonSet が既定で許容するのは `nvidia.com/gpu` と `aws.amazon.com/neuron` の 2 つで、CB のノードはこれに加えて予約ごとの `capacity-reservation` taint を持ちます。足さないと DaemonSet の DESIRED が 0 のままになり、まさに温める価値が最も高いノードだけが黙って外れます。`--set 'prewarm.<プール名>.tolerations[0].key=capacity-reservation' --set 'prewarm.<プール名>.tolerations[0].operator=Exists'` のように渡します。確認は `kubectl -n "$NAMESPACE" get ds` で DESIRED が 1 以上になっていることです。
 
-対象イメージには `/bin/sh` と `sleep` が必要で、既定 USER のまま権限を落とした状態でそれらが動く必要があります（本書で扱う CUDA / vLLM / Neuron 系のイメージはいずれも該当します）。distroless や scratch のイメージはシェルを持たないのでこの方法では温められません。正確には、pull そのものは成功するのでイメージはノード上に置かれます。しかしその後のコンテナ作成が `/bin/sh` 不在で失敗するため、イメージを「使用中」として掴むコンテナが居らず、本章が扱ってきた枠組みのとおり imageGC の回収候補に残り続けます。DaemonSet も恒久的に不健全になります。
+対象イメージには `/bin/sh` と `sleep` が必要で、既定 USER のまま権限を落とした状態でそれらが動く必要があります（本書で扱う CUDA / vLLM / Neuron 系のイメージはいずれも該当します）。distroless や scratch のイメージはシェルを持たないのでこの方法では温められません。正確には、pull そのものは成功するのでイメージはノード上に置かれます。しかしその後のコンテナ作成が `/bin/sh` 不在で失敗するため、イメージを「使用中」として保持するコンテナが無く、本章が扱ってきた枠組みのとおり imageGC の回収候補に残り続けます。DaemonSet も恒久的に不健全になります。
 
 ## 3. 効果を測って条件付き最適化に進む
 
@@ -349,7 +349,7 @@ Capacity Block のプールを温める場合は toleration を 1 つ足す必�
 
 prewarm 済みノードでは `Pulling` イベントすら出ず、`Container image ... already present on machine and can be accessed by the pod` になります。これが確認できれば効果測定は完了です。逆に `Pulling` が出る場合は、ノードが入れ替わって prewarm がまだ終わっていないか、digest がずれています。
 
-3 行目は「prewarm が新規ノードで走っている最中にワークロードが着地する」ケースで、Karpenter がノードを起こす経路では普通に起きます。prewarm が帯域を取ってワークロードを遅くするのではないか、という懸念がありますが、同じ digest を指している限りそうはなりません。kubelet は同一イメージの pull をまとめるので、両者は 1 回の pull を共有します。実測でも prewarm 側とワークロード側が同じ 1m9.3s を報告しており、単独のコールド pull より遅くなっていません。
+3 行目は「prewarm が新規ノードで走っている最中にワークロードが着地する」ケースで、Karpenter がノードを起動する経路では普通に起きます。prewarm が帯域を取ってワークロードを遅くするのではないか、という懸念がありますが、同じ digest を指している限りそうはなりません。kubelet は同一イメージの pull をまとめるので、両者は 1 回の pull を共有します。実測でも prewarm 側とワークロード側が同じ 1m9.3s を報告しており、単独のコールド pull より遅くなっていません。
 
 これは prewarm とワークロードで**同じ digest を指していること**が前提です。digest がずれていると 2 本の別々の pull になり、そのときに `maxParallelImagePulls` が効いてワークロードが prewarm の後ろに並ばずに済みます。digest をずらさないこと自体がキャッシュ戦略の要点でもあるので、prewarm の digest はワークロードが参照するものと同じ値を渡してください。
 
@@ -412,7 +412,7 @@ layer7: application/vnd.oci.image.layer.v1.tar+zstd  16 bytes
 
 ## 4. 良性故障を検証する
 
-恒久コアと最適化を入れたら、高速化の層を意図的に止めても pull が通ることを確認します。DaemonSet に `replicas` フィールドは存在しないため `kubectl scale` は使えません。代わりに、実在しないラベルを狙う `nodeSelector` を一時的に注入して Pod をどのノードにも乗せない状態にし、prewarm DaemonSet を止めた状態で新規ノードを立て、pod が通常のコールド pull で正常に起動することを見ます。
+恒久コアと最適化を入れたら、高速化の層を意図的に止めても pull が通ることを確認します。DaemonSet に `replicas` フィールドは存在しないため `kubectl scale` は使えません。代わりに、実在しないラベルを狙う `nodeSelector` を一時的に注入して Pod をどのノードにも乗せない状態にし、prewarm DaemonSet を止めた状態で新規ノードを起動し、pod が通常のコールド pull で正常に起動することを見ます。
 
 ```bash
 kubectl -n "$NAMESPACE" patch daemonset image-prewarm-gpu-ddp \
@@ -429,7 +429,7 @@ kubectl -n "$NAMESPACE" patch daemonset image-prewarm-gpu-ddp \
 
 `kubectl scale` を試すと `Error from server (NotFound): the server could not find the requested resource` になります。DaemonSet に scale サブリソースが無いためで、パッチを使う理由がこれです。
 
-高速化の層が全滅しても素のコールド pull に退化するだけである、という良性故障の性質を実地で確認できれば、この層を安心して恒久基盤に組み込めます。
+高速化の層が全滅しても通常のコールド pull に戻るだけである、という良性故障の性質を実地で確認できれば、この層を安心して恒久基盤に組み込めます。
 
 ## 5. 後片付けをする
 
@@ -442,11 +442,11 @@ kubectl delete priorityclass cache-headroom --ignore-not-found
 kubectl get nodes -l node-role=cpu
 ```
 
-最後の確認で cpu ノードが `consolidateAfter` の経過後に消えていれば、headroom がノードを掴んでいない状態に戻っています。手順 1 で作った `coldpull` Pod も残っていれば消してください。
+最後の確認で cpu ノードが `consolidateAfter` の経過後に消えていれば、headroom がノードを確保していない状態に戻っています。手順 1 で作った `coldpull` Pod も残っていれば消してください。
 
 # まとめ
 
-本章では、変化し続けるイメージを扱うキャッシュ層を、この分散 AI 基盤に恒久的に組み込む設計を示しました。キャッシュの寿命はノードの寿命に等しいこと、digest pin が stale 故障を消すこと、そして高速化の層は必ず「失敗しても素のコールド pull に退化するだけ」の良性故障に閉じるべきこと、という原則を軸に据えました。まず計測し、headroom floor と素の prewarm DaemonSet という退屈な恒久コアを入れ、効果を測ってから zstd などの条件付き最適化に進む、という順序自体が本章の主張です。SOCI の lazy pull や Spegel を恒久コアに入れなかったのは、それらがノード起動不能や学習中死亡という受け入れ難い故障を持ち込むからであり、恒久基盤に要るのは派手さではなく退屈な堅牢さです。
+本章では、変化し続けるイメージを扱うキャッシュ層を、この分散 AI 基盤に恒久的に組み込む設計を示しました。キャッシュの寿命はノードの寿命に等しいこと、digest pin が stale 故障を消すこと、そして高速化の層は必ず「失敗しても通常のコールド pull に戻るだけ」の良性故障に閉じるべきこと、という原則を軸に据えました。まず計測し、headroom floor と単純な prewarm DaemonSet という地味な恒久コアを入れ、効果を測ってから zstd などの条件付き最適化に進む、という順序自体が本章の主張です。SOCI の lazy pull や Spegel を恒久コアに入れなかったのは、それらがノード起動不能や学習中死亡という受け入れ難い故障を持ち込むからであり、恒久基盤に要るのは派手さではなく退屈な堅牢さです。
 
 # 参考資料
 

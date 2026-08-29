@@ -32,7 +32,7 @@ CB を使う最低限の運用フローは次のようになります。
 3. `cr-...` を `accelerator_pools` の該当プールに書き込み `terraform apply` する
 4. 確保したノードでワークロードを動かす
 
-この章に付属する CB 関連の helper script は [`00-check-cb-offerings.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/00-check-cb-offerings.sh)、[`01-purchase-cb.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/01-purchase-cb.sh)、[`02-post-purchase.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/02-post-purchase.sh)、[`04-teardown.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/04-teardown.sh) の 4 つです（`03-` は欠番で、そういうファイルはありません）。
+この章に付属する CB 関連の 補助スクリプト は [`00-check-cb-offerings.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/00-check-cb-offerings.sh)、[`01-purchase-cb.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/01-purchase-cb.sh)、[`02-post-purchase.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/02-post-purchase.sh)、[`04-teardown.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/04-teardown.sh) の 4 つです（`03-` は欠番で、そういうファイルはありません）。
 
 この構成には予約の終了時刻から自動的に期限アラートを組み立てる仕組みが入っています。プールに `cb_reservation_id` を書いておくと、Terraform がその予約の終了時刻を自動的に読み取り、Amazon EventBridge Scheduler の one-shot スケジュールを 1 プールにつき 1 つ作り、終了 1 時間前に Amazon SNS へ通知します。発火後はそのスケジュール自体が AWS 側から消えます。ここで素朴に作ると、次の `terraform apply` が消えたスケジュールを過去の時刻で作り直そうとして API に拒否され、以降 apply が通らなくなります。これを避けているのは自己削除ではなく Terraform 側の時刻フィルタで、通知時刻 (終了 1 時間前) がすでに過ぎたプールをスケジュールの対象から外しています。同じ仕組みを自分で組む場合は、この 2 つを対で用意しないと apply が毎回失敗します。例外は、通知時刻の直前に `plan` を作って直後に `apply` する場合です。このときは `plan` の時点では未来だった時刻が `apply` の時点で過去になっているため、その 1 回の apply が失敗します。`plan` を作り直せば解消します。この時刻フィルタには読者に見える帰結が 1 つあります。終了 1 時間前を過ぎてから初めて `apply` した場合、スケジュールも SNS トピックも作られません。後述の手順 5 で `cb_expiry_alert_schedule_exprs` が空の map、`cb_expiry_sns_topic_arn` が空文字になるのはこのケースで、設定の失敗ではありません。
 
@@ -42,7 +42,7 @@ CB を使う最低限の運用フローは次のようになります。
 
 CB は前払いで、購入した時点でその予約期間分の費用が確定します。途中で不要になっても取り消しや返金はできません。`infra/eks/scripts` の中にある `00-check-cb-offerings.sh` で CB 予約のオファリングを検索できます。
 
-`01-purchase-cb.sh` で CB を購入すると、標準出力に `cr-...` という Capacity Reservation ID が表示されます。これを `accelerator-pools.auto.tfvars`(Basic04 で作ったプール定義ファイル)の `accelerator_pools` 内、該当プールの `cb_reservation_id` に貼り付けるだけで、Terraform 側の配線は完了します。
+`01-purchase-cb.sh` で CB を購入すると、標準出力に `cr-...` という Capacity Reservation ID が表示されます。これを `accelerator-pools.auto.tfvars`(Basic04 で作ったプール定義ファイル)の `accelerator_pools` 内、該当プールの `cb_reservation_id` に貼り付けるだけで、Terraform 側の設定は完了します。
 
 ```hcl
 # accelerator-pools.auto.tfvars（例、cr-... はプレースホルダ）
@@ -56,7 +56,7 @@ accelerator_pools = {
 }
 ```
 
-ここで最も事故につながりやすいのは、予約を指定したのに `capacity_type` を `"reserved"` にし忘れる、あるいはその逆というミスです。[`variables.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/variables.tf) の `accelerator_pools` には、この 2 方向のミスをそれぞれ弾く `validation` ブロックが用意されています。
+ここで最も障害につながりやすいのは、予約を指定したのに `capacity_type` を `"reserved"` にし忘れる、あるいはその逆というミスです。[`variables.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/variables.tf) の `accelerator_pools` には、この 2 方向のミスをそれぞれ弾く `validation` ブロックが用意されています。
 
 `cr-...` を正しく渡せば、あとは手で入力する項目はほとんど残りません。後述の [`capacity-block.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/capacity-block.tf) の `data "external" "capacity_reservations"` が `cb_reservation_id` だけから予約の `end_date`・`availability_zone`・`state` を自動的に読み取り、期限アラートや AZ 整合性チェックに使います。したがって `accelerator-pools.auto.tfvars` に手で書く CB 関連の値は、原則 `cb_reservation_id` と `capacity_type = "reserved"` の 2 つだけで済みます。
 
@@ -95,7 +95,7 @@ check "capacity_block_ready" {
 
 # ワークショップ実施
 
-本章の実機検証は p4d.24xlarge（NVIDIA A100 40GB x8、EFA x4）2 台の Capacity Block で実施しました。以降のコマンド出力はすべてこの構成の実測値です。読者が別のインスタンスタイプで進める場合、台数や EFA の枚数は当然変わります。本章のスクリプトはそうした値を決め打ちせず AWS API から取得する作りにしてあるので、コマンドはそのまま使えます。
+本章の実機検証は p4d.24xlarge（NVIDIA A100 40GB x8、EFA x4）2 台の Capacity Block で実施しました。以降のコマンド出力はすべてこの構成の実測値です。読者が別のインスタンスタイプで進める場合、台数や EFA の枚数は当然変わります。本章のスクリプトはそうした値を固定値で指定せず AWS API から取得する作りにしてあるので、コマンドはそのまま使えます。
 
 ## 1. オファリングを検索する（読み取りのみ、課金なし）
 
@@ -192,7 +192,7 @@ k get nodepool $POOL
 k get ec2nodeclass $POOL
 ```
 
-apply が作るのは NodePool と EC2NodeClass の定義であって、この時点ではまだノードは立ちません。Karpenter は GPU を要求する Pod（Pending）が現れて初めてノードを起動します（Karpenter 自体のインストールと NodePool 生成の仕組みは Basic04 で構築済みという前提です）。実際にノードが立つのは、次章 Basic06 で CB プールをターゲットにした検証ワークロードを投入したときなので、ここで確認するのは定義が正しく作られたことまでです。
+apply が作るのは NodePool と EC2NodeClass の定義であって、この時点ではまだノードは立ちません。Karpenter は GPU を要求する Pod（Pending）が現れて初めてノードを起動します（Karpenter 自体のインストールと NodePool 生成の仕組みは Basic04 で構築済みという前提です）。実際にノードが起動するのは、次章 Basic06 で CB プールをターゲットにした検証ワークロードを投入したときなので、ここで確認するのは定義が正しく作られたことまでです。
 
 ノードが立ったあと、それが予約から起動したことを確かめるコマンドを先に示しておきます。実行するのは Basic06 の手順 3 でワークロードを投入したあとです。
 
@@ -238,9 +238,9 @@ cb_alert_email_addresses = ["you@example.com"]
 
 本章では、Basic04 で用意した `capacity_type = "reserved"` を使い、Capacity Block の検索・購入から `accelerator-pools.auto.tfvars` への反映、NodePool の確認、期限アラートまでを構築しました。
 
-手で書いたのは予約 ID と `capacity_type = "reserved"` の 2 つだけです。AZ は予約から自動導出され、期限アラートも予約の終了時刻から組み立てられます。ここまでで確保できたのは容量であって、その容量が期待どおりの帯域を出すかはまだ分かっていません。確保したノードで EFA が正しく配線され、ノード間で実際に帯域が出ているかの検証と、終わったあとの teardown は次章の Basic06 で扱います。
+手で書いたのは予約 ID と `capacity_type = "reserved"` の 2 つだけです。AZ は予約から自動導出され、期限アラートも予約の終了時刻から組み立てられます。ここまでで確保できたのは容量であって、その容量が期待どおりの帯域を出すかはまだ分かっていません。確保したノードで EFA が正しく構成され、ノード間で実際に帯域が出ているかの検証と、終わったあとの teardown は次章の Basic06 で扱います。
 
-CB は前払いで取り消しができないため、On-Demand で動作確認を済ませたジョブを最後に載せる、という段階的な使い方が安全です。価格は `00-check-cb-offerings.sh` が「ブロック全体の総額」と「1 台 1 時間あたり」の両方で示すので、購入前に On-Demand 単価と比較できます。`capacity_type` の指定漏れによる二重課金など、Terraform の `validation` で弾いている落とし穴も合わせて押さえておけば、期限管理まで含めた CB 運用を事故なく回せます。
+CB は前払いで取り消しができないため、On-Demand で動作確認を済ませたジョブを最後に載せる、という段階的な使い方が安全です。価格は `00-check-cb-offerings.sh` が「ブロック全体の総額」と「1 台 1 時間あたり」の両方で示すので、購入前に On-Demand 単価と比較できます。`capacity_type` の指定漏れによる二重課金など、Terraform の `validation` で弾いている落とし穴も合わせて理解しておけば、期限管理まで含めた CB 運用を問題なく運用できます。
 
 # 参考資料
 

@@ -19,7 +19,7 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 
 RDMA（Remote Direct Memory Access）は、リモートホストのメモリに CPU を介さず直接アクセスするネットワークの機構である。EFA は SRD（Scalable Reliable Datagram）という独自プロトコルでこの RDMA を提供する。片側が相手のメモリを直接 read/write するという意味論は InfiniBand や RoCE とほぼ同等だが、トランスポートの実装は SRD で異なり、対応する RDMA 操作もインスタンス世代に依存する。
 
-GPUDirect RDMA は、その RDMA の転送先・転送元をホストメモリではなく GPU メモリに置き換えたものである。NIC（EFA）が PCI Express 経由で GPU メモリへ直接 DMA する。RDMA という土台の上で DMA 対象を GPU まで伸ばした拡張であり、大きなテンソルを転送する分散学習の集合通信は、この GPUDirect RDMA が帯域の本体を担う。
+GPUDirect RDMA は、その RDMA の転送先・転送元をホストメモリではなく GPU メモリに置き換えたものである。NIC（EFA）が PCI Express 経由で GPU メモリへ直接 DMA する。RDMA を前提に DMA 対象を GPU まで伸ばした拡張であり、大きなテンソルを転送する分散学習の集合通信は、この GPUDirect RDMA が帯域の本体を担う。
 
 GDRCopy は、この二つとは別のライブラリである。GPU の BAR1 領域 (GPU メモリの一部を PCIe 経由で CPU から直接見えるようにする窓) を CPU のアドレス空間にマッピングし、CPU が memcpy で GPU メモリを読み書きできるようにする。NIC が直接 DMA する GPUDirect RDMA とは対照的に、CPU が主導するコピー手段であり、主に小さなメッセージの受信コピーや制御パスのレイテンシ削減に使われる。
 
@@ -27,11 +27,11 @@ GDRCopy は、この二つとは別のライブラリである。GPU の BAR1 �
 
 ![GPUDirect RDMA と GDRCopy の役割分担](/images/books/eks-distributed-ai/gdrcopy-roles.png)
 
-## EFA の通信で GDRCopy がどこに効くか
+## EFA の通信で GDRCopy がどこで役に立つか
 
 libfabric の EFA プロバイダは、受信したデータを GPU メモリへ書き込むときにコピー経路を選ぶ。GDRCopy が使える場合は CPU が BAR1 マッピング経由で直接コピーする。使えない場合は、EFA デバイス経由のループバック read でホストのバウンスバッファに一度受けてから GPU メモリへコピーする代替経路にフォールバックする。これは libfabric 公式のビルドドキュメントに明記されている挙動である（[Building the EFA provider](https://github.com/ofiwg/libfabric/blob/main/prov/efa/docs/building.md) の `--with-gdrcopy` の項）。
 
-ここで重要なのは、GDRCopy が効くのは小さいメッセージに限られるという点である。libfabric の EFA プロバイダは、GDRCopy を使う受信コピーのサイズ上限を環境変数で持ち、本書執筆時点の既定は 32 KB 程度である。それより大きいバルク転送は GPUDirect RDMA が NIC から GPU メモリへ直接書き込むので、GDRCopy の有無に関係なく同じ経路を通る。したがって GDRCopy は小メッセージのコピーレイテンシを詰める補助であって、all-reduce のような大きなテンソルの集合通信の帯域には効かない。この点は本章の最後で実測して確かめる。
+ここで重要なのは、GDRCopy が役に立つのは小さいメッセージに限られるという点である。libfabric の EFA プロバイダは、GDRCopy を使う受信コピーのサイズ上限を環境変数で持ち、本書執筆時点の既定は 32 KB 程度である。それより大きいバルク転送は GPUDirect RDMA が NIC から GPU メモリへ直接書き込むので、GDRCopy の有無に関係なく同じ経路を通る。したがって GDRCopy は小メッセージのコピーレイテンシを詰める補助であって、all-reduce のような大きなテンソルの集合通信の帯域には効かない。この点は本章の最後で実測して確かめる。
 
 ## GPU Operator では入らない理由
 
@@ -135,7 +135,7 @@ k get ds -n kube-system gdrdrv-loader 2>/dev/null || echo "no gdrdrv-loader (= o
 
 `off` で `gdrdrv-loader` が無ければ、ノードには `gdrdrv` が載らず、NCCL は Basic06 で見た `Failed to open gdr handle` を出す状態である。
 
-## 3. gdrcopy_mode を有効にしてノードを起こす
+## 3. gdrcopy_mode を有効にしてノードを起動する
 
 まず `gdrcopy_mode` を有効にして `gdrdrv` を載せる仕組みを入れる。本番運用の推奨は `userdata` だが、それはノードの再作成でしか反映されない。ここではこの後の手順で起動する GPU ノードにその場で載せるため、`daemonset` を `-var` の一時上書きで指定する。
 
@@ -160,7 +160,7 @@ k -n kube-system logs -l app=gdrdrv-loader -c load-gdrdrv --tail=-1 \
 各ノードで `verified: gdrdrv loaded, /dev/gdrdrv present` が出れば成功である。すでにロード済みのノードでも同じメッセージに合流するので、出るのはこの 1 種類だけである。失敗した場合は `gdrdrv not loaded or /dev/gdrdrv missing; retrying` が出て initContainer が終了し、kubelet が繰り返し起動し直す。ロードできるまで進ませない fail-closed の作りなので、grep が空振りするときは Pod が `Init:CrashLoopBackOff` になっていないかを `k -n kube-system get pods -l app=gdrdrv-loader` で確認する。
 
 :::message
-Basic06 では hugepages を要求しない warmup Pod で先にノードを起こしていたが、本章で使う GPU Pod（手順 4 の `copylat` プローブと手順 5 の torchrun 測定）はどちらも hugepages を要求しないので、warmup を挟まずそのままノードを起こせる。hugepages を要求する `ncclSshd` などを使う場合に warmup が要る理由と段取りは、Basic06 の details にまとめてある。
+Basic06 では hugepages を要求しない warmup Pod で先にノードを起動していたが、本章で使う GPU Pod（手順 4 の `copylat` プローブと手順 5 の torchrun 測定）はどちらも hugepages を要求しないので、warmup を挟まずそのままノードを起こせる。hugepages を要求する `ncclSshd` などを使う場合に warmup が要る理由と段取りは、Basic06 の details にまとめてある。
 :::
 
 ## 4. GDRCopy が単体で機能することを確認する（ポジティブコントロール）
@@ -212,7 +212,7 @@ gdr_copy_to_mapping        8192       0.7943
 
 ## 5. マルチノード通信でレイテンシを測る
 
-GDRCopy が効くとすれば、小さいメッセージの受信コピーである。そこで小メッセージ中心の 2 ノード間 point-to-point レイテンシと all-reduce レイテンシを、`gdrdrv` をロードした状態（GDRCopy 有効）とアンロードした状態（無効）で測って並べる。
+GDRCopy が役に立つとすれば、小さいメッセージの受信コピーである。そこで小メッセージ中心の 2 ノード間 point-to-point レイテンシと all-reduce レイテンシを、`gdrdrv` をロードした状態（GDRCopy 有効）とアンロードした状態（無効）で測って並べる。
 
 測定は 2 ノード 16 GPU の NCCL 通信で行う。手順 4 のプローブが 1 台目を起こしているので、torchrun の 2 ノード測定 Pod を投入するともう 1 台が起動し、DaemonSet が両ノードに `gdrdrv` を載せる。torchrun で `torch.distributed` の point-to-point（`isend`/`irecv` の ping-pong）と `all_reduce` を回し、各サイズについて 50 回の往復を 1 試行として 20 試行の中央値をとり、往復時間の半分を片道レイテンシとした。GDRCopy 有効の状態でひととおり測ったあと、`gdrdrv` をアンロードして無効の状態を作り、同じ測定を繰り返す。アンロードの手順と注意点（Pod の削除、DaemonSet の停止、特権の要件）は手順 7 にまとめてある。無効状態では `/dev/gdrdrv` を開けなくなるので (ファイル自体は残ることがある)、測定 Pod は `/dev/gdrdrv` をマウントしない版を各条件で作り直す。
 
@@ -239,7 +239,7 @@ all-reduce（16 GPU）の結果を次に示す。
 
 手順 4 で GDRCopy 単体は 0.3 us で動くことを確認したうえで、なぜマルチノード通信では差が消えるのか。理由は二つある。一つは、EFA のノード間 point-to-point レイテンシが 40 us 前後で、これは EFA/SRD のネットワーク往復が支配的な値だという点である。GDRCopy が入れ替えるのは受信側のコピー経路の一部で、その経路自体が 0.3 us オーダーで動く。GDRCopy 有効化で変わりうるのは、この経路をフォールバック（ループバック read でバウンスバッファ経由）から差し替えたときの差分だが、いずれの経路もマイクロ秒オーダーであり、40 us のネットワーク往復の中に埋もれてしまう。もう一つは、NCCL の集合通信は小さいメッセージでも独自の低レイテンシプロトコル（LL/LL128）や GPUDirect RDMA の直接書き込みを使い、libfabric の eager 受信コピー経路（GDRCopy が置き換わる箇所）がクリティカルパスに乗りにくいという点である。
 
-つまり GDRCopy は「入れておくと NCCL の初期化警告が消え、libfabric の小メッセージ受信コピーが速くなる」ものであって、all-reduce や NCCL の point-to-point のレイテンシを目に見えて改善する機構ではない。GDRCopy の効果が表に出るのは、EFA のネットワークレイテンシに対してコピーコストの比率が大きくなる場面である。具体的には、libfabric を直接叩く小メッセージ主体の通信や、MoE の all-to-all のように数十 KB 級のメッセージを大量にやり取りする通信、CPU 主導で GPU メモリの小規模な読み書きを繰り返す制御パスなどが該当する。標準的な分散学習の集合通信を回すうえでは、GDRCopy を入れる前に、まず GPUDirect RDMA が効いていること（次の手順）を確認するほうが効果が大きい。
+つまり GDRCopy は「入れておくと NCCL の初期化警告が消え、libfabric の小メッセージ受信コピーが速くなる」ものであって、all-reduce や NCCL の point-to-point のレイテンシを目に見えて改善する機構ではない。GDRCopy の効果が表に出るのは、EFA のネットワークレイテンシに対してコピーコストの比率が大きくなる場面である。具体的には、libfabric を直接叩く小メッセージ主体の通信や、MoE の all-to-all のように数十 KB 級のメッセージを大量にやり取りする通信、CPU 主導で GPU メモリの小規模な読み書きを繰り返す制御パスなどが該当する。標準的な分散学習の集合通信を実行するうえでは、GDRCopy を入れる前に、まず GPUDirect RDMA が効いていること（次の手順）を確認するほうが効果が大きい。
 
 :::message
 本測定は本章の構成（p5.48xlarge 2 ノード、H100 × 16、この libfabric・aws-ofi-nccl のバージョン）での結果である。GDRCopy の効果はネットワークレイテンシとメッセージサイズの比で決まるため、レイテンシのより低いファブリックや、より小さいメッセージ主体のワークロードでは差が出る可能性がある。読者の環境で効果を確かめるには、手順 4 の `copylat` で GDRCopy 単体の動作を確認したうえで、自分の通信パターンで有効・無効を測るとよい。
@@ -319,6 +319,6 @@ terraform apply -var gdrcopy_mode=off
 
 導入面では、AMI プリインストールドライバの構成では GPU Operator の GDRCopy が使えないため、ノード側で `gdrdrv` を載せる必要があることを押さえた。AL2023 が `gdrcopy-kmod` を DKMS パッケージとして提供し、同梱の `gdrcopy.service` がロードと再起動をまたいだ永続化を引き受けるため、`dnf install` 一回で足りる。`infra/eks` ではこれを `gdrcopy_mode`（`userdata` / `daemonset`）で選べるようにした。
 
-実測では、GDRCopy 単体は `copylat` で 0.3 us オーダーの低レイテンシコピーとして確かに動作した。それでも p5 2 ノードの point-to-point と all-reduce では、GDRCopy の有無でレイテンシに差が出なかった。EFA のノード間レイテンシが 40 us 前後で、GDRCopy が入れ替える受信コピー経路の差分がその中に埋もれるためである。GDRCopy の恩恵はネットワークレイテンシに対してコピーコストの比率が大きい通信に限られる。分散学習の集合通信を回すうえでは、GDRCopy を入れる前にまず `GPU Direct RDMA Enabled` が出ていることを確認するのが実務上の優先順位になる。
+実測では、GDRCopy 単体は `copylat` で 0.3 us オーダーの低レイテンシコピーとして確かに動作した。それでも p5 2 ノードの point-to-point と all-reduce では、GDRCopy の有無でレイテンシに差が出なかった。EFA のノード間レイテンシが 40 us 前後で、GDRCopy が入れ替える受信コピー経路の差分がその中に埋もれるためである。GDRCopy の恩恵はネットワークレイテンシに対してコピーコストの比率が大きい通信に限られる。分散学習の集合通信を実行するうえでは、GDRCopy を入れる前にまず `GPU Direct RDMA Enabled` が出ていることを確認するのが実務上の優先順位になる。
 
 参考資料として、libfabric の EFA プロバイダのビルドオプションは [Building the EFA provider](https://github.com/ofiwg/libfabric/blob/main/prov/efa/docs/building.md) を、GPUDirect RDMA と GDRCopy の詳細は [NVIDIA GPUDirect RDMA](https://docs.nvidia.com/cuda/gpudirect-rdma/index.html) と [NVIDIA GDRCopy](https://github.com/NVIDIA/gdrcopy) を参照するとよい。実装は [infra/eks](https://github.com/littlemex/distributed-ai/tree/main/infra/eks) にある。
