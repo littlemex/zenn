@@ -129,7 +129,7 @@ DEV_BUILD=1 ./infra/scripts/install-profiling.sh
 
 初回は全体で 20〜40 分程度かかります。長いのはデータ層の apply と、クラスタ内での 2 つのイメージのビルドです。`Phase N/7` の行が進んでいれば正常なので、terraform やビルドの出力が流れている間は待ちます。
 
-このスクリプトは `aws eks update-kubeconfig --alias profiling-<クラスタ名>` を実行するので、kubectl の current-context が切り替わります。手順 2 で `team-a` を既定にした状態は失われるため、続きに進む前に手順 2 の 4 行 (`DISTAI_NAMESPACE=team-a` 付き) をもう一度 `source` してください。そうしないと次の手順で `namespace default is not wired for profiling` になります。
+このスクリプトはクラスタに触るために自分専用の kubeconfig を作り、そこに context を書いて終了時に捨てます。手順 2 で `team-a` を既定にした状態はそのまま続きに使えます。`aws eks update-kubeconfig` は current-context を切り替える副作用を持つので、呼び出し元の kubeconfig に書くと、既定 namespace を持たない context に乗ったまま次の手順に進んで `namespace default is not wired for profiling` で止まります。そうならないように、書き込み先を分けてあります。
 
 `DEV_BUILD=1` は初回だけ必要です。基盤イメージは自分の ECR から digest で引く作りなので、まだ何も無い状態では `no analysis image digest available` で止まります。2 回目以降は付けなくてよく、既にあるイメージを digest で使います。
 
@@ -408,7 +408,7 @@ export TRACKING_SERVER_NAME=$(k get configmap accelprof-config \
 aws sagemaker stop-mlflow-tracking-server --tracking-server-name "$TRACKING_SERVER_NAME" --region "$AWS_REGION"
 ```
 
-B の場合は以下に進みます。データ層は `terraform destroy` ではなく、トグルを `false` にした `terraform apply` で畳みます。trace バケットと MLflow アーティファクトのバケットには「消してはいけない記録」を守るために `prevent_destroy` が付いており、`terraform destroy` は plan 段階でこのバケット破棄を検出して操作全体を中断してしまうため、MLflow や S3 Files ファイルシステムまで実際には消えないからです。トグルを false にした apply なら、バケット (と中の成果物ファイル) は残したまま、MLflow と S3 Files ファイルシステムだけを破棄できます。B を完走しても残るものが他にもあります。`DEV_BUILD=1` で焼いた基盤イメージの ECR リポジトリ、バケットの暗号化に使っている KMS キー (月額課金)、レジストリに記録したデータ層のアタッチ、kubeconfig に増えた `profiling-<クラスタ名>` コンテキストです。完全に消したい場合はこれらを個別に片付けます。
+B の場合は以下に進みます。データ層は `terraform destroy` ではなく、トグルを `false` にした `terraform apply` で畳みます。trace バケットと MLflow アーティファクトのバケットには「消してはいけない記録」を守るために `prevent_destroy` が付いており、`terraform destroy` は plan 段階でこのバケット破棄を検出して操作全体を中断してしまうため、MLflow や S3 Files ファイルシステムまで実際には消えないからです。トグルを false にした apply なら、バケット (と中の成果物ファイル) は残したまま、MLflow と S3 Files ファイルシステムだけを破棄できます。B を完走しても残るものが他にもあります。`DEV_BUILD=1` で焼いた基盤イメージの ECR リポジトリ、バケットの暗号化に使っている KMS キー (月額課金)、レジストリに記録したデータ層のアタッチです。完全に消したい場合はこれらを個別に片付けます。
 
 :::message alert
 run のメタデータ (metrics、params、tags) は MLflow と一緒に消えます。成果物ファイルはバケットに残りますが、それがどの条件の実験だったかという情報は失われるので、残したい記録があれば先に取り出してください。
