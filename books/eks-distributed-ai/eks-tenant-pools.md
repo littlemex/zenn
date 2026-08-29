@@ -388,7 +388,7 @@ Basic05 では `cb_reservation_id` を Terraform の tfvars に書いて apply �
 
 ## 6. テナント境界を確認する
 
-ここで試すのは他テナントの toleration と未許可の Capacity Block ですが、VAP が閉じている経路はそれだけではありません。テナントのラベルを狙う `nodeSelector` と `nodeAffinity`、そして `spec.nodeName` の直接指定も拒否されます。特に `spec.nodeName` はスケジューラを丸ごと飛ばすので、taint による分離が効きません。デバッグのために `nodeName` を書いた既存の Pod がここで落ちるのは、この経路を閉じているためです。
+ここで試すのは他テナントの toleration と未許可の Capacity Block ですが、VAP が閉じている経路はそれだけではありません。テナントのラベルを狙う `nodeSelector`、`nodeAffinity` の一部、そして `spec.nodeName` の直接指定も拒否されます。`nodeAffinity` について見ているのは `requiredDuringSchedulingIgnoredDuringExecution` の値だけなので、`preferred` 側や `Exists` や `NotIn` のように値だけでは意味が決まらない条件は、この検査では捕まりません (そこは taint による分離が受け持ちます)。特に `spec.nodeName` はスケジューラを丸ごと飛ばすので、taint による分離が効きません。デバッグのために `nodeName` を書いた既存の Pod がここで落ちるのは、この経路を閉じているためです。
 
 境界が実際に効いていることを確かめます。まず、別テナントの taint を tolerate する Pod を `team-gpu` に作ろうとすると、VAP が admission の段階で拒否します。
 

@@ -38,7 +38,7 @@ ECR のレイヤ実体は、リージョンによって S3 の presigned URL 経
 
 ### 層 A: pull 経路
 
-恒久ルールは **「ランタイムで参照するイメージは全て自アカウントの Amazon ECR 発とする」** です。BuildKit で焼く自前イメージは既にそうなっており、直接使う外部イメージ（vLLM 公式、NGC ベースなど）は CI で `crane copy` して自 ECR にミラーします。後の手順で使う `registry.k8s.io/pause` のように、本 book が説明のために外部レジストリを直に書いている箇所は、この恒久ルールから外れています。自分の環境で恒久的に置くものは自 ECR にミラーしてから参照してください。
+恒久ルールは **「ランタイムで参照するイメージは全て自アカウントの Amazon ECR 発とする」** です。BuildKit で焼く自前イメージは既にそうなっており、直接使う外部イメージ（vLLM 公式、NGC ベースなど）は CI で `crane copy` して自 ECR にミラーします。後の手順で使う `registry.k8s.io/pause` のように、本 book が説明のために外部レジストリを直に書いている箇所は、この恒久ルールから外れています。自分の環境で恒久的に置くものは自 ECR にミラーしてから参照してください。なお prewarm チャートもビルド Job も、イメージ参照が自 ECR かどうかは検査しません (prewarm が見るのは digest 指定かどうかだけです)。これは実装のガードではなく運用ルールです。
 
 補助的に ECR pull-through cache（PTC）を Docker Hub や `ghcr` などに設定できますが、位置づけは開発時の利便性とミラー漏れの保険にとどめます。GPU 基盤で最も引きたい上流である nvcr.io（NVIDIA NGC）が PTC 非対応であること、そして「未キャッシュの新規 digest かつ上流障害」では PTC でも pull 不能になることから、ランタイム経路を PTC に依存させるのは避けます。
 
@@ -67,7 +67,7 @@ P2P registry mirror の Spegel は魅力的に見えますが、恒久コアか�
 
 ### 層 D: ガバナンス
 
-キャッシュ戦略の最終防衛線は **「そもそも巨大イメージを作らせない」** ことです。モデル重みやデータセットをイメージレイヤに入れると、どの層のキャッシュ設計もいずれ破綻します。恒久ルールとして、イメージはコードと依存のみ（目安 15GB 上限）とし、重みは Amazon S3 に置いて Mountpoint for Amazon S3 CSI や推論フレームワークの S3 直接ロードで取得します。この使い分けは Basic10 の共有ストレージと地続きの判断です。ただし cpu プールで RL 学習のような ~18GB 級イメージを扱う既存の運用例もあり（`variables.tf` の `cpu_node_volume_size` のコメント）、15GB はあくまで新規イメージ設計時の目安であって、超える既存イメージを許さない絶対値ではありません。
+キャッシュ戦略の最終防衛線は **「そもそも巨大イメージを作らせない」** ことです。モデル重みやデータセットをイメージレイヤに入れると、どの層のキャッシュ設計もいずれ破綻します。恒久ルールとして、イメージはコードと依存のみ（目安 15GB 上限）とし、重みは Amazon S3 に置いて Mountpoint for Amazon S3 CSI や推論フレームワークの S3 直接ロードで取得します。この使い分けは Basic10 の共有ストレージと地続きの判断です。ただし cpu プールで RL 学習のような ~18GB 級イメージを扱う既存の運用例もあり（`variables.tf` の `cpu_node_volume_size` のコメント）、15GB はあくまで新規イメージ設計時の目安であって、超える既存イメージを許さない絶対値ではありません。この上限を検査したり拒否したりする仕組みは実装に無く、運用上の取り決めです。
 
 ## なぜ SOCI や Spegel を恒久コアに入れないか
 
@@ -111,10 +111,14 @@ prewarm、並列化、zstd といった高速化は、全滅しても素のコ�
 
 本節では、恒久コアを投入する前にまず計測し、次に最小コアを入れ、効果を測ってから条件付き最適化に進む、という順序で進めます。この順序自体が本章の主張です。
 
-以降のコマンドは `terraform output` と `charts/experiments` を相対パスで使うので、`infra/eks` から実行します。namespace も先に置きます。
+以降のコマンドは `terraform output` と `charts/experiments` を相対パスで使うので、`infra/eks` から実行します。Basic01 の 4 行で `AWS_REGION` などを解決したうえで、namespace を置きます。以降の `aws` コマンドは `--region` を明示していないので、`AWS_REGION` が入っていないとリポジトリが見つからず落ちます (`--region` を毎回付けても構いません)。
 
 ```bash
-cd "$(git rev-parse --show-toplevel)"/infra/eks
+cd "$(git rev-parse --show-toplevel)"
+export CLUSTER_NAME=distai-eks
+export AWS_REGION=us-east-2
+source infra/scripts/distai-env.sh
+cd infra/eks
 export NAMESPACE=distai
 ```
 
@@ -191,7 +195,7 @@ spec:
       imageMaximumGCAge: "168h"
 ```
 
-上の NodeConfig にある `discard_unpacked_layers = false` は、展開後も圧縮済みの blob を残す設定です。将来ノード間でレイヤを配り合う仕組みを載せたときに、そこから配れるようにしておくためのもので、それ以外の場面では無害です。名前から imageGC を弱める設定に見えますが、GC の判断は使用中かどうかで決まるので、この設定はそこに影響しません。
+上の NodeConfig にある `discard_unpacked_layers = false` は、展開後も圧縮済みの blob を残す設定です。将来ノード間でレイヤを配り合う仕組みを載せたときに、そこから配れるようにしておくためのものです。名前から imageGC を弱める設定に見えますが、GC の判断は使用中かどうかで決まるので、この設定はそこに影響しません。ただし無害というわけではなく、展開後も圧縮済みの blob を残す分だけディスクを使います。本章で見るとおり CPU プールは gp3 のルートに imagefs と nodefs が同居するので、容量の見積もりではこの分を足して考えます。
 
 ## 2. 恒久コアを投入する
 
@@ -258,7 +262,7 @@ k get nodes -l node-role=cpu
 
 ここで優先度を上げて preempt を防ごうとしてはいけません。優先度を 0 以上にすれば確かに preempt されなくなりますが、代わりにノードを待っていたワークロードが Karpenter の起動を 1〜2 分待つことになり、消したかった待ち時間をワークロード側に押し付けるだけです。また `preemptionPolicy: Never` も対策になりません。これは「その Pod が他を preempt するか」の設定であって、preempt される側の耐性は一切変わりません。
 
-なお `do-not-disrupt` が止めるのは Karpenter が自発的に行う置き換え、つまり consolidation と drift と満了だけです。ディスク逼迫による kubelet の eviction、Spot の中断、手動の削除はいずれも止まりません。Karpenter v1 では満了 (`expireAfter`) は強制なので、これも止まらない側です。
+なお `do-not-disrupt` が止めるのは Karpenter が自発的に行う置き換え、つまり consolidation と drift です。ディスク逼迫による kubelet の eviction、Spot の中断、手動の削除はいずれも止まりません。満了 (`expireAfter`) も Karpenter v1 では強制なので止まらない側ですが、headroom を置く CPU プールは `expireAfter = "Never"` なので満了そのものが起きません (アクセラレータプールはプールごとに指定できます)。
 
 prewarm DaemonSet は、温めたいイメージを列挙して各ノードで pull させる仕組みです。ここでの設計判断は、**pull を `ctr` ではなく kubelet にやらせる**ことです。温めたいイメージを、何もせず居続けるだけのコンテナとして並べると、kubelet が通常のワークロードとまったく同じ経路で pull します。なぜ initContainer ではないのかは、この節の後半で扱います。
 
@@ -291,7 +295,7 @@ kubelet に pull させる形なら、これらは 1 つも要りません。ECR
 
 温めたイメージを「何もしない initContainer」で pull させる書き方も見かけますが、これは採れません。initContainer は終了するので、そのイメージは kubelet から見て使用中ではなくなり、imageGC の回収候補に戻ります。しかも DaemonSet の Pod は Running のままなので、**キャッシュが消えた後も「温まっている」という顔で立ち続けます**。温めた側が気づけない壊れ方であり、`rollout status` が成功したことは何も保証しません。ノード寿命が長い Capacity Block のプールで最も静かに壊れます。
 
-常駐コンテナにすれば、イメージは本物の「使用中」になり、どの GC 経路からも回収されません。代償として、ディスク逼迫時にノードはこのイメージを回収できず、まず prewarm Pod を追い出すことになります。prewarm が最も低い優先度である以上これは正しい順序で、追い出された時点でイメージは回収可能に戻ります。
+常駐コンテナにすれば、イメージは本物の「使用中」になり、どの GC 経路からも回収されません。代償として、ディスク逼迫時にノードはこのイメージを回収できず、まず prewarm Pod を追い出すことになります。本章のように `prewarmPriorityClassName=cache-headroom` を渡していれば prewarm が最も低い優先度になるので、これは正しい順序で、追い出された時点でイメージは回収可能に戻ります。この値を省くとチャートは `priorityClassName` を出さないため優先度は既定 (0) になり、この順序は成り立ちません。
 
 この形が成立するのに必要なノード側の設定は、手順 1 で入れた `maxParallelImagePulls = 8` と `serializeImagePulls: false` だけです。これがあると、新規ノードで prewarm の pull と本命ワークロードの pull が同時に走り、ワークロードが prewarm の後ろに並びません。逆にこの設定が失われた場合の壊れ方は「遅くなる」であって、キャッシュが消えるわけではありません。
 
@@ -320,7 +324,7 @@ kubectl -n "$NAMESPACE" get ds -o name | grep image-prewarm
 kubectl -n "$NAMESPACE" delete ds image-prewarm-<やめたプール>
 ```
 
-`prewarm.<プール名>` のキーは、Karpenter がノードに付ける `node-role` ラベルの値です。通常は `accelerator_pools` のキーですが、`cpu` を指定して CPU プールを温めることもできます。チャートはこのキーが Kubernetes のリソース名として使える形 (小文字英数とハイフン) であることを検査するので、Terraform 側では許される大文字やアンダースコアを含むプール名はそのままでは通りません。プールごとに DaemonSet が分かれるので、どのプールに何を温めるかは自分で書き分けます。デバイスの種類が合っているかはチャートは見ないので、GPU プールに Neuron のイメージを並べれば、そのまま GPU ノードで pull されます。タグではなく digest で指定するのは、タグが可変だとノード上のキャッシュとレジストリの中身がずれても気づけないためです。
+`prewarm.<プール名>` のキーは、Karpenter がノードに付ける `node-role` ラベルの値です。通常は `accelerator_pools` のキーですが、`cpu` を指定して CPU プールを温めることもできます。チャートはこのキーが Kubernetes のリソース名として使える形 (小文字英数とハイフン) であることを検査します。もっとも `accelerator_pools` のキーは Terraform 側でも NodePool と EC2NodeClass の名前になるので、この制約は Helm だけの話ではありません。プール名は最初から小文字英数とハイフンで付けてください。プールごとに DaemonSet が分かれるので、どのプールに何を温めるかは自分で書き分けます。デバイスの種類が合っているかはチャートは見ないので、GPU プールに Neuron のイメージを並べれば、そのまま GPU ノードで pull されます。タグではなく digest で指定するのは、タグが可変だとノード上のキャッシュとレジストリの中身がずれても気づけないためです。
 
 イメージの列挙は必要なものだけにしてください。1 エントリごとにそのプールの全ノードで pull とディスクを消費し、Capacity Block のプールでは予約が課金されている間にそれが走ります。ただし CB プールを除外すべきという話ではありません。CB では予約開始直後、ワークロードが着地する前に温めるので、どのみち課金されている時間を使うことになり、この仕組みの価値が最も高い場所です。
 
@@ -351,7 +355,7 @@ prewarm 済みノードでは `Pulling` イベントすら出ず、`Container im
 
 この結果は取得が支配的だったこの環境の数字です。手順 1 の計測で展開が支配的だと出た場合に限り、次の zstd 化に進んでください。
 
-zstd 化は BuildKit の出力で行います。Basic02 のクラスタ内ビルドがそのまま使えるので、`imageBuild.zstd=true` を足すだけです。
+zstd 化は BuildKit の出力で行います。Basic02 のクラスタ内ビルドがそのまま使えるので、`imageBuild.zstd=true` を足すだけ (ただしビルド Job が clone する ref は既定で `main` です。本 book のタグと同じソースから焼きたい場合は `--set imageBuild.gitRef=release/eks-distributed-ai/v0.2.0` も渡します)です。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
@@ -426,6 +430,19 @@ kubectl -n "$NAMESPACE" patch daemonset image-prewarm-gpu-ddp \
 `kubectl scale` を試すと `Error from server (NotFound): the server could not find the requested resource` になります。DaemonSet に scale サブリソースが無いためで、パッチを使う理由がこれです。
 
 高速化の層が全滅しても素のコールド pull に退化するだけである、という良性故障の性質を実地で確認できれば、この層を安心して恒久基盤に組み込めます。
+
+## 5. 後片付けをする
+
+恒久基盤として置き続けるならこのままで構いませんが、試しただけならこの章で作ったものを消します。**特に headroom floor は消し忘れるとクラスタの破棄が止まります。** `do-not-disrupt` を付けた Pod は Karpenter が退去させないので、そのノードが空にならず、Basic11 の `terraform destroy` が NodeClaim の待ちで停滞します。しかも headroom は `kube-system` に置くので、Basic11 の片付けスクリプトが対象にする namespace の外にいて、掃除されません。実際にこれで destroy が 18 分止まり、手で消して初めて先に進みました。
+
+```bash
+kubectl -n "$NAMESPACE" delete daemonset -l app.kubernetes.io/name=image-prewarm --ignore-not-found
+kubectl -n kube-system delete deployment cache-headroom --ignore-not-found
+kubectl delete priorityclass cache-headroom --ignore-not-found
+kubectl get nodes -l node-role=cpu
+```
+
+最後の確認で cpu ノードが `consolidateAfter` の経過後に消えていれば、headroom がノードを掴んでいない状態に戻っています。手順 1 で作った `coldpull` Pod も残っていれば消してください。
 
 # まとめ
 

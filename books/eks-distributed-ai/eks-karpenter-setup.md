@@ -33,7 +33,7 @@ Karpenter は、スケジュールできずに `Pending` のままになって�
 
 3 つ目は Spot 中断への対応です。Karpenter は SQS の interruption queue を経由して、Spot インスタンスの中断通知や AWS のヘルスイベント（スケジュールされた変更）などを受け、対象ノード上の Pod を強制終了ではなく graceful に drain してから終了させます。なお rebalance recommendation もこの queue に届きますが、Karpenter はこれを能動的なノード置換のトリガーにはしません（drain の対象は Spot 中断警告・スケジュール変更ヘルスイベント・インスタンス停止/終了です）。この queue と、通知を queue に流す Amazon EventBridge ルールの作成も、Karpenter 導入の一部として行います。
 
-drain で退去した Pod は削除され、それを管理する上位コントローラ（Deployment や Job／TrainJob など）が代替の Pod を作成します。その代替 Pod が `Pending` になり、これを Karpenter のプロビジョニングが検知して、要求を満たす新しいノードを自動で起動します（上位コントローラを持たない素の Pod は再作成されず、Job 系も restart 設定しだいでは代替が作られない点に注意します）。中断ハンドリング（消す側）とプロビジョニング（立てる側）は別々に動くため、明示的な再取得の指示は要りません。次にどの購入オプションで取り直すかは NodePool の `karpenter.sh/capacity-type` に許可した値しだいで、`spot` だけなら在庫があれば再び Spot を、`spot` と `on-demand` を併記していれば Spot が取れないときは on-demand にフォールバックして台数を満たします。ただし立ち上がるのは元と同じインスタンスではなく別ノードなので、途中結果は共有ストレージ上のスナップショットから resume する前提で組みます。Basic02 で `/shared/output/trainjob-cpu/snapshot.pt` に保存したものがこれにあたり、同じ TrainJob を作り直すと `ddp.py` が起動時にそのファイルを見つけて途中のエポックから再開します（Basic02 では保存されたことの確認までで、再開そのものを試す手順は置いていません）。中断そのものを避けたい長時間ジョブには、Spot のような突発的中断が起きない Capacity Block を選ぶ、という使い分けになります（Capacity Block も予約終了の 30 分前からインスタンスの回収が始まるため、終了処理やチェックポイントはそれを見込んで設計します）。
+drain で退去した Pod は削除され、それを管理する上位コントローラ（Deployment や Job／TrainJob など）が代替の Pod を作成します。その代替 Pod が `Pending` になり、これを Karpenter のプロビジョニングが検知して、要求を満たす新しいノードを自動で起動します（上位コントローラを持たない素の Pod は再作成されず、Job 系も restart 設定しだいでは代替が作られない点に注意します）。中断ハンドリング（消す側）とプロビジョニング（立てる側）は別々に動くため、明示的な再取得の指示は要りません。なお `terraform destroy` の側は、ノードが消えるのを待つだけではありません。待ちが終わらなくなるのを避けるため、全 namespace の TrainJob と全 NodePool を先に削除します。共有クラスタや別 namespace に手で置いた TrainJob も対象になる点は Basic11 で改めて扱います。次にどの購入オプションで取り直すかは NodePool の `karpenter.sh/capacity-type` に許可した値しだいで、`spot` だけなら在庫があれば再び Spot を、`spot` と `on-demand` を併記していれば Spot が取れないときは on-demand にフォールバックして台数を満たします。ただし立ち上がるのは元と同じインスタンスではなく別ノードなので、途中結果は共有ストレージ上のスナップショットから resume する前提で組みます。Basic02 で `/shared/output/trainjob-cpu/snapshot.pt` に保存したものがこれにあたり、同じ TrainJob を作り直すと `ddp.py` が起動時にそのファイルを見つけて途中のエポックから再開します（Basic02 では保存されたことの確認までで、再開そのものを試す手順は置いていません）。中断そのものを避けたい長時間ジョブには、Spot のような突発的中断が起きない Capacity Block を選ぶ、という使い分けになります（Capacity Block も予約終了の 30 分前からインスタンスの回収が始まるため、終了処理やチェックポイントはそれを見込んで設計します）。
 
 以降で実際の Terraform コードを引用しながら、なぜその値・その書き方にしているのかを見ていきます。対象ファイルは [`karpenter.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/karpenter.tf) と [`iam.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/iam.tf) です。
 
@@ -262,7 +262,7 @@ k get nodepool
 k get nodes
 ```
 
-`k get nodepool` には `cpu` が表示されます。これは `cpu_nodepool_enabled`（既定 `true`）によって Basic01 の apply で作られたもので、Basic02 の CPU DDP がこのプールにノードを起こしていました。監視スタックを既定のまま有効にしている場合は、これに加えて `monitoring` も表示されるので 2 つになります。アクセラレータ用の NodePool は `accelerator_pools` が空のままなのでまだ存在せず、次章で定義します。
+`k get nodepool` には `cpu` が表示されます。これは `cpu_nodepool_enabled`（既定 `true`）によって Basic01 の apply で作られたもので、Basic02 の CPU DDP がこのプールにノードを起こしていました。監視スタックを既定のまま有効にしている場合は、これに加えて `monitoring` も表示されるので 2 つになります。Basic02 の補足にある `image_builder_dedicated_pool` を有効にしている場合は `image-builder` も並びます。アクセラレータ用の NodePool は `accelerator_pools` が空のままなのでまだ存在せず、次章で定義します。
 
 ```text
 NAME   NODECLASS   NODES   READY   AGE

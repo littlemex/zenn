@@ -73,7 +73,7 @@ Slurm が劣っているという話ではありません。Slurm ベースの�
 
 - AWS アカウント
 - AdministratorAccess 相当の IAM 権限
-- ローカルまたは CloudShell に Terraform 1.9+ / AWS CLI v2 / kubectl / helm
+- ローカルまたは CloudShell に Terraform 1.9+ / AWS CLI v2 / kubectl / helm / git / curl / python3 (後半 3 つも導入スクリプトが必須にしています)
 - GPU/Neuron インスタンスを使う場合はサービスクォータと予算の確認
 
 :::message alert
@@ -82,7 +82,7 @@ Slurm が劣っているという話ではありません。Slurm ベースの�
 
 # アーキテクチャ概要
 
-この book 全体で構築する分散 AI 基盤の全体像です。Amazon VPC はリージョンの全 AZ にまたがって張り、Amazon EKS コントロールプレーンの下で Karpenter がアクセラレーターノードの各 NodePool を要求に応じて起動します。共有ストレージや Capacity Block といった分散 AI インフラのための周辺サービスも含みます。
+この book 全体で構築する分散 AI 基盤の全体像です。Amazon VPC はリージョンの全標準 AZ にまたがって張り (opt-in が必要な AZ や Local Zone は含みません)、Amazon EKS コントロールプレーンの下で Karpenter がアクセラレーターノードの各 NodePool を要求に応じて起動します。共有ストレージや Capacity Block といった分散 AI インフラのための周辺サービスも含みます。
 
 ![Amazon EKS 分散 AI 基盤の全体アーキテクチャ](/images/books/eks-distributed-ai/arch-overview.png)
 

@@ -57,9 +57,9 @@ Kubeflow Trainer v2 の API はまだ `v1alpha1`（アルファ）です。将�
 | 成熟度 | 安定（ただしレガシー） | アルファ（API 変更あり得る） |
 | 変わらないもの | `ddp.py` と `torchrun` の実行モデル | 同左 |
 
-v2 の要点は「利用者は TrainJob で台数と中身だけを書き、集合点の配線は Trainer に任せる」ことです。具体的には、Trainer の torch プラグインが各 Pod に `torchrun`（TorchElastic）が読む `PET_*` 環境変数（`PET_NNODES` / `PET_NPROC_PER_NODE` / `PET_NODE_RANK` / `PET_MASTER_ADDR` / `PET_MASTER_PORT`）を注入します。`PET_NODE_RANK` は Pod のインデックスから固定で決まるため、`node-0-0` が常に node rank 0（= rank 0）になります。`PET_MASTER_ADDR` は先頭ノードの Pod（JobSet が払い出す `<ジョブ名>-node-0-0` の headless DNS）を指し、そこが集合点になります。`torchrun` はこれらを引数の既定値として読み（先頭ノード上の TCPStore を使う既定の rendezvous で動きます。参加順で rank が変わる動的方式ではありません）、各学習プロセスに `RANK` / `WORLD_SIZE` / `LOCAL_RANK` / `MASTER_ADDR` / `MASTER_PORT` を再エクスポートします。`ddp.py` はその値を、引数なしの `init_process_group()` による env:// rendezvous で読み取ります。
+v2 の要点は「利用者は TrainJob で台数と中身だけを書き、集合点の配線は Trainer に任せる」ことです。具体的には、Trainer の torch プラグインが各 Pod に `torchrun`（TorchElastic）が読む `PET_*` 環境変数（`PET_NNODES` / `PET_NPROC_PER_NODE` / `PET_NODE_RANK` / `PET_MASTER_ADDR` / `PET_MASTER_PORT`）を注入します。`PET_NODE_RANK` は Pod のインデックスから固定で決まるため、`node-0-0` が常に node rank 0（= rank 0）になります。`PET_MASTER_ADDR` は先頭ノードの Pod（JobSet が払い出す `<ジョブ名>-node-0-0` の headless DNS）を指し、そこが集合点になります。`torchrun` はこれらを引数の既定値として読み（先頭ノード上の TCPStore を使う既定の rendezvous で動きます。参加順で rank が変わる動的方式ではありません）、各学習プロセスに `RANK` / `WORLD_SIZE` / `LOCAL_RANK` / `MASTER_ADDR` / `MASTER_PORT` を再エクスポートします。`ddp.py` はその値を env:// の rendezvous で読み取ります (`init_process_group` には backend だけを渡し、集合点の情報は引数で渡しません)。
 
-TrainJob 側は台数（`numNodes`）とノードあたりのプロセス数（`numProcPerNode`）、イメージ、起動コマンドだけを指定します。集合点の配線や 1 ノード 1 Pod の配置といった土台側の設定は、本 book がクラスタに用意した Runtime（[`torch-distributed-eks`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/clustertrainingruntime-eks.yaml)）が持っています。この Runtime を導入する Trainer v2 本体は Terraform の [`trainer.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/trainer.tf) が入れます。
+TrainJob 側が指定するのは、台数（`numNodes`）とノードあたりのプロセス数（`numProcPerNode`）、イメージ、起動コマンド、そのノードに要求するリソース（`resourcesPerNode`）と、実行ごとに変えたい環境変数です。集合点の配線や 1 ノード 1 Pod の配置といった土台側の設定は、本 book がクラスタに用意した Runtime（[`torch-distributed-eks`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/clustertrainingruntime-eks.yaml)）が持っています。この Runtime を導入する Trainer v2 本体は Terraform の [`trainer.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/trainer.tf) が入れます。ただし Runtime そのものは Terraform では作られず、手順 4 で TrainJob と同じ `helm template` の出力に含まれる形で適用されます。この時点で `k get clustertrainingruntime` を実行しても何も出ないのは正常です。
 
 ## 学習結果の保存先と共有ストレージ
 
@@ -75,9 +75,9 @@ TrainJob 側は台数（`numNodes`）とノードあたりのプロセス数（`
 
 学習ワークロードには `ddp.py` を焼き込んだコンテナイメージが要ります。素直なやり方は手元の `docker build` で作って ECR に push することですが、これは「手元に Docker があり、しかも EKS ノードと同じ x86_64 向けにクロスビルドできる」という前提を各利用者に強いてしまいます。この基盤では、その前提を持ち込まずにイメージのビルドもクラスタ内で完結させます。
 
-ビルドには [BuildKit](https://github.com/moby/buildkit) の rootless モードを使います。BuildKit は Docker デーモンや特権コンテナを必要とせず、通常の Pod の中で Dockerfile を解釈してイメージをビルドし、レジストリに push できるツールです。rootless イメージ（`moby/buildkit:rootless`）は、ビルド全体をユーザー namespace の中で非 root（uid 1000）として走らせるため、`CAP_SYS_ADMIN` などの特権を一切要求しません。本章ではこの BuildKit を、`buildctl-daemonless.sh` で daemon を常駐させずに 1 回限りの Kubernetes Job として起動します。特別なオペレータや常設のビルドサーバーは要らず、学習 Job と同じ「レンダリングして `kubectl apply` する」操作モデルにそのまま乗ります。
+ビルドには [BuildKit](https://github.com/moby/buildkit) の rootless モードを使います。BuildKit は Docker デーモンや特権コンテナを必要とせず、通常の Pod の中で Dockerfile を解釈してイメージをビルドし、レジストリに push できるツールです。rootless イメージ（`moby/buildkit:rootless`）は、ビルド全体をユーザー namespace の中で非 root（uid 1000）として走らせるため、`CAP_SYS_ADMIN` などの特権を要求しません。ただし Kubernetes の Pod Security Admission から見ると完全に無害ではなく、後述のとおり `seccompProfile: Unconfined` が必要なため `baseline` では拒否されます。この基盤はそのためにビルド専用の namespace だけ PSA の enforce を `privileged` にして隔離しています。本章ではこの BuildKit を、`buildctl-daemonless.sh` で daemon を常駐させずに 1 回限りの Kubernetes Job として起動します。特別なオペレータや常設のビルドサーバーは要らず、学習 Job と同じ「レンダリングして `kubectl apply` する」操作モデルにそのまま乗ります。
 
-ビルドの土台は Basic01 の `terraform apply` の時点で用意されています（`image_builder_enabled` が既定で有効）。具体的には、ビルド先の Amazon ECR リポジトリ・ECR への push 権限を与える IAM ロール・その紐付けを担う Pod Identity・ビルド専用の namespace（`image-builder`）と ServiceAccount です。ここでも Basic01 と同じ設計原則が効いています。すなわち Terraform は「機構」だけを恒久管理し、実際のビルド Job という「実行」はワークショップ側でカタログから適用します。
+ビルドの土台は Basic01 の `terraform apply` の時点で用意されています（`image_builder_enabled` が既定で有効）。具体的には、ビルド先の Amazon ECR リポジトリ・ECR への push 権限を与える IAM ロール・その紐付けを担う Pod Identity・ビルド専用の namespace（`image-builder`）と ServiceAccount です。この IAM ロールの push 権限は 1 つのリポジトリではなく、同じアカウントの同じリージョンにある ECR リポジトリ全体に付いています。新しいイメージを足すたびに権限を追加しなくて済むようにした意図的な設計ですが、他チームの本番リポジトリが同居するアカウントでは範囲を名前の接頭辞で絞ってください。ここでも Basic01 と同じ設計原則が効いています。すなわち Terraform は「機構」だけを恒久管理し、実際のビルド Job という「実行」はワークショップ側でカタログから適用します。
 
 認証の流れがクラスタ内ビルドの肝です。ECR への push には ECR のログイントークンが要りますが、この基盤では **Pod Identity** がそれを透過的に解決します。`image-builder` の ServiceAccount には Pod Identity Association で IAM ロールが結び付いており、この SA で動く Pod には認証情報を取得するためのエンドポイント情報が自動で注入されます。BuildKit の公式イメージは Amazon ECR 用の認証ヘルパーを同梱しません。そこでこのビルド Job は initContainer を 1 つ挟みます。initContainer は Pod Identity の認証情報で `aws ecr get-login-password` を実行してログイントークンを取り、それを Docker の `config.json` として emptyDir に書き出します。BuildKit コンテナは `DOCKER_CONFIG` でそのディレクトリを読み、push 時の認証に使います。結果として、`docker login` を手で打つことも認証情報ファイルをリポジトリに置くこともなく push まで通ります。Pod Identity の認証情報は initContainer にも注入されることを実機で確認しています。
 
@@ -113,8 +113,16 @@ k create namespace distai --dry-run=client -o yaml | k apply -f -
 
 このイメージのビルドは、上述した BuildKit で実施します。ビルド先の ECR URL は Terraform の出力から取得できます。イメージタグはワークショップ用に `v1` を使います（再ビルドするときは `v2` のようにタグを進めると、`latest` のキャッシュ問題を避けられます）。
 
+本章がこの book で最初に `helm template` を使う場所なので、その前にチャートの依存を 1 回だけ取り込みます。`charts/experiments` はビルド Job のテンプレートを `image-builder-lib` という別チャートから借りており、その取り込み先 (`charts/` ディレクトリと `Chart.lock`) はリポジトリに含まれていません。clone した直後は空なので、この 1 行を実行しないと以降の `helm template` が `found in Chart.yaml, but missing in charts/ directory: image-builder-lib` で止まります。参照先はローカルパスなのでネットワークは要りません。クラスタごとに 1 回ではなく、チェックアウトごとに 1 回です。
+
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
+helm dependency build charts/experiments
+```
+
+そのうえでビルドに進みます。
+
+```bash
 ECR_URL=$(terraform output -raw ddp_sample_ecr_url)
 IMAGE=${ECR_URL}:v1
 
@@ -204,7 +212,7 @@ helm template exp charts/experiments -n distai \
     | k apply -f -
 ```
 
-TrainJob が展開する Pod は JobSet の規則で名付けられ、`<ジョブ名>-node-0-<index>-<ランダム>` になります。本章のジョブ名は `ddp-trainjob` なので、rank 0 の Pod は `ddp-trainjob-node-0-0-xxxxx`、rank 1 は `ddp-trainjob-node-0-1-xxxxx` という形です（末尾のランダムな 5 文字は実行のたびに変わるので、Pod 名を決め打ちせずラベルで選ぶのが確実です）。node index と rank は一致し、`node-0-0` が常に rank 0 です。まず 2 つの Pod がそれぞれ別ノードに載っていることを確認します（`-o wide` の `NODE` 列が 2 つとも違えば OK です）。ジョブ名のラベルで全ノードの Pod をまとめて選べます。
+TrainJob が展開する Pod は JobSet の規則で名付けられ、`<ジョブ名>-node-0-<index>-<ランダム>` になります。本章のジョブ名は `ddp-trainjob` なので、rank 0 の Pod は `ddp-trainjob-node-0-0-xxxxx`、rank 1 は `ddp-trainjob-node-0-1-xxxxx` という形です（末尾のランダムな 5 文字は実行のたびに変わるので、Pod 名を決め打ちせずラベルで選ぶのが確実です）。本章は `nprocPerNode=1` なので 1 Pod に 1 rank が対応し、node index と rank が一致して `node-0-0` が rank 0 になります (GPU 枚数に合わせて `nprocPerNode` を増やすと 1 つの Pod の中に複数 rank が立つので、この対応は崩れます)。まず 2 つの Pod がそれぞれ別ノードに載っていることを確認します（`-o wide` の `NODE` 列が 2 つとも違えば OK です）。ジョブ名のラベルで全ノードの Pod をまとめて選べます。
 
 ```bash
 k get pods -o wide -l jobset.sigs.k8s.io/jobset-name=ddp-trainjob
@@ -234,6 +242,7 @@ k logs -f --tail=-1 -l "$SEL"
 [rank 0/2] backend=gloo cuda_available=False device_count=0
 [rank 0/2] downloading MNIST to /shared/mnist-data
 [rank 0/2] starting training: 20 epochs, batch_size 32
+[rank 0/2] mlflow disabled
 [rank 0/2] epoch 0 | steps 938 | loss 0.5312
 [rank 0/2] epoch 0 | snapshot saved to /shared/output/trainjob-cpu/snapshot.pt
 [rank 0/2] epoch 1 | steps 938 | loss 0.2287
@@ -258,6 +267,7 @@ k logs --tail=-1 -l "jobset.sigs.k8s.io/jobset-name=ddp-trainjob,batch.kubernete
 [rank 1/2] backend=gloo cuda_available=False device_count=0
 [rank 1/2] downloading MNIST to /shared/mnist-data
 [rank 1/2] starting training: 20 epochs, batch_size 32
+[rank 1/2] mlflow disabled
 [rank 1/2] epoch 0 | steps 938 | loss 0.5289
 [rank 1/2] epoch 1 | steps 938 | loss 0.2301
 ...
@@ -268,7 +278,7 @@ k logs --tail=-1 -l "jobset.sigs.k8s.io/jobset-name=ddp-trainjob,batch.kubernete
 
 `WORLD_SIZE=2` の 2 プロセスが別々のノードで起動し、両 rank の loss がエポックを追って下がっていることから、2 つのノードが勾配を all-reduce しながら 1 つのモデルを学習できていることが分かります（各 rank はデータセットの異なる分割を担当するので、loss は完全に同一ではなく近い値で推移します）。見るのは全体の低下傾向で、あるエポックだけ前より少し上がることは通常の学習でも起こります。1 回の上下で all-reduce が壊れていると判断する必要はありません。最後に TrainJob が `Complete` になり、rank 0 がスナップショットを共有ストレージ上の `/shared/output/trainjob-cpu/snapshot.pt` に保存します。
 
-このスナップショットがあると、`ddp.py` は次回起動時にそれを読んで途中のエポックから再開します。つまり同じ TrainJob をもう一度作り直すと、2 回目は保存済みのエポックから始まるため、ログが数行だけ出てすぐ `Complete` になります。上に載せた epoch 0 から始まるログとは一致しませんが、これは壊れているのではなく resume が働いた結果です。最初からやり直したい場合は、`--set trainjobTrain.outputSubdir=<別の名前>` で保存先を変えるか、`/shared/output/trainjob-cpu/snapshot.pt` を消してから投入してください。
+このスナップショットがあると、`ddp.py` は次回起動時にそれを読んで途中のエポックから再開します。スナップショットに書かれているのは「保存した時点のエポック番号」なので、再開はその番号から始まります。つまり最後まで完走したあとに同じ TrainJob を作り直すと、2 回目は最後のエポックを 1 回だけ走らせて `Complete` になります。`resuming from snapshot at epoch 19` の行と、そのエポック 1 つ分の loss だけが出る形です。上に載せた epoch 0 から始まるログとは一致しませんが、これは壊れているのではなく resume が働いた結果です。最初からやり直したい場合は、`--set trainjobTrain.outputSubdir=<別の名前>` で保存先を変えるか、`/shared/output/trainjob-cpu/snapshot.pt` を消してから投入してください。
 
 ログを追い損ねても、TrainJob が `Complete` になったことと、共有ストレージ上のスナップショットで完了を確認できます。`kubectl wait` の `--for=condition=Complete` が完了を待つ確実な方法です。
 

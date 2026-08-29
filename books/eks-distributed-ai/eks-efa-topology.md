@@ -8,7 +8,7 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 本章では、Karpenter が起動するノードで EFA が正しく構成され、実際にノード間で帯域が出ていることまでを確認します。Basic05 で確保した Capacity Block のノード 2 台で NCCL の帯域を測ります。
 
 :::message
-本章の帯域測定は、EFA を複数枚持つインスタンスが 2 台以上、しかも同一 AZ に必要です。Basic05 で Capacity Block を確保していることを前提にしています。まだ確保していない場合でも、解説部分と、ノードを必要としない手順 2（`terraform output` による schedulable EFA 数の確認）・手順 3（環境変数の書き方）までは先に読み進められます。手順 3 以降は Basic05 で確保した Capacity Block が必要です。
+本章の帯域測定は、EFA を複数枚持つインスタンスが 2 台以上、しかも同一 AZ に必要です。Basic05 で Capacity Block を確保していることを前提にしています。まだ確保していない場合でも、解説部分と、ノードを必要としない手順 2 (`terraform output` による schedulable EFA 数の確認) までは実行できます。手順 3 は測定ワークロードを投入してノードを起動する手順なので、Basic05 で確保した Capacity Block が必要です。
 :::
 
 # 解説
@@ -378,7 +378,7 @@ nccl-trainjob-node-0-0:172:172 [0] NCCL INFO NET/OFI Using Libfabric version 2.4
 nccl-trainjob-node-0-1:172:172 [0] NCCL INFO NET/OFI Selected provider is efa, fabric is efa (found 3 nics)
 ```
 
-両ノードで `efa` プロバイダが選択され、3 NIC が認識されています。この `found 3 nics` が、手順 2 の `terraform output accelerator_pool_efa_schedulable` が CB プールについて返す値（p4d.24xlarge なら 3 = 4 − 1）と一致していることが重要です。手順 2 を実行した時点では `gpu-ddp` しか無いので 0 だけが出ますが、Basic05 の CB プールを apply したあとに同じコマンドを実行すると 3 が出ます。カード枚数から 1 引いた値が、そのまま NCCL が掴む NIC 数になります。
+両ノードで `efa` プロバイダが選択され、3 NIC が認識されています。この `found 3 nics` が、手順 2 の `terraform output accelerator_pool_efa_schedulable` が CB プールについて返す値（p4d.24xlarge なら 3 = 4 − 1）と一致していることが重要です。手順 2 を実行した時点では `gpu-ddp` しか無いので 0 だけが出ますが、Basic05 の CB プールを apply したあとに同じコマンドを実行すると 3 が出ます。複数カードのインスタンスでは、カード枚数から 1 引いた値がそのまま NCCL が掴む NIC 数になります (カード 0 はノードの IP を持つため要求できません)。カードが 1 枚のインスタンス、たとえば g6e.12xlarge では引き算はせず 1 が schedulable になります。
 
 帯域の実測値:
 
