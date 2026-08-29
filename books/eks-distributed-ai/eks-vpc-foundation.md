@@ -395,9 +395,11 @@ k config view --minify -o 'jsonpath={.contexts[0].context.namespace} @ {.cluster
 
 対象クラスタは `kubectl` の向き先と `terraform output` から解決するので、step 2 の 4 行を同じシェルで実行済みにしてから走らせてください。
 
+テストは自分専用の namespace (`distai-test`) を作って最後に消します。手順 4 で `NAMESPACE` を export しているので、その名前を渡さないよう `--namespace` で明示します。渡さないと、テストが作業 namespace を自分のものと解釈して停止します。
+
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks/tests
-./run-tests.sh
+./run-tests.sh --namespace distai-test
 ```
 
 引数なしで走るのは `baseline` という一群で、3 つの層に分かれています。
