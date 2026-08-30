@@ -225,10 +225,9 @@ kubectl accelprof run --alias teama-smoke --image "$IMAGE" --wait \
 ==> waiting for the run
 
 ==> workload wl-260831044443-b458f144 in team-a
-    job:         profile-wl-260831044443-b458f144
     status:      SuccessCriteriaMet Complete
     run_id:      2bba00937a8444f093887c30479f420d
-    analyse it:  call stage_run then analyze with this run id on the analysis MCP server
+...
 ```
 
 `--wait` は**数分以上かかる run には付けません**。投入したら手元のターミナルは閉じてよく、記録はクラスタの中で完結します。ここで付けているのは、このワークロードが数秒で終わり `run_id` まで 1 コマンドで確認できるからです。なお初回はノードの確保とイメージの pull が先に走るので、ワークロードが数秒でも完了までは数分待ちます。判断の基準はワークロード自体の実行時間です。
@@ -244,12 +243,10 @@ kubectl accelprof runs --alias teama-smoke
 
 ```text
 ==> newest run in team-a for alias teama-smoke: wl-260831044443-b458f144
-    job:         profile-wl-260831044443-b458f144
     status:      SuccessCriteriaMet Complete
     run_id:      2bba00937a8444f093887c30479f420d
 
 WORKLOAD-ID                ALIAS         RUN-ID                             COMPLETIONS   FAILED   AGE
-wl-260830052358-d267ef09   teama-smoke   0a1638331a7d4a40b003134254a062e4   1             <none>   2026-08-29T20:24:02Z
 wl-260831044443-b458f144   teama-smoke   2bba00937a8444f093887c30479f420d   1             <none>   2026-08-30T19:44:46Z
 
 ==> Jobs are kept only until their TTL expires; the recordings are permanent
@@ -342,17 +339,15 @@ export BASE_ID=$(kubectl accelprof run --alias teama-gpu-nsys --image "$TRAIN_IM
 exp.alias        = teama-gpu-nsys
 workload_id      = wl-260830065351-c356f674
 chip             = gpu
-region           = us-east-2
 status           = ok
 exit_reason      = completed
 profiled         = true
 profile_mode     = nsys
-profiled_ranks   = 0
-contract_version = 1
-schema_version   = 1
 artifacts_uri    = s3://<trace バケット>/teama-gpu-nsys/<run_id>/
-pod              = profile-wl-260830065351-c356f674
+...
 ```
+
+このほかに `region`、`profiled_ranks`、`contract_version`、`schema_version`、`pod` が付きます。
 
 押さえるのは 2 点です。`chip` は**要求したデバイス**で、スケジューラが載せた先ではありません。`--profile` が指定するのはプロファイラの種類で、デバイス要求と toleration を決めるのは `--neuron` です。Neuron ノードで動かしたいなら `--neuron` を指定します。もう 1 点は `profiled` が信用しきれないことです。shim は `nsys` を見つけた時点でこの値を立てるので、`nsys` の起動に失敗した実行でも `true` になり得ます。取得できたかどうかは `status` と、次の手順で `stage_run` が返すファイルの一覧まで見て判断してください。
 
@@ -424,17 +419,20 @@ GPU カーネル時間の 100.0% (320 回、合計 705.0 ms) を占める。
 ```text
  ** CUDA GPU Kernel Summary (cuda_gpu_kern_sum):
 
- Time (%)  Total Time (ns)  Instances  Avg (ns)   Med (ns)   Min (ns)  Max (ns)  StdDev (ns)   Name
- --------  ---------------  ---------  ---------  ---------  --------  --------  -----------   ----
-    100.0        705006251        320  2203144.5  2202583.0   2199319   2224951       3083.5   ampere_bf16_s16816gemm_bf16_256x128_ldg8_f2f_stages_32x3_nn
-      0.0           158560          2    79280.0    79280.0     79232     79328         67.9   void at::native::distribution_elementwise_grid_stride_kernel
+ Time (%)  Total Time (ns)  Instances  Avg (ns)   StdDev (ns)  Name
+ --------  ---------------  ---------  ---------  -----------  ----
+    100.0        705006251        320  2203144.5       3083.5  ampere_bf16_s16816gemm_bf16_256x128_ldg8_f2f_stages_32x3_nn
+      0.0           158560          2    79280.0         67.9  void at::native::distribution_elementwise_grid_stride_kernel
 
  ** NVTX Range Summary (nvtx_sum):
 
- Time (%)  Total Time (ns)  Instances  Avg (ns)  Med (ns)  Min (ns)  Max (ns)  StdDev (ns)   Style   Range
- --------  ---------------  ---------  --------  --------  --------  --------  -----------  -------  -----
-    100.0          8877208        300   29590.7   28742.0     26762     71904       4337.9  PushPop  :step
+ Time (%)  Total Time (ns)  Instances  Avg (ns)  StdDev (ns)   Style   Range
+ --------  ---------------  ---------  --------  -----------  -------  -----
+    100.0          8877208        300   29590.7       4337.9  PushPop  :step
+...
 ```
+
+このあとに CUDA API Summary と OS Runtime Summary も続きます (幅の都合で Med と Min と Max の列は省略しています)。
 
 上の表は記録された GPU カーネル時間の内訳で、壁時計全体の内訳ではありません。下の表の 29.6 マイクロ秒は、この出力では NVTX で囲んだ範囲のホスト側の時間として集計されており、カーネルの投入にかかった時間を表します。カーネル起動は非同期なので、この値が小さいことだけでは投入待ちが無いとは言えません。投入待ちを疑うときは同じ出力の CUDA API Summary で同期系の API に時間が乗っていないかを見ます。
 
@@ -507,7 +505,7 @@ kubectl distai-mcp status
     close them with:  kubectl distai-mcp down
 
     analysis     http://127.0.0.1:55504/mcp  listening, answers MCP
-    knowledge    http://127.0.0.1:55521/mcp  listening, answers MCP
+...
 ```
 
 ローカルのポートは毎回 OS が空きポートから割り当てるので、値は実行ごとに変わります。登録に使う行は `up` が実際のポートで出力するので、表示された `claude mcp add` の行をそのまま実行します。Claude Code はそのディレクトリに紐づくプロジェクト単位の設定として保存するので、以降はそのディレクトリでセッションを開きます。
