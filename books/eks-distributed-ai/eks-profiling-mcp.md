@@ -176,14 +176,16 @@ DEV_BUILD=1 ./infra/scripts/install-profiling.sh
 
 ## 4. プロファイルを取得して記録する
 
-プロファイルを取得するのに必要なのは `kubectl-accelprof` という 1 ファイルだけです。`kubectl` はこの名前のファイルを PATH 上に見つけると `kubectl accelprof` というサブコマンドとして呼べるようにします。
+必要なのはプラグイン 2 本で、どちらも 1 ファイルです。`kubectl` は PATH 上の `kubectl-<名前>` を `kubectl <名前>` として呼べるようにします。プロファイルを取得するのが `kubectl accelprof`、手順 8 で MCP に繋ぐのが `kubectl distai-mcp` です。
 
 ここまでの章を進めてきた読者はチェックアウトを持っているので、その中のプラグインを PATH に通すだけで済みます。
 
 ```bash
 export PATH="$(git rev-parse --show-toplevel)/infra/eks/bin:$PATH"
-kubectl accelprof --help >/dev/null && echo "plugin ok"
+kubectl accelprof --help >/dev/null && kubectl distai-mcp --help >/dev/null && echo "plugin ok"
 ```
+
+以前この本を読んで `~/.local/bin` などにプラグインを置いた場合は、そちらが PATH で先に来ていないか確かめてください。古い版が先に見つかると、この章の後半で `unknown subcommand` になります。`kubectl plugin list` でどのファイルが選ばれるかが分かります。
 
 チェックアウトを持たない人 (プロファイルを取得するだけで基盤は触らない人) 向けの経路も 1 行あります。リポジトリを固定タグで `~/distributed-ai-v0.2.0` に取得し、プラグインを `~/.local/bin` に置きます。この経路も冒頭で `git`、`terraform`、`kubectl`、`helm`、`aws`、`python3`、`curl` の存在を確認し、欠けていればそこで止まります。プラグインの設置だけが目的でも `terraform` と `helm` は入れておいてください。
 
@@ -400,15 +402,15 @@ pod              = profile-wl-260830065351-c356f674
 
 そのために必要なものは 2 つです。1 つは手元からクラスタ内のサーバに届く経路で、どちらのサーバも streamable HTTP を素で話すので転送されたポートがあれば足ります。もう 1 つは MCP クライアントへの登録で、クライアントはそのポートを URL として知る必要があります。
 
-この 2 つは同時に成り立っていないと意味がありません。ポートを転送しても登録していなければクライアントは呼べず、登録してもポートを誰も保持していなければ接続に失敗します。手で両方を管理すると、サーバごとに端末を 1 つ占有した上で、トンネルが落ちたときにクライアント側には `ConnectionRefused` しか見えません。そこで `kubectl accelprof mcp exec` が、必要なトンネルを開き、その実際のポートから組んだ設定を環境変数に置き、コマンドを実行して、開けたものだけを閉じます。
+この 2 つは同時に成り立っていないと意味がありません。ポートを転送しても登録していなければクライアントは呼べず、登録してもポートを誰も保持していなければ接続に失敗します。手で両方を管理すると、サーバごとに端末を 1 つ占有した上で、トンネルが落ちたときにクライアント側には `ConnectionRefused` しか見えません。そこで `kubectl distai-mcp` がこれを引き受けます。基盤がホストしている MCP を Service のラベルから見つけ、必要なトンネルを開き、実際に得たポートから組んだ設定を環境変数に置き、コマンドを実行して、開けたものだけを閉じます。accelprof 専用ではなく、`mcp-host` に登録した MCP はすべて対象になります。
 
 ```bash
 export RUN_ID=$(kubectl accelprof get --last --alias teama-smoke -o run-id)
 test -n "$RUN_ID" && echo "run_id=$RUN_ID"
-kubectl accelprof mcp exec -- sh -c 'claude -p "accelprof-analysis の stage_run と analyze を run_id=$RUN_ID で順に呼び、返ってきた事実だけを報告して" --mcp-config "$ACCELPROF_MCP_CONFIG" --strict-mcp-config --allowed-tools mcp__accelprof-analysis__stage_run mcp__accelprof-analysis__analyze'
+kubectl distai-mcp exec -- sh -c 'claude -p "analysis の stage_run と analyze を run_id=$RUN_ID で順に呼び、返ってきた事実だけを報告して" --mcp-config "$DISTAI_MCP_CONFIG" --strict-mcp-config --allowed-tools mcp__analysis__stage_run mcp__analysis__analyze'
 ```
 
-`sh -c` を挟んで単引用符にしているのは、`ACCELPROF_MCP_CONFIG` が `mcp exec` の内側で初めて決まるからです。外側の引用符で書くと、まだ空の変数が展開されます。`RUN_ID` は `export` してあるので、同じ理由で内側に届きます。空のまま進めると claude が run を特定できないので、`echo` で値が出ることを先に確かめています。記録が完了していない run では `-o run-id` が空になります。`--strict-mcp-config` は、そのディレクトリに登録済みの他の MCP サーバを混ぜないための指定です。
+`sh -c` を挟んで単引用符にしているのは、`DISTAI_MCP_CONFIG` が `distai-mcp exec` の内側で初めて決まるからです。外側の引用符で書くと、まだ空の変数が展開されます。`RUN_ID` は `export` してあるので、同じ理由で内側に届きます。空のまま進めると claude が run を特定できないので、`echo` で値が出ることを先に確かめています。記録が完了していない run では `-o run-id` が空になります。`--strict-mcp-config` は、そのディレクトリに登録済みの他の MCP サーバを混ぜないための指定です。
 
 `stage_run` は成果物を読める状態にしてマウント上の場所を返し、`analyze` がその中身を読みます。claude が返すのは自然文の報告なので、run ごとに文面は変わります。判断の基準にするのは、その報告に `/traces/<alias>/<run_id>/` の場所と `.nsys-rep` の名前が出ていることです。ツール自身の返りを直接見ると次の形をしています。
 
@@ -436,7 +438,7 @@ kubectl accelprof mcp exec -- sh -c 'claude -p "accelprof-analysis の stage_run
 
 ```bash
 export RUN_ID=$(kubectl accelprof get --last --alias teama-gpu-nsys -o run-id)
-kubectl accelprof mcp exec -- sh -c 'claude -p "accelprof-analysis の stage_run と analyze (analyzer は nsys-stats) を run_id=$RUN_ID で順に呼び、支配的なカーネルとその平均時間を報告して" --mcp-config "$ACCELPROF_MCP_CONFIG" --strict-mcp-config --allowed-tools mcp__accelprof-analysis__stage_run mcp__accelprof-analysis__analyze'
+kubectl distai-mcp exec -- sh -c 'claude -p "analysis の stage_run と analyze (analyzer は nsys-stats) を run_id=$RUN_ID で順に呼び、支配的なカーネルとその平均時間を報告して" --mcp-config "$DISTAI_MCP_CONFIG" --strict-mcp-config --allowed-tools mcp__analysis__stage_run mcp__analysis__analyze'
 ```
 
 `nsys-stats` の `advice` には集計表が入ります。まず読むのは CUDA GPU Kernel Summary で、次が自分で仕込んだ NVTX の区間です。手順 6 の全区間キャプチャの run では次の表が返りました。
@@ -461,7 +463,7 @@ kubectl accelprof mcp exec -- sh -c 'claude -p "accelprof-analysis の stage_run
 事実が出たら、次に何をするかは knowledge MCP に聞きます。症状を渡すと関連する playbook がランク付きで返り、`get_topic` で本文を開けます。
 
 ```bash
-kubectl accelprof mcp exec -- sh -c 'claude -p "accelprof-knowledge の search_knowledge で GPU の学習が遅い症状に近い playbook を探し、上位 3 件の topic_id と題名を挙げて" --mcp-config "$ACCELPROF_MCP_CONFIG" --strict-mcp-config --allowed-tools mcp__accelprof-knowledge__search_knowledge mcp__accelprof-knowledge__get_topic'
+kubectl distai-mcp exec -- sh -c 'claude -p "knowledge の search_knowledge で GPU の学習が遅い症状に近い playbook を探し、上位 3 件の topic_id と題名を挙げて" --mcp-config "$DISTAI_MCP_CONFIG" --strict-mcp-config --allowed-tools mcp__knowledge__search_knowledge mcp__knowledge__get_topic'
 ```
 
 実際に返った上位 3 件は次のものでした。
@@ -475,7 +477,7 @@ gpu/roofline                     Roofline diagnosis - compute-bound vs memory-bo
 ここまでを 1 本にまとめると、この章のゴールがそのままコマンドになります。両方のサーバを許可して、事実と指針を分けて報告させます。
 
 ```bash
-kubectl accelprof mcp exec -- sh -c 'claude -p "run_id=$RUN_ID について、accelprof-analysis の stage_run と analyze (analyzer は nsys-stats) で支配的なカーネルを特定し、続けて accelprof-knowledge の search_knowledge と get_topic でその症状に対応する playbook を開き、次に何を変えるべきかを報告して。事実と playbook の推奨を分けて書いて" --mcp-config "$ACCELPROF_MCP_CONFIG" --strict-mcp-config --allowed-tools mcp__accelprof-analysis__stage_run mcp__accelprof-analysis__analyze mcp__accelprof-knowledge__search_knowledge mcp__accelprof-knowledge__get_topic'
+kubectl distai-mcp exec -- sh -c 'claude -p "run_id=$RUN_ID について、analysis の stage_run と analyze (analyzer は nsys-stats) で支配的なカーネルを特定し、続けて knowledge の search_knowledge と get_topic でその症状に対応する playbook を開き、次に何を変えるべきかを報告して。事実と playbook の推奨を分けて書いて" --mcp-config "$DISTAI_MCP_CONFIG" --strict-mcp-config --allowed-tools mcp__analysis__stage_run mcp__analysis__analyze mcp__knowledge__search_knowledge mcp__knowledge__get_topic'
 ```
 
 上の GPU の run に対して返ってきたのは、次の内容でした。
@@ -493,18 +495,22 @@ kubectl accelprof mcp exec -- sh -c 'claude -p "run_id=$RUN_ID について、ac
 `mcp exec` はコマンドが終わるとトンネルを閉じるので、セッションを開いたまま何度も聞く使い方には向きません。その場合は `mcp up` でトンネルを保持します。`mcp up` は転送を背景に置いてプロンプトに戻るので、端末を占有しません。表示された URL をクライアントに登録して使います。
 
 ```bash
-kubectl accelprof mcp up
-kubectl accelprof mcp status
+kubectl distai-mcp up
+kubectl distai-mcp status
 ```
 
 この環境ではポート 8080 と 8081 が空いていたので、次の出力になりました。
 
 ```text
 ==> MCP servers are reachable from this machine
-    analysis     http://127.0.0.1:8080/mcp
-    knowledge    http://127.0.0.1:8081/mcp
+    analysis     http://127.0.0.1:61656/mcp
+    knowledge    http://127.0.0.1:61676/mcp
 
-    close them with:  kubectl accelprof mcp down
+    register them with a client that keeps a session open:
+      claude mcp add --transport http analysis http://127.0.0.1:61656/mcp
+      claude mcp add --transport http knowledge http://127.0.0.1:61676/mcp
+
+    close them with:  kubectl distai-mcp down
 ```
 
 `mcp up` は繰り返し実行して構いません。すでに MCP として応答しているトンネルはそのまま残します。ポートが埋まっていた場合は空いているポートに移るので、URL は毎回 `mcp status` で確認してください。`mcp status` は listen しているかではなく MCP として応答するかを見ます。kubectl は転送先の Pod が消えてもポートを開いたままにするので、この 2 つは別物です。
@@ -512,15 +518,13 @@ kubectl accelprof mcp status
 Claude Code に登録する場合は、そのディレクトリに紐づくプロジェクト単位の設定として保存されるので、以降はそのディレクトリでセッションを開きます。ツール一覧に出てこない場合は、起動したディレクトリが登録したディレクトリと違います。
 
 ```bash
-claude mcp add --transport http accelprof-analysis  http://127.0.0.1:8080/mcp
-claude mcp add --transport http accelprof-knowledge http://127.0.0.1:8081/mcp
 claude mcp list
 ```
 
-使い終わったら閉じます。閉じ忘れたトンネルは動き続けるので、次に `mcp up` したときにポートが移る形で気づきます。
+使い終わったら閉じます。`down` は実際に閉じた本数を言うので、0 本だったときは別の context か namespace の記録を見ていることが分かります。
 
 ```bash
-kubectl accelprof mcp down
+kubectl distai-mcp down
 ```
 
 ::::
