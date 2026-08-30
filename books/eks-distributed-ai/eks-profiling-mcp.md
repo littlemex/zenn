@@ -5,7 +5,7 @@ free: true
 
 GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0)
 
-本章では、Basic07 までに動かした GPU ワークロードのプロファイルを取得し、その結果を Claude から分析します。自分の学習コマンドの前に 1 コマンド足すだけでプロファイルが記録され、記録された結果は Model Context Protocol (MCP) 経由で読めるので、「どのカーネルが遅いのか」から「次に何を変えるか」までを 1 本のコマンドで受け取れます。
+本章では、Basic04 で作った GPU プールの上でワークロードのプロファイルを取得し、その結果を Claude から分析します。手順では合成の行列積を題材にしますが、`--image` を差し替えれば自分の学習ジョブでもそのまま動きます。自分の学習コマンドの前に 1 コマンド足すだけでプロファイルが記録され、その結果は Model Context Protocol (MCP) 経由で読めます。「どのカーネルが遅いのか」から「次に何を変えるか」までを 1 本のコマンドで受け取れます。
 
 :::message alert
 マネージド MLflow と S3 Files は課金リソースです。演習が終わったら本章末尾の後片付けを必ず実施してください。EFS ベースのファイルシステムはマウントターゲットが残っていると削除できないため、撤去順は必ず `infra/eks` を先、`infra/data-layer` を後にします。
@@ -27,17 +27,15 @@ flowchart LR
     A --> C["MCP クライアント<br/>Claude など"]
 ```
 
-依存は一方向です。記録先が無ければ producer は書き込めず、producer が書いていなければ分析は読めません。導入もこの順で進みます。
-
 ## これは何をするものか
 
 構成要素は 3 つです。
 
-- **producer Job**: 自分のイメージとコマンドをそのまま受け取り、外側から profiler を注入して包みます。initContainer が基盤イメージから `nsys` と shim を共有ボリュームにコピーするので、**プロファイルを取るためにイメージを作り直す必要がありません**。終了後、同じ Job の recorder コンテナが結果を MLflow に 1 run として記録します
-- **記録先**: run のメタデータ (params、metrics、tags) はマネージド MLflow、トレースの実体 (`.nsys-rep`) は S3 の trace バケットです。分けているのは、メタデータは検索したいがトレースは大きく、手元に落としたくないからです
+- **producer Job**: 自分のイメージとコマンドをそのまま受け取り、外側からプロファイラを注入します。initContainer が基盤イメージから `nsys` と shim を共有ボリュームにコピーするので、**プロファイルを取るためにイメージを作り直す必要がありません**。終了後、同じ Job の recorder コンテナが結果を MLflow に 1 run として記録します
+- **記録先**: run のメタデータ (params、metrics、tags) はマネージド MLflow、トレースの実体 (`.nsys-rep`) は S3 の trace バケットです
 - **分析 MCP と知識 MCP**: 分析側はトレースをクラスタ内で読んで集計テキストを返し、知識側は症状に対応する playbook を返します。トレースの実体は手元に来ません
 
-ワークロード側が守るのは `/accelprof/out` というディレクトリ 1 つだけです。`metrics.json` に数値の JSON を書けば metrics として記録され、`params.json` と `tags.json` も同じ形式で記録されます。ライブラリの import は不要です。
+ワークロード側が守るのは `/accelprof/out` というディレクトリ 1 つだけで、そこに `metrics.json` を書けば metrics として記録されます (手順 5 のコマンドで書きます)。ライブラリの import は不要です。
 
 ## nsys で何が取れて、何が取れないか
 
@@ -53,7 +51,7 @@ nsys profile -t cuda,nvtx,osrt -o /accelprof/out/traces/rank-N --force-overwrite
 
 ## 取得する区間をどう絞るか
 
-`nsys` はイベントを記録し続けるので、トレースのサイズと後処理の時間はカーネル起動数と API 呼び出し数にほぼ比例します。数時間の学習を頭から終わりまで取ると、初期化やデータローダの立ち上げやチェックポイント保存が混ざって、見たい定常状態が埋もれます。診断に必要なのは定常状態の数十から数百イテレーションだけです。
+診断に必要なのは定常状態の数十から数百イテレーションだけです。数時間の学習を頭から取ると、初期化やチェックポイント保存が混ざって見たい区間が埋もれ、トレースも扱いにくいサイズになります。
 
 | 方法 | やること | 向き |
 | --- | --- | --- |
@@ -61,30 +59,38 @@ nsys profile -t cuda,nvtx,osrt -o /accelprof/out/traces/rank-N --force-overwrite
 | NVTX の区間 | `torch.cuda.nvtx.range_push` と `range_pop` をイテレーションに仕込む | 集計をイテレーション境界で読みたいとき |
 | `--capture-range=cudaProfilerApi` | `torch.cuda.profiler.start()` と `stop()` で挟んだ区間だけ記録する | 同じ区間を繰り返し比較するとき |
 
-区間を絞る目的はトレースを小さく的確にすることで、速く走らせることではありません。計測コストが気になるなら推測せず測ります。`--profile none` はプロファイラを動かさずに run だけを記録するモードなので、同じ alias にこの実行を 1 本置いておけば、それがプロファイルなしのベースラインになり、`metrics.json` の数値の差がそのまま計測コストの実測値になります (手順 5 で実測します)。
+長時間の学習で気をつける制約が 2 つあります。トレースは Pod の `emptyDir` に書かれてから recorder が S3 に上げるので、大きな区間を取るとノードのエフェメラルストレージを消費します。大きく取るなら `--patch` で `emptyDir` に `sizeLimit` を付けます。もう 1 つは recorder がワークロードを待つ上限が既定で 1 日であることで、これを超える実行では `--recorder-timeout` を伸ばさないと、その時点のファイルだけが `status=unknown` で記録されます。
 
-## どの Pod を取得するか
+`--profile none` はプロファイラを動かさずに run だけを記録するモードです。この実行を同じ alias に 1 本置けばプロファイルなしのベースラインになり、`metrics.json` の数値の差がそのまま計測コストの実測値になります (手順 5 で実測します)。
 
-既定では rank 0 の Pod だけを取得します。`--profile-ranks` の rank は**プロセスの rank ではなく Pod の index** です。shim が見るのは `ACCELPROF_NODE_RANK` (なければ Indexed Job の `JOB_COMPLETION_INDEX`、単一 Pod では 0) なので、この指定が選ぶのは「どの Pod で `nsys` を起動するか」です。`nsys` は既定で子プロセスを追跡するため、1 つの Pod で `torchrun --nproc-per-node 8` を包めば 8 プロセス分が 1 本の `rank-0.nsys-rep` に入ります。
+::::details 複数 Pod のジョブで取得する場合を説明します
+
+既定では rank 0 の Pod だけを取得し、対象は `kubectl accelprof run` の `--profile-ranks` で変えられます。この rank は**プロセスの rank ではなく Pod の index** です。shim が見るのは `ACCELPROF_NODE_RANK` (なければ Indexed Job の `JOB_COMPLETION_INDEX`、単一 Pod では 0) なので、この指定が選ぶのは「どの Pod で `nsys` を起動するか」です。`nsys` は既定で子プロセスを追跡するため、1 つの Pod で `torchrun --nproc-per-node 8` を包めば 8 プロセス分が 1 本の `rank-0.nsys-rep` に入ります。
 
 rank 0 だけを取るのはコストを抑えるサンプリングであって、代表値の保証ではありません。rank 0 はロギングやチェックポイント書き出しを担うことが多く、ストラグラーは rank 0 からは見えません。全ノードの step time を `metrics.json` に記録しておき、外れたノードが見えたらその rank を狙い撃ちする 2 段構えが実務的です。なお複数ノードの分散ジョブへの適用は本章では未検証です。
 
-## 記録と後片付けの単位
+::::
 
-alias は調査キャンペーン 1 つに 1 つ付けます。MLflow の experiment 名と S3 の第 1 階層プレフィックスを兼ねるので、**分析側から見える範囲と、掃除するときに数える単位が alias に揃います**。条件の違いは `--param`、コードや構成の違いは `--tag` で表し、反復ごとに alias を作らないでください。
+## 記録と掃除の単位をどう決めるか
 
-alias 単位の削除は自動では起きません。終わったキャンペーンは MLflow の experiment 削除と `aws s3 rm --recursive s3://<trace バケット>/<alias>/` を対で実行します。片方だけ消すと、参照できない run が残ります。
+alias は調査キャンペーン、つまり 1 つの問い (この学習ジョブはなぜ遅いのか、など) のもとで比較する一連の実行に 1 つ付けます。MLflow の experiment 名と S3 の第 1 階層プレフィックスを兼ねるので、**分析側から見える範囲と、掃除するときに数える単位が alias に揃います**。条件の違いは `--param`、コードや構成の違いは `--tag` で表し、反復ごとに alias を作らないでください。
+
+alias 単位の削除は自動では起きません。終わったキャンペーンは MLflow の experiment 削除と `aws s3 rm --recursive s3://<trace バケット>/<alias>/` を対で実行します (片方だけ消すと参照できない run が残ります)。
 
 # ワークショップ実施
 
 ## 1. 前提を確認する
 
-- Basic01 から Basic11 まで進めたクラスタが稼働していること
+- Basic01 から Basic11 まで進めたクラスタが稼働していること (プロファイルを取る対象は Basic07 の GPU ワークロードですが、本章はクラスタ側の配線も足すので Basic11 までの構成を前提にします)
 - `k` と `KUBECONFIG` は Basic01 手順 2 の 4 行で設定済みであること
 - `terraform` と `kubectl` と `helm` と `aws` と `python3` と `git` と `curl` が手元にあること
 - Claude Code の `claude` が入っていて認証済みであること (手順 6 で使います)
 
-`aws` は SageMaker MLflow app と S3 Files を知っているバージョンが必要です。`aws sagemaker list-mlflow-apps help` が通らない場合は先に更新してください。古いままだと、導入スクリプトが権限エラーのような見た目で止まります。
+`aws` は SageMaker MLflow app と S3 Files を知っているバージョンが必要です。次が使い方を表示せずに終了するなら、先に AWS CLI を更新してください。古いままだと、導入スクリプトが権限エラーのような見た目で止まります。
+
+```bash
+aws sagemaker list-mlflow-apps help >/dev/null && echo "aws ok"
+```
 
 本章は `infra/eks` の稼働中クラスタにデータ層と MCP サーバを足すので、まだデータ層 (`infra/data-layer`) を適用していない状態から始めます。
 
@@ -128,9 +134,11 @@ namespace/team-b created
 serviceaccount/mcp-producer created
 ```
 
-:::message
-共有 namespace で使う場合は、配られる Role の範囲を先に把握してください。Kubernetes の RBAC はリソース名を絞らない限り種類単位なので、この Role はその namespace の Pod の参照と Job の参照・更新ができます。recorder が自分の Pod の状態を読み、Job に run id を書くために必要な範囲です。
-:::
+::::details 共有 namespace で使うときに配られる権限の範囲を説明します
+
+Kubernetes の RBAC はリソース名を絞らない限り種類単位なので、配られる Role では、その namespace の Pod の参照と Job の参照・更新ができます。recorder が自分の Pod の状態を読み、Job に run id を書くために必要な範囲です。他人の Job も同じ Role で触れるので、共有 namespace ではこの範囲を前提に判断してください。
+
+::::
 
 ## 3. 基盤を導入する
 
@@ -143,7 +151,7 @@ serviceaccount/mcp-producer created
 | `DATA_LAYER_NAME` | 記録側の一式 (trace バケット、MLflow、S3 Files) に付ける名前。バケット名の接頭辞になるので既存と別名にします | 初回だけ |
 | `CREATE_DATA_LAYER` | その新規作成を明示的に許可します。既定では既存の再利用しかしません | 初回だけ |
 
-`MLFLOW_BACKEND` を変更できないのは、記録先の MLflow を切り替える plan が「いまの MLflow を破棄して空のものを作る」plan になり、run のメタデータがまとめて消えるからです。
+あわせて初回だけ `DEV_BUILD=1` を付けます。基盤イメージは自分の ECR から digest で引く作りなので、まだ何も無い状態では `no analysis image digest available` で止まります。このビルドは Basic02 で触れたクラスタ内 image builder が前提です。
 
 ```bash
 export PRODUCER_NAMESPACES=team-a,team-b
@@ -153,9 +161,9 @@ export MLFLOW_BACKEND=app
 DEV_BUILD=1 ./infra/scripts/install-profiling.sh
 ```
 
-`DEV_BUILD=1` は初回だけ必要です。基盤イメージは自分の ECR から digest で引く作りなので、まだ何も無い状態では `no analysis image digest available` で止まります。このビルドは Basic02 で触れたクラスタ内 image builder が前提です。
+初回は全体で 20〜40 分かかります。長いのはデータ層の apply と、クラスタ内での 2 つのイメージのビルドです。`Phase N/7` の行が進んでいれば正常なので、terraform やビルドの出力が流れている間は待ちます。
 
-初回は全体で 20〜40 分かかります。長いのはデータ層の apply と、クラスタ内での 2 つのイメージのビルドです。`Phase N/7` の行が進んでいれば正常なので、terraform やビルドの出力が流れている間は待ちます。最後に次が出れば導入完了です。
+実機出力 (末尾):
 
 ```text
 --> acceptance OK: the analysis server exposes stage_run,resolve_artifacts,analyze
@@ -171,13 +179,15 @@ Profiling platform ready on distai-eks.
 
 2 回目以降は `CREATE_DATA_LAYER` と `DATA_LAYER_NAME` を外して同じコマンドを実行します。何度実行しても同じ結果になるので、あとから namespace を増やすときは、その namespace と ServiceAccount を作ってから `PRODUCER_NAMESPACES` に追記して再実行します。
 
-:::message
+::::details 導入スクリプトが差分を検出して停止したときの進め方を説明します
+
 既存クラスタに profiling と無関係な差分が溜まっている場合、スクリプトは一覧を表示して停止します。基盤だけを収束させるなら `PROFILING_ONLY=1`、表示された差分もすべて適用してよいなら `ALLOW_UNRELATED=1` を付けて再実行します。判断できない差分を `ALLOW_UNRELATED=1` で押し通すと、profiling とは関係のない構成変更が同時に走ります。
-:::
 
-## 4. プロファイルを取得して記録する
+::::
 
-必要なのはプラグイン 2 本で、どちらも 1 ファイルです。`kubectl` は PATH 上の `kubectl-<名前>` を `kubectl <名前>` として呼べるようにします。プロファイルを取得するのが `kubectl accelprof`、手順 6 で MCP に繋ぐのが `kubectl distai-mcp` です。
+## 4. 経路を確認する
+
+必要なのはプラグイン 2 本で、どちらも 1 ファイルです。`kubectl` には、PATH 上の `kubectl-<名前>` を `kubectl <名前>` として呼び出すプラグイン機構があります。プロファイルを取得するのが `kubectl accelprof`、手順 6 で MCP に繋ぐのが `kubectl distai-mcp` です。
 
 ```bash
 export PATH="$(git rev-parse --show-toplevel)/infra/eks/bin:$PATH"
@@ -193,9 +203,9 @@ plugin ok
 /home/you/distributed-ai-v0.2.0/infra/eks/bin/kubectl-distai_mcp
 ```
 
-以前この本を読んで `~/.local/bin` などにプラグインを置いた場合は、`kubectl plugin list` にそちらが出ていないか確かめてください。古い版が先に見つかると、手順 6 で `unknown subcommand` になります。
+`kubectl plugin list` の出力がチェックアウト内のパスであることを確かめてください。以前どこかに置いた古い版が先に見つかると、手順 6 で `unknown subcommand` になります。
 
-まず経路が通っていることを確かめるために、基盤イメージ自身を 1 本流します。イメージの URI は namespace に配られた ConfigMap から引けるので、レジストリやタグを組み立てる必要はありません。
+まず経路が通っていることを確かめるために、基盤イメージ自身を 1 本流します。`--gpu` を付けないので GPU ノードは起動せず、CPU で数秒で終わります。イメージの URI は namespace に配られた ConfigMap から引けるので、レジストリやタグを組み立てる必要はありません。
 
 ```bash
 export IMAGE=$(k get configmap accelprof-config -o jsonpath='{.data.ACCELPROF_PLATFORM_IMAGE}')
@@ -221,7 +231,7 @@ kubectl accelprof run --alias teama-smoke --image "$IMAGE" --wait \
     analyse it:  call stage_run then analyze with this run id on the analysis MCP server
 ```
 
-`--wait` は**数分以上かかる run には付けません**。投入したら手元のターミナルは閉じてよく、記録はクラスタの中で完結します。ここで付けているのは、この 1 本が数秒で終わり `run_id` まで 1 コマンドで確認できるからです。初回はノードの確保とイメージの pull が先に走るので、待ち自体は数分になります。
+`--wait` は**数分以上かかる run には付けません**。投入したら手元のターミナルは閉じてよく、記録はクラスタの中で完結します。ここで付けているのは、このワークロードが数秒で終わり `run_id` まで 1 コマンドで確認できるからです。なお初回はノードの確保とイメージの pull が先に走るので、ワークロードが数秒でも完了までは数分待ちます。判断の基準はワークロード自体の実行時間です。
 
 `--wait` を付けずに投入した run は、あとから状態と `run_id` を引きます。
 
@@ -246,14 +256,8 @@ wl-260831044443-b458f144   teama-smoke   2bba00937a8444f093887c30479f420d   1   
 https://app-XXXXXXXX.mlflow.sagemaker.us-east-2.app.aws/  (mlflow-app/app-XXXXXXXX)
 ```
 
-引数を省いた `kubectl accelprof get` は「この namespace で最も新しい run」なので、namespace を共有していると他人の run を指します。`--alias` を付ければ自分のキャンペーンの中で最新を指し、どの run を見ているかは出力の 1 行目に必ず出ます。左端の `WORKLOAD-ID` が run を名前で指すときの値で、`run_id` が表示されたら記録は完了しています。
+引数を省いた `kubectl accelprof get` は「この namespace で最も新しい run」を指すので、namespace を共有していると他人の run を指します。`--alias` を付ければ自分のキャンペーンの中で最新を指し、どの run を見ているかは出力の 1 行目に必ず出ます。左端の `WORKLOAD-ID` が run を名前で指すときの値で、`run_id` が表示されたら記録は完了しています。
 
-metrics を残したい場合は、自分の学習スクリプトの最後にファイルを 1 つ書きます。
-
-```python
-import json
-json.dump({"tokens_per_sec": tps, "loss": loss}, open("/accelprof/out/metrics.json", "w"))
-```
 
 ## 5. 自分のワークロードで取得する
 
@@ -265,7 +269,7 @@ json.dump({"tokens_per_sec": tps, "loss": loss}, open("/accelprof/out/metrics.js
 export TRAIN_IMAGE=763104351884.dkr.ecr.$AWS_REGION.amazonaws.com/pytorch-training:2.10.0-gpu-py313-cu130-ubuntu22.04-ec2
 ```
 
-学習スクリプトの代わりに、bf16 の 4096 角行列積を 300 回回すだけのコマンドを流します。ウォームアップ 20 回のあとに `torch.cuda.profiler.start()` を呼び、各反復を NVTX で囲み、最後に `stop()` を呼んで、スループットを `metrics.json` に書きます。区間を絞る指定が効くのはこの `start()` と `stop()` があるからで、呼んでいないスクリプトに同じ指定をすると区間が始まらないまま何も記録されません。
+学習スクリプトの代わりに、4096×4096 の bf16 行列積を 300 回回すだけのコマンドを流します。ウォームアップ 20 回のあとに `torch.cuda.profiler.start()` を呼び、各反復を NVTX で囲み、最後に `stop()` を呼んで、スループットを `metrics.json` に書きます。区間を絞る指定が効くのはこの `start()` と `stop()` があるからで、呼んでいないスクリプトに同じ指定をすると区間が始まらないまま何も記録されません。
 
 ```bash
 kubectl accelprof run --alias teama-gpu-nsys \
@@ -293,7 +297,13 @@ print("tflops=%.1f elapsed=%.3f" % (tf, el))
 '
 ```
 
-GPU ノードの確保とイメージの pull が入るので、初回は 5 分前後かかります。完了すると workload のログの末尾に結果が出ます。
+GPU ノードの確保とイメージの pull が入るので、初回は 5 分前後かかります。投入時に表示される `logs:` の行のコマンドで、workload の様子を見られます。
+
+```bash
+kubectl logs -n team-a -f job/profile-<workload_id> -c workload
+```
+
+実機出力 (末尾):
 
 ```text
 Capture range started in the application.
@@ -305,7 +315,18 @@ Generated:
 	/accelprof/out/traces/rank-0.nsys-rep
 ```
 
-計測コストを知るために、同じコマンドを 3 通り (`--profile none`、`--nsys-args` を付けない既定、上のとおり区間を絞ったもの) で流すと、A10G 1 枚では次のようになりました。
+計測コストを知るために、同じコマンドをあと 2 通り流します。`--nsys-args` を外した既定と、プロファイラを動かさないベースラインです。
+
+```bash
+kubectl accelprof run --alias teama-gpu-nsys --image "$TRAIN_IMAGE" --gpu 1 \
+  -- python3 -c '...上と同じスクリプト...'
+export BASE_ID=$(kubectl accelprof run --alias teama-gpu-nsys --image "$TRAIN_IMAGE" --gpu 1 \
+  --profile none -o run-id -- python3 -c '...上と同じスクリプト...')
+```
+
+ベースラインの `run_id` は `-o run-id` で受け取っておきます (`runs` の一覧に profile の種類は出ないので、あとから見分けられません)。`-o run-id` は記録が書かれるまで待つので、この 1 行は run の完了までブロックします。
+
+3 本の `metrics.json` を比べると、A10G 1 枚では次のようになりました。
 
 | 実行 | 実測 TFLOPS | 区間の壁時計 | トレース | 記録されたカーネル数 |
 | --- | --- | --- | --- | --- |
@@ -313,9 +334,9 @@ Generated:
 | 既定の全区間キャプチャ | 62.3 | 0.661 秒 | 547 KiB | 320 |
 | `--capture-range=cudaProfilerApi` | 62.3 | 0.662 秒 | 116 KiB | 300 |
 
-このワークロードでは取得の仕方によらず計測コストが差になりませんでした。区間を絞った効果はトレース側に出ていて、ウォームアップの 20 回が除かれてカーネル数が 320 から 300 になり、トレースは 547 KiB から 116 KiB になりました。差が出なかったのは測ったから言えることで、ワークロードによって変わります。ベースラインを同じ alias に残しておけば、この確認はいつでもできます。
+このワークロードでは取得の仕方によらず計測コストが差になりませんでした。区間を絞った効果はトレース側に出ていて、ウォームアップの 20 回が除かれてカーネル数が 320 から 300 になり、トレースは 547 KiB から 116 KiB になりました。差が出なかったのは測ったから言えることで、ワークロードによって変わります。
 
-記録された run には、自分が渡した params と tags のほかに基盤が付ける予約タグが並びます。
+記録された run には、自分が渡した params と tags のほかに基盤が付ける予約タグが並びます。タグは MLflow に入るので、`kubectl accelprof runs` が末尾に出す UI の URL から run を開いて確認します。
 
 ```text
 exp.alias        = teama-gpu-nsys
@@ -333,9 +354,9 @@ artifacts_uri    = s3://<trace バケット>/teama-gpu-nsys/<run_id>/
 pod              = profile-wl-260830065351-c356f674
 ```
 
-押さえるのは 2 点です。`chip` は**要求したデバイス**で、スケジューラが載せた先ではありません。Kubernetes のデバイス要求と toleration が入るのは `--neuron` を付けた場合だけなので、Neuron ノードで動かしたいなら `--profile neuron` ではなく `--neuron` を指定します。もう 1 点は `profiled` が信用しきれないことです。shim は `nsys` を見つけた時点でこの値を立てるので、`nsys` の起動に失敗した実行でも `true` になり得ます。取得できたかどうかは `status` と、次の手順で `stage_run` が返すファイルの一覧まで見て判断してください。
+押さえるのは 2 点です。`chip` は**要求したデバイス**で、スケジューラが載せた先ではありません。`--profile` が指定するのはプロファイラの種類で、デバイス要求と toleration を決めるのは `--neuron` です。Neuron ノードで動かしたいなら `--neuron` を指定します。もう 1 点は `profiled` が信用しきれないことです。shim は `nsys` を見つけた時点でこの値を立てるので、`nsys` の起動に失敗した実行でも `true` になり得ます。取得できたかどうかは `status` と、次の手順で `stage_run` が返すファイルの一覧まで見て判断してください。
 
-失敗した実行も既定では記録され、`status=failed` と終了理由が残ります。遅い実行や落ちる実行こそプロファイルする価値があるという判断です。
+失敗した実行も既定では記録され、`status=failed` と終了理由が残ります。
 
 ::::details イメージ互換で詰まったときにどこを見るかを説明します
 
@@ -343,13 +364,11 @@ pod              = profile-wl-260830065351-c356f674
 
 CUDA のトレースは CUPTI 経由なので、注入される `nsys` がワークロードの CUDA やノードのドライバに対して古すぎると、トレースが欠けるか収集に失敗します。`nsys` は起動時の警告と収集の進行を workload コンテナのログに出すので、`kubectl logs -n <namespace> job/<job 名> -c workload` を読めば、トレースが取れているのか何も記録せず通過したのかが分かります。
 
-トレースは Pod の `emptyDir` に書かれてから recorder が S3 に上げるので、大きな区間を取るとノードのエフェメラルストレージを消費します。大きく取るときは `--patch` で `emptyDir` に `sizeLimit` を付けるか、区間を絞ります。recorder がワークロードを待つ上限は既定で 1 日で、これを超える実行では `--recorder-timeout` を伸ばさないと、その時点のファイルだけが `status=unknown` で記録されます。
-
 ::::
 
 ## 6. 分析する
 
-分析サーバと知識サーバはクラスタの中で動いているので、手元のクライアントは転送されたポート越しに到達します。そのポートを保持し、クライアントに渡す設定を組み、終わったら閉じるところまでを `kubectl distai-mcp` が引き受けます。基盤がホストしている MCP を Service のラベルから見つけるので、accelprof 専用ではなく `mcp-host` に登録した MCP はすべて対象になります。
+分析サーバと知識サーバはクラスタの中で動くので、手元のクライアントは kubectl のポート転送越しに接続します。そのポートを保持し、クライアントに渡す設定を組み、終わったら閉じるところまでを `kubectl distai-mcp` が引き受けます。対象は `mcp-host` に登録した MCP すべてで、accelprof 専用ではありません。
 
 まず手順 4 の run に対して経路を確かめます。
 
@@ -359,7 +378,7 @@ test -n "$RUN_ID" && echo "run_id=$RUN_ID"
 kubectl distai-mcp exec -- sh -c 'claude -p "analysis の stage_run と analyze を run_id=$RUN_ID で順に呼び、返ってきた事実だけを報告して" --mcp-config "$DISTAI_MCP_CONFIG" --strict-mcp-config --allowed-tools mcp__analysis__stage_run mcp__analysis__analyze'
 ```
 
-`sh -c` を挟んで単引用符にしているのは、`DISTAI_MCP_CONFIG` が `distai-mcp exec` の内側で初めて決まるからです。外側の引用符で書くと、まだ空の変数が展開されます。`RUN_ID` は `export` してあるので同じ理由で内側に届きます。
+`sh -c` を挟んで単引用符にしているのは、`DISTAI_MCP_CONFIG` が `distai-mcp exec` の内側で初めて決まるからです。外側の引用符で書くと、まだ空の変数が展開されます。`RUN_ID` は `export` してあるので、内側のシェルにも環境変数として届きます。
 
 実機出力:
 
@@ -385,17 +404,7 @@ analyze はデフォルトの analyzer=inventory で走り、同じディレク�
 }
 ```
 
-```json
-{
-  "run_id": "2bba00937a8444f093887c30479f420d",
-  "chip": "cpu",
-  "analyzer": "inventory",
-  "dir": "/traces/teama-smoke/2bba00937a8444f093887c30479f420d/",
-  "advice": "inventory of /traces/teama-smoke/2bba00937a8444f093887c30479f420d/: rank-0.nsys-rep 80413 total_files=1 total_bytes=80413"
-}
-```
-
-`analyzer` が `inventory` になっているのは、これが `analyze` の既定だからです。カーネルの集計を読むには `analyzer` に `nsys-stats` を指定します。手順 4 の run は CPU なので集計する対象もありません。手順 5 で取った GPU の run に切り替えます。
+`analyze` の既定の analyzer は `inventory` で、ファイルの棚卸ししか返しません。カーネルの集計を読むには `analyzer` に `nsys-stats` を指定します。手順 4 の run は CPU なので集計する対象もありません。手順 5 で取った GPU の run に切り替えます。
 
 ```bash
 export RUN_ID=$(kubectl accelprof get --last --alias teama-gpu-nsys -o run-id)
@@ -410,7 +419,7 @@ GPU カーネル時間の 100.0% (320 回、合計 705.0 ms) を占める。
 平均時間は 2,203,144.5 ns (約 2.20 ms/回) で、ばらつきは小さい (StdDev 3,083.5 ns)。
 ```
 
-`nsys-stats` の `advice` に入っている集計表そのものは次の形です。まず読むのは CUDA GPU Kernel Summary で、次が自分で仕込んだ NVTX の区間です。
+上の報告のもとになっているのが、`analyze` が `advice` に入れて返す集計表です。claude はこれを読んで要約しているので、原文を見たいときは「advice の全文をそのまま出して」と頼めば出てきます。まず読むのは CUDA GPU Kernel Summary で、次が自分で仕込んだ NVTX の区間です。
 
 ```text
  ** CUDA GPU Kernel Summary (cuda_gpu_kern_sum):
@@ -431,9 +440,16 @@ GPU カーネル時間の 100.0% (320 回、合計 705.0 ms) を占める。
 
 ベースラインの run (`--profile none`) に `stage_run` を打つと、成果物が無いという答えが返ります。これは異常ではありません。
 
+```bash
+kubectl distai-mcp exec -- sh -c 'claude -p "analysis の stage_run を run_id=$BASE_ID で呼び、返ってきたエラーの文をそのまま見せて" --mcp-config "$DISTAI_MCP_CONFIG" --strict-mcp-config --allowed-tools mcp__analysis__stage_run'
+```
+
+実機出力:
+
 ```text
-run 74fe9894... has no artifacts to stage: it was recorded without a profiler (profile_mode='none'),
-so nothing was written to '/traces/teama-gpu-nsys/74fe9894.../'. The mount at '/traces' is fine
+Error executing tool stage_run: run 74fe9894... has no artifacts to stage: it was recorded without
+a profiler (profile_mode='none'), so nothing was written to '/traces/teama-gpu-nsys/74fe9894.../'.
+The mount at '/traces' is fine - a run like this is a metrics-only baseline, so read its metrics instead
 ```
 
 事実が出たら、次に何をするかは知識 MCP に聞きます。症状を渡すと関連する playbook がランク付きで返り、`get_topic` で本文を開けます。
@@ -468,8 +484,6 @@ kubectl distai-mcp exec -- sh -c 'claude -p "run_id=$RUN_ID について、analy
 指針: 占有率を上げる方向は、Nsight Compute で warp 不足を確認するまで触らない
 ```
 
-事実と指針が同じ 1 コマンドで並ぶので、次の実験をその場で決められます。これがこの基盤の使い方です。
-
 ::::details 対話的なクライアントから使う場合の手順を説明します
 
 `exec` はコマンドが終わるとトンネルを閉じるので、セッションを開いたまま何度も聞く使い方には向きません。その場合は `up` でトンネルを保持します。`up` は転送を背景に置いてプロンプトに戻るので、端末を占有しません。
@@ -496,11 +510,11 @@ kubectl distai-mcp status
     knowledge    http://127.0.0.1:55521/mcp  listening, answers MCP
 ```
 
-ローカルのポートは毎回カーネルが渡すものなので、値は実行ごとに変わります。登録に使う行は `up` が実際のポートで出力するので、表示された `claude mcp add` の行をそのまま実行します。Claude Code はそのディレクトリに紐づくプロジェクト単位の設定として保存するので、以降はそのディレクトリでセッションを開きます。
+ローカルのポートは毎回 OS が空きポートから割り当てるので、値は実行ごとに変わります。登録に使う行は `up` が実際のポートで出力するので、表示された `claude mcp add` の行をそのまま実行します。Claude Code はそのディレクトリに紐づくプロジェクト単位の設定として保存するので、以降はそのディレクトリでセッションを開きます。
 
-ポートを固定したい場合は `--local-port analysis=18000` のように指定します。埋まっていれば黙って移らずに失敗するので、登録した URL が指す先が消える形にはなりません。`status` は listen しているかではなく MCP として応答するかを見ます。kubectl は転送先の Pod が消えてもポートを開いたままにするので、この 2 つは別物です。
+ポートを固定したい場合は `--local-port analysis=18000` のように指定します。指定したポートが使用中なら別のポートへ黙って移らずに失敗するので、登録済みの URL と実際の転送先がずれることはありません。`status` は listen しているかではなく MCP として応答するかを見ます。kubectl は転送先の Pod が消えてもポートを開いたままにするので、この 2 つは別物です。
 
-使い終わったら閉じます。`down` は実際に閉じた本数を言うので、0 本だったときは別の context か namespace の記録を見ていることが分かります。
+使い終わったら閉じます。`down` は実際に閉じた本数を報告するので、0 本だった場合は別の context か namespace の記録を見ていると分かります。
 
 ```bash
 kubectl distai-mcp down
@@ -532,11 +546,26 @@ aws sagemaker stop-mlflow-tracking-server --tracking-server-name "$TRACKING_SERV
 B に進む場合、run のメタデータ (metrics、params、tags) は MLflow と一緒に消えます。成果物ファイルはバケットに残りますが、それがどの条件の実験だったかという情報は失われるので、残したい記録があれば先に取り出してください。
 :::
 
-B ではまず namespace 側を掃除します。`accelprof-orphan-check` CronJob は基盤イメージを参照したまま 1 時間ごとに起動し続けるので、基盤を撤去したあとに残すと失敗し続ける残骸になります。
+B ではまず namespace 側を掃除します。`accelprof-orphan-check` CronJob を残すと、撤去後も 1 時間ごとに起動して失敗し続けます。
+
+まず走り続けている producer Job が無いことを確認します。`ttlSecondsAfterFinished` は終了した Job だけを消すので、走っている Job は自動では消えません。
+
+```bash
+for ns in team-a team-b; do kubectl accelprof runs -n "$ns"; done
+```
+
+実機出力 (残っていない場合):
+
+```text
+WORKLOAD-ID   ALIAS   RUN-ID   COMPLETIONS   FAILED   AGE
+
+==> Jobs are kept only until their TTL expires; the recordings are permanent
+```
+
+残っていなければ、配られたものを消します。
 
 ```bash
 for ns in team-a team-b; do
-  kubectl accelprof runs -n "$ns"
   kubectl -n "$ns" delete jobs -l app.kubernetes.io/name=profiling-producer --ignore-not-found
   kubectl -n "$ns" delete cronjob accelprof-orphan-check --ignore-not-found
   kubectl -n "$ns" delete configmap accelprof-config --ignore-not-found
@@ -546,7 +575,7 @@ for ns in team-a team-b; do
 done
 ```
 
-次に MCP サーバを消し、`infra/eks` 側のマウントと mcp-reader を無効化して、最後にデータ層のトグルを `false` にした apply で畳みます。`terraform destroy` は使いません。trace バケットに `prevent_destroy` が付いているため、destroy は plan 段階で中断して MLflow も S3 Files も実際には消えないからです。
+次に MCP サーバを消し、`infra/eks` 側のマウントと mcp-reader (分析 MCP が trace バケットと MLflow を読むための Pod Identity のロール) を無効化して、最後にデータ層のトグルを `false` にした apply で畳みます。`terraform destroy` は使いません。trace バケットに `prevent_destroy` が付いているため、destroy は plan 段階で中断して MLflow も S3 Files も実際には消えないからです。
 
 ```bash
 export DATA_LAYER_NAME=profiling
@@ -565,12 +594,12 @@ terraform apply teardown.tfplan
 ```
 
 :::message alert
-この 2 つの apply は導入スクリプトを通らないので plan の分類が行われず、クラスタに溜まった無関係な差分も一緒に適用されます。だから plan をファイルに保存し、読んでから適用する形にしています。plan は `infra/eks/terraform.tfvars` があるチェックアウトで作ってください。変数ファイルの無いクローンで作ると、クラスタの設定が既定値に戻った巨大な差分になります。
+この 2 つの apply は導入スクリプトを通らないので plan の分類が行われず、クラスタに溜まった無関係な差分も一緒に適用されます。そのため plan をファイルに保存し、読んでから適用する形にしています。plan は `infra/eks/terraform.tfvars` があるチェックアウトで作ってください。変数ファイルの無いクローンで作ると、クラスタの設定が既定値に戻った巨大な差分になります。
 
 `trace_regions` と `s3files_trace_region` を省くと、いま使っている trace バケットが「不要」と判定されて破棄対象に入ります。`AWS_REGION` が空のまま作った場合も同じです。**plan の削除一覧にバケットが出たら apply せず、変数を確認してください。** 正しく渡した plan は S3 Files のファイルシステムとアクセスポイントと IAM ロール、そして MLflow の 5 つを破棄し、バケットには触りません。
 :::
 
-B を完走しても、`DEV_BUILD=1` で焼いた基盤イメージの ECR リポジトリ、バケットの暗号化に使っている KMS キー (月額課金)、レジストリに記録したデータ層のアタッチは残ります。完全に消したい場合はこれらを個別に片付けます。
+B を完走しても、`DEV_BUILD=1` で焼いた基盤イメージの ECR リポジトリ、バケットの暗号化に使っている KMS キー (月額課金)、そしてこのクラスタとデータ層の紐付け (Systems Manager のパラメータストア、`/distai/v1/clusters/<クラスタ名>/` の下) は残ります。完全に消したい場合はこれらを個別に片付けます。
 
 # まとめ
 
