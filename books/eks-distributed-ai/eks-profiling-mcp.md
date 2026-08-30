@@ -362,6 +362,15 @@ GPU ノードの確保とイメージの pull が入るので、初回は 5 分�
 
 この例でオーバーヘッドが見えなかったのは測ったから言えることで、ワークロードによって変わります。`--profile none` のベースラインを同じ alias に残しておけば、性能の数値はそこから、カーネルの内訳はプロファイル付きの run から取る、という使い分けがいつでもできます。
 
+ベースラインの run に手順 8 の `stage_run` を打つと、成果物が無いという答えが返ります。これは異常ではありません。
+
+```text
+run 74fe9894... has no artifacts to stage: it was recorded without a profiler (profile_mode='none'),
+so nothing was written to '/traces/teama-gpu-nsys/74fe9894.../'. The mount at '/traces' is fine
+```
+
+ベースラインは metrics だけを持つ run なので、読むのは MLflow に記録された数値の側です。
+
 物理的な置き場所も意識します。トレースは Pod の `emptyDir` に書かれてから recorder が S3 に上げるので、大きな区間を取得するとノードのエフェメラルストレージを消費します。大きく取得するときは `--patch` で `emptyDir` に `sizeLimit` を付けるか、そもそも区間を絞ります。また recorder がワークロードを待つ上限は既定で 1 日です。これを超える実行では `--recorder-timeout` を伸ばさないと、ワークロードの終了前に、その時点のファイルだけが `status=unknown` で記録されてしまいます (ワークロードが成功したのか失敗したのかを recorder が知らないまま打ち切るので、`failed` ではありません)。`status=failed` で探しても見つからないので注意してください。
 
 記録された run には、自分が渡した params と tags のほかに、基盤が付ける予約タグが並びます。以下はこの節で取得した GPU の run から引いた実測値です (値は run ごとに変わります)。
