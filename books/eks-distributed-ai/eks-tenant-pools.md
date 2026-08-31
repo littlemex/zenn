@@ -55,6 +55,15 @@ operator は Karpenter 本体・device plugin・Capacity Block の購入には�
 
 # ワークショップ実施
 
+はじめにシェルを対象クラスタへ向けます。Basic01 手順 2 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION` は自分のクラスタのものに読み替えます。
+
+```bash
+cd ~/distributed-ai-v0.2.0
+export CLUSTER_NAME=distai-eks
+export AWS_REGION=us-east-2
+source infra/scripts/distai-env.sh
+```
+
 本章の実機検証は、Basic シリーズと同じ構成の検証用クラスタ（us-east-2、Karpenter v1.13、`ReservedCapacity` フィーチャゲート有効）で実施しました。g5 プールは On-Demand、p5 プールは購入済みの p5.48xlarge の Capacity Block（`cr-...`）を使います。以降のコマンド出力はこの構成の実測値です。Capacity Block の AZ は予約から引くので、手で書き換える箇所はありません。
 
 ## 1. 前提を確認する
@@ -107,7 +116,7 @@ export NODE_ROLE=$(aws iam get-instance-profile \
 echo "$NODE_ROLE"
 ```
 
-次の手順ではこのロール名と、discovery タグに使うクラスタ名を `AcceleratorClass` に渡します。以降のマニフェストは `$NODE_ROLE` と `$CLUSTER_NAME` を展開する形にしてあるので、この 2 つが同じシェルに入っていれば貼り付けたまま apply できます (`CLUSTER_NAME` は Basic01 手順 2 で設定したものです)。operator は AWS を呼ばないため、実在しないロールやタグでも apply 自体は成功し、手順 4 で生成される EC2NodeClass が Karpenter 側で解決できず `Ready=False` になって初めて分かります。値を手で書き換えて apply する場合は、この失敗の仕方を思い出してください。
+次の手順ではこのロール名と、discovery タグに使うクラスタ名を `AcceleratorClass` に渡します。以降のマニフェストは `$NODE_ROLE` と `$CLUSTER_NAME` を展開する形にしてあるので、この 2 つが同じシェルに入っていれば貼り付けたまま apply できます。operator は AWS を呼ばないため、実在しないロールやタグでも apply 自体は成功し、手順 4 で生成される EC2NodeClass が Karpenter 側で解決できず `Ready=False` になって初めて分かります。値を手で書き換えて apply する場合は、この失敗の仕方を思い出してください。
 
 :::message
 本書は作業用 namespace を `distai` に統一していますが、本章はテナント分離のデモが目的のため、テナント役の専用 namespace `team-gpu` を使います（`distai` 統一ルールの意図的な例外です）。

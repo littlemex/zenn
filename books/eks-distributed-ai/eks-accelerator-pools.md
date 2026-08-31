@@ -75,6 +75,15 @@ accelerator_pools = {
 
 # ワークショップ実施
 
+はじめにシェルを対象クラスタへ向けます。Basic01 手順 2 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION` は自分のクラスタのものに読み替えます。
+
+```bash
+cd ~/distributed-ai-v0.2.0
+export CLUSTER_NAME=distai-eks
+export AWS_REGION=us-east-2
+source infra/scripts/distai-env.sh
+```
+
 ## 1. 前提を確認する
 
 - Karpenter が導入済み
@@ -253,7 +262,7 @@ k delete trainjob ddp-trainjob
 k get nodeclaims -l karpenter.sh/nodepool=gpu-ddp -w
 ```
 
-Pod が消えると NodePool の `consolidationPolicy` に従って Karpenter がノードを回収します。`gpu-ddp` の NodeClaim が無くなれば GPU の課金は止まります (フィルタを外すと CPU プールの NodeClaim も並ぶので、GPU の判定にはプール名で絞ります)。回収は非同期で数分かかるので、消えるまで待ってから次章に進みます。ここで NodeClaim が残り続けるのは、そのノードにまだ Pod が載っているときです (`karpenter.sh/do-not-disrupt` を付けた Pod が動き続けている場合も含みます)。`k get pods` で確認します (`k` の既定 namespace は Basic01 手順 2 の 4 行で `distai` に設定済みです)。
+Pod が消えると NodePool の `consolidationPolicy` に従って Karpenter がノードを回収します。`gpu-ddp` の NodeClaim が無くなれば GPU の課金は止まります (フィルタを外すと CPU プールの NodeClaim も並ぶので、GPU の判定にはプール名で絞ります)。回収は非同期で数分かかるので、消えるまで待ってから次章に進みます。ここで NodeClaim が残り続けるのは、そのノードにまだ Pod が載っているときです (`karpenter.sh/do-not-disrupt` を付けた Pod が動き続けている場合も含みます)。`k get pods` で確認します。
 
 NodePool 自体は残しておいてかまいません。Karpenter は要求があってからノードを起動するので、プールが存在するだけでは課金されません。Basic07 と Basic08 はこの `gpu-ddp` プールをそのまま使います。
 

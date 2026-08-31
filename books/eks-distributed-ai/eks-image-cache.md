@@ -111,7 +111,7 @@ prewarm、並列化、zstd といった高速化は、全滅しても通常の�
 
 本節では、常設の最小構成を投入する前にまず計測し、次にその最小構成を入れ、効果を測ってから条件付き最適化に進む、という順序で進めます。この順序自体が本章の主張です。
 
-以降のコマンドは `terraform output` と `charts/experiments` を相対パスで使うので、`infra/eks` から実行します。Basic01 の 4 行で `AWS_REGION` などを解決したうえで、namespace を置きます。以降の `aws` コマンドは `--region` を明示していないので、`AWS_REGION` が未設定だと `You must specify a region` で落ち、profile 側に別リージョンの既定値があるとそのリージョンを見てリポジトリが見つからないエラーになります (`--region` を毎回付けても構いません)。
+以降のコマンドは `terraform output` と `charts/experiments` を相対パスで使うので、`infra/eks` から実行します。クラスタを解決し、namespace を置きます。以降の `aws` コマンドは `--region` を明示していないので、`AWS_REGION` が未設定だと `You must specify a region` で落ち、profile 側に別リージョンの既定値があるとそのリージョンを見てリポジトリが見つからないエラーになります (`--region` を毎回付けても構いません)。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"

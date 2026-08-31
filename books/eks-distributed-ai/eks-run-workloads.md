@@ -31,10 +31,18 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 
 # ワークショップ実施
 
+はじめにシェルを対象クラスタへ向けます。Basic01 手順 2 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION` は自分のクラスタのものに読み替えます。
+
+```bash
+cd ~/distributed-ai-v0.2.0
+export CLUSTER_NAME=distai-eks
+export AWS_REGION=us-east-2
+source infra/scripts/distai-env.sh
+```
+
 ## 1. 前提を確認する
 
 - Basic04 で `gpu-ddp` プールを定義・apply 済みであること
-- `k` と `KUBECONFIG` は Basic01 手順 2 の 4 行で設定済みであること
 - NVIDIA GPU Operator は Basic04 の apply で導入済みであること
 
 本章は既存のプールと GPU Operator の上に vLLM の Deployment を載せるだけなので、新しくインフラを足す操作はありません。

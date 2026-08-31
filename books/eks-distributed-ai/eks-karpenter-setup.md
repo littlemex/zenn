@@ -220,7 +220,16 @@ DRA が GA になったからといって、本書の構成にそのまま持ち
 
 # ワークショップ実施
 
-Karpenter は Basic01 の `terraform apply` に含めて導入済みの構成です。ここでは導入結果を確認します。以降のコマンドは Basic01 手順 2 の 4 行を実行済みの前提です（ターミナルを開き直した場合はその 4 行をもう一度実行してください）。
+はじめにシェルを対象クラスタへ向けます。Basic01 手順 2 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION` は自分のクラスタのものに読み替えます。
+
+```bash
+cd ~/distributed-ai-v0.2.0
+export CLUSTER_NAME=distai-eks
+export AWS_REGION=us-east-2
+source infra/scripts/distai-env.sh
+```
+
+Karpenter は Basic01 の `terraform apply` に含めて導入済みの構成です。ここでは導入結果を確認します。
 
 ## 1. Karpenter コントローラの起動を確認する
 
@@ -270,7 +279,7 @@ cpu          cpu          0       True    3m21s
 monitoring   monitoring   1       True    6m23s
 ```
 
-一方 `kubectl get nodes` から `cpu` プールのノードは、しばらくすると消えます（Basic02 で起動した cpu ノードは、ワークロードが終わって空になってから `consolidateAfter` の 30 秒を待って回収対象になり、drain と EC2 の終了を経て消えます）。Basic02 の直後だとまだ見えることがあるので、`k get nodes -l node-role=cpu -w` で減っていくのを確かめます。残っているのは Basic01 の System ノードと、監視スタックを有効にしている場合は監視 Pod を載せた `monitoring` プールのノードです。後者は Pod が常駐するため回収されません。NodePool が存在しても、それを要求する Pod がなければノードは起動しません。これが 要求に応じてノードを起動するプロビジョニングの動作確認になります。
+一方 `k get nodes` から `cpu` プールのノードは、しばらくすると消えます（Basic02 で起動した cpu ノードは、ワークロードが終わって空になってから `consolidateAfter` の 30 秒を待って回収対象になり、drain と EC2 の終了を経て消えます）。Basic02 の直後だとまだ見えることがあるので、`k get nodes -l node-role=cpu -w` で減っていくのを確かめます。残っているのは Basic01 の System ノードと、監視スタックを有効にしている場合は監視 Pod を載せた `monitoring` プールのノードです。後者は Pod が常駐するため回収されません。NodePool が存在しても、それを要求する Pod がなければノードは起動しません。これが 要求に応じてノードを起動するプロビジョニングの動作確認になります。
 
 `cpu` の `NODES` 列が 0 であることと、`READY` が `True`（= Karpenter がこの NodePool を受理して起動待機している）ことの両方を確認してください。`monitoring` の `NODES` が 1 なのは、監視 Pod が常駐しているためで正常です。
 

@@ -104,14 +104,22 @@ EOSH
 
 # ワークショップ実施
 
-ここからは実機で GDRCopy を有効にし、その効果を測る。以降のコマンドは、これまでの章と同じく `k` で記述し、向き先と既定 namespace は Basic01 手順 2 の 4 行で設定済みの前提である（ターミナルを開き直した場合はその 4 行をもう一度実行する）。手順は Basic05 で確保した GPU プールをそのまま使い、プール名やインスタンスタイプは環境変数に置いて読者の環境に読み替える。本章に載せる実測値は p5.48xlarge 2 ノード（H100 × 16）で取得したものだが、p5en など他の EFA 対応 GPU でも手順は変わらない。
+はじめにシェルを対象クラスタへ向ける。Basic01 手順 2 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION` は自分のクラスタのものに読み替える。
+
+```bash
+cd ~/distributed-ai-v0.2.0
+export CLUSTER_NAME=distai-eks
+export AWS_REGION=us-east-2
+source infra/scripts/distai-env.sh
+```
+
+ここからは実機で GDRCopy を有効にし、その効果を測る。手順は Basic05 で確保した GPU プールをそのまま使い、プール名やインスタンスタイプは環境変数に置いて読者の環境に読み替える。本章に載せる実測値は p5.48xlarge 2 ノード（H100 × 16）で取得したものだが、p5en など他の EFA 対応 GPU でも手順は変わらない。
 
 ## 1. 前提を確認する
 
 - Basic05 で Capacity Block を確保済み（同一 AZ・2 台、EFA を複数枚持つ GPU インスタンス）。手順 5 の 2 ノード測定で必要
 - Basic04/05 で GPU プール（Basic05 の例では `gpu-p4d`、本章の例では `gpu-p5`）を `accelerator-pools.auto.tfvars` に定義し `terraform apply` 済み
 - Basic06 で 2 ノードの EFA 通信が動くことを確認済み。本章はその通信の一部を最適化する GDRCopy を足す章で、EFA を有効にする操作ではない
-- `k` と向き先は Basic01 手順 2 の 4 行で設定済み（本章のコマンドは `k` で記述する）
 
 以降は対象プールと namespace を環境変数に置いておく。`POOL` と `ITYPE` は Basic05 で定義した自分のプール名・インスタンスタイプに読み替える（例では p5.48xlarge を使うが、p5en など他の EFA 対応 GPU でも同じ手順が通る）。
 

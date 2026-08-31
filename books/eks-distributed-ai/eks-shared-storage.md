@@ -101,12 +101,20 @@ GPU 分散学習では NCCL の集合通信も EFA を使います。Amazon FSx 
 
 # ワークショップ実施
 
+はじめにシェルを対象クラスタへ向けます。Basic01 手順 2 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION` は自分のクラスタのものに読み替えます。
+
+```bash
+cd ~/distributed-ai-v0.2.0
+export CLUSTER_NAME=distai-eks
+export AWS_REGION=us-east-2
+source infra/scripts/distai-env.sh
+```
+
 本章の実機検証は、`terraform.tfvars` の既定値（`fsx_enabled = true` / `openzfs_enabled = true` / `efs_enabled = false` / `fsx_efa_enabled = false`）のまま実施します。以下の実機出力は `us-east-2` で採取した例で、読者が別リージョンで進める場合はリージョン名とファイルシステム ID が変わりますが、手順そのものは同じです。
 
 ## 1. 前提を確認する
 
 - `terraform apply` 実行ずみ
-- `k` と `KUBECONFIG` は Basic01 手順 2 の 4 行で設定済み (別のターミナルを開いた場合は設定が残らないので、`k config current-context` が対象クラスタを返すかを確かめ、返らなければ 4 行を実行し直します)
 
 ```bash
 export NAMESPACE=distai
@@ -173,7 +181,7 @@ openzfs-shared   256Gi      RWX            Retain           Available           
 `STATUS` が `Available` ではなく `Bound` や `Released` になっている場合は、Basic02 で `fsx` バックエンドを試すなどして、この PV をバインドした PVC が過去にあったことを意味します。その状態では次の手順で作る PVC が `Pending` のままになるため、先に PV を解放しておきます。
 
 :::message
-ここで注意したいのが、`kubectl get pv` で `STATUS=Available` に見えても、`CLAIM` 欄に別 namespace の PVC 名が残っていると、その PV は「その PVC 専用に予約された」状態で、別 namespace の PVC はバインドできず `Pending` のままになる点です。静的 PV は `Retain` なので、一度どれかの PVC がバインドすると `spec.claimRef` が残り続けるためです。この解放は手順を 1 つでも誤ると PVC をバインドした Pod のファイナライザやテナントの ValidatingAdmissionPolicy でハマりやすいので、確実に済ませたい場合は次のスクリプトを使えます。
+ここで注意したいのが、`k get pv` で `STATUS=Available` に見えても、`CLAIM` 欄に別 namespace の PVC 名が残っていると、その PV は「その PVC 専用に予約された」状態で、別 namespace の PVC はバインドできず `Pending` のままになる点です。静的 PV は `Retain` なので、一度どれかの PVC がバインドすると `spec.claimRef` が残り続けるためです。この解放は手順を 1 つでも誤ると PVC をバインドした Pod のファイナライザやテナントの ValidatingAdmissionPolicy でハマりやすいので、確実に済ませたい場合は次のスクリプトを使えます。
 
 `--storage` には `fsx` と `openzfs` と `efs` のいずれかを指定します。解放できる状態であれば対象の PV を `Available` へ戻します。ただしその PV を待っている PVC が別にある場合は `Available` を経ずにそちらへ再バインドし、それも成功として終わります (使われている状態に戻っただけなので、意図どおりです)。逆に、PVC を使用している Pod が Deployment・ReplicaSet・StatefulSet・Job のいずれかに管理されている場合は、消しても作り直されて同じ PVC を再びバインドするため、`--force` を付けても停止します。そのコントローラを先に止めてから再実行してください。検出するのはこの 4 種類なので、それ以外のコントローラ (DaemonSet や自作の operator) が使用している場合は止まらず、Pod が再作成されて後続で詰まります。
 
