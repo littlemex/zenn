@@ -11,7 +11,7 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 
 ## これは何をするものか
 
-破棄で気をつけるべき点は 1 つです。NodePool を消しても、実際のノードの drain・Amazon EC2 インスタンスの終了・ENI の解放は Karpenter が引き継いで進めます。`kubectl delete nodepool` はその後始末が終わるまで戻ってこないことがあり、Pod が退去できないなどで進まなくなると長く待たされます ([`04-teardown.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/04-teardown.sh) の破棄経路がこの削除にタイムアウトを付けているのはそのためです)。この非同期処理が終わる前に Karpenter 本体やアクセラレータ関連のコントローラを消してしまうと、ノードを終了させるコントローラが無くなり、Amazon EC2 インスタンスが孤立して課金だけが続きます。
+破棄で気をつけるべき点は 1 つです。NodePool を消しても、実際のノードの drain・Amazon EC2 インスタンスの終了・ENI の解放は Karpenter が引き継いで進めます。`k delete nodepool` はその後始末が終わるまで戻ってこないことがあり、Pod が退去できないなどで進まなくなると長く待たされます ([`04-teardown.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/04-teardown.sh) の破棄経路がこの削除にタイムアウトを付けているのはそのためです)。この非同期処理が終わる前に Karpenter 本体やアクセラレータ関連のコントローラを消してしまうと、ノードを終了させるコントローラが無くなり、Amazon EC2 インスタンスが孤立して課金だけが続きます。
 
 この事故を防ぐため、破棄は 2 段階で進めます。まずアクセラレータプールのワークロードとノードを片付け、ノードが実際に消えたことを確認してから、`terraform destroy` でクラスタ全体を破棄します。この順序と、`terraform destroy` の内部でノードの drain 完了を待つ仕組みは [`infra/eks`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks) が担保しているので、本章では手順の実行と確認に集中します。
 
@@ -30,11 +30,7 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 
 # ワークショップ実施
 
-## 1. 前提を確認する
-
-この章はクラスタを破棄します。Advanced02 のプロファイリング基盤など、稼働中のクラスタを前提にする章を実施する予定がある場合は、**この章より先にそちらを済ませてください**。破棄したあとに実施するには Basic01 からの再構築が必要になります。
-
-共有クラスタでは、破棄の前に必ず操作対象のクラスタを確認します。この章の操作はクラスタ全体に影響する破壊的操作なので、意図しないクラスタへの誤操作を避けます。
+はじめにシェルを対象クラスタへ向けます。Basic01 手順 2 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION` は自分のクラスタのものに読み替えます。
 
 ```bash
 cd ~/distributed-ai-v0.2.0
@@ -43,7 +39,11 @@ export AWS_REGION=us-east-2
 source infra/scripts/distai-env.sh
 ```
 
-この 4 行は Basic01 手順 2 と同じもので、中身は [`distai-env.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/scripts/distai-env.sh) にあります。`CLUSTER_NAME` と `AWS_REGION` は自分のクラスタのものに読み替えます。特に `AWS_REGION` は手順 5 の孤児ボリュームの確認でそのまま使うので、ここが違っていると別のリージョンを照会して「残っていない」という答えが返ってきます。表示された context が破棄したいクラスタであることを確認してから進みます。
+## 1. 前提を確認する
+
+この章はクラスタを破棄します。Advanced02 のプロファイリング基盤など、稼働中のクラスタを前提にする章を実施する予定がある場合は、**この章より先にそちらを済ませてください**。破棄したあとに実施するには Basic01 からの再構築が必要になります。
+
+この章の操作はクラスタ全体に影響する破壊的操作なので、表示された context が破棄したいクラスタであることを確認してから進みます。`AWS_REGION` は手順 5 の孤児ボリュームの確認でそのまま使うので、ここが違っていると別のリージョンを照会して「残っていない」という答えが返ってきます。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks

@@ -73,6 +73,15 @@ NMA が出す NodeCondition は、Karpenter のノード自動修復（auto-repa
 
 # ワークショップ実施
 
+はじめにシェルを対象クラスタへ向けます。Basic01 手順 2 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION` は自分のクラスタのものに読み替えます。
+
+```bash
+cd ~/distributed-ai-v0.2.0
+export CLUSTER_NAME=distai-eks
+export AWS_REGION=us-east-2
+source infra/scripts/distai-env.sh
+```
+
 :::message
 手順 1 から 5 は連続して実施してください。注入した値は DCGM のキャッシュに残り、手順 5 でクリアするまで保持されますが、途中で長時間中断すると `dcgm-server` の再起動などで状態が変わることがあります。また、本章で注入する GPU 障害でノードが Unhealthy になっても、Karpenter のノード自動修復は無効にしてあるため、ノードが勝手に terminate されることはありません。この判断の理由は、解説パートの「なぜ auto-repair を有効にしないか」で説明しています。
 :::
@@ -80,7 +89,6 @@ NMA が出す NodeCondition は、Karpenter のノード自動修復（auto-repa
 ## 1. 前提を確認し、対象ノードを決める
 
 - Basic08 で NMA と kube-prometheus-stack が導入済みであること。
-- `k` と `KUBECONFIG` は Basic01 手順 2 の 4 行で設定済みであること。アドオンのバージョンを確認する `aws eks describe-addon` を打つ場合は、同じシェルに `CLUSTER_NAME` と `AWS_REGION` も入っている必要があります (Basic01 手順 2 で `export` した値です)。
 - GPU ノードが 1 台以上動いていること。Basic07 の vLLM や Basic05 の Capacity Block のいずれかを稼働させておきます。
 - 手順 4 の JSON パースに `python3` を使います。無い場合は `dnf install -y python3` などで入れておきます。
 

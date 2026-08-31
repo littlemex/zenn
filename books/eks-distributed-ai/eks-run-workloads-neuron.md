@@ -47,11 +47,19 @@ GPU 版（Basic07）との対応関係は次のとおりです。
 
 # ワークショップ実施
 
+はじめにシェルを対象クラスタへ向けます。Basic01 手順 2 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION` は自分のクラスタのものに読み替えます。
+
+```bash
+cd ~/distributed-ai-v0.2.0
+export CLUSTER_NAME=distai-eks
+export AWS_REGION=us-east-2
+source infra/scripts/distai-env.sh
+```
+
 ## 1. 前提を確認する
 
 - Basic05 の手順で trn2.3xlarge の Capacity Block を確保済み (本章の実機例はメルボルン `ap-southeast-4` ですが、trn2 が使えるリージョンならどこでもかまいません)
 - Basic05 の手順で `terraform apply` で NodePool 作成済み
-- `k` と `KUBECONFIG` は Basic01 手順 2 の 4 行で設定済み
 
 trn2 の NodePool と、すでにノードが起動している場合の Neuron リソースを確認します。Karpenter は要求があってからノードを起動するので、手順 3 の Deployment を投入する前は、下のようにインスタンスタイプで絞ったノード一覧が空になるのが正常です (絞り込みを外すと system と monitoring の常駐ノードが並びます)。空だった場合は `k get nodepool` で NodePool の存在だけを確かめて手順 3 に進んでください。
 

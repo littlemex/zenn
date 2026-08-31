@@ -171,6 +171,15 @@ env:
 
 # ワークショップ実施
 
+はじめにシェルを対象クラスタへ向けます。Basic01 手順 2 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION` は自分のクラスタのものに読み替えます。
+
+```bash
+cd ~/distributed-ai-v0.2.0
+export CLUSTER_NAME=distai-eks
+export AWS_REGION=us-east-2
+source infra/scripts/distai-env.sh
+```
+
 本章の実機検証は p4d.24xlarge（NVIDIA A100 40GB x8、EFA x4）2 台の Capacity Block で実施しました。以降の出力はこの構成の実測値です。EFA の枚数はインスタンスファミリごとに違うので、読者の環境では数値が変わります。だからこそ枚数を固定値で指定せず、次の手順のように必ず AWS 側の値を参照してください。
 
 ## 1. 前提を確認する
@@ -178,8 +187,7 @@ env:
 - Basic05 で EFA 対応インスタンスの Capacity Block を確保済み。
 - リポジトリ同梱の NCCL 測定用 TrainJob チャート（`infra/eks/charts/experiments` の `ncclTrainjob`）。Basic04 では `trainjobTrain.nodeRole` が Runtime ごと再レンダリングされましたが、こちらは方式が違います。Runtime はクラスタ全体で共有される 1 つなので、`ncclTrainjob.nodeRole` は Runtime を書き換えず、この TrainJob だけに `nodeSelector` を重ねる形 (`runtimePatches`) で載せ先を決めます
 - Capacity Block のノードは予約の AZ に立つので、共有ストレージ (単一 AZ の FSx for OpenZFS) と別の AZ になることがあります。NFS は AZ を跨いでもマウントできるため本手順は動きますが、`/shared` への読み書きに AZ 間のデータ転送料金と余分なレイテンシがかかります。本章が `/shared` に置くのは数 KB の測定スクリプトだけなので測定結果には影響しません
-- Basic02 で作った共有 PVC `shared-claim` が対象 namespace にあること (`ncclTrainjob` は `/shared` をマウントします。チャートが検査するのは PVC 名を渡したかどうかだけなので、PVC が実在しなくてもレンダリングと `kubectl apply` は通り、Pod が `Pending` のまま止まります。`k get pvc -n $NAMESPACE shared-claim` で `Bound` を先に確かめてください)
-- `k` と `KUBECONFIG` は Basic01 手順 2 の 4 行で設定済み
+- Basic02 で作った共有 PVC `shared-claim` が対象 namespace にあること (`ncclTrainjob` は `/shared` をマウントします。チャートが検査するのは PVC 名を渡したかどうかだけなので、PVC が実在しなくてもレンダリングと `k apply` は通り、Pod が `Pending` のまま止まります。`k get pvc -n $NAMESPACE shared-claim` で `Bound` を先に確かめてください)
 - 手順 3 で `terraform output -json` の値を取り出すのに `jq` を使います。入っていない環境では `EFA` が空になり、チャートが `ncclTrainjob.efaCount is required` で失敗します
 - クラスタに入っている共有 Runtime (`torch-distributed-eks`) が、GPU を有効にしてレンダリングされたものであること。Basic04 で `trainjobTrain.gpu.enabled=true` を付けて適用していればそうなっています。GPU 無効で適用した Runtime には `nvidia.com/gpu` の toleration が入らないので、GPU ノードの taint を越えられず Pod が `Pending` のまま止まります
 
@@ -202,7 +210,7 @@ Basic04 の `gpu-ddp` プールだけを定義した状態での出力です。B
 }
 ```
 
-この 0 は、Basic04 の tfvars で `gpu-ddp` に `efa_interface_count = 0` を明示しているためです。プール側で明示した値は API 値より優先されるので、ここに出ているのは自分が書いた値です。結果の数字が同じなのは、`gpu-ddp` が並べている g6.2xlarge / g5.2xlarge がそもそも EFA 非対応だからで、明示しなければ API から 0 が導出されます。API 側の事実は次のコマンドで直接確認できます（`$AWS_REGION` は Basic01 手順 2 の 4 行で解決済みのクラスタのリージョンです。インスタンスタイプの EFA 情報自体はリージョンによらずほぼ同じですが、クラスタと同じリージョンを指定しておくと以降の手順と揃います）。
+この 0 は、Basic04 の tfvars で `gpu-ddp` に `efa_interface_count = 0` を明示しているためです。プール側で明示した値は API 値より優先されるので、ここに出ているのは自分が書いた値です。結果の数字が同じなのは、`gpu-ddp` が並べている g6.2xlarge / g5.2xlarge がそもそも EFA 非対応だからで、明示しなければ API から 0 が導出されます。API 側の事実は次のコマンドで直接確認できます（`$AWS_REGION` はクラスタのリージョンです。インスタンスタイプの EFA 情報自体はリージョンによらずほぼ同じですが、クラスタと同じリージョンを指定しておくと以降の手順と揃います）。
 
 ```bash
 aws ec2 describe-instance-types --instance-types g6.2xlarge g5.2xlarge g6e.12xlarge \
