@@ -425,16 +425,16 @@ cd "$(git rev-parse --show-toplevel)"/infra/eks/tests
 - **live-ro**: クラスタを読むだけです (control-plane、system-nodes、karpenter、csi-drivers、device-plugins、trainer)
 - **live-mut**: 実際に作って消します (`storage-mount` が FSx と OpenZFS に読み書きします)
 
-GPU ノードは起動しません。全部で 38 項目、3 分前後で終わります。
+GPU ノードは起動しません。全部で 56 項目 (static 49、live-ro 6、live-mut 1) で、5 分前後で終わります。
 
 出力の末尾に集計が出ます。
 
 ```text
 --------------------------------------------------------------
-PASS: 37  FAIL: 0  SKIP: 1  TOTAL: 38
+PASS: 55  FAIL: 0  SKIP: 1  TOTAL: 56
 ```
 
-`SKIP` の 1 件は `registry-default-layer-attached` で、Advanced02 のプロファイリング基盤を導入するまでデータ層が紐づかないため「該当なし」になります。この時点では正常です。`device-plugins` は GPU/EFA/Neuron の device plugin を見る項目ですが、該当プールが無い段階では対象が存在しないので PASS します。手順 2 で `DISTAI_SHARED_STORAGE=off` を選んだ場合は、複製元の PV が無いので `storage-mount` が SKIP になり、`PASS: 36 SKIP: 2` になります。
+`SKIP` の 1 件は `registry-default-layer-attached` で、Advanced02 のプロファイリング基盤を導入するまでデータ層が紐づかないため「該当なし」になります。この時点では正常です。`device-plugins` は GPU/EFA/Neuron の device plugin を見る項目ですが、該当プールが無い段階では対象が存在しないので PASS します。手順 2 で `DISTAI_SHARED_STORAGE=off` を選んだ場合は、複製元の PV が無いので `storage-mount` が SKIP になり、`PASS: 54 SKIP: 2` になります。項目数はテストが増えれば増えるので、集計行の数字そのものより `FAIL: 0` を見てください。
 
 FAIL があった場合は、その項目名で `infra/eks/tests/cases/` を探すと、何を assert しているかがそのまま読めます。
 
