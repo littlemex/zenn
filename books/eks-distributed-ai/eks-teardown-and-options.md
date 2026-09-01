@@ -29,10 +29,11 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.1](https://github.com/littlemex/dis
 この章はクラスタを破棄します。Advanced02 のプロファイリング基盤など、稼働中のクラスタを前提にする章を実施する予定がある場合は、**この章より先にそちらを済ませてください**。破棄したあとに実施するには Basic01 からの再構築が必要になります。
 :::
 
-はじめにシェルを対象クラスタへ向けます。Basic01 手順 3 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION`、それに 1 行目のチェックアウトのパスは自分のものに読み替えます。
+はじめにシェルを対象クラスタへ向けます。Basic01 手順 3 と同じ 5 行で、`AWS_PROFILE` と `CLUSTER_NAME` と `AWS_REGION`、それに 1 行目のチェックアウトのパスは自分のものに読み替えます。プロファイルを使わず環境変数やインスタンスロールで認証している場合は、`AWS_PROFILE` の行を削ります。
 
 ```bash
 cd ~/distributed-ai-v0.2.1
+export AWS_PROFILE=default
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2
 source infra/scripts/distai-env.sh
@@ -42,7 +43,7 @@ source infra/scripts/distai-env.sh
 
 | 前提 | どこで用意するか |
 |---|---|
-| 破棄したいクラスタに context が向いていること | [Basic01](https://zenn.dev/tosshi/books/eks-distributed-ai/viewer/eks-vpc-foundation) の手順 3 の 4 行 |
+| 破棄したいクラスタに context が向いていること | [Basic01](https://zenn.dev/tosshi/books/eks-distributed-ai/viewer/eks-vpc-foundation) の手順 3 の 5 行 |
 
 ## 1. 前提を確認する
 
@@ -53,7 +54,7 @@ k config current-context
 aws eks describe-cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" --query 'cluster.{name:name,status:status}' --output text
 ```
 
-表示されたクラスタ名が破棄したいものであることを、自分の目で確かめてから進んでください。`k` の向き先は 4 行が `CLUSTER_NAME` から作るので、`CLUSTER_NAME` を読み替え忘れたまま実行すると、context も揃って別のクラスタを指します。ここは機械が判定できない唯一の前提です。
+表示されたクラスタ名が破棄したいものであることを、自分の目で確かめてから進んでください。`k` の向き先は 5 行が `CLUSTER_NAME` から作るので、`CLUSTER_NAME` を読み替え忘れたまま実行すると、context も揃って別のクラスタを指します。ここは機械が判定できない唯一の前提です。
 
 この章の操作はクラスタ全体に影響する破壊的操作です。`AWS_REGION` は手順 5 の孤児ボリュームの確認でそのまま使うので、ここが違っていると別のリージョンを照会して「残っていない」という答えが返ってきます。`04-teardown.sh` 自身も先頭で Terraform の出力からクラスタ名を読み取り、context がそのクラスタを指しているかを検証して、違えば破壊的な手順の前に中断します。
 

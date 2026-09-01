@@ -95,10 +95,11 @@ check "capacity_block_ready" {
 
 # ワークショップ実施
 
-はじめにシェルを対象クラスタへ向けます。Basic01 手順 3 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION`、それに 1 行目のチェックアウトのパスは自分のものに読み替えます。
+はじめにシェルを対象クラスタへ向けます。Basic01 手順 3 と同じ 5 行で、`AWS_PROFILE` と `CLUSTER_NAME` と `AWS_REGION`、それに 1 行目のチェックアウトのパスは自分のものに読み替えます。プロファイルを使わず環境変数やインスタンスロールで認証している場合は、`AWS_PROFILE` の行を削ります。
 
 ```bash
 cd ~/distributed-ai-v0.2.1
+export AWS_PROFILE=default
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2
 source infra/scripts/distai-env.sh
@@ -242,7 +243,7 @@ k get nodepool $POOL
 k get ec2nodeclass $POOL
 ```
 
-シェルを開き直した場合は、章冒頭の 4 行と `export POOL=<プール名>` を先に実行し直します。CB の開始時刻より前に apply すると、予約が `scheduled` のままなので `capacity_block_ready` の WARNING が出ます。定義の作成自体は成功しているので、これは異常ではありません。ワークロードの投入 (Basic06 の手順 3) は予約の開始時刻を過ぎてから行います。
+シェルを開き直した場合は、章冒頭の 5 行と `export POOL=<プール名>` を先に実行し直します。CB の開始時刻より前に apply すると、予約が `scheduled` のままなので `capacity_block_ready` の WARNING が出ます。定義の作成自体は成功しているので、これは異常ではありません。ワークロードの投入 (Basic06 の手順 3) は予約の開始時刻を過ぎてから行います。
 
 apply が作るのは NodePool と EC2NodeClass の定義であって、この時点ではまだノードは起動しません。Karpenter は GPU を要求する Pod（Pending）が現れて初めてノードを起動します（Karpenter 自体のインストールと NodePool 生成の仕組みは Basic04 で構築済みという前提です）。実際にノードが起動するのは、次章 Basic06 で CB プールをターゲットにした検証ワークロードを投入したときなので、ここで確認するのは定義が正しく作られたことまでです。
 
