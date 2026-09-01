@@ -104,10 +104,11 @@ EOSH
 
 # ワークショップ実施
 
-はじめにシェルを対象クラスタへ向ける。Basic01 手順 3 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION`、それに 1 行目のチェックアウトのパスは自分のものに読み替える。
+はじめにシェルを対象クラスタへ向ける。Basic01 手順 3 と同じ 5 行で、`AWS_PROFILE` と `CLUSTER_NAME` と `AWS_REGION`、それに 1 行目のチェックアウトのパスは自分のものに読み替える。プロファイルを使わず環境変数やインスタンスロールで認証している場合は、`AWS_PROFILE` の行を削る。
 
 ```bash
 cd ~/distributed-ai-v0.2.1
+export AWS_PROFILE=default
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2
 source infra/scripts/distai-env.sh

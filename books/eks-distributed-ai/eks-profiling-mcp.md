@@ -79,10 +79,11 @@ alias 単位の削除は自動では起きません。終わったキャンペ�
 
 # ワークショップ実施
 
-はじめにシェルを対象クラスタへ向けます。Basic01 手順 3 の 4 行に `DISTAI_NAMESPACE` を足したもので、本章の作業 namespace は `distai` ではなく `team-a` です。こうすると `k` と後述のプラグインの既定がこの namespace になり、以降のコマンドに `-n` を書かずに済みます。`CLUSTER_NAME` と `AWS_REGION`、それに 1 行目のチェックアウトのパスは自分のものに読み替えます。
+はじめにシェルを対象クラスタへ向けます。Basic01 手順 3 の 5 行に `DISTAI_NAMESPACE` を足したもので、本章の作業 namespace は `distai` ではなく `team-a` です。こうすると `k` と後述のプラグインの既定がこの namespace になり、以降のコマンドに `-n` を書かずに済みます。`CLUSTER_NAME` と `AWS_REGION`、それに 1 行目のチェックアウトのパスは自分のものに読み替えます。
 
 ```bash
 cd ~/distributed-ai-v0.2.1
+export AWS_PROFILE=default
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2
 export DISTAI_NAMESPACE=team-a
@@ -194,7 +195,7 @@ Profiling platform ready on distai-eks.
 
 ## 4. 経路を確認する
 
-必要なのはプラグイン 2 本で、どちらも 1 ファイルです。`kubectl` には、PATH 上の `kubectl-<名前>` を `kubectl <名前>` として呼び出すプラグイン機構があります。プロファイルを取得するのが `kubectl-accelprof`、手順 6 で MCP に繋ぐのが `kubectl-distai_mcp` です。プラグインだけは `k` ではなく `kubectl` と打ちます。`k` は `kubectl --context <クラスタ>` を呼ぶ関数で、`kubectl` はプラグイン名より前に置かれたフラグを受け付けないため、`kubectl accelprof` は `flags cannot be placed before plugin name: --context` で失敗します。向き先は 4 行が書いた `KUBECONFIG` で決まるので、`kubectl` と打っても対象クラスタは変わりません。
+必要なのはプラグイン 2 本で、どちらも 1 ファイルです。`kubectl` には、PATH 上の `kubectl-<名前>` を `kubectl <名前>` として呼び出すプラグイン機構があります。プロファイルを取得するのが `kubectl-accelprof`、手順 6 で MCP に繋ぐのが `kubectl-distai_mcp` です。プラグインだけは `k` ではなく `kubectl` と打ちます。`k` は `kubectl --context <クラスタ>` を呼ぶ関数で、`kubectl` はプラグイン名より前に置かれたフラグを受け付けないため、`kubectl accelprof` は `flags cannot be placed before plugin name: --context` で失敗します。向き先は冒頭の行が書いた `KUBECONFIG` で決まるので、`kubectl` と打っても対象クラスタは変わりません。
 
 ```bash
 export PATH="$(git rev-parse --show-toplevel)/infra/eks/bin:$PATH"
@@ -539,7 +540,7 @@ kubectl distai-mcp down
 引き続きプロファイルを取る場合は、この後片付けを飛ばします。基盤を残したときに課金が続くのは MLflow とバケット、分析用の Pod が載る CPU ノードです。Basic11 でクラスタを破棄する予定なら、データ層は別の state にあるので本章の B を先に済ませてください。
 :::
 
-新しいターミナルで始める場合は、章冒頭の 5 行を先に実行してください。
+新しいターミナルで始める場合は、章冒頭の 6 行を先に実行してください。
 
 最初に選ぶのは、しばらく使わないだけか (A: 一時停止)、完全に撤去するか (B: 完全撤去) です。A は tracking server を停止するだけで課金が止まり、記録は保持されます。B は MLflow ごと消えるのであとから A に戻れません。迷ったら A です。
 
