@@ -120,7 +120,7 @@ source infra/scripts/distai-env.sh
 
 ```bash
 k -n karpenter get deploy karpenter >/dev/null 2>&1 && echo "OK Karpenter コントローラ" || echo "NG Karpenter コントローラ"
-test -f infra/eks/accelerator-pools.auto.tfvars && echo "OK プール定義ファイル" || echo "NG プール定義ファイル"
+test -f "$(git rev-parse --show-toplevel)/infra/eks/accelerator-pools.auto.tfvars" && echo "OK プール定義ファイル" || echo "NG プール定義ファイル"
 ```
 
 ## 2. オファリングを検索する（読み取りのみ、課金なし）

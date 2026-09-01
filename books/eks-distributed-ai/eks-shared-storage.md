@@ -126,8 +126,14 @@ source infra/scripts/distai-env.sh
 ```bash
 command -v jq >/dev/null && echo "OK jq" || echo "NG jq"
 k get pv >/dev/null 2>&1 && echo "OK クラスタに接続できる" || echo "NG クラスタに接続できない"
-terraform -chdir=infra/eks output -json shared_storage | jq -e '.fsx_lustre.enabled' >/dev/null && echo "OK FSx for Lustre" || echo "NG FSx for Lustre が無効"
+EKS_DIR="$(git rev-parse --show-toplevel)/infra/eks"
+SS="$(terraform -chdir="$EKS_DIR" output -json shared_storage 2>/dev/null)"
+if [ -z "$SS" ]; then echo "NG terraform output が読めない"
+elif printf '%s' "$SS" | jq -e '.fsx_lustre.enabled' >/dev/null; then echo "OK FSx for Lustre"
+else echo "NG FSx for Lustre が無効"; fi
 ```
+
+`terraform output が読めない` は、このチェックアウトで `terraform init` がまだ済んでいないときに出ます。clone し直した直後は `.terraform` が無いので、Basic01 手順 3 の details にある `terraform -chdir=<チェックアウト>/infra/eks init -reconfigure -backend-config=backend.hcl` を一度実行してください。
 
 ## 2. 作業用 namespace を用意する
 
