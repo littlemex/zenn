@@ -209,6 +209,59 @@ gpu-ddp-qhczq   g6.2xlarge   on-demand   us-west-2a   ip-10-0-27-109.us-west-2.c
 
 この例では 1 台目が spot、2 台目が on-demand になっています。Karpenter は許可した複数タイプ・複数 capacity-type の中から確保可能なものを選ぶため、spot の空きが足りないときは他タイプの spot を試し、それも取れなければ on-demand にフォールバックして台数を満たします。`CAPACITY` 列が 2 台で異なるのは失敗ではなく、単一タイプ・単一 capacity-type に固定していたら 2 台目が `Pending` のままだった状況を、混在させた確保が救っている状態です。空き状況によっては spot x2 で揃うこともあります。
 
+::::details ノードが 10 分以上立たないとき (AZ の在庫切れ)
+
+`Pending` が続き、`k get nodeclaims -l karpenter.sh/nodepool=gpu-ddp` に行が現れては消えるなら、Karpenter は要求を受け取って起動を試み、EC2 に断られています。理由は Karpenter のログに残ります。コントローラは 2 レプリカで動いていて、リーダーだけがこのログを出すので、Pod 名ではなくラベルで両方から読みます。
+
+```bash
+k -n karpenter logs -l app.kubernetes.io/name=karpenter --tail=200 \
+  | grep -o 'InsufficientInstanceCapacity[^;.]*' | tail -3
+```
+
+在庫切れなら AWS 自身がどの AZ なら空いているかを返します。
+
+```text
+InsufficientInstanceCapacity: We currently do not have sufficient g5.2xlarge capacity in the Availability Zone you requested (us-east-2a). Our system will be working on provisioning additional capacity. You can currently get g5.2xlarge capacity by not specifying an Availability Zone in your request or choosing us-east-2b, us-east-2c.
+```
+
+プールに `zones` を書かないと、AZ はクラスタの先頭 1 つに固定されます。これは cross-AZ のレイテンシを避けるための既定で、GPU が複数ノードで通信する構成では意味があります。一方で、その 1 つの AZ で在庫が切れている間は他の AZ を試せません。4 タイプ並べても全部同じ AZ を狙うので、タイプを増やしても抜けられません。
+
+抜け道は `zones` を明示することです。`"*"` はクラスタの全 AZ に展開されます。
+
+```bash
+cd "$(git rev-parse --show-toplevel)"/infra/eks
+cat > accelerator-pools.auto.tfvars <<'EOF'
+accelerator_pools = {
+  gpu-ddp = {
+    instance_types      = ["g6.2xlarge", "g5.2xlarge", "g6.xlarge", "g5.xlarge"]
+    device_plugin       = "nvidia"
+    capacity_types      = ["spot", "on-demand"]
+    efa_interface_count = 0
+    zones               = ["*"]
+    labels              = { workload = "ddp-basic04" }
+  }
+}
+EOF
+terraform apply
+k get nodepool gpu-ddp -o jsonpath='{range .spec.template.spec.requirements[?(@.key=="topology.kubernetes.io/zone")]}{.values}{"\n"}{end}'
+```
+
+plan の削除は 0 件で、変更は NodePool と Karpenter の Helm リリースの in-place 更新になります。ノードや共有ストレージは作り直されません。最後のコマンドが 3 つの AZ を返せば反映されています。
+
+```text
+["us-east-2a","us-east-2b","us-east-2c"]
+```
+
+`Pending` の Pod は消さなくてかまいません。Karpenter は既存の Pod を見て次の確保を試すので、広げた時点から他の AZ が候補に入ります。
+
+このプールの共有ストレージは Amazon FSx for OpenZFS で、静的 PV に nodeAffinity が付いていません。NFS は AZ を跨いでマウントできるので、別の AZ に立ったノードからも `/shared` は読み書きできます。ただし AZ 間のデータ転送料金と余分なレイテンシがかかります。本章が `/shared` に書くのは MNIST とスナップショットだけなので影響は小さいですが、大きなチェックポイントを毎ステップ書く構成では効いてきます。
+
+EFA を使うプールにはこの逃げ道が使えません。EFA はサブネットを跨いで通信できないため、`efa_interface_count` が 1 以上のプールで複数 AZ を指定すると `terraform plan` が検証で止まります。Basic06 の CB プールが在庫で詰まった場合は、予約そのものを別の AZ で取り直すことになります。
+
+在庫は数分から数十分で戻ることもあります。急がないなら待つのが一番簡単で、Karpenter がリトライを続けるので操作は要りません。
+
+::::
+
 rank 0(completion index 0)のログを追います。
 
 ```bash
