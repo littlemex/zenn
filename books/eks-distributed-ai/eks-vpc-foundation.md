@@ -3,7 +3,7 @@ title: "Basic01 - Amazon EKS 基盤を立てる"
 free: true
 ---
 
-GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0)
+GitHub Tag: [release/eks-distributed-ai/v0.2.1](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.1)
 
 本章のゴールは、GPU や Trainium のノードを「必要になったときだけ起動する」土台をひととおり立て、`kubectl` でノードが見える状態にすることです。
 
@@ -218,7 +218,24 @@ module "karpenter" {
 
 # ワークショップ実施
 
-## 1. 2 段階で導入する
+前提は次のとおりです。
+
+| 前提 | どこで用意するか |
+|---|---|
+| AWS の認証情報が使えること | [AWS CLI の設定](https://docs.aws.amazon.com/ja_jp/cli/latest/userguide/cli-chap-configure.html) |
+| Amazon EKS・VPC・IAM・AWS KMS・Amazon FSx を作れる権限 | 自分の AWS アカウント |
+| `aws` `terraform` `kubectl` `helm` `git` `curl` `jq` | 各ツールの公式手順 |
+
+## 1. 前提を確認する
+
+次のコマンドは前提を 1 行ずつ OK か NG で表示します。NG が出たら、上の表の行に書いた場所を先に済ませてください。
+
+```bash
+ARN=$(aws sts get-caller-identity --query Arn --output text 2>/dev/null) && echo "OK AWS 認証 ($ARN)" || echo "NG AWS 認証"
+for c in aws terraform kubectl helm git curl jq; do command -v "$c" >/dev/null && echo "OK $c" || echo "NG $c"; done
+```
+
+## 2. 2 段階で導入する
 
 導入は「リポジトリを取ってくる」と「クラスタを作る」の 2 つのコマンドに分かれています。前半は AWS のリソースを 1 つも作らず、後半で初めて課金が始まります。分けているのは、どのコマンドで課金が始まったかを後から追えるようにするためと、クラスタを作る側では実行前に対話で確認を取りたいためです。`curl` の出力をシェルに流す形は標準入力をスクリプトが使ってしまうので、対話の確認を置けません。
 
@@ -227,7 +244,7 @@ module "karpenter" {
 名前付きプロファイル (AWS SSO や assume-role) を使う場合は、**この後に開くシェルでは毎回 `export AWS_PROFILE=<自分のプロファイル名>` を置く**、と決めておいてください。以降の手順もスクリプトも、プロファイルの指定はこの環境変数だけを見ます。必要なら `aws sso login --profile <名前>` も先に済ませます。存在しない名前を設定すると `no usable AWS credentials. Sign in, or set AWS_PROFILE, before running this.` で停止します。この停止では AWS CLI 側の詳細メッセージが出ないので、原因は `aws sts get-caller-identity` を単独で実行して確かめます。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/littlemex/distributed-ai/refs/tags/release/eks-distributed-ai/v0.2.0/infra/scripts/distai-install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/littlemex/distributed-ai/refs/tags/release/eks-distributed-ai/v0.2.1/infra/scripts/distai-install.sh | bash
 ```
 
 後半に渡すのはクラスタ名とリージョンだけです。この 2 つが対象クラスタを決めるので、自分の値に読み替えてください。
@@ -246,7 +263,7 @@ export AWS_REGION=us-east-2
 共有ストレージも含めて作る場合は、次を実行します。
 
 ```bash
-cd ~/distributed-ai-v0.2.0
+cd ~/distributed-ai-v0.2.1
 ./infra/scripts/distai-up.sh
 ```
 
@@ -276,7 +293,7 @@ cat infra/eks/terraform.tfvars
 
 ::::details plan の表示範囲と、あとから変数を変える場合
 
-plan に表示されるのは変更の件数と、変更のあるリソース名の先頭 40 件までです。作成だけでなく更新・置換・削除も同じ形で並び、40 件を超えた分は `... and N more` にまとめられます。属性ごとの差分や置き換えの詳細は出ないので、そこまで見たい場合は step 2 の 4 行を実行したうえで `infra/eks` で `terraform plan` を直に実行します。
+plan に表示されるのは変更の件数と、変更のあるリソース名の先頭 40 件までです。作成だけでなく更新・置換・削除も同じ形で並び、40 件を超えた分は `... and N more` にまとめられます。属性ごとの差分や置き換えの詳細は出ないので、そこまで見たい場合は step 3 の 4 行を実行したうえで `infra/eks` で `terraform plan` を直に実行します。
 
 すでに `terraform.tfvars` がある状態で `distai-up.sh` を再実行すると、`exists; leaving it alone` と表示してファイルには触りません。共有ストレージをあとから有効にするなら、`fsx_enabled` と `openzfs_enabled` を `true` に直してから再実行します。
 
@@ -284,12 +301,12 @@ plan の確認で中止した場合も、state のバケットとロックテー
 
 ::::
 
-## 2. 以降の章の前提はこの 4 行
+## 3. 以降の章の前提はこの 4 行
 
 以降の章はすべて、クラスタを名前とリージョンで指すだけで始まります。バケット名も state のキーも章に書きません。それを可能にしているのが、apply の途中でレジストリ (AWS Systems Manager のパラメータストア) に書いた記録です。
 
 ```bash
-cd ~/distributed-ai-v0.2.0
+cd ~/distributed-ai-v0.2.1
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2
 source infra/scripts/distai-env.sh
@@ -317,19 +334,19 @@ apply が途中で失敗した場合、レジストリには state の場所ま�
 
 ::::
 
-## 3. ノードを確認する
+## 4. ノードを確認する
 
-ここで確かめるのは、System ノードグループが立ち上がっていることと、`kubectl` が正しいクラスタを向いていることです。向き先の設定は step 2 で済んでいて、`source` したときに表示された次の 2 行がその結果です。
+ここで確かめるのは、System ノードグループが立ち上がっていることと、`kubectl` が正しいクラスタを向いていることです。向き先の設定は step 3 で済んでいて、`source` したときに表示された次の 2 行がその結果です。
 
 ```text
-distai-env: distai-eks in us-east-2 (account <アカウント ID>, release release/eks-distributed-ai/v0.2.0, data layer none)
+distai-env: distai-eks in us-east-2 (account <アカウント ID>, release release/eks-distributed-ai/v0.2.1, data layer none)
 distai-env: kubectl: context distai-eks, namespace distai at https://XXXXXXXX.gr7.us-east-2.eks.amazonaws.com (the namespace does not exist yet)
 distai-env: k is kubectl --context distai-eks; KUBECONFIG is /home/ubuntu/.kube/distai/distai-eks.distai.yaml
 ```
 
-1 行目で見るのは末尾です。`(unreachable: ...)` が付いていなければ、endpoint への到達と認証まで確認できたことになります。`(the namespace does not exist yet)` は step 4 で作る `distai` namespace がまだ無いという意味なので、この時点では正常です。
+1 行目で見るのは末尾です。`(unreachable: ...)` が付いていなければ、endpoint への到達と認証まで確認できたことになります。`(the namespace does not exist yet)` は step 5 で作る `distai` namespace がまだ無いという意味なので、この時点では正常です。
 
-kubeconfig は既定の `~/.kube/config` ではなく、クラスタと namespace ごとの専用ファイルに書きます。既定の current-context を書き換えると、別のターミナルで他のクラスタを触っている作業まで巻き込むためです。設定が効くのは `source` したシェルの中だけなので、ターミナルを開き直したら step 2 の 4 行をもう一度実行します。
+kubeconfig は既定の `~/.kube/config` ではなく、クラスタと namespace ごとの専用ファイルに書きます。既定の current-context を書き換えると、別のターミナルで他のクラスタを触っている作業まで巻き込むためです。設定が効くのは `source` したシェルの中だけなので、ターミナルを開き直したら step 3 の 4 行をもう一度実行します。
 
 ::::details `k` はどこまで向き先を固定するか
 
@@ -364,7 +381,7 @@ ip-10-0-54-140.us-east-2.compute.internal   m5.xlarge   system       <none>
 `kubectl` が `Unauthorized`（`error: You must be logged in to the server`）で拒否される場合、原因はほぼ 2 つです。1 つ目は、クラスタを作ったプリンシパルと、いま `kubectl` を実行しているプリンシパルが違うケースです。`enable_cluster_creator_admin_permissions = true` は作成したプリンシパルにだけ管理者権限を与えるので、別のプリンシパルからは拒否されます。よくあるのは、`distai-up.sh` を名前付きプロファイルで実行したのに、`source` するシェルで `AWS_PROFILE` を設定し忘れ、プロファイル指定なしの `[default]` で認証している場合です。`source` は `AWS_PROFILE` をそのまま kubeconfig に書き込むので、`export AWS_PROFILE=<name>` を 4 行の前に置き、`aws sts get-caller-identity` で両者のプリンシパルを確認してください。assume-role の場合はセッション名部分が違っていても問題なく、`assumed-role/<ロール名>` までが一致していれば認証は通ります（アクセスエントリは基底の IAM ロール ARN 単位でマッチするためです）。自分のロールが登録済みかは `aws eks list-access-entries --cluster-name <name>` でも確認できます。2 つ目は、`apply` 直後にアクセスエントリがまだ認証レイヤに伝播していないケースで、この場合は 1〜2 分待って再実行すれば通ります。
 :::
 
-## 4. 作業用の namespace を作る
+## 5. 作業用の namespace を作る
 
 本書のワークショップでは、学習 Job や推論サーバーなどのワークロードを `default` ではなく専用の namespace に作ります。あとで「この namespace ごと消せば実験の後片付けが済む」ようにするためです。本書では作業用 namespace を `distai` に統一して進めます。
 
@@ -375,9 +392,9 @@ export NAMESPACE=distai
 k create namespace "$NAMESPACE" --dry-run=client -o yaml | k apply -f -
 ```
 
-`namespace/distai created`（初回）または `namespace/distai unchanged`（2 回目以降）と表示されれば準備完了です。本書は既定としてこの `distai` を使います (章によって別の namespace を使いたい場合の切り替え方は次に触れます)。作成後に step 2 の 4 行をもう一度実行すると、先ほどの `(the namespace does not exist yet)` が消えます。
+`namespace/distai created`（初回）または `namespace/distai unchanged`（2 回目以降）と表示されれば準備完了です。本書は既定としてこの `distai` を使います (章によって別の namespace を使いたい場合の切り替え方は次に触れます)。作成後に step 3 の 4 行をもう一度実行すると、先ほどの `(the namespace does not exist yet)` が消えます。
 
-## 5. 向き先を確認する習慣をつける
+## 6. 向き先を確認する習慣をつける
 
 操作対象のクラスタやリソースが増える後続の章では、別のクラスタを向いたまま元のつもりで操作してしまう事故が起きやすいため、破壊的な操作の前には現在の向き先を確認する習慣をつけておきます。`source` したときに表示される 2 行と同じ内容を、いつでも自分で確認できます。
 
@@ -387,15 +404,15 @@ k config current-context
 k config view --minify -o 'jsonpath={.contexts[0].context.namespace} @ {.clusters[0].cluster.server}{"\n"}'
 ```
 
-別のクラスタに切り替えたいときは、`CLUSTER_NAME` を変えて step 2 の 4 行をもう一度実行します。クラスタごとに kubeconfig ファイルが分かれているので、`k config use-context` で切り替えようとしても、いま使っている kubeconfig の中に別のクラスタの context は居ません。`distai` 以外の namespace を既定にしたい章では、`source` の前に `export DISTAI_NAMESPACE=<name>` を置くか、コマンド側で `-n <name>` を明示します。
+別のクラスタに切り替えたいときは、`CLUSTER_NAME` を変えて step 3 の 4 行をもう一度実行します。クラスタごとに kubeconfig ファイルが分かれているので、`k config use-context` で切り替えようとしても、いま使っている kubeconfig の中に別のクラスタの context は居ません。`distai` 以外の namespace を既定にしたい章では、`source` の前に `export DISTAI_NAMESPACE=<name>` を置くか、コマンド側で `-n <name>` を明示します。
 
-## 6. (任意) スモークテストで動作確認する
+## 7. (任意) スモークテストで動作確認する
 
 `apply` が通っても、その上のコンポーネントが動いているとは限りません。それを早めに切り分けるために、リポジトリの [`infra/eks/tests/`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/tests) にスモークテストを置いています。
 
-対象クラスタは `kubectl` の向き先と `terraform output` から解決するので、step 2 の 4 行を同じシェルで実行済みにしてから走らせてください。
+対象クラスタは `kubectl` の向き先と `terraform output` から解決するので、step 3 の 4 行を同じシェルで実行済みにしてから走らせてください。
 
-テストは自分専用の namespace (`distai-test`) を作って最後に消します。手順 4 で `NAMESPACE` を export しているので、その名前を渡さないよう `--namespace` で明示します。渡さないと、テストが作業 namespace を自分のものと解釈して停止します。
+テストは自分専用の namespace (`distai-test`) を作って最後に消します。手順 5 で `NAMESPACE` を export しているので、その名前を渡さないよう `--namespace` で明示します。渡さないと、テストが作業 namespace を自分のものと解釈して停止します。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks/tests
@@ -417,7 +434,7 @@ GPU ノードは起動しません。全部で 38 項目、3 分前後で終わ�
 PASS: 37  FAIL: 0  SKIP: 1  TOTAL: 38
 ```
 
-`SKIP` の 1 件は `registry-default-layer-attached` で、Advanced02 のプロファイリング基盤を導入するまでデータ層が紐づかないため「該当なし」になります。この時点では正常です。`device-plugins` は GPU/EFA/Neuron の device plugin を見る項目ですが、該当プールが無い段階では対象が存在しないので PASS します。手順 1 で `DISTAI_SHARED_STORAGE=off` を選んだ場合は、複製元の PV が無いので `storage-mount` が SKIP になり、`PASS: 36 SKIP: 2` になります。
+`SKIP` の 1 件は `registry-default-layer-attached` で、Advanced02 のプロファイリング基盤を導入するまでデータ層が紐づかないため「該当なし」になります。この時点では正常です。`device-plugins` は GPU/EFA/Neuron の device plugin を見る項目ですが、該当プールが無い段階では対象が存在しないので PASS します。手順 2 で `DISTAI_SHARED_STORAGE=off` を選んだ場合は、複製元の PV が無いので `storage-mount` が SKIP になり、`PASS: 36 SKIP: 2` になります。
 
 FAIL があった場合は、その項目名で `infra/eks/tests/cases/` を探すと、何を assert しているかがそのまま読めます。
 

@@ -3,7 +3,7 @@ title: "Basic05 - Capacity Block を利用する"
 free: true
 ---
 
-GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0)
+GitHub Tag: [release/eks-distributed-ai/v0.2.1](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.1)
 
 本章では、Basic04 で導入した `accelerator_pools` の仕組みに、ここで初めて `capacity_type = "reserved"` のプールを足し、Capacity Block(CB) で確保したリソースを Amazon EKS クラスタに組み込みます。予約の検索・購入から `accelerator-pools.auto.tfvars` への反映、NodePool と EC2NodeClass が正しく作られるところまでの確認、期限管理までを扱います (実際にノードが起動するのは次章 Basic06 です)。確保したノードで実際にマルチノード通信が出ているかの検証は、次章の Basic06 で行います。
 
@@ -34,7 +34,7 @@ CB を使う最低限の運用フローは次のようになります。
 
 この章に付属する CB 関連の 補助スクリプト は [`00-check-cb-offerings.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/00-check-cb-offerings.sh)、[`01-purchase-cb.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/01-purchase-cb.sh)、[`02-post-purchase.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/02-post-purchase.sh)、[`04-teardown.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/04-teardown.sh) の 4 つです（`03-` は欠番で、そういうファイルはありません）。
 
-この構成には予約の終了時刻から自動的に期限アラートを組み立てる仕組みが入っています。プールに `cb_reservation_id` を書いておくと、Terraform がその予約の終了時刻を自動的に読み取り、Amazon EventBridge Scheduler の one-shot スケジュールを 1 プールにつき 1 つ作り、終了 1 時間前に Amazon SNS へ通知します。発火後はそのスケジュール自体が AWS 側から消えます。ここで素朴に作ると、次の `terraform apply` が消えたスケジュールを過去の時刻で作り直そうとして API に拒否され、以降 apply が通らなくなります。これを避けているのは自己削除ではなく Terraform 側の時刻フィルタで、通知時刻 (終了 1 時間前) がすでに過ぎたプールをスケジュールの対象から外しています。同じ仕組みを自分で組む場合は、この 2 つを対で用意しないと apply が毎回失敗します。例外は、通知時刻の直前に `plan` を作って直後に `apply` する場合です。このときは `plan` の時点では未来だった時刻が `apply` の時点で過去になっているため、その 1 回の apply が失敗します。`plan` を作り直せば解消します。この時刻フィルタには読者に見える帰結が 1 つあります。終了 1 時間前を過ぎたプールは、スケジュールの作成対象から外れます。SNS トピックはクラスタで 1 つを共有するので、通知時刻がまだ先の予約プールが 1 つでも残っていれば作られます。予約プールがこの 1 つだけ、あるいは全予約プールの通知時刻がすでに過ぎている場合に、後述の手順 5 で `cb_expiry_alert_schedule_exprs` が空の map、`cb_expiry_sns_topic_arn` が空文字になります。これは設定の失敗ではありません。
+この構成には予約の終了時刻から自動的に期限アラートを組み立てる仕組みが入っています。プールに `cb_reservation_id` を書いておくと、Terraform がその予約の終了時刻を自動的に読み取り、Amazon EventBridge Scheduler の one-shot スケジュールを 1 プールにつき 1 つ作り、終了 1 時間前に Amazon SNS へ通知します。発火後はそのスケジュール自体が AWS 側から消えます。ここで素朴に作ると、次の `terraform apply` が消えたスケジュールを過去の時刻で作り直そうとして API に拒否され、以降 apply が通らなくなります。これを避けているのは自己削除ではなく Terraform 側の時刻フィルタで、通知時刻 (終了 1 時間前) がすでに過ぎたプールをスケジュールの対象から外しています。同じ仕組みを自分で組む場合は、この 2 つを対で用意しないと apply が毎回失敗します。例外は、通知時刻の直前に `plan` を作って直後に `apply` する場合です。このときは `plan` の時点では未来だった時刻が `apply` の時点で過去になっているため、その 1 回の apply が失敗します。`plan` を作り直せば解消します。この時刻フィルタには読者に見える帰結が 1 つあります。終了 1 時間前を過ぎたプールは、スケジュールの作成対象から外れます。SNS トピックはクラスタで 1 つを共有するので、通知時刻がまだ先の予約プールが 1 つでも残っていれば作られます。予約プールがこの 1 つだけ、あるいは全予約プールの通知時刻がすでに過ぎている場合に、後述の手順 6 で `cb_expiry_alert_schedule_exprs` が空の map、`cb_expiry_sns_topic_arn` が空文字になります。これは設定の失敗ではありません。
 
 プールの `cb_end_date` は、この自動導出された終了時刻を緊急時に上書きするための任意項目であり、通常は書く必要がありません。
 
@@ -95,10 +95,10 @@ check "capacity_block_ready" {
 
 # ワークショップ実施
 
-はじめにシェルを対象クラスタへ向けます。Basic01 手順 2 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION` は自分のクラスタのものに読み替えます。
+はじめにシェルを対象クラスタへ向けます。Basic01 手順 3 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION`、それに 1 行目のチェックアウトのパスは自分のものに読み替えます。
 
 ```bash
-cd ~/distributed-ai-v0.2.0
+cd ~/distributed-ai-v0.2.1
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2
 source infra/scripts/distai-env.sh
@@ -106,7 +106,24 @@ source infra/scripts/distai-env.sh
 
 本章の実機検証は p4d.24xlarge（NVIDIA A100 40GB x8、EFA x4）2 台の Capacity Block で実施しました。以降のコマンド出力はすべてこの構成の実測値です。読者が別のインスタンスタイプで進める場合、台数や EFA の枚数は当然変わります。本章のスクリプトはそうした値を固定値で指定せず AWS API から取得する作りにしてあるので、コマンドはそのまま使えます。
 
-## 1. オファリングを検索する（読み取りのみ、課金なし）
+前提は次のとおりです。
+
+| 前提 | どこで用意するか |
+|---|---|
+| Karpenter が動いていること | [Basic03](https://zenn.dev/tosshi/books/eks-distributed-ai/viewer/eks-karpenter-setup) |
+| プール定義ファイル `accelerator-pools.auto.tfvars` があること | [Basic04](https://zenn.dev/tosshi/books/eks-distributed-ai/viewer/eks-accelerator-pools) |
+| Capacity Block を購入できる権限とサービスクォータ | 自分の AWS アカウント |
+
+## 1. 前提を確認する
+
+次のコマンドは前提を 1 行ずつ OK か NG で表示します。NG が出たら、上の表の行に書いた場所を先に済ませてください。
+
+```bash
+k -n karpenter get deploy karpenter >/dev/null 2>&1 && echo "OK Karpenter コントローラ" || echo "NG Karpenter コントローラ"
+test -f infra/eks/accelerator-pools.auto.tfvars && echo "OK プール定義ファイル" || echo "NG プール定義ファイル"
+```
+
+## 2. オファリングを検索する（読み取りのみ、課金なし）
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks/scripts
@@ -138,9 +155,9 @@ cd "$(git rev-parse --show-toplevel)"/infra/eks/scripts
 そのリージョン・期間・台数の組み合わせで在庫が無い場合は `(no offerings available — sold out for this window/size)` と表示されます。アカウントの CB 上限に達している場合は AWS API のエラー文がそのまま表示されるため、「売り切れ」と「上限不足」を区別できます。台数を減らす、期間を変える、別の AZ やリージョンを試す、といった調整で候補が出ることがあります。
 :::
 
-## 2. CB を購入する（ここで課金が発生する）
+## 3. CB を購入する（ここで課金が発生する）
 
-`--offering-id` には手順 1 の検索結果に出た自分の OfferingId を渡します。下の値は例です。オファリングは在庫に連動するので、検索から時間が経つと無効になります。その場合は手順 1 の検索からやり直します。
+`--offering-id` には手順 2 の検索結果に出た自分の OfferingId を渡します。下の値は例です。オファリングは在庫に連動するので、検索から時間が経つと無効になります。その場合は手順 2 の検索からやり直します。
 
 ```bash
 ./01-purchase-cb.sh \
@@ -155,7 +172,7 @@ cd "$(git rev-parse --show-toplevel)"/infra/eks/scripts
 CB の購入は前払いで、キャンセルや返金はできません。`00-check-cb-offerings.sh` で候補を確認し、必要台数・期間を十分に見積もってから購入してください。
 :::
 
-## 3. accelerator-pools.auto.tfvars に反映するブロックを生成する
+## 4. accelerator-pools.auto.tfvars に反映するブロックを生成する
 
 購入した CB の CR ID を確認するコマンドです。
 
@@ -216,7 +233,7 @@ accelerator_pools = {
 EOF
 ```
 
-## 4. apply して NodePool を確認する
+## 5. apply して NodePool を確認する
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
@@ -245,7 +262,7 @@ gpu-p4d-5zlm9   p4d.24xlarge   reserved   us-west-2d   ip-10-0-115-100.us-west-2
 
 `CAPACITY = reserved` の NodeClaim が表示され、`ZONE` が予約の AZ に一致していれば、CB からのノード起動は成功です。ここで `zone` を `accelerator-pools.auto.tfvars` に一切書いていないことを思い出してください。`us-west-2d` は予約から自動導出された値です。
 
-## 5. 期限アラートを確認する
+## 6. 期限アラートを確認する
 
 ```bash
 terraform output cb_expiry_alert_schedule_exprs

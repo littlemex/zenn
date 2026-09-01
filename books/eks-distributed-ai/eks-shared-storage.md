@@ -3,7 +3,7 @@ title: "Basic10 - Amazon FSx for Lustre を導入する"
 free: true
 ---
 
-GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0)
+GitHub Tag: [release/eks-distributed-ai/v0.2.1](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.1)
 
 本章では、Basic01 から Basic04 で構築した Amazon VPC・Amazon EKS コントロールプレーン・アクセラレータノードを前提に、Karpenter がノードを入れ替えても失われないデータ層として Amazon FSx for Lustre を構成します。Amazon FSx for Lustre は単一 AZ の高スループットなスクラッチおよびチェックポイント領域で、Terraform で 1 度作成すれば以降の Karpenter によるノード入れ替えの影響を受けません。
 
@@ -90,7 +90,7 @@ EFA は OS をバイパスし [SRD](https://docs.aws.amazon.com/AWSEC2/latest/Us
 この実装では、ファイルシステム側の EFA 有効化を `terraform.tfvars` の [`fsx_efa_enabled`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/variables.tf)（既定 `false`）で切り替えられるようにしてあります。`true` にすると `EfaEnabled` の付与、USER_PROVISIONED のメタデータ構成 (IOPS は `fsx_metadata_iops` で指定し、EFA を使う場合は 6000 が下限)、EFA 用の自己参照セキュリティグループルールが自動で構成され、容量と IOPS の下限は `terraform plan` の段階で検証されます。
 
 :::message alert
-`fsx_efa_enabled = true` はファイルシステム側の設定だけを行います。ノード側の EFA ドライバ・Lustre クライアント・LNET の EFA 設定と、ノードをファイルシステムのセキュリティグループに参加させる構成は本実装では導入していないため、この設定だけを有効にしてもクライアントは EFA データパスを使えません。ノード側の具体的な導入手順は、後述の参考資料に挙げた AWS の [FSx for Lustre ワークショップ](https://catalog.us-east-1.prod.workshops.aws/workshops/1152c25d-552e-4b9f-8cd0-875910071c54/en-US)の EFA および EKS+EFA のセクションを参照してください。加えて `EfaEnabled` は作成時のみ指定できる設定のため、稼働中のファイルシステムでこの値を切り替えると `terraform apply` はファイルシステムを再作成し、保存済みのデータはすべて失われます。切り替える場合は、事前に必要なデータを Amazon S3 などへ退避してください。今後の課題として EFA 利用有無をより柔軟に扱う仕組みを検討します。
+`fsx_efa_enabled = true` はファイルシステム側の設定だけを行います。ノード側の EFA ドライバ・Lustre クライアント・LNET の EFA 設定と、ノードをファイルシステムのセキュリティグループに参加させる構成は本実装では導入していないため、この設定だけを有効にしてもクライアントは EFA データパスを使えません。ノード側の具体的な導入手順は、後述の参考資料に挙げた AWS の [FSx for Lustre ワークショップ](https://catalog.us-east-1.prod.workshops.aws/workshops/1152c25d-552e-4b9f-8cd0-875910071c54/en-US)の EFA および EKS+EFA のセクションを参照してください。加えて `EfaEnabled` は作成時のみ指定できる設定のため、稼働中のファイルシステムでこの値を切り替えると `terraform apply` はファイルシステムを再作成し、保存済みのデータはすべて失われます。切り替える場合は、事前に必要なデータを Amazon S3 などへ退避してください。
 :::
 
 ## EFA を共有ストレージと GPU 通信で共有するときの考え方
@@ -101,10 +101,10 @@ GPU 分散学習では NCCL の集合通信も EFA を使います。Amazon FSx 
 
 # ワークショップ実施
 
-はじめにシェルを対象クラスタへ向けます。Basic01 手順 2 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION` は自分のクラスタのものに読み替えます。
+はじめにシェルを対象クラスタへ向けます。Basic01 手順 3 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION`、それに 1 行目のチェックアウトのパスは自分のものに読み替えます。
 
 ```bash
-cd ~/distributed-ai-v0.2.0
+cd ~/distributed-ai-v0.2.1
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2
 source infra/scripts/distai-env.sh
@@ -112,16 +112,33 @@ source infra/scripts/distai-env.sh
 
 本章の実機検証は、`terraform.tfvars` の既定値（`fsx_enabled = true` / `openzfs_enabled = true` / `efs_enabled = false` / `fsx_efa_enabled = false`）のまま実施します。以下の実機出力は `us-east-2` で採取した例で、読者が別リージョンで進める場合はリージョン名とファイルシステム ID が変わりますが、手順そのものは同じです。
 
+前提は次のとおりです。
+
+| 前提 | どこで用意するか |
+|---|---|
+| Amazon FSx for Lustre が有効なこと (`fsx_enabled`) | [Basic01](https://zenn.dev/tosshi/books/eks-distributed-ai/viewer/eks-vpc-foundation) |
+| `jq` が入っていること | 各ツールの公式手順 |
+
 ## 1. 前提を確認する
 
-- `terraform apply` 実行ずみ
+次のコマンドは前提を 1 行ずつ OK か NG で表示します。NG が出たら、上の表の行に書いた場所を先に済ませてください。
+
+```bash
+command -v jq >/dev/null && echo "OK jq" || echo "NG jq"
+k get pv >/dev/null 2>&1 && echo "OK クラスタに接続できる" || echo "NG クラスタに接続できない"
+terraform -chdir=infra/eks output -json shared_storage | jq -e '.fsx_lustre.enabled' >/dev/null && echo "OK FSx for Lustre" || echo "NG FSx for Lustre が無効"
+```
+
+## 2. 作業用 namespace を用意する
+
+以降のコマンドは namespace を `NAMESPACE` から受け取ります。作成は冪等なので、すでにあってもエラーになりません。
 
 ```bash
 export NAMESPACE=distai
 k create namespace "$NAMESPACE" --dry-run=client -o yaml | k apply -f -
 ```
 
-## 2. Terraform の出力を確認する
+## 3. Terraform の出力を確認する
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
@@ -162,7 +179,7 @@ terraform output shared_storage
 
 `enabled` がその層を使うかどうか、`persistent_volume` が静的 PV の名前です。3 つの層は無効なものも同じ形で並ぶので、`efs` が `enabled = false` で空の値を持って出てくるのは正常です。`root_volume_id` は OpenZFS だけが持つ値で、テナントごとに子ボリュームを切るときの親を指します。
 
-## 3. PersistentVolume を確認する
+## 4. PersistentVolume を確認する
 
 ```bash
 k get pv fsx-training openzfs-shared
@@ -265,7 +282,7 @@ k label namespace "$PVC_NS" tenantpools.dev/excluded-
 PersistentVolume と PersistentVolumeClaim の namespace の考え方を整理しておきます。PV はクラスタスコープのリソースで namespace を持ちません。namespace を持つのは PVC のほうで、Pod は自分と同じ namespace の PVC しか参照できません。つまり「PVC と、それをマウントする Pod は必ず同じ namespace に置く」「PV はどの namespace の PVC からでも `volumeName` でバインドできる共通の存在」と理解しておくと混乱しません。本書は作業用 namespace を `distai` に統一しているので、PVC も Pod も `distai` に作ります。`default` などにうっかり作ると、Basic11 の `04-teardown.sh --namespace distai` が対象にせず消し漏らし、Bound な PV が残って `terraform destroy` を止める原因になります。
 :::
 
-## 4. Amazon FSx for Lustre に書き込み、Pod を作り直してもデータが残ることを確認する
+## 5. Amazon FSx for Lustre に書き込み、Pod を作り直してもデータが残ることを確認する
 
 PV は Terraform で作られていますが、PVC は手動で作ります。静的 PV に名前でバインドするため `volumeName` に PV 名を、`storageClassName` に空文字を指定します。学習ワークロードが使う共通の PVC は [`manifests/shared-pvc.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/manifests/shared-pvc.yaml) にテンプレートがあり、そちらも同じ書き方です。
 
@@ -286,7 +303,7 @@ EOF
 k get pvc fsx-claim -n "$NAMESPACE"
 ```
 
-`4800Gi` は手順 2 で見た `storage_capacity` の値です。`fsx_storage_capacity_gib` を変えて構築した場合は、その値 (PV の容量) 以下にします。PV より大きい容量を要求すると PVC は `Pending` のままになり、次のテスト Pod も起動しません。
+`4800Gi` は手順 3 で見た `storage_capacity` の値です。`fsx_storage_capacity_gib` を変えて構築した場合は、その値 (PV の容量) 以下にします。PV より大きい容量を要求すると PVC は `Pending` のままになり、次のテスト Pod も起動しません。
 
 `Bound` になったら、ファイルを書き込むテスト Pod を実行します。
 
@@ -309,7 +326,11 @@ k logs fsx-test2 -n "$NAMESPACE"
 
 別名の Pod でも `hello-fsx` が読み出せます。ここで直接確認しているのは Pod を作り直してもデータが残ることです。共有ストレージはノードの入れ替えにも耐える設計ですが、それを確かめるにはノードごと消して別ノードに載せる必要があるので、この手順には含めていません。
 
-## 5. 検証用リソースを削除する
+## 6. 検証用リソースを削除する
+
+:::message
+消すのは本章の検証用 Pod と PVC だけです。ファイルシステムと静的 PV は Terraform の管理なので残り、Basic02 で作った `shared-claim` にも触りません。
+:::
 
 検証が終わったら、テスト Pod と PVC を削除しておきます。Amazon FSx for Lustre を無効化する場合は、この削除を先に済ませておかないと、Bound な PV の削除がファイナライザで止まり `terraform apply` や `terraform destroy` が詰まることがあります。
 
@@ -318,7 +339,7 @@ k delete pod fsx-test fsx-test2 -n "$NAMESPACE" --ignore-not-found
 k delete pvc fsx-claim -n "$NAMESPACE" --ignore-not-found
 ```
 
-Pod を先に、PVC を後に消すこの順序が大事です。逆にすると `k delete pvc` が Pod の残るあいだファイナライザで止まります。namespace 内の PVC をまとめて片付けたい場合は、Basic11 の [`04-teardown.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/04-teardown.sh) に `--delete-pvcs` を付けると、その namespace の PVC を storage の種類によらず一括削除できます。削除が止まったときの原因の切り分けは、手順 3 の details で示した Pod の調べ方と同じです。
+Pod を先に、PVC を後に消すこの順序が大事です。逆にすると `k delete pvc` が Pod の残るあいだファイナライザで止まります。namespace 内の PVC をまとめて片付けたい場合は、Basic11 の [`04-teardown.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/04-teardown.sh) に `--delete-pvcs` を付けると、その namespace の PVC を storage の種類によらず一括削除できます。削除が止まったときの原因の切り分けは、手順 4 の details で示した Pod の調べ方と同じです。
 
 PV 自体は Terraform が管理しているため、この削除では消えません。`reclaimPolicy` が `Retain` なので、Bound だった PVC を削除しても PV は `Released` になります。同じ PV に再びバインドしたい場合の復旧手順は Basic02 で扱ったものと同じです。
 
@@ -333,6 +354,12 @@ Amazon FSx for Lustre は有効な間、プロビジョニングした容量分�
 # まとめ
 
 本章では、Karpenter によるノード入れ替えから独立したデータ層として Amazon FSx for Lustre を構成しました。既存ファイルシステムには静的プロビジョニングを用いる点、`volumeAttributes` のキーが小文字でないと読まれない点、`reclaimPolicy` は `Retain` が正しい点を理解しておけば、以降の章で GPU/Neuron ワークロードがこの共有ストレージを安心して利用できます。さらに高いスループットが必要な場合は EFA 有効化という選択肢があり、この実装では `fsx_efa_enabled` で切り替えられます。EFA 有効時は USER_PROVISIONED メタデータ 6000 IOPS 以上・容量 4800 GiB 以上・単一 AZ・ノード側の EFA 設定という制約を伴い、GPU 学習では NCCL 通信との EFA デバイス分離も検討することになります。
+
+# 今後の改善
+
+| なぜ改善すべきか | 改善対象 | 改善案 |
+|---|---|---|
+| `fsx_efa_enabled = true` はファイルシステム側だけを設定するので、有効にしてもクライアントは EFA データパスを使えない | ノード側の EFA 設定 | EFA ドライバと Lustre クライアントの LNET 設定、ノードをファイルシステムのセキュリティグループに入れる構成までを含める |
 
 # 参考資料
 

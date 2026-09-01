@@ -3,7 +3,7 @@ title: "Basic08 - Observability を導入する"
 free: true
 ---
 
-GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0)
+GitHub Tag: [release/eks-distributed-ai/v0.2.1](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.1)
 
 本章では、Basic07 で動かした GPU ワークロードを観測します。kube-prometheus-stack（Prometheus + Grafana）で、NVIDIA GPU Operator に同梱される DCGM exporter が公開する GPU メトリクス（使用率・温度・メモリなど）を Grafana の UI で確認し、あわせてノード障害の検知も見ていきます。
 
@@ -73,7 +73,7 @@ relabelings = [
 ]
 ```
 
-データ自体は 1 つの Prometheus に集約されるため、他テナントのデータも「見ようと思えば」見えます。強制的なデータ分離（テナントごとにクエリを分離する `prom-label-proxy` や Grafana の folder permission、Thanos/Mimir によるストレージ分離）は今後の課題として、まずは「ラベル `tenant` を分離の契約点として確立する」ところまでを作りました。
+データ自体は 1 つの Prometheus に集約されるため、他テナントのデータも「見ようと思えば」見えます。本章で作ったのは、ラベル `tenant` を分離の契約点として確立するところまでです。
 
 ## 監視スタックの置き場所
 
@@ -90,24 +90,40 @@ Prometheus は PVC を持つ常駐の stateful なコンポーネントで、GPU
 
 NMA は障害を「検知して知らせる」だけで、Karpenter によるノードの自動修復（[Node Auto Repair](https://karpenter.sh/docs/concepts/disruption/#node-auto-repair)、不健全なノードを自動で terminate して置き換える機能）は意図的に無効にしています。高価な GPU ノードを止める・置き換えるという不可逆な判断は、人間やジョブ層に委ねる方針です。
 
-NMA を GPU ノードで正しく動かすための設定、実際に GPU 障害を注入して検知が働くことをどう確かめるか、auto-repair を無効にした詳しい理由といった踏み込んだ話は、本書では扱いません。本章のワークショップでは、監視スタックと NMA がすでに動いていることの確認までを行います。
+本章のワークショップでは、監視スタックと NMA がすでに動いていることの確認までを行います。
 
 # ワークショップ実施
 
-はじめにシェルを対象クラスタへ向けます。Basic01 手順 2 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION` は自分のクラスタのものに読み替えます。
+はじめにシェルを対象クラスタへ向けます。Basic01 手順 3 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION`、それに 1 行目のチェックアウトのパスは自分のものに読み替えます。
 
 ```bash
-cd ~/distributed-ai-v0.2.0
+cd ~/distributed-ai-v0.2.1
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2
 source infra/scripts/distai-env.sh
 ```
 
+前提は次のとおりです。
+
+| 前提 | どこで用意するか |
+|---|---|
+| 監視スタックが動いていること (`enable_observability`) | [Basic01](https://zenn.dev/tosshi/books/eks-distributed-ai/viewer/eks-vpc-foundation) |
+| NVIDIA GPU Operator が動いていること | [Basic04](https://zenn.dev/tosshi/books/eks-distributed-ai/viewer/eks-accelerator-pools) |
+| GPU ワークロードが動いていること (任意。無くても 0 系列で進められます) | [Basic07](https://zenn.dev/tosshi/books/eks-distributed-ai/viewer/eks-run-workloads) |
+| `jq` が入っていること | 各ツールの公式手順 |
+
 ## 1. 前提を確認する
 
-- `terraform apply` を実行済みであること
-- Basic04 で NVIDIA GPU Operator 導入済み、Basic07 で vLLM サーバー起動済みであること
-- `jq` 導入済み
+次のコマンドは前提を 1 行ずつ OK か NG で表示します。NG が出たら、上の表の行に書いた場所を先に済ませてください。
+
+```bash
+command -v jq >/dev/null && echo "OK jq" || echo "NG jq"
+k -n monitoring get deploy -o name 2>/dev/null | grep -q . && echo "OK 監視スタック" || echo "NG 監視スタック"
+k -n gpu-operator get deploy -o name 2>/dev/null | grep -q . && echo "OK GPU Operator" || echo "NG GPU Operator"
+k get deploy gpu-vllm >/dev/null 2>&1 && echo "OK GPU ワークロード" || echo "NG GPU ワークロード"
+```
+
+GPU ワークロードが NG でも手順は進みますが、GPU のメトリクスは 0 系列で表示されます。
 
 ## 2. 監視スタックが動いていることを確認する
 
@@ -212,13 +228,9 @@ curl -sf http://localhost:3000/api/health >/dev/null \
 
 ![NVIDIA DCGM Exporter Dashboard で p5en の 8 GPU を可視化した実画面](/images/books/eks-distributed-ai/ch7-dcgm-grafana.png)
 
-これで、GPU ワークロードの実行中に各 GPU がどれだけ使われているかを、時系列グラフで観測できます。Basic07 の vLLM 推論であれば 1 枚の GPU 使用率が、Capacity Block で確保したマルチノード学習であれば全 GPU の使用率が、それぞれ可視化されます。
+EFA と Neuron のメトリクスは現状では収集対象に含めていません (章末の「今後の改善」を参照)。これで、GPU ワークロードの実行中に各 GPU がどれだけ使われているかを、時系列グラフで観測できます。Basic07 の vLLM 推論であれば 1 枚の GPU 使用率が、Capacity Block で確保したマルチノード学習であれば全 GPU の使用率が、それぞれ可視化されます。
 
 手順 3・4 でバックグラウンド（`&`）に起動した port-forward は、ターミナルを閉じるまで残り続けます。確認が終わったら `jobs` でジョブ番号を確認し、`kill %<番号>` で止めておきます（放置すると次の再実行時に 9090 / 3000 が使用中で port-forward が失敗します）。
-
-:::message
-**EFA のネットワークメトリクスは現時点では観測対象に含めていません。** EFA の帯域や RDMA の統計を Prometheus に取り込むには専用の EFA exporter が別途必要ですが、この基盤にはまだ導入しておらず、今後の対応予定です。**Neuron の Observability についても現状では未対応**で、今後対応予定です。
-:::
 
 ## 5. observability を無効化する（任意）
 
@@ -245,6 +257,14 @@ GPU 障害の検知を自分で試す予定があるなら、本章の NMA と�
 # まとめ
 
 本章では、GPU Operator 同梱の DCGM exporter が公開する GPU メトリクスを Prometheus で収集、Grafana の UI で可視化しました。observability は `terraform apply` に含まれるため追加の導入操作は不要で、Prometheus/Grafana はすでにクラスタ上で動いています。ポイントは、GPU メトリクスに収集時点で `tenant` ラベルを刻印し、Grafana のドロップダウンでテナントごとに GPU を見られるようにしたこと、そして監視スタックを専用 NodePool・自動生成パスワード・専用 gp3 StorageClass で「宣言的に一発で立ち上がる」形に組み込んだことです。
+
+# 今後の改善
+
+| なぜ改善すべきか | 改善対象 | 改善案 |
+|---|---|---|
+| データは 1 つの Prometheus に集約されるので、他テナントのメトリクスも見ようと思えば見える | テナント間のデータ分離 | `prom-label-proxy` や Grafana の folder permission、Thanos/Mimir でクエリとストレージを分離する |
+| EFA の帯域と RDMA の統計が Prometheus に入らないので、Basic06 で測った通信性能を継続的に監視できない | EFA のメトリクス | 専用の EFA exporter を導入して収集対象に加える |
+| Neuron のデバイス使用率が収集されないので、Basic09 の推論は GPU と同じ画面で見られない | Neuron のメトリクス | Neuron monitor 由来の exporter を追加し、`tenant` ラベルの刻印を GPU と揃える |
 
 # 参考資料
 

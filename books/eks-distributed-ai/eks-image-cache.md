@@ -3,7 +3,7 @@ title: "Advanced01 - イメージキャッシュ戦略を常設の基盤に組�
 free: true
 ---
 
-GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0)
+GitHub Tag: [release/eks-distributed-ai/v0.2.1](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.1)
 
 本章では、変化し続けるコンテナイメージをノードを跨いで賢くキャッシュし、かつ行き詰まらないためのイメージキャッシュ層を、この分散 AI 基盤に恒久的に組み込む考え方を扱います。特定の 1 イメージを速くする小手先の話ではなく、「キャッシュが無くて毎回コールド pull で待たされるのも、キャッシュがディスクを埋めてノードが起動不能になるのも、どちらも困る」という要求に対して、地味でも壊れない設計を選ぶ判断を示します。
 
@@ -111,7 +111,7 @@ prewarm、並列化、zstd といった高速化は、全滅しても通常の�
 
 本節では、常設の最小構成を投入する前にまず計測し、次にその最小構成を入れ、効果を測ってから条件付き最適化に進む、という順序で進めます。この順序自体が本章の主張です。
 
-以降のコマンドは `terraform output` と `charts/experiments` を相対パスで使うので、`infra/eks` から実行します。クラスタを解決し、namespace を置きます。以降の `aws` コマンドは `--region` を明示していないので、`AWS_REGION` が未設定だと `You must specify a region` で落ち、profile 側に別リージョンの既定値があるとそのリージョンを見てリポジトリが見つからないエラーになります (`--region` を毎回付けても構いません)。
+以降のコマンドは `terraform output` と `charts/experiments` を相対パスで使うので、`infra/eks` から実行します。次の 5 行でクラスタを解決し、namespace を置きます。以降の `aws` コマンドは `--region` を明示していないので、`AWS_REGION` が未設定だと `You must specify a region` で落ち、profile 側に別リージョンの既定値があるとそのリージョンを見てリポジトリが見つからないエラーになります (`--region` を毎回付けても構いません)。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"
@@ -360,7 +360,7 @@ prewarm 済みノードでは `Pulling` イベントすら出ず、`Container im
 
 この結果は取得が大きな割合を占めていたこの環境の数字です。手順 1 の計測で展開が支配的だと出た場合に限り、次の zstd 化に進んでください。
 
-zstd 化は BuildKit の出力で行います。Basic02 のクラスタ内ビルドがそのまま使えるので、`imageBuild.zstd=true` を足すだけ (ただしビルド Job が clone する ref は既定で `main` です。本書のタグと同じソースから焼きたい場合は `--set imageBuild.gitRef=release/eks-distributed-ai/v0.2.0` も渡します)です。
+zstd 化は BuildKit の出力で行います。Basic02 のクラスタ内ビルドがそのまま使えるので、`imageBuild.zstd=true` を足すだけ (ただしビルド Job が clone する ref は既定で `main` です。本書のタグと同じソースから焼きたい場合は `--set imageBuild.gitRef=release/eks-distributed-ai/v0.2.1` も渡します)です。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
@@ -373,7 +373,7 @@ helm template exp charts/experiments -n "$NAMESPACE" \
     --set imageBuild.repository="$ECR_URL" \
     --set imageBuild.tag=v2-zstd \
     --set imageBuild.zstd=true \
-    --set imageBuild.gitRef=release/eks-distributed-ai/v0.2.0 \
+    --set imageBuild.gitRef=release/eks-distributed-ai/v0.2.1 \
     -s templates/image-build-ddp-sample.yaml \
     | kubectl apply -f -
 

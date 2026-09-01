@@ -3,7 +3,7 @@ title: "Basic06 - EFA でマルチノード通信を検証する"
 free: true
 ---
 
-GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0)
+GitHub Tag: [release/eks-distributed-ai/v0.2.1](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.1)
 
 本章では、Karpenter が起動するノードで EFA が正しく構成され、実際にノード間で帯域が出ていることまでを確認します。Basic05 で確保した Capacity Block のノード 2 台で NCCL の帯域を測ります。
 
@@ -167,14 +167,14 @@ env:
 
 この値は本書のチャートでは 1 か所、[`values.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/values.yaml) の `ncclSocketIfname` に既定として持たせています。本章で使う TrainJob の [`nccl-trainjob.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/nccl-trainjob.yaml)、単ノードの sanity 用 [`nccl-probe.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/nccl-probe.yaml)、`mpirun` 方式の [`nccl-sshd.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/nccl-sshd.yaml) の 3 つが、いずれもそこから `NCCL_SOCKET_IFNAME` としてコンテナに渡します。特定のワークロードだけ別のパターンにしたい場合は `--set ncclProbe.socketIfname=...` のように個別に上書きできます。自分でワークロードを書く場合も、Pod の `env` にこの 1 行を同じ形でインストールします。
 
-一次情報としては、[NCCL の環境変数一覧](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html)、[EFA と libfabric の環境変数](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/efa-working-with.html)、[aws-ofi-nccl](https://github.com/aws/aws-ofi-nccl) を参照してください。あわせて AWS の [awsome-distributed-ai リポジトリの EFA Cheatsheet](https://github.com/awslabs/awsome-distributed-ai/blob/main/1.architectures/efa-cheatsheet.md) に、`NCCL_SOCKET_IFNAME` を含む EFA/NCCL 環境変数の推奨値がまとまっています。バージョンごとの推奨が変わるので、あわせて参照すると良いでしょう。
+一次情報としては、[NCCL の環境変数一覧](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html)、[EFA と libfabric の環境変数](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/efa-working-with.html)、[aws-ofi-nccl](https://github.com/aws/aws-ofi-nccl) を参照してください。あわせて AWS の [awsome-distributed-ai リポジトリの EFA Cheatsheet](https://github.com/awslabs/awsome-distributed-ai/blob/main/docs/efa-cheatsheet.md) に、`NCCL_SOCKET_IFNAME` を含む EFA/NCCL 環境変数の推奨値がまとまっています。バージョンごとの推奨が変わるので、あわせて参照すると良いでしょう。
 
 # ワークショップ実施
 
-はじめにシェルを対象クラスタへ向けます。Basic01 手順 2 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION` は自分のクラスタのものに読み替えます。
+はじめにシェルを対象クラスタへ向けます。Basic01 手順 3 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION`、それに 1 行目のチェックアウトのパスは自分のものに読み替えます。
 
 ```bash
-cd ~/distributed-ai-v0.2.0
+cd ~/distributed-ai-v0.2.1
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2
 source infra/scripts/distai-env.sh
@@ -182,16 +182,34 @@ source infra/scripts/distai-env.sh
 
 本章の実機検証は p4d.24xlarge（NVIDIA A100 40GB x8、EFA x4）2 台の Capacity Block で実施しました。以降の出力はこの構成の実測値です。EFA の枚数はインスタンスファミリごとに違うので、読者の環境では数値が変わります。だからこそ枚数を固定値で指定せず、次の手順のように必ず AWS 側の値を参照してください。
 
+前提は次のとおりです。
+
+| 前提 | どこで用意するか |
+|---|---|
+| EFA 対応インスタンスの Capacity Block を確保済みであること | [Basic05](https://zenn.dev/tosshi/books/eks-distributed-ai/viewer/eks-capacity-block) |
+| 共有 PVC `shared-claim` があること | [Basic02](https://zenn.dev/tosshi/books/eks-distributed-ai/viewer/eks-cpu-ddp) |
+| GPU を有効にした共有 Runtime `torch-distributed-eks` があること | [Basic04](https://zenn.dev/tosshi/books/eks-distributed-ai/viewer/eks-accelerator-pools) |
+| `jq` が入っていること | 各ツールの公式手順 |
+
 ## 1. 前提を確認する
 
-- Basic05 で EFA 対応インスタンスの Capacity Block を確保済み。
-- リポジトリ同梱の NCCL 測定用 TrainJob チャート（`infra/eks/charts/experiments` の `ncclTrainjob`）。Basic04 では `trainjobTrain.nodeRole` が Runtime ごと再レンダリングされましたが、こちらは方式が違います。Runtime はクラスタ全体で共有される 1 つなので、`ncclTrainjob.nodeRole` は Runtime を書き換えず、この TrainJob だけに `nodeSelector` を重ねる形 (`runtimePatches`) で載せ先を決めます
-- Capacity Block のノードは予約の AZ に立つので、共有ストレージ (単一 AZ の FSx for OpenZFS) と別の AZ になることがあります。NFS は AZ を跨いでもマウントできるため本手順は動きますが、`/shared` への読み書きに AZ 間のデータ転送料金と余分なレイテンシがかかります。本章が `/shared` に置くのは数 KB の測定スクリプトだけなので測定結果には影響しません
-- Basic02 で作った共有 PVC `shared-claim` が対象 namespace にあること (`ncclTrainjob` は `/shared` をマウントします。チャートが検査するのは PVC 名を渡したかどうかだけなので、PVC が実在しなくてもレンダリングと `k apply` は通り、Pod が `Pending` のまま止まります。`k get pvc -n $NAMESPACE shared-claim` で `Bound` を先に確かめてください)
-- 手順 3 で `terraform output -json` の値を取り出すのに `jq` を使います。入っていない環境では `EFA` が空になり、チャートが `ncclTrainjob.efaCount is required` で失敗します
-- クラスタに入っている共有 Runtime (`torch-distributed-eks`) が、GPU を有効にしてレンダリングされたものであること。Basic04 で `trainjobTrain.gpu.enabled=true` を付けて適用していればそうなっています。GPU 無効で適用した Runtime には `nvidia.com/gpu` の toleration が入らないので、GPU ノードの taint を越えられず Pod が `Pending` のまま止まります
+次のコマンドは前提を 1 行ずつ OK か NG で表示します。NG が出たら、上の表の行に書いた場所を先に済ませてください。
+
+```bash
+k get pvc shared-claim -o jsonpath='{.status.phase}' 2>/dev/null | grep -qx Bound && echo "OK 共有 PVC が Bound" || echo "NG 共有 PVC が Bound でない"
+k get clustertrainingruntime torch-distributed-eks >/dev/null 2>&1 && echo "OK 共有 Runtime" || echo "NG 共有 Runtime"
+command -v jq >/dev/null && echo "OK jq" || echo "NG jq"
+```
 
 EFA 関連のアドオン（EC2NodeClass の `networkInterfaces` 自動生成、EFA 用セキュリティグループ、`aws-efa-k8s-device-plugin`）は、EFA 対応プールが 1 つ以上あることを条件に前章までの `terraform apply` で導入済みです。本章はそれらが正しく効いているかを確認する章なので、新しくインフラを足す操作はありません。
+
+::::details 共有 Runtime と PVC が NG のときに起きること
+共有 Runtime (`torch-distributed-eks`) は、GPU を有効にしてレンダリングされたものが要ります。Basic04 で `trainjobTrain.gpu.enabled=true` を付けて適用していればそうなっています。GPU 無効で適用した Runtime には `nvidia.com/gpu` の toleration が入らないので、GPU ノードの taint を越えられず Pod が `Pending` のまま止まります。共有 PVC も同じで、チャートが検査するのは PVC 名を渡したかどうかだけなので、PVC が実在しなくてもレンダリングと `k apply` は通り、Pod が `Pending` のまま止まります。`ncclTrainjob` は Basic04 と載せ先の決め方が違い、クラスタ全体で共有される Runtime を書き換えず、この TrainJob だけに `nodeSelector` を重ねる形 (`runtimePatches`) で決めます。
+::::
+
+::::details Capacity Block のノードが共有ストレージと別 AZ になる場合
+Capacity Block のノードは予約の AZ に立つので、単一 AZ の Amazon FSx for OpenZFS と別の AZ になることがあります。NFS は AZ を跨いでもマウントできるため手順は動きますが、`/shared` への読み書きに AZ 間のデータ転送料金と余分なレイテンシがかかります。本章が `/shared` に置くのは数 KB の測定スクリプトだけなので、測定結果には影響しません。
+::::
 
 ## 2. Schedulable EFA の値を確認する
 
@@ -457,9 +475,13 @@ NET/OFI Failed to initialize GDRCopy: Failed to open gdr handle
 
 これはエラーではなく、GDRCopy という補助機構が使えなかったという通知です。EFA がノード間で GPU メモリのデータをやり取りするとき、NIC が GPU メモリへ直接データを読み書きする経路が 2 段階に分かれています。大きなメッセージのバルク転送は GPUDirect RDMA が NIC から GPU メモリへ直接 DMA するので、この経路は GDRCopy とは無関係に動きます。一方で受信側の小さなメッセージのコピーには GDRCopy を使う道があり、これが無い場合は libfabric の EFA プロバイダが EFA デバイス経由のループバック read という代替経路でホストのバウンスバッファ越しにコピーします。つまり GDRCopy はマルチノード通信の小さなメッセージのレイテンシを詰めるための補助であって、EFA/NCCL がノード間で帯域を出すこと自体には必須ではありません。上の警告が出ていても、`Selected provider is efa` と高い `busbw` が出ていれば EFA は正しく効いています。
 
-GDRCopy を実際に有効にするには、ノードのカーネルに `gdrdrv` というモジュールをロードして `/dev/gdrdrv` を用意する必要があります。AMI にこれが標準で載っていない場合、載せる仕組みを別途用意することになります。その仕組みと、GDRCopy を有効にしたときにマルチノード通信のレイテンシが実際にどうなるのかの実測は、本書では扱いません。上の警告が出ていても EFA の帯域が出ていれば、本章の検証としては合格です。
+GDRCopy を実際に有効にするには、ノードのカーネルに `gdrdrv` というモジュールをロードして `/dev/gdrdrv` を用意する必要があります。上の警告が出ていても EFA の帯域が出ていれば、本章の検証としては合格です。
 
 ## 7. 後片付けをする
+
+:::message
+片付けるのは本章の TrainJob と Capacity Block のプールです。`gpu-ddp` プールは Basic07 と Basic08 が使うので残します。
+:::
 
 検証が終わったら、ワークロードを退避します。[`04-teardown.sh`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/scripts/04-teardown.sh) は Deployment/StatefulSet/Job/TrainJob/MPIJob を削除対象に含むため、本章で投入した `ncclTrainjob` もこのスクリプトで消えます。TrainJob は配下に JobSet が管理する Pod を持ちますが、スクリプトは TrainJob の削除がタイムアウトした場合に finalizer を外して確実に消すフォールバックまで備えているので、Pod が残って NodePool の退避が引っかかることはありません。単独で先に消しておきたい場合は次のコマンドを使いますが、必須ではありません。
 
