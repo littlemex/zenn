@@ -3,7 +3,7 @@ title: "Basic07 - 軽量 vLLM で推論を動かす"
 free: true
 ---
 
-GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0)
+GitHub Tag: [release/eks-distributed-ai/v0.2.1](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.1)
 
 本章では、Basic04 で用意した Karpenter・アクセラレータプールの上に、vLLM の OpenAI 互換サーバーをデプロイし、軽量な言語モデルで推論を動かします。高額な Capacity Block は使わず、g5 / g6 系の GPU を spot 優先（取れなければ on-demand にフォールバック）で使う、比較的試しやすい構成です。
 
@@ -31,32 +31,32 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 
 # ワークショップ実施
 
-はじめにシェルを対象クラスタへ向けます。Basic01 手順 2 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION` は自分のクラスタのものに読み替えます。
+はじめにシェルを対象クラスタへ向けます。Basic01 手順 3 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION`、それに 1 行目のチェックアウトのパスは自分のものに読み替えます。
 
 ```bash
-cd ~/distributed-ai-v0.2.0
+cd ~/distributed-ai-v0.2.1
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2
 source infra/scripts/distai-env.sh
 ```
 
+前提は次のとおりです。
+
+| 前提 | どこで用意するか |
+|---|---|
+| `gpu-ddp` プールがあること | [Basic04](https://zenn.dev/tosshi/books/eks-distributed-ai/viewer/eks-accelerator-pools) |
+| NVIDIA GPU Operator が動いていること | [Basic04](https://zenn.dev/tosshi/books/eks-distributed-ai/viewer/eks-accelerator-pools) |
+
 ## 1. 前提を確認する
 
-- Basic04 で `gpu-ddp` プールを定義・apply 済みであること
-- NVIDIA GPU Operator は Basic04 の apply で導入済みであること
-
-本章は既存のプールと GPU Operator の上に vLLM の Deployment を載せるだけなので、新しくインフラを足す操作はありません。
-
-`gpu-ddp` プールと GPU Operator の有無を確認します。確認したいのは NodePool の存在です。Karpenter は要求があってからノードを起動するので、Basic04 のワークロードを消してあれば、下のようにプール名で絞ったノード一覧が 0 台なのは正常で、本章の Deployment を投入した時点で起動します (絞り込みを外すと system と monitoring の常駐ノードが並びます)。
+次のコマンドは前提を 1 行ずつ OK か NG で表示します。NG が出たら、上の表の行に書いた場所を先に済ませてください。
 
 ```bash
-POOL=gpu-ddp
-k get nodepool $POOL
-k get nodes -l karpenter.sh/nodepool=$POOL
-k get pods -n gpu-operator
+k get nodepool gpu-ddp >/dev/null 2>&1 && echo "OK gpu-ddp プール" || echo "NG gpu-ddp プール"
+k -n gpu-operator get deploy -o name 2>/dev/null | grep -q . && echo "OK GPU Operator" || echo "NG GPU Operator"
 ```
 
-存在しない場合、Basic04 に戻って `terraform apply` で `gpu-ddp` ノードプールを作成してください。
+本章は既存のプールと GPU Operator の上に vLLM の Deployment を載せるだけなので、新しくインフラを足す操作はありません。確認するのは NodePool があることだけです。Karpenter は要求があってからノードを起動するので、`k get nodes -l karpenter.sh/nodepool=gpu-ddp` が 0 台でも正常で、本章の Deployment を投入した時点で起動します。
 
 ## 2. 作業用 namespace を用意する
 
@@ -116,6 +116,7 @@ CPU リクエストの既定値は `2` なので g6.2xlarge / g5.2xlarge（8 vCP
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
 helm dependency build charts/experiments
+POOL=gpu-ddp
 MODEL=Qwen/Qwen2.5-0.5B-Instruct
 helm template exp charts/experiments -n "$NAMESPACE" \
     --set gpuServingVllm.enabled=true \

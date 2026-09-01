@@ -3,7 +3,7 @@ title: "Basic09 - vLLM Neuron で推論を動かす"
 free: true
 ---
 
-GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0)
+GitHub Tag: [release/eks-distributed-ai/v0.2.1](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.1)
 
 本章では、Basic07 で GPU 向けに vLLM 推論サーバーを立ち上げましたが、この章では vLLM と vLLM Neuron Plugin というものを使って AWS Trainium チップの上で LLM 推論を動かします。大きな違いは 2 点で、1 つはランタイム、もう 1 つはハードウェアの確保方法です。ランタイムは、Neuron が CUDA ではなく Neuron ランタイムで動くため、vLLM 本体に Neuron 対応を足す [vLLM Neuron plugin](https://github.com/aws-neuron/upstreaming-to-vllm) を同梱した Deep Learning Container（DLC）を使います。モデルはマルチモーダル（画像とテキスト）の `Qwen/Qwen3-VL-4B-Instruct` を使います。
 
@@ -47,21 +47,30 @@ GPU 版（Basic07）との対応関係は次のとおりです。
 
 # ワークショップ実施
 
-はじめにシェルを対象クラスタへ向けます。Basic01 手順 2 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION` は自分のクラスタのものに読み替えます。
+はじめにシェルを対象クラスタへ向けます。本章の実機例はメルボルン (`ap-southeast-4`) ですが、trn2 が使えるリージョンならどこでもかまいません。Basic01 手順 3 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION`、それに 1 行目のチェックアウトのパスは自分のものに読み替えます。
 
 ```bash
-cd ~/distributed-ai-v0.2.0
+cd ~/distributed-ai-v0.2.1
 export CLUSTER_NAME=distai-eks
-export AWS_REGION=us-east-2
+export AWS_REGION=ap-southeast-4
 source infra/scripts/distai-env.sh
 ```
 
+前提は次のとおりです。
+
+| 前提 | どこで用意するか |
+|---|---|
+| trn2 の Capacity Block を確保し、プールを apply 済みであること | [Basic05](https://zenn.dev/tosshi/books/eks-distributed-ai/viewer/eks-capacity-block) |
+
 ## 1. 前提を確認する
 
-- Basic05 の手順で trn2.3xlarge の Capacity Block を確保済み (本章の実機例はメルボルン `ap-southeast-4` ですが、trn2 が使えるリージョンならどこでもかまいません)
-- Basic05 の手順で `terraform apply` で NodePool 作成済み
+この章の前提は NodePool の名前で決まるので、一覧を出して自分の目で照合します。Basic05 で作った trn2 プールが並んでいなければ、Basic05 に戻ってください。
 
-trn2 の NodePool と、すでにノードが起動している場合の Neuron リソースを確認します。Karpenter は要求があってからノードを起動するので、手順 3 の Deployment を投入する前は、下のようにインスタンスタイプで絞ったノード一覧が空になるのが正常です (絞り込みを外すと system と monitoring の常駐ノードが並びます)。空だった場合は `k get nodepool` で NodePool の存在だけを確かめて手順 3 に進んでください。
+```bash
+k get nodepools --no-headers -o custom-columns='NAME:.metadata.name'
+```
+
+続けて、すでにノードが起動している場合の Neuron リソースを見ます。すでにノードが起動している場合の Neuron リソースを確認します。Karpenter は要求があってからノードを起動するので、手順 3 の Deployment を投入する前は、下のようにインスタンスタイプで絞ったノード一覧が空になるのが正常です (絞り込みを外すと system と monitoring の常駐ノードが並びます)。空だった場合は `k get nodepool` で NodePool の存在だけを確かめて手順 3 に進んでください。
 
 ```bash
 k get nodes -l node.kubernetes.io/instance-type=trn2.3xlarge \

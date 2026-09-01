@@ -3,7 +3,7 @@ title: "Basic02 - 分散学習を体験する"
 free: true
 ---
 
-GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0)
+GitHub Tag: [release/eks-distributed-ai/v0.2.1](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.1)
 
 本章では、GPU を一切使わずに、Amazon EKS の CPU ノード上で PyTorch の分散学習（DDP）を、Kubeflow Trainer v2 の TrainJob で複数ノードにまたがって動かします。高額な GPU/Capacity Block に進む前に、「複数プロセスが協調して 1 つのモデルを学習する」という分散学習を最小構成で動かすことを、GPU に比べればごくわずかなコストで得ることが目的です。
 
@@ -38,7 +38,7 @@ Kubernetes 上でこれを宣言的に扱う標準が、Kubeflow Trainer v2 が�
 
 複数ノードの PyTorch 学習を Kubernetes で動かす方法として、MPIJob（MPI Operator）に torchrun を載せる構成もあります。MPIJob 自体は Open MPI 以外に Intel MPI や MPICH も扱える汎用的なものです。ただし Launcher Pod が各 Worker へ SSH でログインして起動コマンドを配る前提です。そのため PyTorch の DDP に流用すると、コンテナに sshd を組み込み SSH 鍵を配るという、PyTorch 本来は要らない仕組みを追加で抱えることになります。
 
-Kubeflow の学習ジョブは世代ごとに改善がなされており v1 と v2 があり過渡期です。Kubeflow Training Operator v1 が提供する PyTorchJob（`kubeflow.org/v1`）で、[awslabs/awsome-distributed-ai の DDP サンプル](https://github.com/awslabs/awsome-distributed-ai/tree/main/3.test_cases/pytorch/ddp/kubernetes) もこれを使っています。ただし v1 は開発元でレガシー扱いになり（`release-1.9` ブランチで当面メンテされますが、公式は後継への移行を推奨）、本書では後継の Kubeflow Trainer v2 の TrainJob（`trainer.kubeflow.org/v1alpha1`）を主線に採用してみました。
+Kubeflow の学習ジョブは世代ごとに改善がなされており v1 と v2 があり過渡期です。Kubeflow Training Operator v1 が提供する PyTorchJob（`kubeflow.org/v1`）で、[awslabs/awsome-distributed-ai の DDP サンプル](https://github.com/awslabs/awsome-distributed-ai/tree/main/examples/training/ddp/kubernetes) もこれを使っています。ただし v1 は開発元でレガシー扱いになり（`release-1.9` ブランチで当面メンテされますが、公式は後継への移行を推奨）、本書では後継の Kubeflow Trainer v2 の TrainJob（`trainer.kubeflow.org/v1alpha1`）を主線に採用してみました。
 
 :::message
 Kubeflow Trainer v2 の API はまだ `v1alpha1`（アルファ）です。将来のバージョンでフィールド名が変わる可能性があります。
@@ -59,7 +59,7 @@ Kubeflow Trainer v2 の API はまだ `v1alpha1`（アルファ）です。将�
 
 v2 の要点は「利用者は TrainJob で台数と中身だけを書き、接続情報の設定は Trainer に任せる」ことです。具体的には、Trainer の torch プラグインが各 Pod に `torchrun`（TorchElastic）が読む `PET_*` 環境変数（`PET_NNODES` / `PET_NPROC_PER_NODE` / `PET_NODE_RANK` / `PET_MASTER_ADDR` / `PET_MASTER_PORT`）を注入します。`PET_NODE_RANK` は Pod の completion index から固定で決まるため、`node-0-0` が常に node rank 0 になります。本章のように `nprocPerNode` が 1 なら、これがそのままグローバル rank 0 です。`PET_MASTER_ADDR` は先頭ノードの Pod（JobSet が払い出す `<ジョブ名>-node-0-0` の headless DNS）を指し、そこが待ち合わせになります。`torchrun` はこれらを引数の既定値として読み（先頭ノード上の TCPStore を使う既定の rendezvous で動きます。参加順で rank が変わる動的方式ではありません）、各学習プロセスに `RANK` / `WORLD_SIZE` / `LOCAL_RANK` / `MASTER_ADDR` / `MASTER_PORT` を再エクスポートします。`ddp.py` はその値を env:// の rendezvous で読み取ります (`init_process_group` には backend だけを渡し、待ち合わせの情報は引数で渡しません)。
 
-TrainJob 側が指定するのは、台数（`numNodes`）とノードあたりのプロセス数（`numProcPerNode`）、イメージ、起動コマンド、そのノードに要求するリソース（`resourcesPerNode`）と、実行ごとに変えたい環境変数です。接続情報の設定や 1 ノード 1 Pod の配置といった共通側の設定は、本書がクラスタに用意した Runtime（[`torch-distributed-eks`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/clustertrainingruntime-eks.yaml)）が持っています。この Runtime を導入する Trainer v2 本体は Terraform の [`trainer.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/trainer.tf) が導入します。ただし Runtime そのものは Terraform では作られず、手順 4 で TrainJob と同じ `helm template` の出力に含まれる形で適用されます。この時点で `k get clustertrainingruntime` を実行しても何も出ないのは正常です。
+TrainJob 側が指定するのは、台数（`numNodes`）とノードあたりのプロセス数（`numProcPerNode`）、イメージ、起動コマンド、そのノードに要求するリソース（`resourcesPerNode`）と、実行ごとに変えたい環境変数です。接続情報の設定や 1 ノード 1 Pod の配置といった共通側の設定は、本書がクラスタに用意した Runtime（[`torch-distributed-eks`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/clustertrainingruntime-eks.yaml)）が持っています。この Runtime を導入する Trainer v2 本体は Terraform の [`trainer.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/trainer.tf) が導入します。ただし Runtime そのものは Terraform では作られず、手順 5 で TrainJob と同じ `helm template` の出力に含まれる形で適用されます。この時点で `k get clustertrainingruntime` を実行しても何も出ないのは正常です。
 
 ## 学習結果の保存先と共有ストレージ
 
@@ -69,7 +69,7 @@ TrainJob 側が指定するのは、台数（`numNodes`）とノードあたり�
 
 複数ノードの TrainJob では、各 rank が別ノードの別 Pod で動き、同じデータセット置き場を読み、rank 0 が成果物を書きます。rank 0 がどのノードに配置されても同じ場所に成果物が集まるよう、全ノードから同一パスを読み書きできる共有ストレージ（ReadWriteMany）が要ります。共有ファイルシステム上での同時書き込みによる破損を避けるため、スナップショットの書き込みは rank 0 だけが行います。MNIST のダウンロードは全 rank が実行します（`download=True` は冪等で、既にファイルが揃っていれば torchvision 側が再取得をスキップします）。
 
-保存先を決めるのは Helm の値ではなく、`shared-claim` がどの PV に結びついているかです。Terraform は `openzfs`（FSx for OpenZFS）、`fsx`（FSx for Lustre）、`efs` の 3 つについてそれぞれ静的 PV を用意する設計で、既定では `openzfs` と `fsx` が有効、`efs` は無効（ドライバのみ常設）です。後述の手順 3 で `shared-claim` を作るときに、どの PV 名を埋め込むかで保存先が決まります。ワークロードに渡す `--set sharedStorage.existingClaimName=shared-claim` は「どの PVC を使うか」だけを伝える値なので、これを変えずに保存先を切り替えることはできません。なお [`values.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/values.yaml) には `sharedStorage.backend` という項目が残っていますが、これは PV 名を思い出すための注記で、現在どのテンプレートからも読まれていません。
+保存先を決めるのは Helm の値ではなく、`shared-claim` がどの PV に結びついているかです。Terraform は `openzfs`（FSx for OpenZFS）、`fsx`（FSx for Lustre）、`efs` の 3 つについてそれぞれ静的 PV を用意する設計で、既定では `openzfs` と `fsx` が有効、`efs` は無効（ドライバのみ常設）です。後述の手順 4 で `shared-claim` を作るときに、どの PV 名を埋め込むかで保存先が決まります。ワークロードに渡す `--set sharedStorage.existingClaimName=shared-claim` は「どの PVC を使うか」だけを伝える値なので、これを変えずに保存先を切り替えることはできません。なお [`values.yaml`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/values.yaml) には `sharedStorage.backend` という項目が残っていますが、これは PV 名を思い出すための注記で、現在どのテンプレートからも読まれていません。
 
 ## 学習用イメージをクラスタ内でビルドする
 
@@ -93,16 +93,36 @@ TrainJob 側が指定するのは、台数（`numNodes`）とノードあたり�
 
 # ワークショップ実施
 
-はじめにシェルを対象クラスタへ向けます。Basic01 手順 2 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION` は自分のクラスタのものに読み替えます。
+はじめにシェルを対象クラスタへ向けます。Basic01 手順 3 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION`、それに 1 行目のチェックアウトのパスは自分のものに読み替えます。
 
 ```bash
-cd ~/distributed-ai-v0.2.0
+cd ~/distributed-ai-v0.2.1
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2
 source infra/scripts/distai-env.sh
 ```
 
-## 1. 作業用 namespace を用意する
+前提は次のとおりです。
+
+| 前提 | どこで用意するか |
+|---|---|
+| クラスタが動いていること | [Basic01](https://zenn.dev/tosshi/books/eks-distributed-ai/viewer/eks-vpc-foundation) |
+| 共有ストレージ (Amazon FSx for OpenZFS) が有効なこと | [Basic01](https://zenn.dev/tosshi/books/eks-distributed-ai/viewer/eks-vpc-foundation) |
+| `jq` が入っていること | 各ツールの公式手順 |
+
+## 1. 前提を確認する
+
+次のコマンドは前提を 1 行ずつ OK か NG で表示します。NG が出たら、上の表の行に書いた場所を先に済ませてください。
+
+```bash
+command -v jq >/dev/null && echo "OK jq" || echo "NG jq"
+k get nodes >/dev/null 2>&1 && echo "OK クラスタに接続できる" || echo "NG クラスタに接続できない"
+terraform -chdir=infra/eks output -json shared_storage | jq -e '.fsx_openzfs.enabled' >/dev/null && echo "OK 共有ストレージ" || echo "NG 共有ストレージが無効"
+```
+
+共有ストレージが NG のときは、`infra/eks/terraform.tfvars` の `openzfs_enabled` を `true` に直して `distai-up.sh` を実行し直します。Basic01 を最初からやり直す必要はありません。
+
+## 2. 作業用 namespace を用意する
 
 以降のコマンドはリポジトリのルート、つまり `git rev-parse --show-toplevel` が返すディレクトリで実行します。`infra/eks` に移る手順にはその都度 `cd` を書いています。MNIST データセットを取得するためのアウトバウンド通信やノードの ECR pull 権限は、Basic01 の構築で用意済みです。
 
@@ -117,9 +137,9 @@ k create namespace "$NAMESPACE" --dry-run=client -o yaml | k apply -f -
 本章のコマンドは `jq` を使います。未インストールだと `terraform output` の抽出が空文字になり、PVC が `Pending` のまま止まります。
 :::
 
-## 2. 学習用イメージを用意する
+## 3. 学習用イメージを用意する
 
-本章のワークロード（`trainjobTrain`）は、MNIST MLP を DDP で学習する `ddp.py` を組み込んだ専用イメージ `ddp-sample` を使います。`ddp.py` は [awslabs/awsome-distributed-ai の DDP サンプル](https://github.com/awslabs/awsome-distributed-ai/tree/main/3.test_cases/pytorch/ddp) をベースに、保存先を共有 PVC に変えるよう手を加えたものです。Dockerfile はリポジトリの [`infra/eks/manifests/ddp-sample/`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/manifests/ddp-sample) に置いてあります。
+本章のワークロード（`trainjobTrain`）は、MNIST MLP を DDP で学習する `ddp.py` を組み込んだ専用イメージ `ddp-sample` を使います。`ddp.py` は [awslabs/awsome-distributed-ai の DDP サンプル](https://github.com/awslabs/awsome-distributed-ai/tree/main/examples/training/ddp) をベースに、保存先を共有 PVC に変えるよう手を加えたものです。Dockerfile はリポジトリの [`infra/eks/manifests/ddp-sample/`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/manifests/ddp-sample) に置いてあります。
 
 このイメージのビルドは、上述した BuildKit で実施します。ビルド先の ECR URL は Terraform の出力から取得できます。イメージタグはワークショップ用に `v1` を使います（再ビルドするときは `v2` のようにタグを進めると、`latest` のキャッシュ問題を避けられます）。
 
@@ -188,7 +208,7 @@ k get crd trainjobs.trainer.kubeflow.org
 k get pods -n kubeflow-system
 ```
 
-## 3. 共有 PVC を用意する
+## 4. 共有 PVC を用意する
 
 本章のワークロード（`trainjobTrain`）は共有ストレージへの書き込みが要りますが、そのための PVC はチャートが作りません。ここで 1 回だけ、自分で `k apply` して作ります。
 
@@ -208,11 +228,11 @@ k get pvc shared-claim
 なぜチャートが PVC を自動生成しないのか、実際に手を動かして確かめてみましょう。ワークロードの Job/TrainJob を作り直すたびに PVC も一緒に作り直す設計だったらどうなるか、というのを本章の最後の「共有 PVC を消してみる」ステップで体験します。先に結論だけ言うと、PV は PVC を「名前」ではなく「オブジェクトの実体（UID）」で覚えるため、同じ名前で PVC を作り直しても新しい実体とみなされ、そのままでは bind されません（`Released` という状態で止まります。復旧手順は章末で扱います）。PVC の生成をワークロードの `apply`/`delete` から切り離し、基盤を用意するこのステップで 1 回だけ作ることで、この意図しない動作を避けています。
 :::
 
-## 4. 複数ノードで TrainJob を動かす
+## 5. 複数ノードで TrainJob を動かす
 
 `ddp.py` を 2 ノードにまたがる TrainJob で動かします。`torchrun` を通常の `batch/v1` Job で単一ノードに動かす場合は 1 Pod 内で複数プロセスが立ちますが、TrainJob で複数ノードに広げると **rank ごとに別々の Pod、別々のノード**に分かれます。rank 0 と rank 1 は同じコンテナのプロセスではなく、ネットワーク越しに通信する別々の Pod です。
 
-`numNodes=2` がノード数、`nprocPerNode=1` が各ノード内のプロセス数です（Helm の `nprocPerNode` は TrainJob の `numProcPerNode` に対応します）。本書がクラスタに用意した Runtime（[`torch-distributed-eks`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/clustertrainingruntime-eks.yaml)）に `topologyKey: kubernetes.io/hostname` の podAntiAffinity が入っているので、2 つの Pod は必ず別ノードに分かれて配置されます。PVC は 手順 3 で作った `shared-claim` を使います。
+`numNodes=2` がノード数、`nprocPerNode=1` が各ノード内のプロセス数です（Helm の `nprocPerNode` は TrainJob の `numProcPerNode` に対応します）。本書がクラスタに用意した Runtime（[`torch-distributed-eks`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/clustertrainingruntime-eks.yaml)）に `topologyKey: kubernetes.io/hostname` の podAntiAffinity が入っているので、2 つの Pod は必ず別ノードに分かれて配置されます。PVC は 手順 4 で作った `shared-claim` を使います。
 
 同名の TrainJob が残っていると変更箇所によっては apply が拒否されるので、作り直すときは先に削除します（初回は存在しなくても `--ignore-not-found` で安全です）。
 
@@ -315,9 +335,9 @@ k run peek --rm -it --pod-running-timeout=5m --restart=Never --image=busybox:1.3
 k delete trainjob ddp-trainjob
 ```
 
-## 5. 共有 PVC を消してみる
+## 6. 共有 PVC を消してみる
 
-最後に、step 3 で触れた「なぜチャートが PVC を自動生成しないのか」を実際に確かめます。ワークロード（Job/TrainJob）を消すのと同じ感覚で、共有 PVC 自体を消してみましょう。
+最後に、step 4 で触れた「なぜチャートが PVC を自動生成しないのか」を実際に確かめます。ワークロード（Job/TrainJob）を消すのと同じ感覚で、共有 PVC 自体を消してみましょう。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
@@ -350,11 +370,13 @@ k get pvc shared-claim
 
 数秒待つと `shared-claim` が `Bound` に変わります。他の静的 PV（`fsx-training`、`efs-neuron-workspace`）も同じ `Retain` なので、それらを使っている場合も同じ症状・同じ復旧手順になります。
 
-これで step 3 で 1 回だけ手動作成した理由が実感できたはずです。PVC の生成をワークロードの `apply`/`delete` に含めていたら、ワークロードを作り直すたびにこの `Released` を踏むことになります。基盤を用意するタイミングで 1 回だけ作り、以降のワークロードはその PVC の**名前を渡すだけ**にする、というこの章の設計はこの意図しない動作を避けるためのものです。
+これで step 4 で 1 回だけ手動作成した理由が実感できたはずです。PVC の生成をワークロードの `apply`/`delete` に含めていたら、ワークロードを作り直すたびにこの `Released` を踏むことになります。基盤を用意するタイミングで 1 回だけ作り、以降のワークロードはその PVC の**名前を渡すだけ**にする、というこの章の設計はこの意図しない動作を避けるためのものです。
 
-## 6. 後片付け
+## 7. 後片付け
 
-次章以降でこの学習イメージや共有データを使わない場合は、残ったリソースを片付けます。共有 PVC（`shared-claim`）と共有ストレージ上の MNIST データ・スナップショットは、後続の章でも使うため残して構いません。
+:::message
+Basic04 以降に進む場合は、共有 PVC (`shared-claim`)、共有ストレージ上の MNIST データとスナップショット、ECR の `ddp-sample:v1` を残します。ここで消すのは TrainJob と一時 Pod、ビルド Job だけです。
+:::
 
 途中でやめる場合も、TrainJob は必ず削除してください。Pod が残っている間はノードが空にならず、CPU ノード 2 台の課金が続きます。
 
@@ -383,6 +405,6 @@ aws ecr batch-delete-image --repository-name "$REPO_NAME" --image-ids imageTag=v
 - [torchrun (Elastic Launch)](https://pytorch.org/docs/stable/elastic/run.html)
 - [Kubeflow Trainer v2 (TrainJob)](https://trainer.kubeflow.org/en/latest/)
 - [Kubeflow Training Operator v1 (PyTorchJob、レガシー)](https://trainer.kubeflow.org/en/latest/legacy-v1/user-guides/pytorch.html)
-- [awslabs/awsome-distributed-ai の DDP テストケース (Kubernetes)](https://github.com/awslabs/awsome-distributed-ai/tree/main/3.test_cases/pytorch/ddp/kubernetes)
+- [awslabs/awsome-distributed-ai の DDP テストケース (Kubernetes)](https://github.com/awslabs/awsome-distributed-ai/tree/main/examples/training/ddp/kubernetes)
 - [(参考) 単一ノード版ワークロード torchrunTrain（charts/experiments）](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/torchrun-train.yaml)
 - [対象ワークロード trainjobTrain（charts/experiments）](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/charts/experiments/templates/trainjob-train.yaml)

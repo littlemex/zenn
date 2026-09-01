@@ -3,7 +3,7 @@ title: "Basic11 - 安全に破棄する"
 free: true
 ---
 
-GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0)
+GitHub Tag: [release/eks-distributed-ai/v0.2.1](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.1)
 
 本章では、これまで構築してきた Amazon EKS 基盤を安全に破棄します。この章の目的はシンプルで、立てたリソースをすべて漏れなく削除し、消えたことを確認することです。アクセラレータノードは時間単価が高いため、ワークショップ向けに試した後に破棄し損ねて課金だけが残る事故を防ぐことが狙いです。
 
@@ -21,38 +21,50 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 
 本章の手順を使わず `terraform destroy` を直接実行した場合も、課金が残らないようにする仕掛けは働きます。ただしそのために destroy は Kubernetes 側に手を入れます。具体的には、全 namespace の TrainJob と全 NodePool を削除してから、NodeClaim が 0 になるのを待ちます。TrainJob が残っていると JobSet の Pod がノードを使い続けて待ちがタイムアウトし、NodePool が残っていると Karpenter がノードを作り続けて待ちが終わらないためです。`distai` 以外の namespace に置いた TrainJob も削除対象になるので、消えて困るものがあるなら destroy より先に退避してください。
 
-クラスタだけ壊してストレージを残したい、あるいは次に構築するクラスタで既存のファイルシステムを再利用したい、という要求も実運用では出てきます。結論として、どちらも現在の実装では対応していません。
-
-- **ストレージだけ残す** — ストレージをクラスタとは別の Terraform state に切り出す、破棄の直前に対象リソースを state から外す、`prevent_destroy` を設定するといった方法が一般にはありますが、いずれも現在の実装には入っていません。長期保持したいデータがある場合は、破棄の前に Amazon S3 などへ退避するのが現実的です。
-- **既存ファイルシステムの再利用** — 静的プロビジョニングの仕組み自体は、PersistentVolume に既存ファイルシステムを書けば技術的には成立します。ただし Basic10 で見たとおり、FSx for Lustre では `volumeHandle` だけでは足りず `dnsname` と `mountname` を `volumeAttributes` に書く必要があります (ノード側のドライバは `<dnsname>@tcp:/<mountname>` をマウントし、どちらも `volumeHandle` からは導出しません)。ただし作成をスキップして既存 ID を参照するための変数は用意されておらず、同一 VPC 内であればセキュリティグループの追加、別 VPC であれば VPC ピアリングなどのネットワーク到達性の確保が別途必要になります。
-
-これらを恒久的に運用へ組み込むかどうかは今後の検討事項です。本章の手順は、あくまで環境を漏れなく削除することを前提にしています。
+クラスタだけ壊してストレージを残す運用と、既存のファイルシステムを次のクラスタで再利用する運用は、現在の実装では扱えません。長期保持したいデータは破棄の前に Amazon S3 などへ退避してください。
 
 # ワークショップ実施
 
-はじめにシェルを対象クラスタへ向けます。Basic01 手順 2 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION` は自分のクラスタのものに読み替えます。
+:::message alert
+この章はクラスタを破棄します。Advanced02 のプロファイリング基盤など、稼働中のクラスタを前提にする章を実施する予定がある場合は、**この章より先にそちらを済ませてください**。破棄したあとに実施するには Basic01 からの再構築が必要になります。
+:::
+
+はじめにシェルを対象クラスタへ向けます。Basic01 手順 3 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION`、それに 1 行目のチェックアウトのパスは自分のものに読み替えます。
 
 ```bash
-cd ~/distributed-ai-v0.2.0
+cd ~/distributed-ai-v0.2.1
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2
 source infra/scripts/distai-env.sh
 ```
 
+前提は次のとおりです。
+
+| 前提 | どこで用意するか |
+|---|---|
+| 破棄したいクラスタに context が向いていること | [Basic01](https://zenn.dev/tosshi/books/eks-distributed-ai/viewer/eks-vpc-foundation) の手順 3 の 4 行 |
+
 ## 1. 前提を確認する
 
-この章はクラスタを破棄します。Advanced02 のプロファイリング基盤など、稼働中のクラスタを前提にする章を実施する予定がある場合は、**この章より先にそちらを済ませてください**。破棄したあとに実施するには Basic01 からの再構築が必要になります。
+この章の前提は機械が判定できません。次のコマンドの出力を自分の目で照合します。
 
-この章の操作はクラスタ全体に影響する破壊的操作なので、表示された context が破棄したいクラスタであることを確認してから進みます。`AWS_REGION` は手順 5 の孤児ボリュームの確認でそのまま使うので、ここが違っていると別のリージョンを照会して「残っていない」という答えが返ってきます。
+```bash
+k config current-context
+aws eks describe-cluster --name "$CLUSTER_NAME" --region "$AWS_REGION" --query 'cluster.{name:name,status:status}' --output text
+```
+
+表示されたクラスタ名が破棄したいものであることを、自分の目で確かめてから進んでください。`k` の向き先は 4 行が `CLUSTER_NAME` から作るので、`CLUSTER_NAME` を読み替え忘れたまま実行すると、context も揃って別のクラスタを指します。ここは機械が判定できない唯一の前提です。
+
+この章の操作はクラスタ全体に影響する破壊的操作です。`AWS_REGION` は手順 5 の孤児ボリュームの確認でそのまま使うので、ここが違っていると別のリージョンを照会して「残っていない」という答えが返ってきます。`04-teardown.sh` 自身も先頭で Terraform の出力からクラスタ名を読み取り、context がそのクラスタを指しているかを検証して、違えば破壊的な手順の前に中断します。
+
+## 2. アクセラレータプールをドレインする
+
+スクリプトは `charts` と同じく相対パスで置かれているので、`infra/eks` から実行します。削除対象の namespace は `NAMESPACE` から受け取ります。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
 export NAMESPACE=distai
 ```
-
-`04-teardown.sh` は先頭で Terraform の出力からクラスタ名を読み取り、`kubectl` の現在のコンテキストがそのクラスタを指しているかを検証します。別のクラスタを指していた場合は、破壊的な手順に進む前に中断します。
-
-## 2. アクセラレータプールをドレインする
 
 `04-teardown.sh` を `--destroy` なしで実行すると、指定した namespace のワークロードを削除し、アクセラレータプールのノードを Karpenter に回収させます。作業用 namespace は Basic01 以降で使ってきた `distai` です。
 
@@ -63,7 +75,7 @@ cd "$(git rev-parse --show-toplevel)"/infra/eks/scripts
 
 削除対象の NodePool は、アクセラレータプールの device taint（`nvidia.com/gpu` / `aws.amazon.com/neuron`）を持つものをクラスタに問い合わせて自動的に見つけます。`accelerator_pools` は読者が自分で定義するマップなので、スクリプトが特定のプール名を固定値で指定することはありません。CPU プールは、`terraform destroy` 自身が最後に流す処理の実行先として要るので、この手順では対象外です (手順 4 のスクリプトが `terraform destroy` に入る直前にまとめて削除します)。
 
-クラスタは残したまま namespace の PVC も片付けたい場合は `--delete-pvcs` を付けます。その namespace の PVC を storage の種類によらず一括削除し、削除が Pod で止まったときはどの Pod が使用しているかを表示します。本書が用意する共有ストレージの PV は `Retain` なので、ファイルシステムのデータは消えず、PVC のバインドだけが外れて PV は `Released` になります。ただしこのフラグは namespace の PVC を種類によらず全部消すので、自分で作った動的プロビジョニングの PVC (`storageClassName: gp3` など、`reclaimPolicy: Delete` の PV を持つもの) があると、その EBS ボリュームは中身ごと削除されます。残したいものが無いかを `k get pvc -n "$NAMESPACE"` で確認してから付けてください。クラスタごと破棄する場合も、PVC は自動では削除されません。`--destroy` の経路に PVC を削除する処理はなく、読者が作った PVC は Terraform の管理下にもないからです。Basic10 の手順 5 で見たとおり、PVC が `Bound` のまま残っていると PV の削除がファイナライザで止まり、`terraform destroy` がそこで停滞し得ます。クラスタごと捨てる場合も `--delete-pvcs` を付けるか、Basic10 手順 5 と同じ手順で先に PVC を消しておくのが安全です。
+クラスタは残したまま namespace の PVC も片付けたい場合は `--delete-pvcs` を付けます。その namespace の PVC を storage の種類によらず一括削除し、削除が Pod で止まったときはどの Pod が使用しているかを表示します。本書が用意する共有ストレージの PV は `Retain` なので、ファイルシステムのデータは消えず、PVC のバインドだけが外れて PV は `Released` になります。ただしこのフラグは namespace の PVC を種類によらず全部消すので、自分で作った動的プロビジョニングの PVC (`storageClassName: gp3` など、`reclaimPolicy: Delete` の PV を持つもの) があると、その EBS ボリュームは中身ごと削除されます。残したいものが無いかを `k get pvc -n "$NAMESPACE"` で確認してから付けてください。クラスタごと破棄する場合も、PVC は自動では削除されません。`--destroy` の経路に PVC を削除する処理はなく、読者が作った PVC は Terraform の管理下にもないからです。Basic10 の手順 6 で見たとおり、PVC が `Bound` のまま残っていると PV の削除がファイナライザで止まり、`terraform destroy` がそこで停滞し得ます。クラスタごと捨てる場合も `--delete-pvcs` を付けるか、Basic10 手順 6 と同じ手順で先に PVC を消しておくのが安全です。
 
 対話実行なので、各ステップの前に `y/N` の確認が入ります。実行後に、device リソースを持つノードが残っていないかが表示されます。
 
@@ -153,7 +165,14 @@ Advanced02 のプロファイリング基盤を導入した場合、そのデー
 
 # まとめ
 
-本章では、`04-teardown.sh` を使ってアクセラレータプールをドレインし、ノードが消えたことを確認してから `terraform destroy` でクラスタ全体を破棄しました。ポイントは、Kubernetes API の受理と実際のリソース削除は別物であり、ノードが本当に消えたことを確認してから次に進むことです。この順序を守れば、GPU や Neuron のような高額なリソースを課金を残さず安全に削除できます。state の置き場とレジストリの記録は同じ名前で再構築するために残るので、二度と使わない場合だけ消してください。ストレージを残す運用や既存ファイルシステムの再利用は現在の実装では対応しておらず、必要なデータは破棄の前に退避してください。
+本章では、`04-teardown.sh` を使ってアクセラレータプールをドレインし、ノードが消えたことを確認してから `terraform destroy` でクラスタ全体を破棄しました。ポイントは、Kubernetes API の受理と実際のリソース削除は別物であり、ノードが本当に消えたことを確認してから次に進むことです。この順序を守れば、GPU や Neuron のような高額なリソースを課金を残さず安全に削除できます。state の置き場とレジストリの記録は同じ名前で再構築するために残るので、二度と使わない場合だけ消してください。
+
+# 今後の改善
+
+| なぜ改善すべきか | 改善対象 | 改善案 |
+|---|---|---|
+| すべてを 1 つの state で管理しているため、クラスタを壊すとストレージも消え、長期保持したいデータを退避する手間が毎回かかる | ストレージの寿命 | ストレージをクラスタとは別の state に切り出す |
+| 既存ファイルシステムを次のクラスタで再利用する変数が無いので、作り直すたびにデータを入れ直すことになる | 既存ファイルシステムの参照 | 作成をスキップして既存 ID を参照する変数を用意し、ネットワーク到達性の確保も含めて扱う |
 
 # 参考資料
 

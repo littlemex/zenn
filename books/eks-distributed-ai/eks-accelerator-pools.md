@@ -3,7 +3,7 @@ title: "Basic04 - GPU で分散学習を体験する"
 free: true
 ---
 
-GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0)
+GitHub Tag: [release/eks-distributed-ai/v0.2.1](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.1)
 
 本章では、Basic02 で CPU だけだった分散学習(DDP)を GPU に載せ替えます。ここでは Karpenter の混在させた確保の実験も兼ねて、g5 と g6 を混ぜた Spot とオンデマンドを組み合わせた構成で 2 ノード GPU DDP を実行してみます。なお Spot を混ぜた DDP は本来、バッチ推論やデータ前処理に向くもので、大規模な分散学習では中断のたびに全 rank が最後のスナップショットからやり直しになるため実用的ではありません。本章はあくまで「すでに動かした DDP を GPU に載せ、Karpenter の混在させた確保を確かめる」実験としての位置づけです。
 
@@ -24,10 +24,6 @@ GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/dis
 - g5(A10G)と g6(L4)を**異なる世代を混在させます**: 片方が取れなくても他方でノードが立ちます
 - Spot を第一優先、オンデマンドをフォールバックにします: コストを抑えつつ 2 台確保します
 - 単一 AZ に固定します: cross-AZ レイテンシの影響を避けます(マルチ AZ 構成も作り的には可能です)
-
-:::message
-本章の accelerator_pools capacity-mix 実装は、基本的なユースケースをカバーする初期バージョンです。今後、実運用に基づき EFA 対応の大規模訓練シナリオや Capacity Block との連携パターンを追加していきます。そもそも Terraform の領域で実装を頑張るものでもないので根本的な改善も検討中です。
-:::
 
 ## accelerator_pools の設定
 
@@ -75,19 +71,35 @@ accelerator_pools = {
 
 # ワークショップ実施
 
-はじめにシェルを対象クラスタへ向けます。Basic01 手順 2 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION` は自分のクラスタのものに読み替えます。
+はじめにシェルを対象クラスタへ向けます。Basic01 手順 3 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION`、それに 1 行目のチェックアウトのパスは自分のものに読み替えます。
 
 ```bash
-cd ~/distributed-ai-v0.2.0
+cd ~/distributed-ai-v0.2.1
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2
 source infra/scripts/distai-env.sh
 ```
 
+前提は次のとおりです。
+
+| 前提 | どこで用意するか |
+|---|---|
+| Karpenter が動いていること | [Basic03](https://zenn.dev/tosshi/books/eks-distributed-ai/viewer/eks-karpenter-setup) |
+| ECR に `ddp-sample:v1` があること | [Basic02](https://zenn.dev/tosshi/books/eks-distributed-ai/viewer/eks-cpu-ddp) |
+| 共有 PVC `shared-claim` が `Bound` であること | [Basic02](https://zenn.dev/tosshi/books/eks-distributed-ai/viewer/eks-cpu-ddp) |
+
 ## 1. 前提を確認する
 
-- Karpenter が導入済み
-- Basic02 で作った `ddp-sample` イメージ(ECR に push 済み)
+次のコマンドは前提を 1 行ずつ OK か NG で表示します。NG が出たら、上の表の行に書いた場所を先に済ませてください。
+
+```bash
+k -n karpenter get deploy karpenter >/dev/null 2>&1 && echo "OK Karpenter コントローラ" || echo "NG Karpenter コントローラ"
+k get pvc shared-claim -o jsonpath='{.status.phase}' 2>/dev/null | grep -qx Bound && echo "OK 共有 PVC shared-claim" || echo "NG 共有 PVC shared-claim"
+REPO=$(terraform -chdir=infra/eks output -raw ddp_sample_ecr_url 2>/dev/null | sed 's#^[^/]*/##')
+test -n "$REPO" && aws ecr describe-images --region "$AWS_REGION" --repository-name "$REPO" --image-ids imageTag=v1 >/dev/null 2>&1 && echo "OK ddp-sample:v1" || echo "NG ddp-sample:v1 (terraform output か ECR を確認)"
+```
+
+## 2. GPU プールを定義して apply する
 
 NVIDIA GPU Operator は Basic03 の時点では入っていません。`accelerator_pools` に `device_plugin = "nvidia"` のプールが 1 つ以上あることを条件 ([`local.has_gpu_pool`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/locals.tf))に導入されるため、本章で初めてインストールされます。
 
@@ -95,7 +107,7 @@ NVIDIA GPU Operator は Basic03 の時点では入っていません。`accelera
 
 リポジトリにはコメント付きの雛形 [`accelerator-pools.tfvars.example`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/accelerator-pools.tfvars.example) があります。どんなプールが書けるかはこれを読むと分かるので、まず中身を眺めます。雛形は全プール例がコメントアウトされた空の map (`accelerator_pools = {}`) なので、これをそのままコピーして apply しても何も作られません。
 
-本章で作るファイルは次の手順の heredoc で作成するため、雛形のコピーは不要です。
+本章で作るファイルはこのあとの heredoc で作成するため、雛形のコピーは不要です。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
@@ -138,9 +150,9 @@ k get nodepool gpu-ddp
 k get pods -n gpu-operator
 ```
 
-`gpu-operator` の Pod がまだ `ContainerCreating` でも、NodePool が出来ていれば手順 2 に進めます。device plugin の DaemonSet は GPU ノードが起動してから載ります。
+`gpu-operator` の Pod がまだ `ContainerCreating` でも、NodePool が出来ていれば手順 3 に進めます。device plugin の DaemonSet は GPU ノードが起動してから載ります。
 
-## 2. TrainJob で 2 ノード DDP を投入する
+## 3. TrainJob で 2 ノード DDP を投入する
 
 Kubeflow Trainer v2 の TrainJob は、Pod への `nodeSelector` や `tolerations` をトップレベルの専用フィールドとしては持たず（`spec.podSpecOverrides` で上書きする口はありますが）、Pod スペックの元になるのは Basic02 で確認した `ClusterTrainingRuntime`(`torch-distributed-eks`)が持ちます。そこに焼き込まれた `nodeSelector: { node-role: <値> }` がどのプールに載せるかを決めます。本構成では上書きに頼らず、Helm の `trainjobTrain.nodeRole` を `gpu-ddp` に切り替えて `torch-distributed-eks` を再レンダリングすることで GPU プールへ載せ替えます。
 
@@ -170,7 +182,7 @@ helm template exp charts/experiments -n "$NAMESPACE" \
 
 `trainjobTrain.nodeRole=gpu-ddp` が `torch-distributed-eks` の `nodeSelector.node-role` を `gpu-ddp` に、`trainjobTrain.gpu.enabled=true` が `resourcesPerNode.limits.nvidia.com/gpu` と `nvidia.com/gpu` taint への toleration を有効にします。TrainJob 自体の名前は常に `ddp-trainjob` です。
 
-## 3. 実行と確認
+## 4. 実行と確認
 
 TrainJob が展開する Pod は JobSet の規則で名付けられるため、Pod 名を固定値で指定せずラベルで選びます。
 
@@ -219,7 +231,7 @@ k logs -f --tail=-1 -l "$SEL"
 
 （`/shared` に Basic02 の CPU 実行のスナップショットが残っていると、`resuming from snapshot at epoch <N>` と出て途中から再開することがあります。出力ディレクトリは `nodeRole` ごとに分かれる設計なので、CPU 版とは別の `trainjob-gpu-ddp` に保存されます。）
 
-## 4. (任意) GPU スモークテストで確認する
+## 5. (任意) GPU スモークテストで確認する
 
 Basic01 で紹介したインフラ層のスモークテストには、GPU ノードを実際に起動して確認する `--with-gpu` モードがあります。アクセラレータプールを定義した本章の段階で初めて実行できます。`--with-gpu` は Basic01 の 38 項目をもう一度回したうえで GPU の層を足すので、全部で 43 項目、9 分前後かかります。長いのは Karpenter が GPU ノードを起動する分と、最後の `gpu-serving-vllm` が vLLM を実際にデプロイして API を叩く分です。`--namespace` を明示するのは Basic01 と同じ理由です。このシェルには `NAMESPACE` が入っているので、渡さないとテストが作業 namespace を自分のものと解釈して停止します。
 
@@ -253,7 +265,11 @@ PASS: 42  FAIL: 0  SKIP: 1  TOTAL: 43
 
 対象の NodePool は [`resolve_gpu_nodepool`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/tests/lib/resolve.sh) が NVIDIA GPU のプールから自動選択します（`--gpu-nodepool` で明示指定も可能）。スモーク Pod が要求するのは `nvidia.com/gpu` なので、Neuron のような非 NVIDIA のプールは候補になりません。`--gpu-count` には検証したい GPU 枚数を渡します（g6.2xlarge なら 1、g6e.12xlarge なら 4、p4d.24xlarge なら 8）。GPU テストで ICE（InsufficientInstanceCapacity）により起動できない場合は AWS 側のキャパシティ問題であり、インフラの不具合ではありません。
 
-## 5. 後片付け
+## 6. 後片付け
+
+:::message
+Basic07 と Basic08 はこの `gpu-ddp` プールを使います。続けて進む場合も TrainJob は削除してください。NodePool は残します。Karpenter は要求があってからノードを起動するので、プールが存在するだけでは課金されません。
+:::
 
 本章で起動する GPU ノードは、本書で最初に触れる高額なリソースです。確認が済んだら TrainJob を削除して、ノードが回収されることまで見届けてください。
 
@@ -264,24 +280,19 @@ k get nodeclaims -l karpenter.sh/nodepool=gpu-ddp -w
 
 Pod が消えると NodePool の `consolidationPolicy` に従って Karpenter がノードを回収します。`gpu-ddp` の NodeClaim が無くなれば GPU の課金は止まります (フィルタを外すと CPU プールの NodeClaim も並ぶので、GPU の判定にはプール名で絞ります)。回収は非同期で数分かかるので、消えるまで待ってから次章に進みます。ここで NodeClaim が残り続けるのは、そのノードにまだ Pod が載っているときです (`karpenter.sh/do-not-disrupt` を付けた Pod が動き続けている場合も含みます)。`k get pods` で確認します。
 
-NodePool 自体は残しておいてかまいません。Karpenter は要求があってからノードを起動するので、プールが存在するだけでは課金されません。Basic07 と Basic08 はこの `gpu-ddp` プールをそのまま使います。
-
-# 今の仕組みの限界
-
-ここまでの `accelerator_pools`（Terraform の map 変数を専用 tfvars ファイルで管理する方式）は、一人ないし信頼できる少人数が同じ Terraform state を触る前提では十分に機能します。一方で、複数チームがひとつのクラスタを共有するマルチテナント運用に持ち込もうとすると、次の限界が見えてきます。
-
-::::details マルチテナントで tfvars 方式では足りなくなる理由
-- **ファイル単位の分離ができない**: `accelerator_pools` は単一の map 変数なので、チーム A とチーム B が別ファイルに `accelerator_pools = {...}` を書くと、ファイル名の辞書順で後になるほうが黙って勝ち、もう一方のプール定義は消えます。エラーにならないので気づけません。結局ひとつのファイルを全員で編集することになり、プルリクエストが恒常的にコンフリクトします。
-- **RBAC で権限を絞れない**: Terraform state と AWS の認証情報を持つ人は、他チームのプール定義も含めて何でも書き換えられます。「チーム A は自分のプールだけ作れる」「Capacity Block の ID はプラットフォーム管理者が許可したものだけ使える」といった、Kubernetes の RBAC 相当の権限分離を tfvars では表現できません。
-- **ノードの分離境界を宣言できない**: あるチームのプールで立てたノードに、他チームの Pod が載らないようにする taint／label の対応関係を、テナント自身が勝手に書き換えられないよう固定する仕組みがありません。tfvars は「誰が書いたか」を区別しないため、境界フィールド（テナント taint や `capacity-type: reserved` のピン留め）を守れません。
-- **セルフサービスにならない**: 新しいプールが欲しいたびにプラットフォームチームへ tfvars の編集を依頼する運用になり、Kubernetes のマニフェストを `kubectl apply` する感覚での自助にはなりません。
-::::
-
-これらは Terraform の使い方の問題ではなく、「アクセラレータプールの確保」をマルチテナントのセルフサービスとして扱うには、Namespace 単位で分離され RBAC で保護される Kubernetes ネイティブな API（CRD）が要る、という構造的な要請です。本章の tfvars 方式は、まずは単一チームで確実に動かすための出発点と考えてください。今後改善を予定しています。
-
 # まとめ
 
-`accelerator_pools` に 1 エントリ書くだけで、GPU の世代が混在した DDP 環境が立ち上がりました。tfvars 方式は単一チームの検証には十分ですが、マルチテナント運用では RBAC やファイル分離の限界があり、そこは Kubernetes ネイティブな CRD で解く領域だと整理しました。
+`accelerator_pools` に 1 エントリ書くだけで、GPU の世代が混在した DDP 環境が立ち上がりました。プールの定義は 1 つの tfvars ファイルに集約し、Karpenter が spot を第一優先で 2 台確保し、GPU Operator は GPU プールが 1 つ以上あることを条件に自動で入ります。
+
+# 今後の改善
+
+本章の tfvars 方式は、一人ないし信頼できる少人数が同じ Terraform state を触る前提では十分に機能します。以下はマルチテナント運用に持ち込むときの改善点です。
+
+| なぜ改善すべきか | 改善対象 | 改善案 |
+|---|---|---|
+| `accelerator_pools` は単一の map 変数なので、チームごとに別ファイルへ書くと辞書順で後のファイルが黙って勝ち、もう一方のプール定義が消える | プール定義の置き場所 | プールの宣言を namespace 単位で分離できる Kubernetes の CRD に移す |
+| Terraform state と AWS の認証情報を持つ人は他チームのプールも書き換えられ、テナント境界を固定できない | プール定義の権限分離 | CRD と RBAC で「自分のプールだけ作れる」を表現し、taint や `capacity-type` の境界フィールドは admission で固定する |
+| 新しいプールが要るたびにプラットフォームチームへ tfvars の編集を依頼する運用になる | プール追加の経路 | テナント自身が `k apply` で宣言できる形にする |
 
 # 参考資料
 

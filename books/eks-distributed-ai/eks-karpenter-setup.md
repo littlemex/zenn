@@ -3,7 +3,7 @@ title: "Basic03 - Karpenter を導入する"
 free: true
 ---
 
-GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0)
+GitHub Tag: [release/eks-distributed-ai/v0.2.1](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.1)
 
 本章では、Pod のリソース要求に応じてアクセラレータノードを動的に起動する Karpenter を扱います。Karpenter 本体は Basic01 の `terraform apply` で導入済みなので、本章はその構成（CRD 管理・認証方式の Pod Identity・Spot 中断通知の SQS）を読み解き、動作を確認します。アクセラレータ用の NodePool は次章以降で定義します。
 
@@ -216,20 +216,26 @@ DRA が GA になったからといって、本書の構成にそのまま持ち
 
 [KEP-5004](https://github.com/kubernetes/enhancements/issues/5004) は正式には「DRA: Handle extended resource requests via DRA Driver」という提案で、DRA ドライバが公開するデバイスを、device plugin を介さずに `nvidia.com/gpu` のような従来の拡張リソース API 経由でも要求できるようにすることを目指しています。この仕組みが実現すると、同じクラスタの一部のノードが device plugin を使い、別の一部のノードが DRA ドライバを使うという混在運用や、既存の Pod マニフェストを書き換えずに DRA へ段階的に移行することが可能になる、という位置づけです。この仕組みに伴い、cluster-autoscaler 側が新設される `NodeInfo` の `DynamicResources` フィールドなどを認識してスケール判断に反映できるようにするための連携も、KEP 本文で考慮事項として触れられています（ただし Karpenter については言及がなく、この KEP 自体がオートスケーラーに実装を加えるものでもありません）。KEP のマイルストーンは次のとおりです: Alpha が Kubernetes 1.34、Beta が 1.35 から 1.36 に後ろ倒しされ、Stable（GA）の目標は 1.37 とされています。ただしこれは KEP が置いている目標であり、他の多くの KEP と同様に確定したスケジュールではないため、実際のリリースタイミングは前後する可能性がある点は留保しておきます。
 
-したがって、Karpenter でノードプロビジョニングを行うこの構成では、DRA ドライバは現時点で選択肢になりません。device plugin 方式（NVIDIA GPU Operator、aws-efa-k8s-device-plugin、Neuron device plugin）を使うことが、legacy な妥協ではなく現状で唯一実用的な選択です。Karpenter からも DRA の `ResourceClaim` が扱えるようになれば、この判断は再検討の対象になります。
+したがって、Karpenter でノードプロビジョニングを行うこの構成では、DRA ドライバは現時点で選択肢になりません。device plugin 方式（NVIDIA GPU Operator、aws-efa-k8s-device-plugin、Neuron device plugin）を使うことが、legacy な妥協ではなく現状で唯一実用的な選択です。
 
 # ワークショップ実施
 
-はじめにシェルを対象クラスタへ向けます。Basic01 手順 2 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION` は自分のクラスタのものに読み替えます。
+はじめにシェルを対象クラスタへ向けます。Basic01 手順 3 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION`、それに 1 行目のチェックアウトのパスは自分のものに読み替えます。
 
 ```bash
-cd ~/distributed-ai-v0.2.0
+cd ~/distributed-ai-v0.2.1
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2
 source infra/scripts/distai-env.sh
 ```
 
 Karpenter は Basic01 の `terraform apply` に含めて導入済みの構成です。ここでは導入結果を確認します。
+
+前提は次のとおりです。
+
+| 前提 | どこで用意するか |
+|---|---|
+| クラスタが動いていること | [Basic01](https://zenn.dev/tosshi/books/eks-distributed-ai/viewer/eks-vpc-foundation) |
 
 ## 1. Karpenter コントローラの起動を確認する
 
@@ -288,6 +294,12 @@ monitoring   monitoring   1       True    6m23s
 本章では、ノードを要求に応じて起動する Karpenter の構成を確認しました。CRD を別チャート（`karpenter-crd`）で管理してバージョンアップに追従できるようにし、認証は Pod Identity、Spot 中断は SQS interruption queue で 安全に処理する構成です。
 
 Basic02 の CPU DDP がノードを得られていたのは、`cpu` NodePool が Basic01 の apply で先に作られていたからでした。本章でその仕組みを確認したので、次章では `accelerator_pools` を定義して、同じ Karpenter に GPU ノードを起動させます。
+
+# 今後の改善
+
+| なぜ改善すべきか | 改善対象 | 改善案 |
+|---|---|---|
+| Karpenter が DRA に対応していないため device plugin 方式に固定されており、GPU の世代やメモリ容量を属性で選ぶことができない | GPU の要求方法 | Karpenter から `ResourceClaim` が扱えるようになった時点で、DRA へ移すかを再検討する |
 
 # 参考資料
 

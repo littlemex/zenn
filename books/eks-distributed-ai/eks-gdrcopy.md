@@ -3,7 +3,7 @@ title: "Advanced04 - GDRCopy を有効にする"
 free: true
 ---
 
-GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0)
+GitHub Tag: [release/eks-distributed-ai/v0.2.1](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.1)
 
 本章では、[Basic06 - EFA でマルチノード通信を検証する](eks-efa-topology) の最後に触れた GDRCopy を実際にノードへ導入する。まず GPUDirect RDMA と GDRCopy が別物であることを整理し、EFA のマルチノード通信でそれぞれが果たす役割を押さえる。そのうえで Capacity Block の GPU AMI でなぜ GDRCopy が標準で載らないのかを見て、Terraform でノードに `gdrdrv` をロードする実装を読む。最後に GDRCopy が単体では確かに機能することを確かめたうえで、EFA のマルチノード通信でレイテンシがどう変わるのかを実機で測る。
 
@@ -104,10 +104,10 @@ EOSH
 
 # ワークショップ実施
 
-はじめにシェルを対象クラスタへ向ける。Basic01 手順 2 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION` は自分のクラスタのものに読み替える。
+はじめにシェルを対象クラスタへ向ける。Basic01 手順 3 と同じ 4 行で、`CLUSTER_NAME` と `AWS_REGION`、それに 1 行目のチェックアウトのパスは自分のものに読み替える。
 
 ```bash
-cd ~/distributed-ai-v0.2.0
+cd ~/distributed-ai-v0.2.1
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2
 source infra/scripts/distai-env.sh

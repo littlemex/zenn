@@ -3,7 +3,7 @@ title: "Advanced02 - GPU プロファイルを MCP で分析する"
 free: true
 ---
 
-GitHub Tag: [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0)
+GitHub Tag: [release/eks-distributed-ai/v0.2.1](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.1)
 
 本章では、Basic04 で作った GPU プールの上でワークロードのプロファイルを取得し、その結果を Claude から分析します。手順では合成の行列積を題材にしますが、`--image` を差し替えれば自分の学習ジョブでもそのまま動きます。自分の学習コマンドの前に 1 コマンド足すだけでプロファイルが記録され、その結果は Model Context Protocol (MCP) 経由で読めます。「どのカーネルが遅いのか」から「次に何を変えるか」までを 1 本のコマンドで受け取れます。
 
@@ -65,7 +65,7 @@ nsys profile -t cuda,nvtx,osrt -o /accelprof/out/traces/rank-N --force-overwrite
 
 ::::details 複数 Pod のジョブで取得する場合を説明します
 
-既定では rank 0 の Pod だけを取得し、対象は `k accelprof run` の `--profile-ranks` で変えられます。この rank は**プロセスの rank ではなく Pod の index** です。shim が見るのは `ACCELPROF_NODE_RANK` (なければ Indexed Job の `JOB_COMPLETION_INDEX`、単一 Pod では 0) なので、この指定が選ぶのは「どの Pod で `nsys` を起動するか」です。`nsys` は既定で子プロセスを追跡するため、1 つの Pod で `torchrun --nproc-per-node 8` を包めば 8 プロセス分が 1 本の `rank-0.nsys-rep` に入ります。
+既定では rank 0 の Pod だけを取得し、対象は `kubectl accelprof run` の `--profile-ranks` で変えられます。この rank は**プロセスの rank ではなく Pod の index** です。shim が見るのは `ACCELPROF_NODE_RANK` (なければ Indexed Job の `JOB_COMPLETION_INDEX`、単一 Pod では 0) なので、この指定が選ぶのは「どの Pod で `nsys` を起動するか」です。`nsys` は既定で子プロセスを追跡するため、1 つの Pod で `torchrun --nproc-per-node 8` を包めば 8 プロセス分が 1 本の `rank-0.nsys-rep` に入ります。
 
 rank 0 だけを取るのはコストを抑えるサンプリングであって、代表値の保証ではありません。rank 0 はロギングやチェックポイント書き出しを担うことが多く、ストラグラーは rank 0 からは見えません。全ノードの step time を `metrics.json` に記録しておき、外れたノードが見えたらその rank を狙い撃ちする 2 段構えが実務的です。なお複数ノードの分散ジョブへの適用は本章では未検証です。
 
@@ -79,10 +79,10 @@ alias 単位の削除は自動では起きません。終わったキャンペ�
 
 # ワークショップ実施
 
-はじめにシェルを対象クラスタへ向けます。Basic01 手順 2 の 4 行に `DISTAI_NAMESPACE` を足したもので、本章の作業 namespace は `distai` ではなく `team-a` です。こうすると `k` と後述のプラグインの既定がこの namespace になり、以降のコマンドに `-n` を書かずに済みます。`CLUSTER_NAME` と `AWS_REGION` は自分のクラスタのものに読み替えます。
+はじめにシェルを対象クラスタへ向けます。Basic01 手順 3 の 4 行に `DISTAI_NAMESPACE` を足したもので、本章の作業 namespace は `distai` ではなく `team-a` です。こうすると `k` と後述のプラグインの既定がこの namespace になり、以降のコマンドに `-n` を書かずに済みます。`CLUSTER_NAME` と `AWS_REGION`、それに 1 行目のチェックアウトのパスは自分のものに読み替えます。
 
 ```bash
-cd ~/distributed-ai-v0.2.0
+cd ~/distributed-ai-v0.2.1
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2
 export DISTAI_NAMESPACE=team-a
@@ -92,26 +92,32 @@ source infra/scripts/distai-env.sh
 実機出力:
 
 ```text
-distai-env: distai-eks in us-east-2 (account 123456789012, release release/eks-distributed-ai/v0.2.0, data layer none)
+distai-env: distai-eks in us-east-2 (account 123456789012, release release/eks-distributed-ai/v0.2.1, data layer none)
 distai-env: kubectl: context distai-eks, namespace team-a at https://XXXXXXXX.gr7.us-east-2.eks.amazonaws.com
 distai-env: k is kubectl --context distai-eks; KUBECONFIG is /home/you/.kube/distai/distai-eks.team-a.yaml
 ```
 
 データ層はまだ紐づいていないので `data layer none` です。
 
+前提は次のとおりです。
+
+| 前提 | どこで用意するか |
+|---|---|
+| Basic10 まで進めたクラスタが稼働していること | [Basic01](https://zenn.dev/tosshi/books/eks-distributed-ai/viewer/eks-vpc-foundation) から [Basic10](https://zenn.dev/tosshi/books/eks-distributed-ai/viewer/eks-shared-storage) |
+| SageMaker MLflow app と S3 Files を知っている `aws` | 各ツールの公式手順 |
+| Claude Code の `claude` が認証済みであること | [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) |
+
 ## 1. 前提を確認する
 
-- Basic01 から Basic11 まで進めたクラスタが稼働していること (プロファイルを取る対象は Basic07 の GPU ワークロードですが、本章はクラスタ側の配線も足すので Basic11 までの構成を前提にします)
-- `terraform` と `kubectl` と `helm` と `aws` と `python3` と `git` と `curl` が手元にあること
-- Claude Code の `claude` が入っていて認証済みであること (手順 6 で使います)
-
-`aws` は SageMaker MLflow app と S3 Files を知っているバージョンが必要です。次が使い方を表示せずに終了するなら、先に AWS CLI を更新してください。古いままだと、導入スクリプトが権限エラーのような見た目で止まります。
+次のコマンドは前提を 1 行ずつ OK か NG で表示します。NG が出たら、上の表の行に書いた場所を先に済ませてください。
 
 ```bash
-aws sagemaker list-mlflow-apps help >/dev/null && echo "aws ok"
+k get nodes >/dev/null 2>&1 && echo "OK クラスタに接続できる" || echo "NG クラスタに接続できない"
+aws sagemaker list-mlflow-apps help >/dev/null 2>&1 && echo "OK aws が MLflow app を知っている" || echo "NG aws を更新する"
+for c in terraform kubectl helm python3 git curl claude; do command -v "$c" >/dev/null && echo "OK $c" || echo "NG $c"; done
 ```
 
-本章は `infra/eks` の稼働中クラスタにデータ層と MCP サーバを足すので、まだデータ層 (`infra/data-layer`) を適用していない状態から始めます。
+`aws` が NG のときは AWS CLI を更新してください。古いままだと、導入スクリプトが権限エラーのような見た目で止まります。`claude` は手順 6 で使います。本章は稼働中のクラスタにデータ層と MCP サーバを足すので、まだデータ層 (`infra/data-layer`) を適用していない状態から始めます。
 
 ## 2. プロファイルを取得する namespace を用意する
 
@@ -188,29 +194,29 @@ Profiling platform ready on distai-eks.
 
 ## 4. 経路を確認する
 
-必要なのはプラグイン 2 本で、どちらも 1 ファイルです。`kubectl` には、PATH 上の `kubectl-<名前>` を `kubectl <名前>` として呼び出すプラグイン機構があります。プロファイルを取得するのが `kubectl-accelprof`、手順 6 で MCP に繋ぐのが `kubectl-distai_mcp` です。`k` は `kubectl` を呼ぶ関数なので、以降は `k accelprof` と `k distai-mcp` で呼びます。
+必要なのはプラグイン 2 本で、どちらも 1 ファイルです。`kubectl` には、PATH 上の `kubectl-<名前>` を `kubectl <名前>` として呼び出すプラグイン機構があります。プロファイルを取得するのが `kubectl-accelprof`、手順 6 で MCP に繋ぐのが `kubectl-distai_mcp` です。プラグインだけは `k` ではなく `kubectl` と打ちます。`k` は `kubectl --context <クラスタ>` を呼ぶ関数で、`kubectl` はプラグイン名より前に置かれたフラグを受け付けないため、`kubectl accelprof` は `flags cannot be placed before plugin name: --context` で失敗します。向き先は 4 行が書いた `KUBECONFIG` で決まるので、`kubectl` と打っても対象クラスタは変わりません。
 
 ```bash
 export PATH="$(git rev-parse --show-toplevel)/infra/eks/bin:$PATH"
-k accelprof --help >/dev/null && k distai-mcp --help >/dev/null && echo "plugin ok"
-k plugin list | grep -E "accelprof|distai"
+kubectl accelprof --help >/dev/null && kubectl distai-mcp --help >/dev/null && echo "plugin ok"
+kubectl plugin list | grep -E "accelprof|distai"
 ```
 
 実機出力:
 
 ```text
 plugin ok
-/home/you/distributed-ai-v0.2.0/infra/eks/bin/kubectl-accelprof
-/home/you/distributed-ai-v0.2.0/infra/eks/bin/kubectl-distai_mcp
+/home/you/distributed-ai-v0.2.1/infra/eks/bin/kubectl-accelprof
+/home/you/distributed-ai-v0.2.1/infra/eks/bin/kubectl-distai_mcp
 ```
 
-`k plugin list` の出力がチェックアウト内のパスであることを確かめてください。以前どこかに置いた古い版が先に見つかると、手順 6 で `unknown subcommand` になります。
+`kubectl plugin list` の出力がチェックアウト内のパスであることを確かめてください。以前どこかに置いた古い版が先に見つかると、手順 6 で `unknown subcommand` になります。
 
 まず経路が通っていることを確かめるために、基盤イメージ自身を 1 本流します。`--gpu` を付けないので GPU ノードは起動せず、CPU で数秒で終わります。イメージの URI は namespace に配られた ConfigMap から引けるので、レジストリやタグを組み立てる必要はありません。
 
 ```bash
 export IMAGE=$(k get configmap accelprof-config -o jsonpath='{.data.ACCELPROF_PLATFORM_IMAGE}')
-k accelprof run --alias teama-smoke --image "$IMAGE" --wait \
+kubectl accelprof run --alias teama-smoke --image "$IMAGE" --wait \
   --param steps=1 --tag phase=smoke \
   -- bash -lc 'python3 -c "print(sum(range(10**6)))"'
 ```
@@ -236,8 +242,8 @@ k accelprof run --alias teama-smoke --image "$IMAGE" --wait \
 `--wait` を付けずに投入した run は、あとから状態と `run_id` を引きます。
 
 ```bash
-k accelprof get --last --alias teama-smoke
-k accelprof runs --alias teama-smoke
+kubectl accelprof get --last --alias teama-smoke
+kubectl accelprof runs --alias teama-smoke
 ```
 
 実機出力:
@@ -254,7 +260,7 @@ wl-260831044443-b458f144   teama-smoke   2bba00937a8444f093887c30479f420d   1   
 https://app-XXXXXXXX.mlflow.sagemaker.us-east-2.app.aws/  (mlflow-app/app-XXXXXXXX)
 ```
 
-引数を省いた `k accelprof get` は「この namespace で最も新しい run」を指すので、namespace を共有していると他人の run を指します。`--alias` を付ければ自分のキャンペーンの中で最新を指し、どの run を見ているかは出力の 1 行目に必ず出ます。左端の `WORKLOAD-ID` が run を名前で指すときの値で、`run_id` が表示されたら記録は完了しています。
+引数を省いた `kubectl accelprof get` は「この namespace で最も新しい run」を指すので、namespace を共有していると他人の run を指します。`--alias` を付ければ自分のキャンペーンの中で最新を指し、どの run を見ているかは出力の 1 行目に必ず出ます。左端の `WORKLOAD-ID` が run を名前で指すときの値で、`run_id` が表示されたら記録は完了しています。
 
 
 ## 5. 自分のワークロードで取得する
@@ -270,7 +276,7 @@ export TRAIN_IMAGE=763104351884.dkr.ecr.$AWS_REGION.amazonaws.com/pytorch-traini
 学習スクリプトの代わりに、4096×4096 の bf16 行列積を 300 回回すだけのコマンドを流します。ウォームアップ 20 回のあとに `torch.cuda.profiler.start()` を呼び、各反復を NVTX で囲み、最後に `stop()` を呼んで、スループットを `metrics.json` に書きます。区間を絞る指定が効くのはこの `start()` と `stop()` があるからで、呼んでいないスクリプトに同じ指定をすると区間が始まらないまま何も記録されません。
 
 ```bash
-k accelprof run --alias teama-gpu-nsys \
+kubectl accelprof run --alias teama-gpu-nsys \
   --image "$TRAIN_IMAGE" --gpu 1 \
   --nsys-args '-t cuda,nvtx --capture-range=cudaProfilerApi --capture-range-end=stop' \
   -- python3 -c '
@@ -316,9 +322,9 @@ Generated:
 計測コストを知るために、同じコマンドをあと 2 通り流します。`--nsys-args` を外した既定と、プロファイラを動かさないベースラインです。
 
 ```bash
-k accelprof run --alias teama-gpu-nsys --image "$TRAIN_IMAGE" --gpu 1 \
+kubectl accelprof run --alias teama-gpu-nsys --image "$TRAIN_IMAGE" --gpu 1 \
   -- python3 -c '...上と同じスクリプト...'
-export BASE_ID=$(k accelprof run --alias teama-gpu-nsys --image "$TRAIN_IMAGE" --gpu 1 \
+export BASE_ID=$(kubectl accelprof run --alias teama-gpu-nsys --image "$TRAIN_IMAGE" --gpu 1 \
   --profile none -o run-id -- python3 -c '...上と同じスクリプト...')
 ```
 
@@ -334,7 +340,7 @@ export BASE_ID=$(k accelprof run --alias teama-gpu-nsys --image "$TRAIN_IMAGE" -
 
 このワークロードでは取得の仕方によらず計測コストが差になりませんでした。区間を絞った効果はトレース側に出ていて、ウォームアップの 20 回が除かれてカーネル数が 320 から 300 になり、トレースは 547 KiB から 116 KiB になりました。差が出なかったのは測ったから言えることで、ワークロードによって変わります。
 
-記録された run には、自分が渡した params と tags のほかに基盤が付ける予約タグが並びます。タグは MLflow に入るので、`k accelprof runs` が末尾に出す UI の URL から run を開いて確認します。
+記録された run には、自分が渡した params と tags のほかに基盤が付ける予約タグが並びます。タグは MLflow に入るので、`kubectl accelprof runs` が末尾に出す UI の URL から run を開いて確認します。
 
 ```text
 exp.alias        = teama-gpu-nsys
@@ -364,14 +370,14 @@ CUDA のトレースは CUPTI 経由なので、注入される `nsys` がワー
 
 ## 6. 分析する
 
-分析サーバと知識サーバはクラスタの中で動くので、手元のクライアントは kubectl のポート転送越しに接続します。そのポートを保持し、クライアントに渡す設定を組み、終わったら閉じるところまでを `k distai-mcp` が引き受けます。対象は `mcp-host` に登録した MCP すべてで、accelprof 専用ではありません。
+分析サーバと知識サーバはクラスタの中で動くので、手元のクライアントは kubectl のポート転送越しに接続します。そのポートを保持し、クライアントに渡す設定を組み、終わったら閉じるところまでを `kubectl distai-mcp` が引き受けます。対象は `mcp-host` に登録した MCP すべてで、accelprof 専用ではありません。
 
 まず手順 4 の run に対して経路を確かめます。
 
 ```bash
-export RUN_ID=$(k accelprof get --last --alias teama-smoke -o run-id)
+export RUN_ID=$(kubectl accelprof get --last --alias teama-smoke -o run-id)
 test -n "$RUN_ID" && echo "run_id=$RUN_ID"
-k distai-mcp exec -- sh -c 'claude -p "analysis の stage_run と analyze を run_id=$RUN_ID で順に呼び、返ってきた事実だけを報告して" --mcp-config "$DISTAI_MCP_CONFIG" --strict-mcp-config --allowed-tools mcp__analysis__stage_run mcp__analysis__analyze'
+kubectl distai-mcp exec -- sh -c 'claude -p "analysis の stage_run と analyze を run_id=$RUN_ID で順に呼び、返ってきた事実だけを報告して" --mcp-config "$DISTAI_MCP_CONFIG" --strict-mcp-config --allowed-tools mcp__analysis__stage_run mcp__analysis__analyze'
 ```
 
 `sh -c` を挟んで単引用符にしているのは、`DISTAI_MCP_CONFIG` が `distai-mcp exec` の内側で初めて決まるからです。外側の引用符で書くと、まだ空の変数が展開されます。`RUN_ID` は `export` してあるので、内側のシェルにも環境変数として届きます。
@@ -403,8 +409,8 @@ analyze はデフォルトの analyzer=inventory で走り、同じディレク�
 `analyze` の既定の analyzer は `inventory` で、ファイルの棚卸ししか返しません。カーネルの集計を読むには `analyzer` に `nsys-stats` を指定します。手順 4 の run は CPU なので集計する対象もありません。手順 5 で取った GPU の run に切り替えます。
 
 ```bash
-export RUN_ID=$(k accelprof get --last --alias teama-gpu-nsys -o run-id)
-k distai-mcp exec -- sh -c 'claude -p "analysis の stage_run と analyze (analyzer は nsys-stats) を run_id=$RUN_ID で順に呼び、支配的なカーネル名と平均時間だけを 2 行で報告して" --mcp-config "$DISTAI_MCP_CONFIG" --strict-mcp-config --allowed-tools mcp__analysis__stage_run mcp__analysis__analyze'
+export RUN_ID=$(kubectl accelprof get --last --alias teama-gpu-nsys -o run-id)
+kubectl distai-mcp exec -- sh -c 'claude -p "analysis の stage_run と analyze (analyzer は nsys-stats) を run_id=$RUN_ID で順に呼び、支配的なカーネル名と平均時間だけを 2 行で報告して" --mcp-config "$DISTAI_MCP_CONFIG" --strict-mcp-config --allowed-tools mcp__analysis__stage_run mcp__analysis__analyze'
 ```
 
 実機出力:
@@ -440,7 +446,7 @@ GPU カーネル時間の 100.0% (320 回、合計 705.0 ms) を占める。
 ベースラインの run (`--profile none`) に `stage_run` を打つと、成果物が無いという答えが返ります。これは異常ではありません。
 
 ```bash
-k distai-mcp exec -- sh -c 'claude -p "analysis の stage_run を run_id=$BASE_ID で呼び、返ってきたエラーの文をそのまま見せて" --mcp-config "$DISTAI_MCP_CONFIG" --strict-mcp-config --allowed-tools mcp__analysis__stage_run'
+kubectl distai-mcp exec -- sh -c 'claude -p "analysis の stage_run を run_id=$BASE_ID で呼び、返ってきたエラーの文をそのまま見せて" --mcp-config "$DISTAI_MCP_CONFIG" --strict-mcp-config --allowed-tools mcp__analysis__stage_run'
 ```
 
 実機出力:
@@ -454,7 +460,7 @@ The mount at '/traces' is fine - a run like this is a metrics-only baseline, so 
 事実が出たら、次に何をするかは知識 MCP に聞きます。症状を渡すと関連する playbook がランク付きで返り、`get_topic` で本文を開けます。
 
 ```bash
-k distai-mcp exec -- sh -c 'claude -p "knowledge の search_knowledge で GPU の学習が遅い症状に近い playbook を探し、上位 3 件の topic_id と題名を挙げて" --mcp-config "$DISTAI_MCP_CONFIG" --strict-mcp-config --allowed-tools mcp__knowledge__search_knowledge mcp__knowledge__get_topic'
+kubectl distai-mcp exec -- sh -c 'claude -p "knowledge の search_knowledge で GPU の学習が遅い症状に近い playbook を探し、上位 3 件の topic_id と題名を挙げて" --mcp-config "$DISTAI_MCP_CONFIG" --strict-mcp-config --allowed-tools mcp__knowledge__search_knowledge mcp__knowledge__get_topic'
 ```
 
 実機出力:
@@ -468,7 +474,7 @@ gpu/roofline                     Roofline diagnosis - compute-bound vs memory-bo
 ここまでを 1 本にまとめると、この章のゴールがそのままコマンドになります。両方のサーバを許可して、事実と指針を分けて報告させます。
 
 ```bash
-k distai-mcp exec -- sh -c 'claude -p "run_id=$RUN_ID について、analysis の stage_run と analyze (analyzer は nsys-stats) で支配的なカーネルを特定し、続けて knowledge の search_knowledge と get_topic でその症状に対応する playbook を開き、次に何を変えるべきかを報告して。事実と playbook の推奨を分けて書いて" --mcp-config "$DISTAI_MCP_CONFIG" --strict-mcp-config --allowed-tools mcp__analysis__stage_run mcp__analysis__analyze mcp__knowledge__search_knowledge mcp__knowledge__get_topic'
+kubectl distai-mcp exec -- sh -c 'claude -p "run_id=$RUN_ID について、analysis の stage_run と analyze (analyzer は nsys-stats) で支配的なカーネルを特定し、続けて knowledge の search_knowledge と get_topic でその症状に対応する playbook を開き、次に何を変えるべきかを報告して。事実と playbook の推奨を分けて書いて" --mcp-config "$DISTAI_MCP_CONFIG" --strict-mcp-config --allowed-tools mcp__analysis__stage_run mcp__analysis__analyze mcp__knowledge__search_knowledge mcp__knowledge__get_topic'
 ```
 
 実機出力:
@@ -488,8 +494,8 @@ k distai-mcp exec -- sh -c 'claude -p "run_id=$RUN_ID について、analysis �
 `exec` はコマンドが終わるとトンネルを閉じるので、セッションを開いたまま何度も聞く使い方には向きません。その場合は `up` でトンネルを保持します。`up` は転送を背景に置いてプロンプトに戻るので、端末を占有しません。
 
 ```bash
-k distai-mcp up
-k distai-mcp status
+kubectl distai-mcp up
+kubectl distai-mcp status
 ```
 
 実機出力:
@@ -516,7 +522,7 @@ k distai-mcp status
 使い終わったら閉じます。`down` は実際に閉じた本数を報告するので、0 本だった場合は別の context か namespace の記録を見ていると分かります。
 
 ```bash
-k distai-mcp down
+kubectl distai-mcp down
 ```
 
 実機出力:
@@ -528,6 +534,10 @@ k distai-mcp down
 ::::
 
 ## 7. 後片付けする
+
+:::message
+引き続きプロファイルを取る場合は、この後片付けを飛ばします。基盤を残したときに課金が続くのは MLflow とバケット、分析用の Pod が載る CPU ノードです。Basic11 でクラスタを破棄する予定なら、データ層は別の state にあるので本章の B を先に済ませてください。
+:::
 
 新しいターミナルで始める場合は、章冒頭の 5 行を先に実行してください。
 
@@ -550,7 +560,7 @@ B ではまず namespace 側を掃除します。`accelprof-orphan-check` CronJo
 まず走り続けている producer Job が無いことを確認します。`ttlSecondsAfterFinished` は終了した Job だけを消すので、走っている Job は自動では消えません。
 
 ```bash
-for ns in team-a team-b; do k accelprof runs -n "$ns"; done
+for ns in team-a team-b; do kubectl accelprof runs -n "$ns"; done
 ```
 
 実機出力 (残っていない場合):
@@ -608,7 +618,7 @@ B を完走しても、`DEV_BUILD=1` で焼いた基盤イメージの ECR リ�
 
 - [プロファイリングを楽にしたい](https://zenn.dev/littlemex/articles/8ab01bc40f627a) - 本基盤の設計思想を解説したブログ
 - [littlemex/distributed-ai](https://github.com/littlemex/distributed-ai) - `infra/scripts/install-profiling.sh` と `infra/eks/bin/kubectl-accelprof`、`infra/data-layer` と `infra/eks`、`mcp-host` チャートの実装
-- [release/eks-distributed-ai/v0.2.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.0) - 本章が前提にしているリリース
+- [release/eks-distributed-ai/v0.2.1](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.1) - 本章が前提にしているリリース
 - [accelprof](https://pypi.org/project/accelprof/) / [accelprof-knowledge](https://pypi.org/project/accelprof-knowledge/) - 分析 MCP と知識 MCP の pip パッケージ
 - [Nsight Systems ユーザーガイド](https://docs.nvidia.com/nsight-systems/UserGuide/index.html) - `nsys profile` のオプションと収集対象の公式ドキュメント
 - [Amazon S3 Files (EFS ユーザーガイド)](https://docs.aws.amazon.com/efs/latest/ug/s3-file-systems.html) - S3 Files の公式ドキュメント
