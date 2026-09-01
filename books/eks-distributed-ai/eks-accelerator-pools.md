@@ -95,7 +95,8 @@ source infra/scripts/distai-env.sh
 ```bash
 k -n karpenter get deploy karpenter >/dev/null 2>&1 && echo "OK Karpenter コントローラ" || echo "NG Karpenter コントローラ"
 k get pvc shared-claim -o jsonpath='{.status.phase}' 2>/dev/null | grep -qx Bound && echo "OK 共有 PVC shared-claim" || echo "NG 共有 PVC shared-claim"
-REPO=$(terraform -chdir=infra/eks output -raw ddp_sample_ecr_url 2>/dev/null | sed 's#^[^/]*/##')
+EKS_DIR="$(git rev-parse --show-toplevel)/infra/eks"
+REPO=$(terraform -chdir="$EKS_DIR" output -raw ddp_sample_ecr_url 2>/dev/null | sed 's#^[^/]*/##')
 test -n "$REPO" && aws ecr describe-images --region "$AWS_REGION" --repository-name "$REPO" --image-ids imageTag=v1 >/dev/null 2>&1 && echo "OK ddp-sample:v1" || echo "NG ddp-sample:v1 (terraform output か ECR を確認)"
 ```
 
