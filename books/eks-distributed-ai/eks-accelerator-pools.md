@@ -267,9 +267,19 @@ rank 0(completion index 0)のログを追います。
 ```bash
 SEL="jobset.sigs.k8s.io/jobset-name=ddp-trainjob,batch.kubernetes.io/job-completion-index=0"
 until k get pods -l "$SEL" --no-headers 2>/dev/null | grep -q .; do sleep 5; done
-k wait --for=condition=ready pod -l "$SEL" --timeout=15m
 k logs -f --tail=-1 -l "$SEL"
 ```
+
+`k wait --for=condition=ready` は挟みません。学習が終わった Pod は `Succeeded` で `Ready` にならないので、完走した run に対しては必ず時間切れになります。Basic02 と同じ理由です。
+
+何も出ないまま待たされることがあります。原因は 2 つで、どちらも `-f` の前にあります。1 つは `k wait --for=condition=ready` を挟んでしまった場合です。完走する run では `Ready` にならないので指定した時間まで待ち続け、その間 `k logs` は実行されません。もう 1 つは、TrainJob の Pod が JobSet に作り直された場合です。Pod 名が変わるので、`-f` を張った先が消えて出力が止まったように見えます。完了済みの Pod に対する `-f` 自体は問題なく、過去のログを全部出して終了します (実測)。詰まったら `-f` を外して読み直すのが確実です。
+
+```bash
+k get trainjob ddp-trainjob
+k logs -l "$SEL" --tail=-1
+```
+
+`--tail=-1` は全行を意味します。ラベルで選ぶ `k logs` は既定で末尾 10 行しか返さないので、これを付けないと最初のエポックや `backend=` の行が見えません。ログは Pod を消すまで残るので、`Complete` を確認してから読むほうが確実です。rank 1 を見たいときは `SEL` の `job-completion-index=0` を `1` にします。
 
 `ddp.py` は CUDA が見えるとログに `backend=nccl cuda_available=True device_count=1` と出し、各 rank が `done` で終われば成功です。実機出力は次のようになります。
 
