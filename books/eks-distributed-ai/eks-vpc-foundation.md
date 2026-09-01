@@ -270,6 +270,7 @@ cd ~/distributed-ai-v0.2.1
 共有ストレージを作らない場合は、代わりに次を実行します。`DISTAI_SHARED_STORAGE` が効くのは変数ファイルを初めて生成するときだけで、後から付けても既存のファイルは書き換わりません。
 
 ```bash
+cd ~/distributed-ai-v0.2.1
 DISTAI_SHARED_STORAGE=off ./infra/scripts/distai-up.sh
 ```
 

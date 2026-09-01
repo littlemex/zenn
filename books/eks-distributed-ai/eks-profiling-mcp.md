@@ -162,6 +162,7 @@ Kubernetes の RBAC はリソース名を絞らない限り種類単位なので
 あわせて初回だけ `DEV_BUILD=1` を付けます。基盤イメージは自分の ECR から digest で引く作りなので、まだ何も無い状態では `no analysis image digest available` で止まります。このビルドは Basic02 で触れたクラスタ内 image builder が前提です。
 
 ```bash
+cd "$(git rev-parse --show-toplevel)"
 export PRODUCER_NAMESPACES=team-a,team-b
 export DATA_LAYER_NAME=profiling
 export CREATE_DATA_LAYER=1
