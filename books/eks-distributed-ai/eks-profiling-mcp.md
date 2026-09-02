@@ -441,7 +441,7 @@ analyze はデフォルトの analyzer=inventory で走り、同じディレク�
 }
 ```
 
-`analyze` の既定の analyzer は `inventory` で、ファイルの棚卸ししか返しません。カーネルの集計を読むには `analyzer` に `nsys-stats` を指定します。手順 4 の run は CPU なので集計する対象もありません。手順 5 で取った GPU の run に切り替えます。指すのは手順 5 で受け取った `NSYS_ID` です。`--last` を使わないのは、手順 5 の最後に投げたのがベースラインで、`--last` がそれを指すからです。ベースラインには成果物が無いので、`stage_run` は `has no artifacts to stage` を返して終わります。ここで `--last` を使わないのは、手順 5 の最後に投げたのがベースラインで、`--last` はそれを指すからです。ベースラインには成果物が無いので、`stage_run` が `has no artifacts to stage` を返して終わります。
+`analyze` の既定の analyzer は `inventory` で、ファイルの棚卸ししか返しません。カーネルの集計を読むには `analyzer` に `nsys-stats` を指定します。手順 4 の run は CPU なので集計する対象もありません。手順 5 で取った GPU の run に切り替えます。指すのは手順 5 で受け取った `NSYS_ID` です。`--last` を使わないのは、手順 5 の最後に投げたのがベースラインで、`--last` がそれを指すからです。ベースラインには成果物が無いので、`stage_run` は `has no artifacts to stage` を返して終わります。
 
 ```bash
 export RUN_ID="$NSYS_ID"
