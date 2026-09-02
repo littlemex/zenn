@@ -296,11 +296,12 @@ export TRAIN_IMAGE=763104351884.dkr.ecr.$AWS_REGION.amazonaws.com/pytorch-traini
 
 学習スクリプトの代わりに、4096×4096 の bf16 行列積を 300 回回すだけのコマンドを流します。ウォームアップ 20 回のあとに `torch.cuda.profiler.start()` を呼び、各反復を NVTX で囲み、最後に `stop()` を呼んで、スループットを `metrics.json` に書きます。区間を絞る指定が効くのはこの `start()` と `stop()` があるからで、呼んでいないスクリプトに同じ指定をすると区間が始まらないまま何も記録されません。
 
+このスクリプトは同じものを 3 通りの取得方法で流すので、先に変数に入れます。こうしておけば 3 本目まで貼るだけで済みます。
+
+同じスクリプトを 3 通りの取得方法で流すので、先に変数に入れます。こうしておけば 3 本目まで貼るだけで済みます。
+
 ```bash
-kubectl accelprof run --alias teama-gpu-nsys \
-  --image "$TRAIN_IMAGE" --gpu 1 \
-  --nsys-args '-t cuda,nvtx --capture-range=cudaProfilerApi --capture-range-end=stop' \
-  -- python3 -c '
+SCRIPT=$(cat <<'PY'
 import json, time, torch
 a = torch.randn(4096, 4096, device="cuda", dtype=torch.bfloat16)
 b = torch.randn(4096, 4096, device="cuda", dtype=torch.bfloat16)
@@ -319,7 +320,12 @@ torch.cuda.profiler.stop()
 tf = 300 * 2 * 4096 ** 3 / el / 1e12
 json.dump({"tflops": tf, "elapsed_s": el}, open("/accelprof/out/metrics.json", "w"))
 print("tflops=%.1f elapsed=%.3f" % (tf, el))
-'
+PY
+)
+kubectl accelprof run --alias teama-gpu-nsys \
+  --image "$TRAIN_IMAGE" --gpu 1 \
+  --nsys-args '-t cuda,nvtx --capture-range=cudaProfilerApi --capture-range-end=stop' \
+  -- python3 -c "$SCRIPT"
 ```
 
 GPU ノードの確保とイメージの pull が入るので、初回は 5 分前後かかります。投入時に表示される `logs:` の行のコマンドで、workload の様子を見られます。
@@ -343,13 +349,21 @@ Generated:
 計測コストを知るために、同じコマンドをあと 2 通り流します。`--nsys-args` を外した既定と、プロファイラを動かさないベースラインです。
 
 ```bash
-kubectl accelprof run --alias teama-gpu-nsys --image "$TRAIN_IMAGE" --gpu 1 \
-  -- python3 -c '...上と同じスクリプト...'
-export BASE_ID=$(kubectl accelprof run --alias teama-gpu-nsys --image "$TRAIN_IMAGE" --gpu 1 \
-  --profile none -o run-id -- python3 -c '...上と同じスクリプト...')
+export NSYS_ID=$(kubectl accelprof get --last --alias teama-gpu-nsys -o run-id)
+echo "NSYS_ID=$NSYS_ID"
 ```
 
-ベースラインの `run_id` は `-o run-id` で受け取っておきます (`runs` の一覧に profile の種類は出ないので、あとから見分けられません)。`-o run-id` は記録が書かれるまで待つので、この 1 行は run の完了までブロックします。
+`--last` はその時点の最新を指すので、この 1 行はベースラインを投げる前に実行します。あとで実行すると `--last` が指すのはベースラインです。
+
+```bash
+kubectl accelprof run --alias teama-gpu-nsys --image "$TRAIN_IMAGE" --gpu 1 --wait \
+  -- python3 -c "$SCRIPT"
+export BASE_ID=$(kubectl accelprof run --alias teama-gpu-nsys --image "$TRAIN_IMAGE" --gpu 1 \
+  --profile none -o run-id -- python3 -c "$SCRIPT")
+echo "BASE_ID=$BASE_ID"
+```
+
+`run_id` を 2 つとも変数で受け取るのは、`runs` の一覧に profile の種類が出ないので、あとから見分けられないからです。`-o run-id` は記録が書かれるまで待つので、その行は run の完了までブロックします。
 
 3 本の `metrics.json` を比べると、A10G 1 枚では次のようになりました。
 
@@ -427,10 +441,10 @@ analyze はデフォルトの analyzer=inventory で走り、同じディレク�
 }
 ```
 
-`analyze` の既定の analyzer は `inventory` で、ファイルの棚卸ししか返しません。カーネルの集計を読むには `analyzer` に `nsys-stats` を指定します。手順 4 の run は CPU なので集計する対象もありません。手順 5 で取った GPU の run に切り替えます。
+`analyze` の既定の analyzer は `inventory` で、ファイルの棚卸ししか返しません。カーネルの集計を読むには `analyzer` に `nsys-stats` を指定します。手順 4 の run は CPU なので集計する対象もありません。手順 5 で取った GPU の run に切り替えます。指すのは手順 5 で受け取った `NSYS_ID` です。`--last` を使わないのは、手順 5 の最後に投げたのがベースラインで、`--last` がそれを指すからです。ベースラインには成果物が無いので、`stage_run` は `has no artifacts to stage` を返して終わります。ここで `--last` を使わないのは、手順 5 の最後に投げたのがベースラインで、`--last` はそれを指すからです。ベースラインには成果物が無いので、`stage_run` が `has no artifacts to stage` を返して終わります。
 
 ```bash
-export RUN_ID=$(kubectl accelprof get --last --alias teama-gpu-nsys -o run-id)
+export RUN_ID="$NSYS_ID"
 kubectl distai-mcp exec -- sh -c 'claude -p "analysis の stage_run と analyze (analyzer は nsys-stats) を run_id=$RUN_ID で順に呼び、支配的なカーネル名と平均時間だけを 2 行で報告して" --mcp-config "$DISTAI_MCP_CONFIG" --strict-mcp-config --allowed-tools mcp__analysis__stage_run mcp__analysis__analyze'
 ```
 
