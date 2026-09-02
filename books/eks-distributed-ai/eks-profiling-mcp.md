@@ -79,7 +79,7 @@ alias 単位の削除は自動では起きません。終わったキャンペ�
 
 # ワークショップ実施
 
-はじめにシェルを対象クラスタへ向けます。Basic01 手順 3 の 5 行に `DISTAI_NAMESPACE` を足したもので、本章の作業 namespace は `distai` ではなく `team-a` です。こうすると `k` と後述のプラグインの既定がこの namespace になり、以降のコマンドに `-n` を書かずに済みます。`CLUSTER_NAME` と `AWS_REGION`、それに 1 行目のチェックアウトのパスは自分のものに読み替えます。
+はじめにシェルを対象クラスタへ向けます。Basic01 手順 3 の 5 行に `DISTAI_NAMESPACE` を足したもので、本章の作業 namespace は `distai` ではなく `team-a` です。こうすると `k` と後述のプラグインの既定がこの namespace になり、以降のコマンドに `-n` を書かずに済みます。端末を開き直したりこの 6 行を飛ばすと `k` は `distai` を向くので、本章のコマンドは `accelprof-config` が見つからないという形で止まります。`CLUSTER_NAME` と `AWS_REGION`、それに 1 行目のチェックアウトのパスは自分のものに読み替えます。
 
 ```bash
 cd ~/distributed-ai-v0.2.1
@@ -114,9 +114,12 @@ distai-env: k is kubectl --context distai-eks; KUBECONFIG is /home/you/.kube/dis
 
 ```bash
 k get nodes >/dev/null 2>&1 && echo "OK クラスタに接続できる" || echo "NG クラスタに接続できない"
+test "$(k config view --minify -o jsonpath='{.contexts[0].context.namespace}')" = team-a && echo "OK シェルが team-a を向いている" || echo "NG 章冒頭の 6 行を DISTAI_NAMESPACE=team-a 付きで実行し直す"
 aws sagemaker list-mlflow-apps help >/dev/null 2>&1 && echo "OK aws が MLflow app を知っている" || echo "NG aws を更新する"
 for c in terraform kubectl helm python3 git curl claude; do command -v "$c" >/dev/null && echo "OK $c" || echo "NG $c"; done
 ```
+
+2 行目を入れているのは、本章のほとんどのコマンドが `-n` を書かずに済むのが `KUBECONFIG` の namespace のおかげだからです。ConfigMap も Role も `PRODUCER_NAMESPACES` に挙げた namespace にだけ配られるので、シェルが `distai` を向いたままだと以降が `NotFound` で止まります。原因から遠い場所に出るので、ここで先に落とします。比べる相手を `team-a` と書いているのは、`DISTAI_NAMESPACE` と比べても意味が無いからです。この変数は冒頭の 6 行が向き先を決めるために使ったものなので、それと一致するのは当たり前で、向き先が間違っていても一致してしまいます。別の namespace で進めるなら、この行の `team-a` をその名前に読み替えてください。
 
 `aws` が NG のときは AWS CLI を更新してください。古いままだと、導入スクリプトが権限エラーのような見た目で止まります。`claude` は手順 6 で使います。本章は稼働中のクラスタにデータ層と MCP サーバを足すので、まだデータ層 (`infra/data-layer`) を適用していない状態から始めます。
 
@@ -232,7 +235,8 @@ kubectl plugin list | grep -E "accelprof|distai"
 まず経路が通っていることを確かめるために、基盤イメージ自身を 1 本流します。`--gpu` を付けないので GPU ノードは起動せず、CPU で数秒で終わります。イメージの URI は namespace に配られた ConfigMap から引けるので、レジストリやタグを組み立てる必要はありません。
 
 ```bash
-export IMAGE=$(k get configmap accelprof-config -o jsonpath='{.data.ACCELPROF_PLATFORM_IMAGE}')
+export IMAGE=$(k get configmap accelprof-config -n "${DISTAI_NAMESPACE:-team-a}" -o jsonpath='{.data.ACCELPROF_PLATFORM_IMAGE}')
+test -n "$IMAGE" || echo "NG accelprof-config が ${DISTAI_NAMESPACE:-team-a} に無い。章冒頭の 6 行を実行したか、その namespace が PRODUCER_NAMESPACES にあるかを確認する"
 kubectl accelprof run --alias teama-smoke --image "$IMAGE" --wait \
   --param steps=1 --tag phase=smoke \
   -- bash -lc 'python3 -c "print(sum(range(10**6)))"'
@@ -563,7 +567,7 @@ kubectl distai-mcp down
 MLflow が `app` の場合、A に相当する操作はありません。起動と停止の概念がなく、置いておくこと自体に課金要素がバケット以外に無いためです。この場合は何もしないのが A で、撤去したいときだけ B に進みます。`server` の場合は名前を ConfigMap から引いて停止します。
 
 ```bash
-export TRACKING_SERVER_NAME=$(k get configmap accelprof-config \
+export TRACKING_SERVER_NAME=$(k get configmap accelprof-config -n "${DISTAI_NAMESPACE:-team-a}" \
   -o jsonpath='{.data.ACCELPROF_TRACKING_URI}' | sed 's#.*/##')
 aws sagemaker stop-mlflow-tracking-server --tracking-server-name "$TRACKING_SERVER_NAME" --region "$AWS_REGION"
 ```
