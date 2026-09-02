@@ -212,6 +212,21 @@ plugin ok
 /home/you/distributed-ai-v0.2.1/infra/eks/bin/kubectl-distai_mcp
 ```
 
+`get-profiling.sh` で基盤を入れた場合は、同じプラグインの写しが `~/.local/bin` にも置かれています。この状態では `kubectl plugin list` が overshadow の警告を出し、警告が 1 つでもあると `error: one plugin warning was found` を出して終了コード 1 を返します。`plugin ok` が表示されていればプラグイン自体は動いているので、この行だけが失敗したように見えます。
+
+```text
+/Users/you/.local/bin/kubectl-accelprof
+  - warning: /Users/you/.local/bin/kubectl-accelprof is overshadowed by a similarly named plugin: /Users/you/distributed-ai-v0.2.1/infra/eks/bin/kubectl-accelprof
+error: one plugin warning was found
+```
+
+実行されるのは PATH の先に置いた checkout 側です。`command -v kubectl-accelprof` で確認できます。写しは古いままになるので、消しておくほうが安全です。PATH を前置していない端末では古い写しが動きます。
+
+```bash
+rm -f ~/.local/bin/kubectl-accelprof ~/.local/bin/kubectl-distai_mcp
+kubectl plugin list | grep -E "accelprof|distai"
+```
+
 `kubectl plugin list` の出力がチェックアウト内のパスであることを確かめてください。以前どこかに置いた古い版が先に見つかると、手順 6 で `unknown subcommand` になります。
 
 まず経路が通っていることを確かめるために、基盤イメージ自身を 1 本流します。`--gpu` を付けないので GPU ノードは起動せず、CPU で数秒で終わります。イメージの URI は namespace に配られた ConfigMap から引けるので、レジストリやタグを組み立てる必要はありません。
