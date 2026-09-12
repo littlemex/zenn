@@ -1,9 +1,9 @@
 ---
 title: "FSx for Lustre クライアントの DKMS 化"
-emoji: "🧩"
+emoji: "🥁"
 type: "tech"
 topics: ["aws", "fsx", "lustre", "ubuntu", "dkms"]
-published: false
+published: true
 ---
 
 # はじめに
