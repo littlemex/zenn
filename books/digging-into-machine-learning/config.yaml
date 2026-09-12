@@ -10,3 +10,5 @@ chapters:
   - llm2026-elements
   - serving-disaggregation
   - global-workspace-jlens
+  - global-workspace-jlens-workspace
+  - global-workspace-jlens-apply
