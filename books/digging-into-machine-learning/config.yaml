@@ -9,3 +9,4 @@ chapters:
   - llm2026-overview
   - llm2026-elements
   - serving-disaggregation
+  - global-workspace-jlens
