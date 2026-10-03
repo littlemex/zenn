@@ -6,10 +6,10 @@ free: false
 ## はじめに
 
 :::message
-本稿は「[分離サービングの理論 (2): 平均では見えない裾と、約束を引数にした地図](https://zenn.dev/littlemex/books/digging-into-machine-learning/viewer/disagg-simulator-promisemap)」の続きである。前 2 回の式とシミュレーションを実機の GPU クラスタで確かめた結果を扱う。根拠の表記は前 2 回と同じである。
+本稿は「[分離サービングの理論 (2): 平均では見えない裾と、約束を引数にした地図](https://zenn.dev/littlemex/books/digging-into-machine-learning/viewer/disagg-tail-promisemap)」の続きである。前 2 回の式と試算を実機の GPU クラスタで確かめた結果を扱う。根拠の表記は前 2 回と同じである。
 :::
 
-理論とシミュレータは、実機で確かめるまで仮説である。本稿では実機の測定結果を、3 つの問いの順に並べる。費用の式は実機の定数で書けるか。測る道具は信用できるか。そして、分離はどの条件で負け、どの条件で勝ったか。
+理論と試算は、実機で確かめるまで仮説である。本稿では実機の測定結果を、3 つの問いの順に並べる。費用の式は実機の定数で書けるか。測る道具は信用できるか。そして、分離はどの条件で負け、どの条件で勝ったか。
 
 先に結論を書く。費用の式のうち、重みと KV を読む項は、測った範囲ではデータシートからの見積もりと近かった。一方で、測る道具は何度も「測られる側の性質」に化けて嘘をつき、分離について出した結論のいくつかは道具を直したことで撤回した。筆者の測った範囲で分離が素直に勝ったのは、EFA で KV を運び、短い読みが高頻度で来る負荷だった。
 
@@ -126,7 +126,7 @@ TCP 1 本の帯域は、AWS が公表している 1 フローあたりの上限�
 
 ## 参考文献
 
-- 前回: [分離サービングの理論 (2): 平均では見えない裾と、約束を引数にした地図](https://zenn.dev/littlemex/books/digging-into-machine-learning/viewer/disagg-simulator-promisemap)
+- 前回: [分離サービングの理論 (2): 平均では見えない裾と、約束を引数にした地図](https://zenn.dev/littlemex/books/digging-into-machine-learning/viewer/disagg-tail-promisemap)
 - 筆者の公開解説: [分離推論が効く条件を、机の上で先に決める](https://littlemex.github.io/explainers/disagg-theory.html)
 - NIXL: [ai-dynamo/nixl](https://github.com/ai-dynamo/nixl)
 - vLLM: [vllm-project/vllm](https://github.com/vllm-project/vllm)

@@ -10,7 +10,7 @@ chapters:
   - llm2026-elements
   - serving-disaggregation
   - disagg-queueing-basics
-  - disagg-simulator-promisemap
+  - disagg-tail-promisemap
   - disagg-real-validation
   - disagg-decision-framework
   - global-workspace-jlens
