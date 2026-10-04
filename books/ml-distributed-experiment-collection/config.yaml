@@ -1,5 +1,5 @@
-title: "ML Distributed Training/Inference - Experiment Collection"
-summary: "分散学習・推論関連の実験集です。"
+title: "Distributed AI - Experiments"
+summary: "分散学習・推論関連の実験集で動かした結果や Contribute した内容を自分向けに整理しています。購入非推奨。"
 topics: ["Training", "Hyperpod", "Distributed", "Inference", "AWS"]
 published: true
 price: 500 # 有料の場合200〜5000
