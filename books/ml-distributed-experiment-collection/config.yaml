@@ -5,6 +5,13 @@ published: true
 price: 500 # 有料の場合200〜5000
 # 本に含めるチャプターを順番に並べましょう
 chapters:
+  - awsome-picotron
+  - awsome-ddp-container
+  - awsome-pcluster-monitoring
+  - awsome-slime-b300
+  - awsome-hyperpod-eks-fixes
+  - awsome-miles-grpo
+  - awsome-eks-gpu-cfn
 #  - pipeline-parallelism
 #  - review
 #  - background
