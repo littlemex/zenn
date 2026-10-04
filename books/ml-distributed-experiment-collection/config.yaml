@@ -5,9 +5,6 @@ published: true
 price: 500 # 有料の場合200〜5000
 # 本に含めるチャプターを順番に並べましょう
 chapters:
-  - aws-hpc-ml-orchestration-comparison
-  - transformer-distributed-parallelism
-  - basics-rmsnorm
 #  - pipeline-parallelism
 #  - review
 #  - background
