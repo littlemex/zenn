@@ -130,11 +130,42 @@ flowchart LR
 
 身元の運び方を決めるときは、1 本目の矢印のトークンを 2 本目に流用しないよう注意します。Runtime に渡された JWT は Runtime 宛てのトークンなので、クレームを読むために使い、そのまま Gateway や下流の API に転送しません。転送すると、前の節で禁止された token passthrough になります。後者の構成で Runtime 上のエージェントから Gateway を呼ぶ場合は、トークン交換などで Gateway 宛てのトークンを別に取るか、エージェント自身の資格情報で呼ぶかを決めます。1 枚のトークンに Runtime 宛てと Gateway 宛てを兼ねさせる方法もありますが、audience で境界を引く意味が薄れるので、IdP の制約でやむを得ない場合の妥協です。エージェント自身の資格情報で呼ぶと、Gateway から見えるのはエージェントの身元だけになり、ユーザー単位の認可は Gateway の手前で行うことになります。
 
+下流用のトークンを取り直すときに考えたいのが、なりすましと委任の違いです。なりすまし（impersonation）は、エージェントがユーザーと同じ権限をそのまま持って下流を呼ぶ形です。単純ですが、下流のツールからはユーザー本人とエージェントの区別がつきません。トークンが盗まれたときや、エージェントが操られたときの被害も、ユーザーの全権限に及びます。委任（delegation）は、ユーザーの権限のうち、その呼び出しに必要な分だけを持つトークンを発行し直す形です。トークンには「誰の代わりに（`sub`）」に加えて「誰が実行しているか（`act`）」を書き込みます。下流はエージェント経由の呼び出しだと見分けたうえで、絞られた権限だけを受け取ります。本番では委任を基本にし、呼び出しの段ごとに用途を絞ったトークンを取り直すのが安全です。
+
+:::details 委任トークンの例
+ユーザーが受け取ったトークンには、ユーザーの権限がすべて入っています。
+
+```json
+{
+  "sub": "user-a",
+  "tenant_id": "tenant-a",
+  "scope": "orders:read promotions:write"
+}
+```
+
+注文ツールを呼ぶときは、注文ツール宛てで、読み取りの権限だけを持つトークンに発行し直します。
+
+```json
+{
+  "sub": "user-a",
+  "act": { "sub": "order-agent" },
+  "aud": "order-tool",
+  "tenant_id": "tenant-a",
+  "scope": "orders:read"
+}
+```
+
+`act` クレームは、トークン交換を定めた RFC 8693 で定義されています。段ごとに発行し直すと認可サーバーへの問い合わせが増えますが、有効期限内のトークンを使い回したり、有効期限を調整したりして負荷を抑えられます。
+
+一次情報: [RFC 8693](https://www.rfc-editor.org/rfc/rfc8693.html)
+:::
+
 :::details 身元を運ぶ仕組み
 - `requestHeaderAllowlist` に Authorization ヘッダーを入れると、Runtime は JWT をエージェントのコードに渡します。これを許すのは、Runtime に JWT authorizer を設定した場合だけです。
 - `GetWorkloadAccessTokenForJWT` は、受け取った JWT の署名と有効期限を確かめ、`iss` と `sub` の組でユーザーを特定します。Runtime に JWT の入口認証を設定している場合は、Runtime がこれを自動で呼び、workload access token をエージェントのコードに渡します。
 - `GetWorkloadAccessTokenForUserId` は、呼び出し側がユーザー ID を文字列で渡します。この API を呼べるロールは、どのユーザーの分のトークンでも取り出せることになります。ユーザー ID は検証済みの JWT やセッションのような信頼できる経路からだけ取り、LLM の出力や会話の内容から決めてはいけません。
 - JWT の discovery URL は `/.well-known/openid-configuration` で終わる形式に限られます。
+- テナント ID を独自のヘッダーで運ぶ場合は注意が要ります。そのヘッダーをクライアントが自由に付けられるなら、他のテナントの ID を名乗れてしまいます。テナント ID は検証済みの JWT のクレームから取り、独自のヘッダーは信頼できる部品が付け直したものだけを信じます。
 - テナント ID のような独自のクレームを JWT に入れておけば、JWT authorizer のカスタムクレーム検証で入口の条件にできます。ただし、これは入口の条件で、3 本目の矢印の代わりにはなりません。
 
 一次情報: [Inbound JWT authorizer](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/inbound-jwt-authorizer.html)、[Header allowlist](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-header-allowlist.html)、[Workload access token](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/get-workload-access-token.html)
