@@ -76,7 +76,15 @@ DKMS は Dynamic Kernel Module Support の略で、Ubuntu では `dkms` とい�
 
 ![1 で /usr/src/lustre-client-modules-2.15.6/ にソースと dkms.conf を置き、2 で dkms add により /var/lib/dkms に登録し、3 で dkms build により 6.8.0-1057-aws のヘッダを使ってビルドし、4 で dkms install によりそのカーネルの updates/dkms に lustre.ko を入れる。5 で新しいカーネル 7.0.0-1012-aws が入ると、カーネルのパッケージのフックから dkms autoinstall が呼ばれ、新しいカーネル向けにもビルドと組み込みが走る。dkms status の表示は added、built、installed と変わる](https://raw.githubusercontent.com/littlemex/figures/refs/heads/zenn/articles/73cedcb6add298/zenn/articles/73cedcb6add298/dkms-lifecycle.gif)
 
-GIF は、DKMS がモジュールを扱う 5 つのステップを、コマンドの並びから描いた模式図です（画面の値は実行結果ではありません）。DKMS が扱う場所は 3 つあります。
+GIF は、DKMS がモジュールを扱う 5 つのステップを、コマンドの並びから描いた模式図です（画面の値は実行結果ではありません）。
+
+1. ソースを置く: モジュールのソースと `dkms.conf` を `/usr/src/lustre-client-modules-2.15.6/` に置きます。
+2. 登録する: `dkms add` で DKMS に登録します。`dkms status` は `added` になります。
+3. ビルドする: `dkms build -k <カーネル>` で、そのカーネルのヘッダを使ってビルドします。`dkms status` は `built` になります。
+4. 組み込む: `dkms install -k <カーネル>` で、できた `lustre.ko` をそのカーネルのモジュールの置き場所に入れます。`dkms status` は `installed` になります。
+5. 新しいカーネルに追随する: `apt` で新しいカーネルが入ると、カーネルのパッケージのフックが `dkms autoinstall` を呼び、新しいカーネル向けに 3 と 4 を自動で行います。
+
+DKMS が扱う場所は 3 つあります。
 
 1. ソースの置き場所 `/usr/src/<名前>-<バージョン>/`。同じディレクトリの `dkms.conf` が、モジュールの名前とバージョン、ビルドの方法、できるモジュールのファイル名を DKMS に伝えます。
 2. DKMS 自身の管理場所 `/var/lib/dkms/<名前>/<バージョン>/`。登録の記録と、ビルドの作業場所（`build/`）がここに置かれます。
