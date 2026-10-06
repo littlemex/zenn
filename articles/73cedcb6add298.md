@@ -78,13 +78,15 @@ DKMS は Dynamic Kernel Module Support の略で、Ubuntu では `dkms` とい�
 
 GIF は、DKMS がモジュールを扱う 5 つのステップを、コマンドの並びから描いた模式図です（画面の値は実行結果ではありません）。各ステップは [dkms(8)](https://manpages.ubuntu.com/manpages/noble/man8/dkms.8.html) のコマンドに対応します。`-k` を省くと、動いているカーネルが対象です。
 
-| ステップ | やること | コマンド | 置き場所 |
-| --- | --- | --- | --- |
-| 1 | ソースを置く | （置くだけ） | `/usr/src/<名前>-<バージョン>/`。`dkms.conf` が名前・バージョン・ビルド方法を DKMS に伝えます |
-| 2 | 登録する | `dkms add -m <名前> -v <バージョン>` | `/var/lib/dkms/<名前>/<バージョン>/`。`dkms status` は `added` |
-| 3 | ビルドする | `dkms build -m <名前> -v <バージョン> -k <カーネル>` | `/lib/modules/<カーネル>/build/` のヘッダを使う。`dkms status` は `built` |
-| 4 | 組み込む | `dkms install -m <名前> -v <バージョン> -k <カーネル>` | `/lib/modules/<カーネル>/updates/dkms/`。`dkms status` は `installed` |
-| 5 | 新しいカーネルに追随する | `dkms autoinstall`（カーネル導入のフックが自動で呼ぶ） | ステップ 3・4 を新しいカーネル向けにやり直す |
+コマンドはどれも `dkms` のサブコマンドです。
+
+| ステップ | やること | コマンド | `dkms status` | 置き場所 |
+| --- | --- | --- | --- | --- |
+| 1 | ソースを置く | （置くだけ） | - | `/usr/src/<名前>-<バージョン>/`。`dkms.conf` が名前・バージョン・ビルド方法を DKMS に伝えます |
+| 2 | 登録する | `add`<br>`-m <名前>`<br>`-v <バージョン>` | `added` | `/var/lib/dkms/<名前>/<バージョン>/` |
+| 3 | ビルドする | `build`<br>`-m <名前>`<br>`-v <バージョン>`<br>`-k <カーネル>` | `built` | `/lib/modules/<カーネル>/build/` のヘッダを使う |
+| 4 | 組み込む | `install`<br>`-m <名前>`<br>`-v <バージョン>`<br>`-k <カーネル>` | `installed` | `/lib/modules/<カーネル>/updates/dkms/` |
+| 5 | 新しいカーネルに追随する | `autoinstall`（カーネル導入のフックが自動で呼ぶ） | - | ステップ 3・4 を新しいカーネル向けにやり直す |
 
 4 の置き場所は、Ubuntu（Debian 系）だけの値です。[dkms のソースの `override_dest_module_location`](https://github.com/dell/dkms/blob/v3.0.11/dkms.in#L372-L396) が、ディストリビューションごとに置き場所を分岐しています。5 の `dkms autoinstall` が対象にするのは、[ソースの `autoinstall()`](https://github.com/dell/dkms/blob/v3.0.11/dkms.in#L2207-L2325) を読むと、モジュール名ごとに登録されているバージョンのうち最も新しいものだけで、`dkms.conf` に `AUTOINSTALL=yes` が書かれているものに限られます。Lustre の `dkms.conf` の元になるテンプレート（[debian/dkms.conf.in](https://github.com/lustre/lustre-release/blob/3cf87a83a0fd5ef8e8b9ba57c22f69d944d37a95/debian/dkms.conf.in#L114)）には、この `AUTOINSTALL="yes"` が書かれています。後で紹介するスクリプトも、ソースを `/usr/src` に展開したあと、この 2〜4 の順に呼んでいます（[lustre_installer.sh](https://github.com/littlemex/distributed-ai/blob/52fff763c028710ab8f7eb0c4136a768930fda9f/2026-09-10-fsx-lustre-client-kernel-abi/ansible/roles/aws_lustre/files/lustre_installer.sh#L724-L790)）。
 
