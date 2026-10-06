@@ -76,32 +76,19 @@ DKMS は Dynamic Kernel Module Support の略で、Ubuntu では `dkms` とい�
 
 ![1 で /usr/src/lustre-client-modules-2.15.6/ にソースと dkms.conf を置き、2 で dkms add により /var/lib/dkms に登録し、3 で dkms build により 6.8.0-1057-aws のヘッダを使ってビルドし、4 で dkms install によりそのカーネルの updates/dkms に lustre.ko を入れる。5 で新しいカーネル 7.0.0-1012-aws が入ると、カーネルのパッケージのフックから dkms autoinstall が呼ばれ、新しいカーネル向けにもビルドと組み込みが走る。dkms status の表示は added、built、installed と変わる](https://raw.githubusercontent.com/littlemex/figures/refs/heads/zenn/articles/73cedcb6add298/zenn/articles/73cedcb6add298/dkms-lifecycle.gif)
 
-GIF は、DKMS がモジュールを扱う 5 つのステップを、コマンドの並びから描いた模式図です（画面の値は実行結果ではありません）。
+GIF は、DKMS がモジュールを扱う 5 つのステップを、コマンドの並びから描いた模式図です（画面の値は実行結果ではありません）。各ステップは [dkms(8)](https://manpages.ubuntu.com/manpages/noble/man8/dkms.8.html) のコマンドに対応します。`-k` を省くと、動いているカーネルが対象です。
 
-1. ソースを置く: モジュールのソースと `dkms.conf` を `/usr/src/lustre-client-modules-2.15.6/` に置きます。
-2. 登録する: `dkms add` で DKMS に登録します。`dkms status` は `added` になります。
-3. ビルドする: `dkms build -k <カーネル>` で、そのカーネルのヘッダを使ってビルドします。`dkms status` は `built` になります。
-4. 組み込む: `dkms install -k <カーネル>` で、できた `lustre.ko` をそのカーネルのモジュールの置き場所に入れます。`dkms status` は `installed` になります。
-5. 新しいカーネルに追随する: `apt` で新しいカーネルが入ると、カーネルのパッケージのフックが `dkms autoinstall` を呼び、新しいカーネル向けに 3 と 4 を自動で行います。
+| ステップ | やること | コマンド | 置き場所 |
+| --- | --- | --- | --- |
+| 1 | ソースを置く | （置くだけ） | `/usr/src/<名前>-<バージョン>/`。`dkms.conf` が名前・バージョン・ビルド方法を DKMS に伝えます |
+| 2 | 登録する | `dkms add -m <名前> -v <バージョン>` | `/var/lib/dkms/<名前>/<バージョン>/`。`dkms status` は `added` |
+| 3 | ビルドする | `dkms build -m <名前> -v <バージョン> -k <カーネル>` | `/lib/modules/<カーネル>/build/` のヘッダを使う。`dkms status` は `built` |
+| 4 | 組み込む | `dkms install -m <名前> -v <バージョン> -k <カーネル>` | `/lib/modules/<カーネル>/updates/dkms/`。`dkms status` は `installed` |
+| 5 | 新しいカーネルに追随する | `dkms autoinstall`（カーネル導入のフックが自動で呼ぶ） | ステップ 3・4 を新しいカーネル向けにやり直す |
 
-DKMS が扱う場所は 3 つあります。
+4 の置き場所は、Ubuntu（Debian 系）だけの値です。[dkms のソースの `override_dest_module_location`](https://github.com/dell/dkms/blob/v3.0.11/dkms.in#L372-L396) が、ディストリビューションごとに置き場所を分岐しています。5 の `dkms autoinstall` が対象にするのは、[ソースの `autoinstall()`](https://github.com/dell/dkms/blob/v3.0.11/dkms.in#L2207-L2325) を読むと、モジュール名ごとに登録されているバージョンのうち最も新しいものだけで、`dkms.conf` に `AUTOINSTALL=yes` が書かれているものに限られます。Lustre の `dkms.conf` の元になるテンプレート（[debian/dkms.conf.in](https://github.com/lustre/lustre-release/blob/3cf87a83a0fd5ef8e8b9ba57c22f69d944d37a95/debian/dkms.conf.in#L114)）には、この `AUTOINSTALL="yes"` が書かれています。後で紹介するスクリプトも、ソースを `/usr/src` に展開したあと、この 2〜4 の順に呼んでいます（[lustre_installer.sh](https://github.com/littlemex/distributed-ai/blob/52fff763c028710ab8f7eb0c4136a768930fda9f/2026-09-10-fsx-lustre-client-kernel-abi/ansible/roles/aws_lustre/files/lustre_installer.sh#L724-L790)）。
 
-1. ソースの置き場所 `/usr/src/<名前>-<バージョン>/`。同じディレクトリの `dkms.conf` が、モジュールの名前とバージョン、ビルドの方法、できるモジュールのファイル名を DKMS に伝えます。
-2. DKMS 自身の管理場所 `/var/lib/dkms/<名前>/<バージョン>/`。登録の記録と、ビルドの作業場所（`build/`）がここに置かれます。
-3. カーネルごとのモジュールの置き場所 `/lib/modules/<カーネルのリリース>/`。ビルドにはこの下の `build/` にあるそのカーネルのヘッダ（カーネルの内部構造の定義）を使います。
-
-できたモジュールは、Ubuntu では `/lib/modules/<カーネルのリリース>/updates/dkms/` の下に入ります。[dkms のソースの `override_dest_module_location`](https://github.com/dell/dkms/blob/v3.0.11/dkms.in#L372-L396) が、Debian 系（Ubuntu を含む）では `/updates/dkms` を置き場所として返すように分岐しています。
-
-操作は [dkms(8)](https://manpages.ubuntu.com/manpages/noble/man8/dkms.8.html) のコマンドで 1 ステップずつ進みます。`-k` を省くと、動いているカーネルが対象です。
-
-- `dkms add -m <名前> -v <バージョン>`: `/usr/src` のソースを登録します（カーネルは指定しません）。
-- `dkms build -m <名前> -v <バージョン> -k <カーネル>`: そのカーネル向けにビルドします。
-- `dkms install -m <名前> -v <バージョン> -k <カーネル>`: ビルドしたモジュールをそのカーネルの置き場所に入れます。
-- `dkms autoinstall`: 新しく入ったカーネルに向けて、まだそのカーネルに組み込まれていないモジュールを入れます。[dkms のソースの `autoinstall()`](https://github.com/dell/dkms/blob/v3.0.11/dkms.in#L2207-L2325) を読むと、対象になるのは、モジュール名ごとに登録されているバージョンのうち最も新しいものだけで、かつ `dkms.conf` に `AUTOINSTALL=yes` が書かれているものに限られます。Lustre の `dkms.conf` の元になるテンプレート（[debian/dkms.conf.in](https://github.com/lustre/lustre-release/blob/3cf87a83a0fd5ef8e8b9ba57c22f69d944d37a95/debian/dkms.conf.in#L114)）には、この `AUTOINSTALL="yes"` が書かれています。
-
-後で紹介するスクリプトも、ソースを `/usr/src` に展開したあと、この `add`、`build`、`install` の順に呼んでいます（[lustre_installer.sh](https://github.com/littlemex/distributed-ai/blob/52fff763c028710ab8f7eb0c4136a768930fda9f/2026-09-10-fsx-lustre-client-kernel-abi/ansible/roles/aws_lustre/files/lustre_installer.sh#L724-L790)）。
-
-登録すると、DKMS は自分の管理下にあるモジュールとして扱い、どのカーネル向けにビルド済みかを一覧できます。状態は、登録だけなら `added`、ビルドまでなら `built`、組み込みまでなら `installed` と表示されます。`installed` は対象のカーネル向けの置き場所にファイルが入ったところまでで、そのカーネルで実際に読み込まれて使えるかどうかは別です（後の「起動時の検査」で確かめます）。
+登録すると、DKMS は自分の管理下にあるモジュールとして扱い、どのカーネル向けにビルド済みかを `dkms status` で一覧できます。`installed` は対象のカーネル向けの置き場所にファイルが入ったところまでで、そのカーネルで実際に読み込まれて使えるかどうかは別です（後の「起動時の検査」で確かめます）。
 
 ```bash
 $ dkms status
