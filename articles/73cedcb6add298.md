@@ -109,7 +109,7 @@ Secure Boot を有効にしている場合、カーネルはモジュールの�
 
 肝心なのは、DKMS が動くタイミングです。Ubuntu のカーネルは、本体の `linux-image-<リリース>` と、ヘッダの `linux-headers-<リリース>` という 2 つのパッケージに分かれています。本体はカーネルそのもので、これだけでホストは起動できます。ヘッダは、そのリリースのカーネルの内部構造の定義とビルド時の設定（`.config` や `Module.symvers` など）をまとめたもので、`/usr/src/linux-headers-<リリース>/` に入り、`/lib/modules/<リリース>/build` がそこを指します。最初の節で見たとおり、モジュールは動くカーネルと同じ前提でコンパイルする必要があり、その前提を書いたものがヘッダです。そのため本体だけではモジュールをビルドできず、DKMS もこのヘッダを使ってビルドします。
 
-DKMS を呼ぶのは、この 2 つのパッケージの導入処理です。本体のパッケージは導入の最後に `/etc/kernel/postinst.d/` の、ヘッダのパッケージは `/etc/kernel/header_postinst.d/` のスクリプトを `run-parts` で順に実行し、dkms パッケージはその両方に同じ中身の `dkms` を置いています（Ubuntu 24.04 の dkms 3.0.11 で確認）。このスクリプトは、ヘッダが揃っていれば `dkms autoinstall` を実行し、揃っていなければ飛ばしたと記録するだけです。そのため本体とヘッダのどちらが先に入っても、ヘッダが揃った時点のフックでビルドが走ります。`linux-aws` は本体とヘッダの両方に依存しているので、これを入れれば `apt install` の 1 回でビルドまで終わります。
+DKMS を呼ぶのは、この 2 つのパッケージの導入処理です。本体のパッケージは導入の最後に `/etc/kernel/postinst.d/` の、ヘッダのパッケージは `/etc/kernel/header_postinst.d/` のスクリプトを `run-parts`（ディレクトリの中の実行可能なファイルを順に実行する、Ubuntu の標準コマンド）で実行し、dkms パッケージはその両方に同じ中身の `dkms` を置いています（Ubuntu 24.04 の dkms 3.0.11 で確認）。このスクリプトは、ヘッダが揃っていれば `dkms autoinstall` を実行し、揃っていなければ飛ばしたと記録するだけです。そのため本体とヘッダのどちらが先に入っても、ヘッダが揃った時点のフックでビルドが走ります。`linux-aws` は本体とヘッダの両方に依存しているので、これを入れれば `apt install` の 1 回でビルドまで終わります。
 
 ![apt install linux-aws で dpkg が linux-image と linux-headers を導入し、それぞれの導入後のフック /etc/kernel/postinst.d/dkms と /etc/kernel/header_postinst.d/dkms が dkms autoinstall を呼ぶ。そのカーネルのヘッダが無ければ飛ばしたと記録するだけで、あれば登録済みのソースをビルドし、結果が dpkg と apt に返る](https://raw.githubusercontent.com/littlemex/figures/refs/heads/zenn/articles/73cedcb6add298/zenn/articles/73cedcb6add298/build-hook.png)
 
