@@ -88,8 +88,6 @@ GIF は、DKMS がモジュールを扱う 5 つのステップを、コマン�
 | 4 | 組み込む | `install`<br>`-m <名前>`<br>`-v <バージョン>`<br>`-k <カーネル>` | `installed` | `/lib/modules/<カーネル>/updates/dkms/` |
 | 5 | 新しいカーネルに追随する | `autoinstall`（カーネル導入のフックが自動で呼ぶ） | - | ステップ 3・4 を新しいカーネル向けにやり直す |
 
-4 の置き場所は、Ubuntu（Debian 系）だけの値です。[dkms のソースの `override_dest_module_location`](https://github.com/dell/dkms/blob/v3.0.11/dkms.in#L372-L396) が、ディストリビューションごとに置き場所を分岐しています。5 の `dkms autoinstall` が対象にするのは、[ソースの `autoinstall()`](https://github.com/dell/dkms/blob/v3.0.11/dkms.in#L2207-L2325) を読むと、モジュール名ごとに登録されているバージョンのうち最も新しいものだけで、`dkms.conf` に `AUTOINSTALL=yes` が書かれているものに限られます。Lustre の `dkms.conf` の元になるテンプレート（[debian/dkms.conf.in](https://github.com/lustre/lustre-release/blob/3cf87a83a0fd5ef8e8b9ba57c22f69d944d37a95/debian/dkms.conf.in#L114)）には、この `AUTOINSTALL="yes"` が書かれています。後で紹介するスクリプトも、ソースを `/usr/src` に展開したあと、この 2〜4 の順に呼んでいます（[lustre_installer.sh](https://github.com/littlemex/distributed-ai/blob/52fff763c028710ab8f7eb0c4136a768930fda9f/2026-09-10-fsx-lustre-client-kernel-abi/ansible/roles/aws_lustre/files/lustre_installer.sh#L724-L790)）。
-
 登録すると、DKMS は自分の管理下にあるモジュールとして扱い、どのカーネル向けにビルド済みかを `dkms status` で一覧できます。`installed` は対象のカーネル向けの置き場所にファイルが入ったところまでで、そのカーネルで実際に読み込まれて使えるかどうかは別です（後の「起動時の検査」で確かめます）。
 
 ```bash
@@ -97,9 +95,15 @@ $ dkms status
 lustre-client-modules/2.15.6, 7.0.0-1012-aws, x86_64: installed
 ```
 
-後で紹介するスクリプトは、新しいソースを登録する前に、自分が登録した古いバージョンを明示的に外します（[lustre_installer.sh](https://github.com/littlemex/distributed-ai/blob/52fff763c028710ab8f7eb0c4136a768930fda9f/2026-09-10-fsx-lustre-client-kernel-abi/ansible/roles/aws_lustre/files/lustre_installer.sh#L724-L740)）。スクリプト自身のコメントは、理由を「登録されたバージョンはカーネル導入のたびにビルドされるので、古いソースが新しいカーネルでコンパイルできないと導入全体が失敗する」としています。`autoinstall()` のソースを読んだ範囲では、新しいカーネル向けに狙うのはモジュール名ごとの最新バージョンだけなので、この理由はやや保守的な想定に見えますが、古いバージョンを残しておく利点も無いので、この記事ではその判断をそのまま伝えます。
+:::details 置き場所と autoinstall の対象の根拠
+4 の置き場所は、Ubuntu（Debian 系）だけの値です。[dkms のソースの `override_dest_module_location`](https://github.com/dell/dkms/blob/v3.0.11/dkms.in#L372-L396) が、ディストリビューションごとに置き場所を分岐しています。5 の `dkms autoinstall` が対象にするのは、[ソースの `autoinstall()`](https://github.com/dell/dkms/blob/v3.0.11/dkms.in#L2207-L2325) を読むと、モジュール名ごとに登録されているバージョンのうち最も新しいものだけで、`dkms.conf` に `AUTOINSTALL=yes` が書かれているものに限られます。Lustre の `dkms.conf` の元になるテンプレート（[debian/dkms.conf.in](https://github.com/lustre/lustre-release/blob/3cf87a83a0fd5ef8e8b9ba57c22f69d944d37a95/debian/dkms.conf.in#L114)）には、この `AUTOINSTALL="yes"` が書かれています。後で紹介するスクリプトも、ソースを `/usr/src` に展開したあと、この 2〜4 の順に呼んでいます（[lustre_installer.sh](https://github.com/littlemex/distributed-ai/blob/52fff763c028710ab8f7eb0c4136a768930fda9f/2026-09-10-fsx-lustre-client-kernel-abi/ansible/roles/aws_lustre/files/lustre_installer.sh#L724-L790)）。
 
-もうひとつ制約を挙げておきます。Secure Boot を有効にしている場合、カーネルはモジュールの署名も検証します。Ubuntu の既定の構成では、DKMS はビルドしたモジュールにホスト上で生成した鍵で署名します。ただし、その公開鍵を MOK として登録し、shim を通じてカーネルの信頼済み鍵として使える状態にしなければ、署名の検証は通りません。Secure Boot を使う環境では、この鍵の運用を別途用意する必要があります。
+後で紹介するスクリプトは、新しいソースを登録する前に、自分が登録した古いバージョンを明示的に外します（[lustre_installer.sh](https://github.com/littlemex/distributed-ai/blob/52fff763c028710ab8f7eb0c4136a768930fda9f/2026-09-10-fsx-lustre-client-kernel-abi/ansible/roles/aws_lustre/files/lustre_installer.sh#L724-L740)）。スクリプト自身のコメントは、理由を「登録されたバージョンはカーネル導入のたびにビルドされるので、古いソースが新しいカーネルでコンパイルできないと導入全体が失敗する」としています。`autoinstall()` のソースを読んだ範囲では、新しいカーネル向けに狙うのはモジュール名ごとの最新バージョンだけなので、この理由はやや保守的な想定に見えますが、古いバージョンを残しておく利点も無いので、この記事ではその判断をそのまま伝えます。
+:::
+
+:::details Secure Boot を有効にしている場合
+Secure Boot を有効にしている場合、カーネルはモジュールの署名も検証します。Ubuntu の既定の構成では、DKMS はビルドしたモジュールにホスト上で生成した鍵で署名します。ただし、その公開鍵を MOK として登録し、shim を通じてカーネルの信頼済み鍵として使える状態にしなければ、署名の検証は通りません。Secure Boot を使う環境では、この鍵の運用を別途用意する必要があります。
+:::
 
 ## ビルドが走る瞬間
 
