@@ -18,7 +18,16 @@ sudo apt install lustre-client-modules-$(uname -r)
 
 この記事では、なぜカーネルのリリースに縛られるのかを、カーネルモジュールと DKMS の仕組みから順に説明します。そのうえで、クライアントの公開状況を一次情報から整理します。最後に、カーネル更新への追随とカスタム AMI への焼き込みを 1 本のスクリプトで扱う実装を紹介します。実装は [littlemex/distributed-ai のリファレンス実装](https://github.com/littlemex/distributed-ai/tree/main/2026-09-10-fsx-lustre-client-kernel-abi) に置いてあります。
 
+| 困ること | この記事の対処 | 節 |
+| --- | --- | --- |
+| 動かしているカーネル向けのパッケージが無いと入れられない | ソースからビルドし、DKMS に登録してカーネル更新に追随させる | DKMS とは何か |
+| DKMS のビルドが失敗すると apt まで止まる | 対象のカーネル系列を絞り、絞った外のホストは起動時に報告する | 失敗が apt を巻き込む理由 |
+| 対応するカーネル系列が時間とともに変わる | 対象の系列を書き留めず、リポジトリから毎回読む | 公開状況、リポジトリから読む対象系列 |
+| カスタム AMI にも入れたい | 同じスクリプトで、イメージを作るときにビルドする | AMI 焼き込みの 2 段階 |
+
 # カーネルモジュールという実体
+
+![モジュールの中には、ビルドしたときのカーネルのリリースを表す vermagic が入っている。同じリリースのカーネルでは読み込まれ、内部構造の前提が食い違うカーネルでは読み込みが拒否される（モジュール側にシンボルのバージョン情報があれば、リリース文字列ではなくその形で照合される。details を参照）。リポジトリのパッケージはカーネルのリリースごとに 1 つずつあり、一覧に無いリリースで動くホストには入れるものが無い](https://raw.githubusercontent.com/littlemex/figures/refs/heads/zenn/articles/73cedcb6add298/zenn/articles/73cedcb6add298/kernel-release.png)
 
 カーネルモジュールとは、カーネルに後から組み込むコードのことです。デバイスドライバやファイルシステムの実装がこの形で提供され、必要になった時点で読み込まれます。FSx for Lustre のクライアントもそのひとつで、マウントするときに読み込まれます。
 
@@ -39,21 +48,15 @@ Ubuntu のカーネルは、リリースを上げるときに内部構造も変�
 
 [リポジトリのパッケージ一覧](https://fsx-lustre-client-repo.s3.amazonaws.com/ubuntu/dists/noble/main/binary-amd64/Packages) を開くと、`lustre-client-modules-6.8.0-1057-aws` のように、ひとつひとつのカーネルリリースに対応するパッケージが並んでいます。裏を返せば、一覧に無いリリースで動いているホストには、入れるものがありません。
 
-# 5 段の入れ子
+# 5 階層の入れ子
 
-ここで登場する言葉が多いので、関係を整理します。上の段が下の段を選び、いちばん下でようやくモジュールのパッケージに行き着きます。図の矢印は「選ぶ」と読んでください。
+ここで登場する言葉が多いので、関係を整理します。上の階層が下の階層を選び、いちばん下でようやくモジュールのパッケージに行き着きます。図の矢印は「選ぶ」と読み、各行の右側のラベルはその階層を誰が決めるかを表します。
 
-```mermaid
-graph TD
-  A["Ubuntu のリリース<br/>24.04 LTS"] --> B["リポジトリの suite<br/>dists/noble"]
-  B --> C["カーネル系列<br/>6.8 / 6.14 / 6.17 / 7.0"]
-  C --> D["カーネルのリリース<br/>6.8.0-1057-aws"]
-  D --> E["モジュールのパッケージ<br/>lustre-client-modules-6.8.0-1057-aws"]
-```
+![Ubuntu のリリース 24.04 LTS（利用者が選ぶ）が FSx のリポジトリの suite dists/noble（コードネームで決まる）を選び、suite がカーネル系列 6.8、6.14、6.17、7.0（Ubuntu のカーネル提供方針が決める）を、カーネル系列がカーネルのリリース 6.8.0-1057-aws（適用したカーネル更新が決める）を、カーネルのリリースがモジュールのパッケージ lustre-client-modules-6.8.0-1057-aws（AWS が公開したかどうかで決まる）を選ぶ](https://raw.githubusercontent.com/littlemex/figures/refs/heads/zenn/articles/73cedcb6add298/zenn/articles/73cedcb6add298/five-levels.png)
 
-それぞれの段が何を決めているかを言い換えると、次のようになります。
+それぞれの階層が何を決めているかを言い換えると、次のようになります。
 
-| 段 | 決めるもの | 誰が決めるか |
+| 階層 | 決めるもの | 誰が決めるか |
 | --- | --- | --- |
 | Ubuntu のリリース | 利用できるパッケージの範囲 | 利用者が選ぶ |
 | suite | FSx のリポジトリのどの suite を読むか | Ubuntu のコードネームから自動で決まる |
@@ -65,36 +68,47 @@ suite という言葉は、apt のリポジトリが `dists/<コードネーム>
 
 カーネル系列については、Ubuntu が 2 通りの提供の仕方をしている点を押さえてください。LTS のリリース時点の系列をそのまま維持するメタパッケージが `linux-aws-lts-24.04` で、新しい系列へ順に上げていくメタパッケージが `linux-aws` です。どちらを使っているかで、動くカーネル系列が変わります。後半で「カーネル系列を固定する」と書くのは、前者を選ぶという意味です。
 
-# DKMS による作り直しの自動化
+# DKMS とは何か
 
-カーネルのリリースごとにパッケージを探すやり方には限界があります。取り得る手は 3 つあり、そのうちのひとつが DKMS です。3 つの比較はこの節の最後に表で示すので、まず DKMS が何をするものかを見てください。
+カーネルのリリースごとにパッケージを探すやり方には限界があります。取り得る手は 3 つあり、そのうちのひとつが DKMS です。3 つの比較は後の「3 つの選択肢」の節で示すので、まず DKMS が何をするものかを見てください。
 
-DKMS は Dynamic Kernel Module Support の略です。考え方は単純で、ビルド済みのモジュールを配るのではなく、**ソースをホストに置いたままにしておき、新しいカーネルが入った時点でそのカーネル向けにビルドする**という形にします。
+DKMS は Dynamic Kernel Module Support の略で、Ubuntu では `dkms` というパッケージで入る、カーネルモジュールをビルドして組み込むための仕組みです。考え方は単純で、ビルド済みのモジュールを配るのではなく、**ソースをホストに置いたままにしておき、新しいカーネルが入った時点でそのカーネル向けにビルドする**という形にします。
 
-ソースは `/usr/src/<名前>-<バージョン>/` に置き、同じディレクトリの `dkms.conf` が、何をどうビルドするかを DKMS に伝えます。登録すると、DKMS は自分の管理下にあるモジュールとして扱い、どのカーネル向けにビルド済みかを一覧できます。
+![1 で /usr/src/lustre-client-modules-2.15.6/ にソースと dkms.conf を置き、2 で dkms add により /var/lib/dkms に登録し、3 で dkms build により 6.8.0-1057-aws のヘッダを使ってビルドし、4 で dkms install によりそのカーネルの updates/dkms に lustre.ko を入れる。5 で新しいカーネル 7.0.0-1012-aws が入ると、カーネルのパッケージのフックから dkms autoinstall が呼ばれ、新しいカーネル向けにもビルドと組み込みが走る。dkms status の表示は added、built、installed と変わる](https://raw.githubusercontent.com/littlemex/figures/refs/heads/zenn/articles/73cedcb6add298/zenn/articles/73cedcb6add298/dkms-lifecycle.gif)
+
+GIF は、DKMS がモジュールを扱う 5 つのステップを、コマンドの並びから描いた模式図です（画面の値は実行結果ではありません）。DKMS が扱う場所は 3 つあります。
+
+1. ソースの置き場所 `/usr/src/<名前>-<バージョン>/`。同じディレクトリの `dkms.conf` が、モジュールの名前とバージョン、ビルドの方法、できるモジュールのファイル名を DKMS に伝えます。
+2. DKMS 自身の管理場所 `/var/lib/dkms/<名前>/<バージョン>/`。登録の記録と、ビルドの作業場所（`build/`）がここに置かれます。
+3. カーネルごとのモジュールの置き場所 `/lib/modules/<カーネルのリリース>/`。ビルドにはこの下の `build/` にあるそのカーネルのヘッダ（カーネルの内部構造の定義）を使います。
+
+できたモジュールは、Ubuntu では `/lib/modules/<カーネルのリリース>/updates/dkms/` の下に入ります。[dkms のソースの `override_dest_module_location`](https://github.com/dell/dkms/blob/v3.0.11/dkms.in#L372-L396) が、Debian 系（Ubuntu を含む）では `/updates/dkms` を置き場所として返すように分岐しています。
+
+操作は [dkms(8)](https://manpages.ubuntu.com/manpages/noble/man8/dkms.8.html) のコマンドで 1 ステップずつ進みます。`-k` を省くと、動いているカーネルが対象です。
+
+- `dkms add -m <名前> -v <バージョン>`: `/usr/src` のソースを登録します（カーネルは指定しません）。
+- `dkms build -m <名前> -v <バージョン> -k <カーネル>`: そのカーネル向けにビルドします。
+- `dkms install -m <名前> -v <バージョン> -k <カーネル>`: ビルドしたモジュールをそのカーネルの置き場所に入れます。
+- `dkms autoinstall`: 新しく入ったカーネルに向けて、まだそのカーネルに組み込まれていないモジュールを入れます。[dkms のソースの `autoinstall()`](https://github.com/dell/dkms/blob/v3.0.11/dkms.in#L2207-L2325) を読むと、対象になるのは、モジュール名ごとに登録されているバージョンのうち最も新しいものだけで、かつ `dkms.conf` に `AUTOINSTALL=yes` が書かれているものに限られます。Lustre の `dkms.conf` の元になるテンプレート（[debian/dkms.conf.in](https://github.com/lustre/lustre-release/blob/3cf87a83a0fd5ef8e8b9ba57c22f69d944d37a95/debian/dkms.conf.in#L114)）には、この `AUTOINSTALL="yes"` が書かれています。
+
+後で紹介するスクリプトも、ソースを `/usr/src` に展開したあと、この `add`、`build`、`install` の順に呼んでいます（[lustre_installer.sh](https://github.com/littlemex/distributed-ai/blob/52fff763c028710ab8f7eb0c4136a768930fda9f/2026-09-10-fsx-lustre-client-kernel-abi/ansible/roles/aws_lustre/files/lustre_installer.sh#L724-L790)）。
+
+登録すると、DKMS は自分の管理下にあるモジュールとして扱い、どのカーネル向けにビルド済みかを一覧できます。状態は、登録だけなら `added`、ビルドまでなら `built`、組み込みまでなら `installed` と表示されます。`installed` は対象のカーネル向けの置き場所にファイルが入ったところまでで、そのカーネルで実際に読み込まれて使えるかどうかは別です（後の「起動時の検査」で確かめます）。
 
 ```bash
 $ dkms status
 lustre-client-modules/2.15.6, 7.0.0-1012-aws, x86_64: installed
 ```
 
-ひとつ制約を挙げておきます。Secure Boot を有効にしている場合、カーネルはモジュールの署名も検証します。Ubuntu の既定の構成では、DKMS はビルドしたモジュールにホスト上で生成した鍵で署名します。ただし、その公開鍵を MOK として登録し、shim を通じてカーネルの信頼済み鍵として使える状態にしなければ、署名の検証は通りません。Secure Boot を使う環境では、この鍵の運用を別途用意する必要があります。
+後で紹介するスクリプトは、新しいソースを登録する前に、自分が登録した古いバージョンを明示的に外します（[lustre_installer.sh](https://github.com/littlemex/distributed-ai/blob/52fff763c028710ab8f7eb0c4136a768930fda9f/2026-09-10-fsx-lustre-client-kernel-abi/ansible/roles/aws_lustre/files/lustre_installer.sh#L724-L740)）。スクリプト自身のコメントは、理由を「登録されたバージョンはカーネル導入のたびにビルドされるので、古いソースが新しいカーネルでコンパイルできないと導入全体が失敗する」としています。`autoinstall()` のソースを読んだ範囲では、新しいカーネル向けに狙うのはモジュール名ごとの最新バージョンだけなので、この理由はやや保守的な想定に見えますが、古いバージョンを残しておく利点も無いので、この記事ではその判断をそのまま伝えます。
+
+もうひとつ制約を挙げておきます。Secure Boot を有効にしている場合、カーネルはモジュールの署名も検証します。Ubuntu の既定の構成では、DKMS はビルドしたモジュールにホスト上で生成した鍵で署名します。ただし、その公開鍵を MOK として登録し、shim を通じてカーネルの信頼済み鍵として使える状態にしなければ、署名の検証は通りません。Secure Boot を使う環境では、この鍵の運用を別途用意する必要があります。
 
 ## ビルドが走る瞬間
 
-肝心なのは、DKMS が動くタイミングです。カーネルのパッケージには導入後に走る処理が付いていて、その中から DKMS が呼ばれます。Ubuntu 24.04 の dkms 3.0.11 では、カーネル本体側の `/etc/kernel/postinst.d/dkms` とヘッダ側の `/etc/kernel/header_postinst.d/dkms` の 2 つが用意されていて、中身は同一です。どちらも `dkms autoinstall` を呼びますが、対象カーネルのヘッダが見つからないときは、ビルドせずに飛ばしたとだけ記録します。したがって、ヘッダが揃った状態で呼ばれたフックがビルドを実行します。本体が先でヘッダが後なら、ヘッダ側のフックがビルドを実行します。`linux-aws` は本体とヘッダの両方に依存しているので、これを入れれば `apt install` の 1 回でビルドまで終わります。
+肝心なのは、DKMS が動くタイミングです。カーネルのパッケージには導入後に走る処理が付いていて、その中から DKMS が呼ばれます。Ubuntu 24.04 の dkms 3.0.11 では、カーネル本体側の `/etc/kernel/postinst.d/dkms` とヘッダ側の `/etc/kernel/header_postinst.d/dkms` の 2 つが用意されていて、中身は同一です。どちらも `dkms autoinstall` を呼びますが、対象カーネルのヘッダが見つからないときは、ビルドせずに飛ばしたとだけ記録します。したがって、ヘッダが揃った状態で呼ばれたフックがビルドを実行します。本体が先でヘッダが後なら、ヘッダ側のフックがビルドを実行します。`linux-aws` は本体とヘッダの両方に依存しているので、これを入れれば `apt install` の 1 回でビルドまで終わります。先に呼ばれたフックがヘッダ不足で飛ばしても、後に呼ばれたフックがビルドを実行するので、どちらの順でも結果は変わりません。
 
-```mermaid
-sequenceDiagram
-  participant apt as apt
-  participant dpkg as dpkg
-  participant dkms as DKMS
-  apt->>dpkg: linux-image と linux-headers を導入
-  dpkg->>dkms: ヘッダ導入後の処理から呼び出す
-  dkms->>dkms: 登録済みのソースをそのカーネル向けにビルド
-  dkms-->>dpkg: 成功すれば導入、失敗すればエラー
-  dpkg-->>apt: 失敗は apt の終了コードに伝わる
-```
+![apt install linux-aws で dpkg が linux-image と linux-headers を導入し、それぞれの導入後のフック /etc/kernel/postinst.d/dkms と /etc/kernel/header_postinst.d/dkms が dkms autoinstall を呼ぶ。そのカーネルのヘッダが無ければ飛ばしたと記録するだけで、あれば登録済みのソースをビルドし、結果が dpkg と apt に返る](https://raw.githubusercontent.com/littlemex/figures/refs/heads/zenn/articles/73cedcb6add298/zenn/articles/73cedcb6add298/build-hook.png)
 
 この形にすると、利用者が書くコマンドからカーネルのリリースが消えます。`lustre-client-modules-6.8.0-1057-aws` のような名前を運用の中で管理する必要がなくなり、カーネルを更新しても追随します。
 
@@ -104,7 +118,9 @@ sequenceDiagram
 
 利点の裏返しとして、注意すべき挙動があります。DKMS のビルドはカーネルパッケージの導入処理の内側で走るので、そこで失敗すると、失敗がカーネルパッケージ側に伝わります。次に示すのは、当時のソースがまだ対応していなかった 7.0 系のカーネルを、対象を絞らずに導入したときの出力です。
 
-```
+![DKMS のビルドが失敗すると、run-parts が postinst.d/dkms の終了コード 11 を返し、dpkg が linux-image-7.0.0-1012-aws の設定処理をエラーにし、apt は終了コード 100 で終わる。パッケージは half-configured のまま残り、以後の apt の操作のたびにやり直して失敗する。失敗の原因を取り除くか dkms remove で登録を外してから dpkg --configure -a を実行する](https://raw.githubusercontent.com/littlemex/figures/refs/heads/zenn/articles/73cedcb6add298/zenn/articles/73cedcb6add298/build-failure.png)
+
+```text
 run-parts: /etc/kernel/postinst.d/dkms exited with return code 11
 dpkg: error processing package linux-image-7.0.0-1012-aws (--configure)
 ```
@@ -115,17 +131,21 @@ dpkg: error processing package linux-image-7.0.0-1012-aws (--configure)
 
 ここで、この記事の他の箇所と見比べると奇妙に見える点に触れておきます。この失敗例のカーネルは 7.0.0-1012-aws ですが、後の節では同じカーネルでモジュールが `installed` になっている出力を載せています。矛盾ではありません。2026 年 9 月 10 日に 7.0 系向けのモジュールと新しいソース版が公開され、それ以降は同じカーネルでビルドが通るようになったからです。同じカーネルが数日で「失敗する対象」から「成功する対象」に変わったという事実そのものが、対応系列を書き留めずにリポジトリから読むべき理由になっています。
 
-DKMS には、この事故を避けるための設定があります。`dkms.conf` の `BUILD_EXCLUSIVE_KERNEL` に正規表現を書くと、それに一致しないカーネルは、失敗ではなく対象外として飛ばされます。この挙動も dkms 3.0.11 で確認したもので、対象外の扱いはバージョンによって変わってきた部分です。飛ばされた場合はエラーになりませんが、そのカーネルで起動したホストにはモジュールが存在しません。つまり、どちらを選んでも代償があります。
+DKMS には、この事故を避けるための設定があります。`dkms.conf` の `BUILD_EXCLUSIVE_KERNEL` に正規表現を書くと、それに一致しないカーネルは、失敗ではなく対象外として飛ばされます。[dkms(8)](https://manpages.ubuntu.com/manpages/noble/man8/dkms.8.html) によると、一致しないカーネルに対する `dkms build` は終了コード 77 で止まり、`dkms autoinstall` はこの種類のエラーを無視して、そのモジュールを飛ばします。この挙動も dkms 3.0.11 で確認したもので、対象外の扱いはバージョンによって変わってきた部分です。飛ばされた場合はエラーになりませんが、そのカーネルで起動したホストにはモジュールが存在しません。つまり、どちらを選んでも代償があります。
 
 ここで、この設定で守れる範囲をはっきりさせておきます。絞り込みの単位はカーネル系列なので、防げるのは未対応の系列へ切り替わる事故です。同じ系列の中で新しいリリースが出て、そのリリースに対してソースがコンパイルできない場合は、正規表現に一致するのでビルドが走り、上と同じ失敗が起こります。系列を絞ることは、事故の確率を下げる措置であって、なくす措置ではありません。
 
-もうひとつ、`/etc/dkms/no-autoinstall-errors` という空ファイルを置くと、DKMS はビルドの失敗を成功として扱い、`apt` には伝えません。パッケージ管理の状態は常に正常に保たれますが、失敗が完全に見えなくなります。対象を絞る方法との違いは、前者が「作れないものを最初から作らない」、後者が「作れなくても黙る」という点です。この記事の実装は前者を選んでいます。
+もうひとつ、`/etc/dkms/no-autoinstall-errors` という空ファイルを置くと、DKMS はビルドの失敗を成功として扱い、`apt` には伝えません。パッケージ管理の状態は常に正常に保たれますが、失敗が完全に見えなくなります。`BUILD_EXCLUSIVE_KERNEL` との違いは、`BUILD_EXCLUSIVE_KERNEL` が「作れないものを最初から作らない」のに対し、`no-autoinstall-errors` が「作れなくても黙る」という点です。この記事の実装は前者を選んでいます。
+
+![ソースがビルドできないカーネルに対して、設定が無ければビルドが走って失敗し、カーネルのパッケージと apt が止まる。BUILD_EXCLUSIVE_KERNEL に一致しないカーネルは終了コード 77 で飛ばされ、apt は通るがそのカーネルにはモジュールが無い。/etc/dkms/no-autoinstall-errors を置くと失敗が成功として扱われ、apt は通るが失敗が見えなくなる](https://raw.githubusercontent.com/littlemex/figures/refs/heads/zenn/articles/73cedcb6add298/zenn/articles/73cedcb6add298/exclusion-settings.png)
 
 対象を絞るなら、モジュールが無いことに気づく手段を別に用意する必要があります。何もしなければ、マウントが失敗したときに初めて気づくことになります。
 
 ## 3 つの選択肢
 
-ここまで DKMS の話をしてきましたが、選択肢は 3 つあり、DKMS が最善なのはそのうち 1 つの条件だけです。
+ここまで DKMS の話をしてきましたが、選択肢は 3 つあり、DKMS が最善なのはそのうち 1 つの条件だけです。3 つの違いは、モジュールを誰がいつビルドするかにあります。
+
+![カーネルを固定して公開モジュールを使う場合は AWS がビルドし、カーネル更新はモジュールの公開を待つ。カスタム AMI に焼き込む場合はイメージを作るときに自分が 1 回ビルドし、ノードを入れ替えて更新し、ビルド環境はノードに残らない。DKMS ではカーネルが入るたびにホストがビルドし、カーネル更新に追随するが、ビルドがカーネルの導入の中で走る](https://raw.githubusercontent.com/littlemex/figures/refs/heads/zenn/articles/73cedcb6add298/zenn/articles/73cedcb6add298/where-built.png)
 
 | やり方 | カーネル更新の扱い | 向く条件 |
 | --- | --- | --- |
@@ -186,6 +206,8 @@ curl -s "https://fsx-lustre-client-repo.s3.amazonaws.com/ubuntu/dists/${SUITE}/m
 | noble | 6.17 | 2026 年 2 月 23 日 | 14 |
 | noble | 7.0 | 2026 年 9 月 10 日 | 1 |
 
+![jammy の 5.15 系は 2023 年 2 月、6.2 系は 2023 年 12 月、6.5 系は 2024 年 7 月、6.8 系は 2024 年 10 月に、noble の 6.8 系は 2025 年 3 月、6.14 系は 2025 年 9 月、6.17 系は 2026 年 2 月、7.0 系は 2026 年 9 月に、観測できた最古の更新日がある。jammy の 5.19 系と noble の 6.11 系は一覧に無い](https://raw.githubusercontent.com/littlemex/figures/refs/heads/zenn/articles/73cedcb6add298/zenn/articles/73cedcb6add298/series-timeline.png)
+
 この表から 3 つのことが読み取れます。
 
 ひとつめは、対応する系列が時間とともに増えていくことです。noble の 7.0 系は 2026 年 9 月 10 日に現れました。つまり、対応系列を設定ファイルやスクリプトに書き込んでしまうと、その値は必ず古くなります。
@@ -228,26 +250,7 @@ sudo ./lustre_installer.sh -y --mode dkms --install-check-unit
 
 処理の流れは次のとおりです。停止する分岐では、何が起きたかと次に何をすればよいかを併せて表示します。
 
-```mermaid
-flowchart TD
-  S([開始]) --> ARG[引数を検証する]
-  ARG --> OS{Ubuntu か}
-  OS -- いいえ --> ST1[Amazon Linux 2023 の手順を案内して停止]
-  OS -- はい --> LOCK[排他ロックを取る]
-  LOCK --> SUITE{suite があるか}
-  SUITE -- いいえ --> ST2[既存の suite の指定を案内して停止]
-  SUITE -- はい --> KEY[署名鍵をフィンガープリントで検証する]
-  KEY --> REPO[リポジトリを登録する]
-  REPO --> UTILS[マウント用のコマンド群を導入する]
-  UTILS --> MODE{モード}
-  MODE -- build --> B[ソースをビルドして deb を導入]
-  MODE -- dkms --> D[対象系列を導出して DKMS に登録]
-  MODE -- binary --> N[公開モジュールを導入]
-  B --> V[検証する]
-  D --> V
-  N --> V
-  V --> SUM([要約を表示する])
-```
+![スクリプトは引数を検証し、Ubuntu でなければ Amazon Linux 2023 の手順を案内して停止する。排他ロックを取り、suite が無ければ既存の suite の指定を案内して停止する。署名鍵をフィンガープリントで検証し、リポジトリを登録し、マウント用のコマンド群を導入してから、モードに応じて build はソースをビルドして deb を導入し、dkms は対象系列を導出して DKMS に登録し、binary は公開モジュールを導入する。最後に検証して要約を表示する](https://raw.githubusercontent.com/littlemex/figures/refs/heads/zenn/articles/73cedcb6add298/zenn/articles/73cedcb6add298/script-flow.png)
 
 図の中で説明が要る箇所が 4 つあります。Amazon Linux 2023 で停止するのは、そちらではモジュールがカーネルパッケージに同梱されていて、`dnf install -y lustre-client` だけで済むからです。排他ロックを取るのは、同じホストで 2 回同時に走ったときに、ソースツリーや DKMS の登録を互いに壊さないためです。suite の有無を先に確認するのは、AWS がまだ対応していないリリースであることを、apt の設定に何も書かないうちに報告するためです。署名鍵をフィンガープリントで確認するのは、差し替えられた鍵を信頼せずに拒否するためです。
 
@@ -271,6 +274,8 @@ sudo ./lustre_installer.sh --refresh-policy
 ```
 
 ただし、再ビルドが起きないということは、すでに新しい系列のカーネルで起動しているホストでは、ポリシーを広げてもモジュールは自動でビルドされないということでもあります。追随が成立するのは、ポリシーを広げた後にそのカーネルが入る順序のときだけです。逆の順序になったホストについては、スクリプトが対象のカーネルを名前で報告します。利用者はそれを見て、`--kernel <リリース>` を指定して個別にビルドしてください。
+
+![先に --refresh-policy で 7.0 系を対象に加え、そのあと 7.0 系のカーネルが入ると、導入のときにモジュールがビルドされる。先に 7.0 系のカーネルが入って対象外として飛ばされ、そのあとで --refresh-policy を実行しても再ビルドは起きず、そのカーネルが名前で報告される](https://raw.githubusercontent.com/littlemex/figures/refs/heads/zenn/articles/73cedcb6add298/zenn/articles/73cedcb6add298/policy-order.png)
 
 `dkms.conf` はシェルとして読み込まれるので、そこにファイルを読む処理を書けば、ファイルの書き換えだけで反映される形にもできます。ただしその読み込みはカーネルパッケージの導入処理の中で毎回走るので、読み取りが途中で失敗した場合などに、エラーにならないまま、何にも一致しない値になり得ます。そのため設定には値そのものだけを書き、反映は上のコマンドで行う形にしました。
 
@@ -296,20 +301,13 @@ ok: 7.0.0-1012-aws SMP preempt mod_unload modversions  is loaded and mountable
 sudo dkms remove -m lustre-client-modules -v <バージョン> --all
 ```
 
-# AMI 焼き込みの 2 段構え
+# AMI 焼き込みの 2 段階
 
 カスタム AMI に焼き込む場合、Packer の中で Ansible を 2 回走らせます。間に再起動を挟むのは、この実装が既定で実行中のカーネルをビルド対象にしているからです。モジュールのビルド自体は、対象カーネルのヘッダがあれば起動していなくても可能で、スクリプトも `--kernel <リリース>` で対象を指定できます。それでも再起動を挟むのは、イメージが実際に起動するカーネルでモジュールが読み込めることを、そのイメージの中で確かめられるからです。
 
-```mermaid
-flowchart LR
-  P[親 AMI] --> Q{カーネル系列を固定するか}
-  Q -- 固定する --> S1["1 段目<br/>系列を固定して再起動する"]
-  Q -- 固定しない --> S2
-  S1 --> S2["2 段目<br/>起動中のカーネル向けにビルドする"]
-  S2 --> A[AMI]
-```
+![親 AMI から始め、カーネル系列を固定するなら 1 回目で系列を固定して再起動し、2 回目で起動中のカーネル向けにビルドして AMI にする。固定しないなら 1 回目と再起動を飛ばし、2 回目だけを行う](https://raw.githubusercontent.com/littlemex/figures/refs/heads/zenn/articles/73cedcb6add298/zenn/articles/73cedcb6add298/ami-stages.png)
 
-再起動が要るのは、カーネル系列を固定する場合だけです。親イメージが起動するカーネルをそのまま使うなら、1 段目の処理と再起動は飛ばされます。そして固定する理由も、モジュールが公開されているかどうかではなく、カーネル自体のサポート期間をどう選ぶかという話になります。ソースからビルドすることで、公開状況への依存は先に外れているからです。
+再起動が要るのは、カーネル系列を固定する場合だけです。親イメージが起動するカーネルをそのまま使うなら、1 回目の処理と再起動は飛ばされます。そして固定する理由も、モジュールが公開されているかどうかではなく、カーネル自体のサポート期間をどう選ぶかという話になります。ソースからビルドすることで、公開状況への依存は先に外れているからです。
 
 なお、忘れやすい点が 2 つあります。ひとつは、`lustre-source` パッケージが宣言している依存関係だけではビルドが完了しないことです。Ubuntu 24.04 で 2.15.6 のソースをビルドした場合、`flex` と `bison` と Python の開発用ヘッダが追加で必要でした。もうひとつは、`lustre-client-utils` が必須で、モジュールだけではマウントできないことです。`mount` コマンドは、ファイルシステム専用の補助プログラムがあればそちらに処理を渡します。`/sbin/mount.lustre` はその補助プログラムで、Lustre 固有の指定の解釈や、マウント前に必要な準備を担います。これが無いと、汎用の `mount` が直接システムコールを呼ぶことになり、その準備が行われないため、指定の内容や環境によってマウントに失敗します。モジュール側の問題に見えて、原因はモジュールの外にあります。どちらもスクリプトの側で処理しています。
 
