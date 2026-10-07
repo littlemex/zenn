@@ -1,0 +1,27 @@
+title: "分離推論ワークショップ手順書を読む: Original 版と Modified 版"
+summary: "EKS 上で LLM 推論の prefill (入力の下読み) と decode (1 トークンずつの生成) を別エンジンに分ける構成 (分離推論) と、分けない構成 (統合) を 60 分で測って比べる AIM345 ワークショップの手順書を、改善前 (Original) と改善後 (Modified) の両方の版でそのまま読み物にした。最後に両版の差分だけを整理する章を置く。"
+topics: ["LLM", "EKS", "分散推論", "AWS", "ベンチマーク"]
+published: false
+price: 0
+chapters:
+  - 00-how-to-read
+  - original-000-introduction
+  - original-005-getting-started
+  - original-010-environment-check
+  - original-020-unified-baseline
+  - original-030-disaggregated-deployment
+  - original-040-load-ramp
+  - original-050-crossover-decision
+  - original-060-summary
+  - original-070-optional-v4-flash
+  - modified-000-introduction
+  - modified-005-getting-started
+  - modified-010-environment-check
+  - modified-020-unified-baseline
+  - modified-030-disaggregated-deployment
+  - modified-040-load-ramp
+  - modified-050-crossover-decision
+  - modified-060-summary
+  - modified-065-optional-promise-map
+  - modified-070-optional-v4-flash
+  - zz-diff-summary
