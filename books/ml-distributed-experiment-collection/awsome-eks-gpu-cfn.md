@@ -17,7 +17,15 @@ free: false
 | 容量の取り方を選べる | GPU の容量の取り方は、On-Demand、targeted の On-Demand Capacity Reservation、Capacity Block と人によって違う | `CapacityReservationId` と `CapacityReservationType` で選ぶ。Capacity Block では `CapacityType` を `CAPACITY_BLOCK` にし、予約を使うときは placement group を作らない |
 | 既存のクラスタに足せる | 既にクラスタと VPC を持ち、GPU だけを足したい人がいる | テンプレートを 5 つに分け、GPU のノードグループのテンプレートを単独で使えるようにした。クラスタを操作する権限はノードグループの側に置く。S3 のバケット無しで `--template-body` で出せるよう、テンプレートが上限の 95% を超えたら lint を失敗させる |
 | GPU と EFA の資源の登録をスタックの成功の条件にする | g7 の件のように、ノードが Ready でも GPU を資源として出さないことがある | `GpuNodeCount` が 0 でなければ、グループのノードの数が一致し、各ノードが Ready で、期待する数の GPU と EFA を出すまで成功を返さない。CUDA や学習が動くことまでは確かめない。失敗したときも CloudFormation に失敗を知らせ、CloudFormation が応答を待つ上限を 45 分にした |
-| リポジトリが保守する版を少なくする | kubectl と Helm を Kubernetes の版の表にすると、EKS が新しい版を出すたびに表の更新が要る | kubectl と Helm の版をパラメータにし、試した版を既定値にした。device plugin のチャートもパラメータだが、ドライバとの組み合わせで正しさが決まるので、既定では試した版に固定する |
+| リポジトリが保守する版を少なくする | kubectl と Helm の版を、Kubernetes の版ごとに選ぶ選択肢のリストとしてテンプレートに持つと、EKS が新しい版を出すたびにリストに足す必要がある | kubectl と Helm の版をパラメータにし、試した版を既定値にした。device plugin のチャートもパラメータだが、ドライバとの組み合わせで正しさが決まるので、既定では試した版に固定する |
+
+![GPU のノードの AMI は、NodeAmiId を埋めれば既にある AMI、NodeImagePackages を埋めれば EKS の標準の AMI にパッケージを入れて Image Builder で作った AMI、NodeImageRecipeArn を埋めれば自分のレシピから Image Builder で作った AMI、どれも空なら EKS がノードグループの AmiType から AMI を選ぶ。上の 3 つは launch template が AMI の ID を指定する](https://raw.githubusercontent.com/littlemex/figures/refs/heads/zenn/books/ml-distributed-experiment-collection/zenn/books/ml-distributed-experiment-collection/awsome-eks-gpu-cfn/ami-paths.png)
+
+上の図は、GPU のノードの AMI がどこから来るかを、入力ごとに並べたものである。緑の 2 つの経路は、root が `eks-gpu-node-ami.yaml` の子のスタックを作り、その中で EC2 Image Builder が AMI を作る。パッケージから作るときは、AMI の中にあるべきパスを `NodeImageAssertPaths` に必ず指定する。自前の AMI を使う 3 つの経路では、launch template が AMI の ID を指定するので、ノードグループの `AmiType` は `CUSTOM` になり、ユーザーデータにはノードがクラスタに参加するための設定をすべて書く。3 つの入力がすべて空なら、launch template は AMI の ID を持たず、ノードグループの `AmiType` から EKS が AMI を選ぶ。
+
+![1 つのクラスタに、NVIDIA と EFA の device plugin のリリースが 1 つずつあり、その下に名前の違う GPU のノードグループのスタックが 3 つ並ぶ。各スタックはノードグループ、CodeBuild の bootstrap と access entry、自分のグループだけを対象にする確認を持ち、PrePullImage を指定したときは事前取得の DaemonSet も持つ。容量は On-Demand、targeted ODCR、Capacity Block とスタックごとに選ぶ](https://raw.githubusercontent.com/littlemex/figures/refs/heads/zenn/books/ml-distributed-experiment-collection/zenn/books/ml-distributed-experiment-collection/awsome-eks-gpu-cfn/node-groups.png)
+
+上の図は、root が子のスタックとして作る `gpu` に、`eks-add-gpu-nodegroup.yaml` を単独で使うスタックで `ng-g7` と `ng-p5en` を足した例である。足すときは root ではなくこのテンプレートを使い、同じクラスタを指定して、スタック名と `NodeGroupName` を既にあるものと重ならない名前にする。インスタンスタイプと容量の組み合わせは説明のための例で、この組み合わせで 3 つを同時に動かした試験はしていない。device plugin の Helm のリリースは、最初のスタックの bootstrap が入れ、プラグインごとにクラスタで 1 つを共有する。後から足すスタックは、指定した版が一致するときだけ共有し、一致しなければデプロイを止める。一方、ノードグループ、ノードの確認の対象、事前取得の DaemonSet はスタックごとに分かれる。
 
 :::details Design principles (English)
 When this PR started, the driver in the EKS-optimized AL2023 NVIDIA AMI did not enumerate the GPUs of g7 instances. Nodes went `Ready` but advertised no GPUs, so using g7 required building a custom AMI. EKS added support while the PR was in progress: in the PR's test runs, a stack launching `g7.12xlarge` without a custom AMI reached `CREATE_COMPLETE`, and each node advertised 2 GPUs. The custom AMI path stayed anyway. It lets people use AMIs they already have, and it is the way out when the next GPU type hits the same gap.
@@ -30,7 +38,7 @@ When this PR started, the driver in the EKS-optimized AL2023 NVIDIA AMI did not 
 | Choose how capacity is obtained | Users get GPU capacity as On-Demand, as a targeted On-Demand Capacity Reservation, or as a Capacity Block | `CapacityReservationId` and `CapacityReservationType` select the mode. A Capacity Block sets `CapacityType` to `CAPACITY_BLOCK`, and no placement group is created when a reservation is used |
 | Add GPUs to an existing cluster | Some users already run a cluster and a VPC and only want GPU capacity | The deploy is split into five templates, and the GPU node group template deploys on its own. The permission to act on the cluster lives on the node group stack. So that the template can be passed with `--template-body` without a bucket, the lint fails once it passes 95% of that limit |
 | Make GPU and EFA registration the success condition | As with g7, a node can be `Ready` and still advertise no GPUs | When `GpuNodeCount` is nonzero, the stack succeeds only when the group has exactly that many nodes, each `Ready` and advertising the expected GPU and EFA counts. It does not verify that CUDA or training runs. On failure the bootstrap reports the failure to CloudFormation, and CloudFormation waits at most 45 minutes for that response |
-| Keep the versions the repository maintains few | A table of kubectl and Helm versions keyed by Kubernetes version needs a new row every time EKS ships a release | kubectl and Helm versions are parameters with the tested versions as defaults. The device plugin charts are parameters too, but stay pinned to the tested versions by default, because their correctness depends on the node's driver |
+| Keep the versions the repository maintains few | A list of kubectl and Helm versions to choose from per Kubernetes version needs a new entry every time EKS ships a release | kubectl and Helm versions are parameters with the tested versions as defaults. The device plugin charts are parameters too, but stay pinned to the tested versions by default, because their correctness depends on the node's driver |
 :::
 
 :::details EKS のノードグループと device plugin
@@ -60,7 +68,7 @@ EKS は Kubernetes のコントロールプレーンを AWS が運用するサ�
 | --- | --- | --- |
 | テンプレートの分け方 | 5 つに分け、root が URL で子を作る | 1 つのテンプレートに条件を足す方法は、読むファイルが 1 つで済む。ただ、持ち込めるものが増えるたびに分岐が増え、一部の分岐でしか効かないパラメータが他と同じ一覧に並ぶ。分けた代わりに、変更を試すには子を S3 に置く手間が増える |
 | クラスタを触る権限 | GPU のノードグループの側に access entry を置く | device plugin を入れる処理が Kubernetes の API を使う。ノードグループ側に置けば単独で作るときも権限を持ち込め、クラスタ側に置くと GPU を使わないクラスタにも権限が残る |
-| 版の固定 | kubectl と Helm はパラメータ（既定は試した版）、device plugin のチャートは既定で固定。root もこれらを受け取って子に渡す | kubectl と Helm を Kubernetes の版の表にすると、EKS が新しい版を出すたびに表の更新が要る。device plugin はノードのドライバとの組み合わせで正しさが決まるので、既定では固定する |
+| 版の固定 | kubectl と Helm はパラメータ（既定は試した版）、device plugin のチャートは既定で固定。root もこれらを受け取って子に渡す | kubectl と Helm の版を Kubernetes の版ごとの選択肢のリストとして持つと、EKS が新しい版を出すたびにリストに足す必要がある。device plugin はノードのドライバとの組み合わせで正しさが決まるので、既定では固定する |
 | GPU のノードの taint | 自前の AMI の分岐では、ノードグループの設定と kubelet のフラグの両方で付ける | フラグを外して登録の直後から観察すると、taint が付く前に `nvidia.com/gpu` を出す瞬間があった。フラグは登録の時点で効くので残した |
 | AMI の入手 | 既存の AMI、ここで作る AMI に入れるパッケージ、外で管理するレシピのどれかを、埋めた入力から決める | 入手の方法を名前で選ぶパラメータは読みやすいが、「レシピ」を選んでパッケージも埋める矛盾を別の規則で止める必要がある。入力から決めれば、この組み合わせは書けない。2 つの入力を同時に埋める誤りは、別の規則が作成の前に拒む。代償は、画面で方法が明示されず、テンプレートの中の条件が増えること |
 
