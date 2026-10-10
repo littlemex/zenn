@@ -7,6 +7,32 @@ free: false
 
 本章では、EKS の GPU クラスタを CloudFormation で作る経路を足した [PR #1269](https://github.com/awslabs/awsome-distributed-ai/pull/1269) をまとめる。先行する [#1259](https://github.com/awslabs/awsome-distributed-ai/pull/1259) の 1 つのテンプレートを 5 つに分け、GPU のノードグループだけを既存のクラスタに足せるようにし、ノードの AMI を作る経路も足した。
 
+この PR を始めた時点では、g7 のインスタンスの GPU を、EKS が用意する AL2023 の NVIDIA の AMI のドライバが認識しなかった。ノードは Ready になっても GPU を資源として出さないので、g7 を使うには自前の AMI を焼く必要があった。実装の途中で EKS の AMI が対応し、PR の試験では、自前の AMI を使わずに `g7.12xlarge` を起動したスタックが `CREATE_COMPLETE` になり、各ノードが GPU を 2 つ資源として出した。それでも AMI を足す経路は残した。既に自分の AMI を持っている人がそれを使えるうえ、次に出る GPU で同じことが起きたときの逃げ道になるからである。そのほかにも、この実装では次の設計の狙いを意識した。
+
+| 設計の狙い | 背景 | 実装での形 |
+| --- | --- | --- |
+| 自前の AMI を持ち込める | g7 の GPU を当時の EKS の AMI が認識せず、自前の AMI が必要だった。対応した後も、既に持っている AMI を使いたい場面がある | `NodeAmiId` で既にある AMI を指定する |
+| 1 回のスタックの作成で AMI まで作れる | root のテンプレート 1 つで全部を作るには、AMI のビルドもスタックの作成の中で行う必要がある | この実装では EC2 Image Builder を使い、パッケージから作る経路と、既にあるレシピから作る経路を用意した。`NodeAmiId` と合わせた 3 つの経路は、`NodeAmiId`、`NodeImagePackages`、`NodeImageRecipeArn` のどれを埋めたかで決まる。2 つ以上を埋めると作成の前に拒み、すべて空なら EKS が用意する AMI を使う |
+| GPU のノードグループを複数足せる | g7 と g7e のように種類の違う GPU を同じクラスタに混ぜ、prefill と decode を別の GPU で処理する分離推論（disaggregated inference）で使い分ける可能性がある | GPU のノードグループのテンプレートで `NodeGroupName` を入力にし、名前を変えてスタックを足す（root は `gpu` に固定）。ノードの確認はノードグループごとに数える。このテンプレートが入れる device plugin の Helm のリリースは、版が一致するときだけ共有し、一致しなければ止める。イメージの事前取得はノードグループごとの DaemonSet にする |
+| 容量の取り方を選べる | GPU の容量の取り方は、On-Demand、targeted の On-Demand Capacity Reservation、Capacity Block と人によって違う | `CapacityReservationId` と `CapacityReservationType` で選ぶ。Capacity Block では `CapacityType` を `CAPACITY_BLOCK` にし、予約を使うときは placement group を作らない |
+| 既存のクラスタに足せる | 既にクラスタと VPC を持ち、GPU だけを足したい人がいる | テンプレートを 5 つに分け、GPU のノードグループのテンプレートを単独で使えるようにした。クラスタを操作する権限はノードグループの側に置く。S3 のバケット無しで `--template-body` で出せるよう、テンプレートが上限の 95% を超えたら lint を失敗させる |
+| GPU と EFA の資源の登録をスタックの成功の条件にする | g7 の件のように、ノードが Ready でも GPU を資源として出さないことがある | `GpuNodeCount` が 0 でなければ、グループのノードの数が一致し、各ノードが Ready で、期待する数の GPU と EFA を出すまで成功を返さない。CUDA や学習が動くことまでは確かめない。失敗したときも CloudFormation に失敗を知らせ、CloudFormation が応答を待つ上限を 45 分にした |
+| リポジトリが保守する版を少なくする | kubectl と Helm を Kubernetes の版の表にすると、EKS が新しい版を出すたびに表の更新が要る | kubectl と Helm の版をパラメータにし、試した版を既定値にした。device plugin のチャートもパラメータだが、ドライバとの組み合わせで正しさが決まるので、既定では試した版に固定する |
+
+:::details Design principles (English)
+When this PR started, the driver in the EKS-optimized AL2023 NVIDIA AMI did not enumerate the GPUs of g7 instances. Nodes went `Ready` but advertised no GPUs, so using g7 required building a custom AMI. EKS added support while the PR was in progress: in the PR's test runs, a stack launching `g7.12xlarge` without a custom AMI reached `CREATE_COMPLETE`, and each node advertised 2 GPUs. The custom AMI path stayed anyway. It lets people use AMIs they already have, and it is the way out when the next GPU type hits the same gap.
+
+| Principle | Background | How the implementation does it |
+| --- | --- | --- |
+| Bring your own AMI | The EKS AMI did not recognize g7 GPUs at the time, so a custom AMI was required. Even after support landed, some users already maintain their own AMIs | `NodeAmiId` points the node group at an existing AMI |
+| Build the AMI within a single stack deployment | Creating everything from one root template means the AMI build has to happen during stack creation | This implementation uses EC2 Image Builder, building from a package list or from an existing recipe. Together with `NodeAmiId`, the three paths are selected by which of `NodeAmiId`, `NodeImagePackages` and `NodeImageRecipeArn` is set. Setting more than one is rejected before any resource is created; leaving all three empty uses the EKS-provided AMI |
+| Add more than one GPU node group | Mixed GPU types such as g7 and g7e may share a cluster and be assigned different roles in disaggregated inference, where prefill and decode run on different GPUs | `NodeGroupName` is a parameter of the node group template, and each additional group is another stack with a different name (the root fixes the name to `gpu`). Node checks are counted per node group. The device plugin Helm releases this template installs are shared only when the pinned versions match, and a mismatch stops the deploy. Image pre-pull uses one DaemonSet per node group |
+| Choose how capacity is obtained | Users get GPU capacity as On-Demand, as a targeted On-Demand Capacity Reservation, or as a Capacity Block | `CapacityReservationId` and `CapacityReservationType` select the mode. A Capacity Block sets `CapacityType` to `CAPACITY_BLOCK`, and no placement group is created when a reservation is used |
+| Add GPUs to an existing cluster | Some users already run a cluster and a VPC and only want GPU capacity | The deploy is split into five templates, and the GPU node group template deploys on its own. The permission to act on the cluster lives on the node group stack. So that the template can be passed with `--template-body` without a bucket, the lint fails once it passes 95% of that limit |
+| Make GPU and EFA registration the success condition | As with g7, a node can be `Ready` and still advertise no GPUs | When `GpuNodeCount` is nonzero, the stack succeeds only when the group has exactly that many nodes, each `Ready` and advertising the expected GPU and EFA counts. It does not verify that CUDA or training runs. On failure the bootstrap reports the failure to CloudFormation, and CloudFormation waits at most 45 minutes for that response |
+| Keep the versions the repository maintains few | A table of kubectl and Helm versions keyed by Kubernetes version needs a new row every time EKS ships a release | kubectl and Helm versions are parameters with the tested versions as defaults. The device plugin charts are parameters too, but stay pinned to the tested versions by default, because their correctness depends on the node's driver |
+:::
+
 :::details EKS のノードグループと device plugin
 EKS は Kubernetes のコントロールプレーンを AWS が運用するサービスで、ワーカーのノードはノードグループとしてまとめて作る。GPU や EFA を Pod から使うには、各ノードで device plugin が動き、`nvidia.com/gpu` や `vpc.amazonaws.com/efa` という資源としてノードに登録する必要がある。CloudFormation のネストしたスタックは、親のテンプレートが子のテンプレートを URL で呼び出してまとめて作る仕組みである。
 :::
