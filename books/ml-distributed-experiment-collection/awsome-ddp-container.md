@@ -53,104 +53,199 @@ DDP（DistributedDataParallel）は、同じモデルを各プロセスに置き
 
 ## 技術面接の準備 (FAQ)
 
-この節は、本章の内容を技術面接で聞かれたときに答えるための想定問答である。システム設計面接の流れ (要件の確認、全体の設計、深掘り、トレードオフ、故障と検証) に沿って並べ、各問は英語の質問、日本語の質問、英語の回答、日本語の回答の順に書いた。回答は本章に書いた事実だけを使う。
+この節は、本章の内容を技術面接で聞かれたときに答えるための想定問答である。システム設計面接の流れに合わせて、全体と設計、不具合の原因の深掘り、検証と振り返りの 3 つに分けた。各問は英語の質問 (見出し)、日本語の質問、英語の回答、日本語の回答の順に書いた。不具合の問には原因の連鎖の図を付け、回答は症状、原因、突き止め方、直し方と比べた案、検証、残ったこと、の順に話す。回答は本章の本文と、PR、Issue、マージ前後のコードで確かめた事実だけを使う。
 
-:::details Q1. Why did only the container path fail with `No module named 'mlflow'`?
+### 全体と設計
+
+:::details Q1. Give me a one-minute overview of these two PRs.
+**質問 (日本語)**
+
+この 2 つの PR を 1 分で説明してほしい。
+
+**Answer (English)**
+
+Both fix the containerized path of the PyTorch DDP test case, which uses GLOO so it runs on CPU-only clusters. PR #1039 fixed a startup failure: the container image didn't contain `mlflow`, and once that was fixed, an argument name mismatch appeared. PR #1048 dealt with an intermittent failure on CPU nodes, where some ranks reported a corrupted MNIST file and others a GLOO connection drop. That one I scoped as a workaround for an upcoming workshop: pin PyTorch to 2.10.0 and make processes per node configurable. A download race on shared storage was pointed out in review as the likely cause; the PR didn't confirm or fix it, and that was left for a follow-up.
+
+**回答 (日本語)**
+
+どちらも PyTorch DDP のテストケースのコンテナの経路を直したもので、このテストケースは CPU だけのクラスタでも動くよう GLOO を使う。PR #1039 は起動の失敗を直した。コンテナのイメージに `mlflow` が無く、それを直すと引数の名前の不一致が現れた。PR #1048 は CPU のノードでときどき起きる失敗を扱い、一部の rank が MNIST のファイルの破損を、他の rank が GLOO の接続切れを出した。こちらは直近のワークショップのための回避策と範囲を決め、PyTorch を 2.10.0 に固定し、1 ノードのプロセス数を変えられるようにした。共有のストレージへの同時のダウンロードの競合が原因らしいとレビューで指摘されたが、この PR では確かめも直しもせず、後続に回した。
+:::
+
+:::details Q2. Why build the image from the Dockerfile instead of installing packages at runtime?
+**質問 (日本語)**
+
+なぜ実行時にパッケージを入れるのではなく、Dockerfile からイメージを作ったのか。
+
+**Answer (English)**
+
+The repository already had `ddp/Dockerfile` that installs the dependencies; the container script just wasn't using it. Other test cases, such as deepspeed, trl and mosaicml-composer, already build from a Dockerfile and import with `dockerd://`, so I followed the same pattern. That keeps one definition of the environment, built once, instead of a second, implicit one that each job would rebuild at runtime. No other option is recorded in the PR; consistency with the repository was the deciding reason.
+
+**回答 (日本語)**
+
+依存を入れる `ddp/Dockerfile` はリポジトリに既にあり、コンテナのスクリプトがそれを使っていなかっただけである。deepspeed、trl、mosaicml-composer などほかのテストケースは既に Dockerfile から作って `dockerd://` で取り込んでいるので、同じ形にそろえた。これで環境の定義が 1 つになり、一度だけ作られる。ジョブのたびに実行時に組み直す、暗黙のもう 1 つの定義を持たずに済む。PR にほかの案の記録は無く、決め手はリポジトリとそろえることだった。
+:::
+
+### 不具合の原因の深掘り
+
+:::details Q3. [Bug] Why did only the container path fail with `No module named 'mlflow'`?
 **質問 (日本語)**
 
 なぜコンテナの経路だけが `No module named 'mlflow'` で止まったのか。
 
+**原因の連鎖 (図)**
+
+```mermaid
+flowchart TD
+  A["2.create-enroot-image.sh:<br/>docker://pytorch/pytorch を直接取り込む"] --> B["mlflow を入れる ddp/Dockerfile を使わない"]
+  B --> C["イメージに mlflow が無い"]
+  D["ddp.py の先頭で import mlflow<br/>MLflow を使わなくても実行される"] --> E["全 rank が起動直後に<br/>ModuleNotFoundError"]
+  C --> E
+  F["venv の経路は mlflow を入れる"] --> G["venv の経路だけ動く"]
+```
+
 **Answer (English)**
 
-`ddp.py` imports `mlflow` unconditionally at module load, so it's needed even when MLflow isn't used. The venv path installs `mlflow` and `sagemaker-mlflow`, but the container path imported `docker://pytorch/pytorch` straight from Docker Hub and never used the `ddp/Dockerfile` that adds them. I changed `2.create-enroot-image.sh` to build from the Dockerfile and import it with `dockerd://`, the same pattern the deepspeed, trl and mosaicml-composer test cases use.
+Two facts combined. `ddp.py` imports `mlflow` unconditionally at the top of the module, lines 8 and 9, so the import runs even when MLflow isn't used. And the container script imported `docker://pytorch/pytorch` straight from Docker Hub, so the image never got the packages that `ddp/Dockerfile` adds. The venv script installs `mlflow` and `sagemaker-mlflow`, which is why only the container path failed: every rank died with `ModuleNotFoundError` right at startup. I changed the script to `docker build` from the Dockerfile and import it with `dockerd://`.
 
 **回答 (日本語)**
 
-`ddp.py` がモジュールの先頭で `mlflow` を無条件に import するので、MLflow を使わない実行でも要る。venv の経路は `mlflow` と `sagemaker-mlflow` を入れるが、コンテナの経路は Docker Hub の `docker://pytorch/pytorch` を直接取り込み、それらを入れる `ddp/Dockerfile` を使っていなかった。`2.create-enroot-image.sh` を、Dockerfile からイメージを作って `dockerd://` で取り込む形に変えた。deepspeed、trl、mosaicml-composer のテストケースと同じ形である。
+2 つの事実が重なった。`ddp.py` はモジュールの先頭 (8 行目と 9 行目) で `mlflow` を無条件に import するので、MLflow を使わなくても import が走る。そしてコンテナのスクリプトは Docker Hub の `docker://pytorch/pytorch` を直接取り込んでいたので、イメージには `ddp/Dockerfile` が足すパッケージが入らなかった。venv のスクリプトは `mlflow` と `sagemaker-mlflow` を入れるので、コンテナの経路だけが失敗し、全 rank が起動の直後に `ModuleNotFoundError` で落ちた。スクリプトを、Dockerfile から `docker build` して `dockerd://` で取り込む形に変えた。
 :::
 
-:::details Q2. After that fix, a second error appeared. How do you deal with errors that surface one at a time?
+:::details Q4. [Bug] After that fix, a second error appeared. What was it, and what's the lesson?
 **質問 (日本語)**
 
-その修正の後に 2 つ目の誤りが出た。1 つずつ現れる誤りにどう向き合うか。
+その修正の後に 2 つ目の誤りが現れた。何で、教訓は何か。
+
+**原因の連鎖 (図)**
+
+```mermaid
+flowchart TD
+  A["イメージに mlflow が入る"] --> B["import を越えて引数の解析に進む"]
+  C["sbatch は --use-mlflow を渡す"] --> X["名前の不一致"]
+  D["ddp.py の argparse は --use_mlflow を定義"] --> X
+  B --> X
+  X --> E["unrecognized arguments: --use-mlflow"]
+  F["修正: sbatch を --use_mlflow に合わせる"]
+```
 
 **Answer (English)**
 
-Fixing the import exposed an argument mismatch: the sbatch passed `--use-mlflow`, but `ddp.py`'s argparse defined `--use_mlflow`. The lesson is that a fix isn't done when the first error disappears; you run the whole path to the end. I fixed the argument in `3.container-train.sbatch` and confirmed training on two c5.4xlarge nodes with four processes each, eight in total, with every rank reporting its epoch loss over GLOO.
+Once the import succeeded, execution got one step further and hit argument parsing: the sbatch passed `--use-mlflow`, while the argparse in `ddp.py` defined `--use_mlflow`, so it was rejected as an unrecognized argument. The first error was masking the second. The lesson is that a fix isn't done when the first error disappears; you run the path to the end. After aligning the argument, I confirmed PR #1039 on two c5.4xlarge nodes with four processes each, eight in total, with every rank reporting its epoch loss over GLOO.
 
 **回答 (日本語)**
 
-import を直すと、引数の名前の不一致が現れた。sbatch は `--use-mlflow` を渡していたが、`ddp.py` の argparse は `--use_mlflow` を定義していた。最初の誤りが消えたところで終わりにせず、最後まで動かして確かめる、というのが教訓である。`3.container-train.sbatch` の引数を合わせ、c5.4xlarge の 2 ノード、1 ノードに 4 プロセスの計 8 プロセスで、GLOO で学習が進み各 rank がエポックの損失を出すことを確かめた。
+import が通ると実行が 1 段先に進み、引数の解析に当たった。sbatch は `--use-mlflow` を渡していたが、`ddp.py` の argparse は `--use_mlflow` を定義していたので、知らない引数として拒まれた。1 つ目の誤りが 2 つ目を隠していたのである。教訓は、最初の誤りが消えたところで終わりにせず、最後まで動かすことである。引数を合わせた後、PR #1039 は c5.4xlarge の 2 ノード、1 ノードに 4 プロセスの計 8 プロセスで、GLOO で学習が進み各 rank がエポックの損失を出すことを確かめた。
 :::
 
-:::details Q3. How did you investigate the intermittent failure, and what was the root cause?
+:::details Q5. [Bug] Walk me through the intermittent MNIST and GLOO failure. What do you think the cause was?
 **質問 (日本語)**
 
-ときどき起きる失敗をどう調べ、原因は何だったか。
+ときどき起きる MNIST と GLOO の失敗を順に説明してほしい。原因は何だと考えるか。
+
+**原因の連鎖 (図)**
+
+```mermaid
+flowchart TD
+  A["torchrun: 2 ノード x 4 プロセス = 8 rank"] --> B["各 rank が init_process_group の直後に<br/>load_train_objs を呼ぶ"]
+  B --> C["ddp.py: datasets.MNIST download=True<br/>同期が無い"]
+  C --> D["8 rank が共有の FSx の同じ場所に<br/>同時にダウンロードして書く"]
+  D --> E["観察: 一部の rank が File not found or corrupted で停止"]
+  E --> F["推論: 残りの rank の通信の相手が消える"]
+  F --> G["観察: 残りの rank は GLOO Connection closed by peer"]
+  H["メンテナの見立て: この競合は PyTorch の版とは別の問題"]
+```
 
 **Answer (English)**
 
-On two c5n.9xlarge nodes with shared FSx for Lustre and `nproc_per_node=4`, some ranks failed reading MNIST with `File not found or corrupted`, and the others then reported GLOO `Connection closed by peer`. The key was to find the rank that failed first instead of chasing the connection errors. I measured success rates: 0% on PyTorch 2.2.1, which `latest` pointed to, about 70% on 2.10.0, and 10 out of 10 with one process per node. I didn't claim a single root cause; I listed three hypotheses: GLOO instability in 2.2.1, concurrent downloads from many processes, and FSx metadata propagation delay. In review, the maintainer saw the same failure once on a different cluster, and said that every rank calling `datasets.MNIST(download=True)` on shared storage is a race separate from the PyTorch version, fixable with a `torch.distributed.barrier()` guard in `ddp.py`. I didn't isolate why 2.10.0 succeeded more often than 2.2.1.
+The symptom on two c5n.9xlarge nodes with shared FSx for Lustre and four processes per node was that some ranks failed loading MNIST with `File not found or corrupted`, and the rest reported GLOO `Connection closed by peer`. The first rule is to find the rank that failed first and not chase the connection errors. In `ddp.py`, every rank calls `datasets.MNIST(download=True)` right after `init_process_group`, with no synchronization, so all eight processes download and write into the same shared directory at once. The maintainer pointed to this race in review as a problem separate from the PyTorch version, and proposed synchronizing with `torch.distributed.barrier()`. I didn't confirm it as the cause, and the fix isn't implemented or tested in this PR. With one process per node, two ranks still share that directory, so the race isn't eliminated; my inference is that it becomes less likely with fewer concurrent writers, but I didn't isolate that. Why the other ranks show a GLOO disconnect isn't explained in the PR; my reading of the code is that once one rank dies, its peers lose their connection, but I'd label that an inference. I measured success rates, 0% on PyTorch 2.2.1, which `latest` pointed to, about 70% on 2.10.0, and 10 out of 10 with one process per node, and I didn't isolate why the version changed the rate.
 
 **回答 (日本語)**
 
-共有の FSx for Lustre を使う c5n.9xlarge の 2 ノード、`nproc_per_node=4` で、一部の rank が MNIST の読み込みで `File not found or corrupted` を出し、残りの rank が GLOO の `Connection closed by peer` を出した。要点は、接続切れを追わずに最初に落ちた rank を探すことだった。成功率は、`latest` が指していた PyTorch 2.2.1 で 0%、2.10.0 で約 70%、1 ノード 1 プロセスなら 10 回中 10 回だった。原因を 1 つに確定させず、2.2.1 の GLOO の不安定さ、多数のプロセスによる同時のダウンロード、FSx のメタデータの反映の遅れの 3 つを仮説として挙げた。レビューではメンテナも別の環境で同じ失敗を 1 回観測し、すべての rank が共有のストレージで `datasets.MNIST(download=True)` を呼ぶ競合は PyTorch の版と別の問題で、`ddp.py` に `torch.distributed.barrier()` の守りを入れれば直せるとした。2.10.0 が 2.2.1 より成功しやすい理由は切り分けていない。
+共有の FSx for Lustre を使う c5n.9xlarge の 2 ノード、1 ノードに 4 プロセスで、一部の rank が MNIST の読み込みで `File not found or corrupted` を出し、残りが GLOO の `Connection closed by peer` を出した。最初の決まりは、接続切れを追わずに最初に落ちた rank を探すことである。`ddp.py` では各 rank が `init_process_group` の直後に `datasets.MNIST(download=True)` を同期無しで呼ぶので、8 プロセスすべてが同じ共有のディレクトリへ同時にダウンロードして書く。メンテナはレビューでこの競合を PyTorch の版とは別の問題として挙げ、`torch.distributed.barrier()` を使う同期を提案した。筆者は原因として確定させておらず、その修正もこの PR では実装も検証もしていない。1 ノード 1 プロセスでも 2 rank が同じ場所を使うので競合は無くならない。同時に書くものが減って起きにくくなると推論するが、切り分けてはいない。ほかの rank が GLOO の接続切れを出す理由は PR に説明が無い。コードを読む限り、1 つの rank が落ちると相手の rank が接続を失うと考えるが、これは推論だと断る。成功率は、`latest` が指していた PyTorch 2.2.1 で 0%、2.10.0 で約 70%、1 ノード 1 プロセスなら 10 回中 10 回で、版で率が変わった理由は切り分けていない。
 :::
 
-:::details Q4. Why ship a workaround instead of fixing the race?
+:::details Q6. Why ship a workaround instead of fixing the race?
 **質問 (日本語)**
 
 なぜ競合を直さずに回避策を出したのか。
 
 **Answer (English)**
 
-There was a ParallelCluster workshop on April 9, 2026 that depended on this test case, so I prioritized stability for that date and kept the scope to pinning the version and adding a runtime switch. I pinned the base image to `pytorch/pytorch:2.10.0-cuda12.6-cudnn9-runtime` to match the venv path, and added `NPROC_PER_NODE=${NPROC_PER_NODE:-4}`, keeping the default of 4 while letting the workshop choose 1. I didn't touch `ddp.py`. The trade-off is explicit: the `nproc_per_node=4` failure remains. The barrier guard the reviewer proposed was left for a follow-up PR, and it's neither implemented nor tested here.
+Timing and scope. A ParallelCluster workshop on April 9, 2026 depended on this test case, so I prioritized a stable run for that date and limited the PR to two changes: pin the base image to `pytorch/pytorch:2.10.0-cuda12.6-cudnn9-runtime` to match the venv path, and add `NPROC_PER_NODE=${NPROC_PER_NODE:-4}` so the default stays 4 but the workshop can choose 1. I didn't touch `ddp.py`. The trade-off is explicit in the PR: with four processes per node the failure remains. The barrier-based synchronization was left for a follow-up PR and isn't implemented or tested here; the current `ddp.py` in the repository still has none.
 
 **回答 (日本語)**
 
-このテストケースを使う ParallelCluster のワークショップが 2026 年 4 月 9 日にあったので、その日の安定を優先し、範囲を版の固定と実行時の切り替えに絞った。ベースのイメージを venv の経路とそろえて `pytorch/pytorch:2.10.0-cuda12.6-cudnn9-runtime` に固定し、`NPROC_PER_NODE=${NPROC_PER_NODE:-4}` を足して、既定の 4 を保ったままワークショップでは 1 を選べるようにした。`ddp.py` は変えていない。代償ははっきりしていて、`nproc_per_node=4` の失敗は残る。レビュアーが示した barrier の守りは後続の PR に回し、この PR では実装も検証もしていない。
+時期と範囲である。このテストケースを使う ParallelCluster のワークショップが 2026 年 4 月 9 日にあったので、その日に安定して動くことを優先し、PR を 2 つの変更に絞った。ベースのイメージを venv の経路とそろえて `pytorch/pytorch:2.10.0-cuda12.6-cudnn9-runtime` に固定し、`NPROC_PER_NODE=${NPROC_PER_NODE:-4}` を足して既定の 4 を保ちつつワークショップでは 1 を選べるようにした。`ddp.py` は変えていない。代償は PR にはっきり書いた。1 ノードに 4 プロセスでは失敗が残る。barrier を使う同期は後続の PR に回し、ここでは実装も検証もしていない。リポジトリの今の `ddp.py` にもまだ無い。
 :::
 
-:::details Q5. Isn't `--break-system-packages` dangerous?
+:::details Q7. [Bug] Review found a bug in your own shell change. What was it?
+**質問 (日本語)**
+
+レビューで、自分の足したシェルの変更に不具合が見つかった。何だったか。
+
+**原因の連鎖 (図)**
+
+```mermaid
+flowchart TD
+  A["declare -a TORCHRUN_ARGS=(<br/>--nproc_per_node=$NPROC_PER_NODE ...)"] --> B["配列の要素は宣言の時点で展開される"]
+  C["後の行: NPROC_PER_NODE=${NPROC_PER_NODE:-4}"] --> D["既定値は配列に届かない"]
+  B --> D
+  D --> E["未設定なら --nproc_per_node= が空の値のまま torchrun に渡る"]
+  F["修正: 代入を配列の前へ移し、変数を引用符で囲む"]
+```
+
+**Answer (English)**
+
+In my first commit, the bash array `TORCHRUN_ARGS` containing `--nproc_per_node=$NPROC_PER_NODE` was declared before the line that set the default `NPROC_PER_NODE=${NPROC_PER_NODE:-4}`. Bash expands array elements at declaration time, so when the variable wasn't set, the empty value was baked into the array and the default never took effect. The reviewer caught it. I moved the assignment above the array and quoted the variable. It's small, but anyone relying on the default would have passed `--nproc_per_node=` with an empty value to torchrun instead of 4.
+
+**回答 (日本語)**
+
+最初の commit では、`--nproc_per_node=$NPROC_PER_NODE` を含む bash の配列 `TORCHRUN_ARGS` を、既定値の `NPROC_PER_NODE=${NPROC_PER_NODE:-4}` を設定する行より前で宣言していた。bash は配列の要素を宣言の時点で展開するので、変数が未設定なら空の値が配列に焼き付き、既定値が効かない。レビューで見つかった。代入を配列の前に移し、変数を引用符で囲んだ。小さな誤りだが、既定値に頼る人は 4 ではなく空の値の `--nproc_per_node=` を torchrun に渡すところだった。
+:::
+
+:::details Q8. Isn't `--break-system-packages` dangerous?
 **質問 (日本語)**
 
 `--break-system-packages` は危なくないか。
 
 **Answer (English)**
 
-The 2.10.0 image ships Python 3.12, which follows PEP 668 and refuses system-wide `pip install` by default. The flag overrides that. The risk is that pip overwrites packages the image's own Python depends on. Here the container is disposable and isolated from the host, and the image is rebuilt from the Dockerfile, so the harm is small. I'd not use the same flag on a long-lived host.
+The 2.10.0 image ships Python 3.12, which follows PEP 668 and refuses system-wide `pip install` by default; the flag overrides that. The risk is that pip overwrites packages the image's own Python depends on. Here the container is disposable and isolated from the host, and the image is rebuilt from the Dockerfile, so the harm is small, and the training runs exercised the result. I wouldn't use it on a long-lived host.
 
 **回答 (日本語)**
 
-2.10.0 のイメージは Python 3.12 で、PEP 668 に従い、既定ではシステムへの `pip install` を拒む。このフラグはそれを上書きする。危険は、pip がイメージ自身の Python が頼るパッケージを上書きすることである。ここではコンテナが使い捨てで、ホストから切り離されていて、イメージは Dockerfile から作り直せるので、害は小さい。長く使うホストでは同じフラグは使わない。
+2.10.0 のイメージは Python 3.12 で、PEP 668 に従い既定ではシステムへの `pip install` を拒み、このフラグはそれを上書きする。危険は、pip がイメージ自身の Python が頼るパッケージを上書きすることである。ここではコンテナが使い捨てでホストから切り離されていて、イメージは Dockerfile から作り直せるので害は小さく、学習の実行でその結果も確かめた。長く使うホストでは使わない。
 :::
 
-:::details Q6. What did the review catch in the shell script?
+### 検証と振り返り
+
+:::details Q9. How was the workaround verified, and by whom?
 **質問 (日本語)**
 
-レビューはシェルのスクリプトで何を見つけたか。
+回避策はどう検証され、誰が確かめたか。
 
 **Answer (English)**
 
-The line that assigned the default for `NPROC_PER_NODE` came after the bash array that used it. Bash expands array elements when the array is declared, so the default never reached the array. I moved the assignment above the array and quoted the variable. It's a small bug, but it would have made the new switch silently ineffective.
+I tested the changed container path on two c5n.9xlarge nodes with one and four processes per node, deleting MNIST with `rm -rf ../data` before every run so each run repeated the first download, and confirmed the image reported `2.10.0+cu126`. With four processes per node, a rank still raised an exception during the download, as expected. The maintainer tested the venv sbatch separately on SageMaker HyperPod Slurm with two ml.c5.2xlarge nodes. Not the container path, because those CPU instances have no NVIDIA drivers. With one process per node, five of five passed. With four, four of five passed, and the failed run showed the same MNIST and GLOO errors.
 
 **回答 (日本語)**
 
-`NPROC_PER_NODE` の既定値を代入する行が、それを使う bash の配列の宣言より後にあった。配列の要素は宣言の時点で展開されるので、既定値が配列に届かない。代入を配列の前に移し、変数を引用符で囲んだ。小さな誤りだが、足した切り替えが黙って効かなくなるところだった。
+変えたコンテナの経路を c5n.9xlarge の 2 ノードで、1 ノードに 1 プロセスと 4 プロセスの両方で試した。毎回の前に `rm -rf ../data` で MNIST を消して初めてのダウンロードから再現させ、イメージの中の版が `2.10.0+cu126` であることも確かめた。1 ノードに 4 プロセスでは、想定どおりダウンロードで例外を出す rank がまだ現れた。メンテナは別に SageMaker HyperPod の Slurm の ml.c5.2xlarge の 2 ノードで、コンテナの経路ではなく venv の sbatch を確かめた。NVIDIA のドライバの無いその CPU のインスタンスでは、コンテナの経路が使えないからである。1 ノードに 1 プロセスで 5 回中 5 回、4 プロセスで 5 回中 4 回成功し、失敗した 1 回は同じ MNIST と GLOO の型だった。
 :::
 
-:::details Q7. How was the fix verified, and by whom?
+:::details Q10. How would you fix the race properly, and what would you check?
 **質問 (日本語)**
 
-修正はどう検証され、誰が確かめたか。
+競合を本当に直すならどうし、何を確かめるか。
 
 **Answer (English)**
 
-I tested the changed container path myself on two c5n.9xlarge nodes, with one and four processes per node. Before each run I deleted MNIST with `rm -rf ../data`, so every run repeated the first download, and I confirmed the image reported `2.10.0+cu126`. With four processes per node, a rank still raised an exception during the download. The maintainer separately tested the venv sbatch, not the container path, on SageMaker HyperPod Slurm with two ml.c5.2xlarge nodes, because on those CPU instances without NVIDIA drivers the container path wasn't usable. With one process per node it passed 5 of 5, with four it passed 4 of 5, and the failed run showed the same MNIST and GLOO errors.
+The review proposed synchronizing with `torch.distributed.barrier()` in `ddp.py`. Whatever the exact form, the follow-up has to guarantee that ranks don't download and write into the shared directory concurrently. In my Issue I also listed three things to investigate next: `--container-mounts` settings for shared data, synchronizing with a barrier that doesn't depend on the dataset, and reviewing the storage. To verify a fix, I'd reuse the same harness: delete the data before each run, run four processes per node many times, and require every run to pass, since a 4 of 5 pass rate is exactly the signal that hides a race.
 
 **回答 (日本語)**
 
-変えたコンテナの経路は、自分で c5n.9xlarge の 2 ノードで、1 ノードに 1 プロセスと 4 プロセスの両方を試した。毎回の前に `rm -rf ../data` で MNIST を消して初めてのダウンロードから再現させ、イメージの中の版が `2.10.0+cu126` であることも確かめた。1 ノードに 4 プロセスでは、ダウンロードで例外を出す rank がまだ現れた。メンテナは別に、SageMaker HyperPod の Slurm の ml.c5.2xlarge の 2 ノードで、コンテナの経路ではなく venv の sbatch を確かめた。NVIDIA のドライバの無いその CPU のインスタンスでは、コンテナの経路が使えないからである。1 ノードに 1 プロセスで 5 回中 5 回、4 プロセスで 5 回中 4 回成功し、失敗した 1 回は同じ MNIST と GLOO の誤りだった。
+レビューでは `ddp.py` で `torch.distributed.barrier()` を使って同期することが提案された。形はどうあれ、後続の修正は、各 rank が共有のディレクトリへ同時にダウンロードして書かないことを保証する必要がある。Issue では、共有データ向けの `--container-mounts` の設定、データセットによらない barrier での同期、ストレージの見直し、の 3 つも次に調べる項目に挙げた。修正の検証には同じ手順を使う。毎回の前にデータを消し、1 ノードに 4 プロセスで何度も動かし、全回の成功を求める。5 回中 4 回の成功こそ、競合を隠す信号だからである。
 :::
 
 ## まとめ
