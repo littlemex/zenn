@@ -72,6 +72,108 @@ NCCL INFO Channel 00/0 : 0[0] -> 1[0] [send] via NET/Libfabric/0
 - **pyxis を入れる段階**（検証の環境で踏んだもの）。ParallelCluster のカスタムアクションで pyxis を入れるときは、`OnNodeStart` ではなく `OnNodeConfigured` に置く。`OnNodeStart` はブートストラップの前に動くので、enroot がまだ入っていない。
 - **公開モデルでも要る HF_TOKEN**（検証の環境で踏んだもの、PR の対象外）。固定した commit の picotron の `train.py` は、設定ファイルにも環境変数にも `HF_TOKEN` が無いと、公開モデルでも起動で止まる。検証では手元の sbatch に `export HF_TOKEN=""` を足した。
 
+## 技術面接の準備 (FAQ)
+
+この節は、本章の内容を技術面接で聞かれたときに答えるための想定問答である。システム設計面接の流れ (要件の確認、全体の設計、深掘り、トレードオフ、故障と検証) に沿って並べ、各問は英語の質問、日本語の質問、英語の回答、日本語の回答の順に書いた。回答は本章に書いた事実だけを使う。
+
+:::details Q1. What problem did this PR solve, and what did you change?
+**質問 (日本語)**
+
+この PR は何を解決し、何を変えたか。
+
+**Answer (English)**
+
+The picotron test case wasn't reproducible. The Dockerfile cloned picotron without pinning a commit, so the image changed silently whenever upstream moved. The README pointed at the wrong config path, the EC2 README duplicated a setup step, `create_config.py` opened its template from the current directory, and `train.sbatch` had no EFA settings for multi-node runs. I pinned the commit, resolved the template path from `__file__` and vendored the template, added the EFA and NCCL environment variables from the repository's EFA cheatsheet, and fixed the two README issues.
+
+**回答 (日本語)**
+
+picotron のテストケースが再現できない状態だった。Dockerfile が commit を固定せずに clone していたので、上流が変わるとイメージが黙って変わる。README は設定の出力先を誤って書き、EC2 の README は準備の手順を重ねて書き、`create_config.py` はテンプレートをカレントディレクトリから開き、`train.sbatch` には複数ノードで EFA を使う設定が無かった。commit を固定し、テンプレートの場所を `__file__` から求めてリポジトリに置き、リポジトリの EFA cheatsheet に合わせて EFA と NCCL の環境変数を足し、README の 2 か所を直した。
+:::
+
+:::details Q2. Why did you pin a commit but leave torch at 2.1.0?
+**質問 (日本語)**
+
+commit は固定したのに、なぜ torch は 2.1.0 のまま残したのか。
+
+**Answer (English)**
+
+Because bumping it in the Dockerfile wouldn't have taken effect. The pinned picotron commit specifies `torch==2.1.0` in its `requirements.txt`, and `pip install -e .` reinstalls that version over whatever the Dockerfile installed. So I left it and wrote the reason down. The reviewer valued that note because it stops the next person from "fixing" something that doesn't need fixing.
+
+**回答 (日本語)**
+
+Dockerfile だけで上げても効かないからである。固定した picotron の commit は `requirements.txt` で `torch==2.1.0` を指定していて、`pip install -e .` がそれで上書きする。そのため上げずに残し、理由を書いた。レビューでは、直す必要の無いものを後の人が直してしまうのを防ぐ、と評価された。
+:::
+
+:::details Q3. How did you prove EFA was actually used?
+**質問 (日本語)**
+
+EFA が実際に使われたことをどう証明したか。
+
+**Answer (English)**
+
+Setting environment variables is not evidence, so I checked the path NCCL actually chose. Separately from training, I ran a two-node all_reduce with `torchrun` and `NCCL_DEBUG=INFO`, and confirmed on both nodes that aws-ofi-nccl initialized and logged `Selected Provider is efa`. On g5.8xlarge the log also shows GPU Direct RDMA disabled. Then I ran a cut-down training job for 5,000 steps with exit code 0 and no NCCL errors. To be precise, the provider evidence comes from that separate all_reduce run, not from the training job's own logs, and both runs used the earlier `NCCL_SOCKET_IFNAME=en` version.
+
+**回答 (日本語)**
+
+環境変数を足しただけでは証拠にならないので、NCCL が実際に選んだ経路を見た。学習とは別に `torchrun` で 2 ノードの all_reduce を `NCCL_DEBUG=INFO` で動かし、両ノードで aws-ofi-nccl が初期化され `Selected Provider is efa` が出ることを確かめた。g5.8xlarge では GPU Direct RDMA が無効と出る。そのうえで、縮めた設定の学習ジョブが 5000 ステップを NCCL のエラー無しで終了コード 0 で完走することを確かめた。正確に言うと、プロバイダの証拠は別に動かした all_reduce のものであり、学習ジョブ自身のログではない。どちらもレビュー前の `NCCL_SOCKET_IFNAME=en` の版で動かした。
+:::
+
+:::details Q4. Why `NCCL_SOCKET_IFNAME=^docker,lo,veth` instead of `en`?
+**質問 (日本語)**
+
+`NCCL_SOCKET_IFNAME` を `en` ではなく `^docker,lo,veth` にしたのはなぜか。
+
+**Answer (English)**
+
+I first used `en`, an allowlist, because it states the intended interface and is easy to read. The reviewer pointed out that it can miss instances whose interfaces don't start with `en`, and suggested the exclusion form already used by the FSDP, DeepSpeed and nanoVLM test cases. I adopted the suggestion, and the merged `train.sbatch` uses `^docker,lo,veth`. The trade-off is that if an unexpected, unwanted interface appears, someone has to add it to the exclusion list. Note that this variable only controls NCCL's socket bootstrap, not the EFA provider selection.
+
+**回答 (日本語)**
+
+最初は、使う側を明示できて意図が読みやすい `en` (許可の形) にした。レビューで、名前が `en` で始まらないインタフェースを持つインスタンスでは外れうると指摘され、FSDP、DeepSpeed、nanoVLM の sbatch と同じ除外の形を提案された。この提案を採り、マージした `train.sbatch` は `^docker,lo,veth` になっている。代償は、想定外の不要なインタフェースが増えたときに除外の一覧へ足す必要があることである。なお、この変数は NCCL のソケットでの待ち合わせを決めるもので、EFA のプロバイダの選択とは別である。
+:::
+
+:::details Q5. Why `FI_EFA_USE_HUGE_PAGE=0`, and why not set `NCCL_DEBUG`?
+**質問 (日本語)**
+
+なぜ `FI_EFA_USE_HUGE_PAGE=0` を入れ、`NCCL_DEBUG` は入れなかったのか。
+
+**Answer (English)**
+
+Both follow the repository's EFA cheatsheet. `FI_EFA_USE_HUGE_PAGE=0` matches its preset for libfabric 1.18.0+ and aws-ofi-nccl 1.7.0+, and prevents PyTorch's multi-process dataloader from exhausting huge pages and failing with `Cannot allocate memory`. `FI_PROVIDER=efa` makes the provider explicit so the script doesn't depend on a particular aws-ofi-nccl version on the host. The cheatsheet recommends leaving `NCCL_DEBUG` off unless you're investigating NCCL, so I only used it in the separate verification run.
+
+**回答 (日本語)**
+
+どちらもリポジトリの EFA cheatsheet に合わせた。`FI_EFA_USE_HUGE_PAGE=0` は libfabric 1.18.0 以上、aws-ofi-nccl 1.7.0 以上のプリセットに従い、PyTorch の複数プロセスの dataloader が huge page を使い切って `Cannot allocate memory` になるのを防ぐ。`FI_PROVIDER=efa` はプロバイダを明示し、スクリプトがホストの特定の aws-ofi-nccl の版に頼らないようにする。`NCCL_DEBUG` は、NCCL を疑うとき以外は切ることを cheatsheet が勧めているので、別に動かした検証でだけ使った。
+:::
+
+:::details Q6. Walk me through how a job reaches the GPU on Slurm with containers.
+**質問 (日本語)**
+
+コンテナを使う Slurm で、ジョブが GPU に届くまでの流れを説明してほしい。
+
+**Answer (English)**
+
+The `sbatch` script runs in a host shell, `srun` places tasks on nodes, pyxis and enroot start the container, and `torchrun` sets `RANK`, `WORLD_SIZE` and `MASTER_ADDR` before launching the training process. So the distributed environment variables come from `torchrun`, not `srun`. Inter-node traffic is meant to go through NCCL, aws-ofi-nccl and EFA. Two pitfalls I hit in my test environment, outside the PR's scope: on ParallelCluster a non-login `sbatch` shell may not have `/opt/slurm/bin` on `PATH`, and pyxis must be installed in `OnNodeConfigured`, not `OnNodeStart`, because enroot isn't installed yet at that stage.
+
+**回答 (日本語)**
+
+`sbatch` のスクリプトがホストのシェルで動き、`srun` がノードにタスクを置き、pyxis と enroot がコンテナを起動し、`torchrun` が `RANK`、`WORLD_SIZE`、`MASTER_ADDR` を設定してから学習のプロセスを起動する。分散の環境変数を設定するのは `srun` ではなく `torchrun` である。ノードの間の通信は NCCL、aws-ofi-nccl、EFA を通ることを狙う。PR の対象外だが検証の環境で 2 つ踏んだ。ParallelCluster では非ログインの `sbatch` のシェルに `/opt/slurm/bin` のパスが入らないことがあり、pyxis は enroot がまだ入っていない `OnNodeStart` ではなく `OnNodeConfigured` に置く必要がある。
+:::
+
+:::details Q7. What did you not test, and what is the risk?
+**質問 (日本語)**
+
+何を試しておらず、どんなリスクが残るか。
+
+**Answer (English)**
+
+I tested on two g5.8xlarge nodes with ParallelCluster 3.13.1 and Slurm 24.05.8, not on p4d or p5, which are the main targets, because of resources and cost. Also, my verification ran on the earlier `NCCL_SOCKET_IFNAME=en` version; the PR has no record of re-testing after the switch to `^docker,lo,veth`. Running outside the container was reported in an Issue comment but the command and logs aren't in the PR. I'd state these gaps explicitly rather than imply coverage.
+
+**回答 (日本語)**
+
+ParallelCluster 3.13.1、Slurm 24.05.8 の g5.8xlarge の 2 ノードで試し、主な対象の p4d と p5 は資源と費用の都合で試していない。また、検証はレビュー前の `NCCL_SOCKET_IFNAME=en` の版で行い、`^docker,lo,veth` に変えた後の再検証は PR に記録が無い。コンテナの外で動くことは Issue のコメントで報告したが、コマンドとログは PR に載せていない。試した範囲を広く見せず、こうした抜けははっきり言う。
+:::
+
 ## まとめ
 
 picotron の PR は、上流の commit の固定、`__file__` からのテンプレートの読み込み、EFA の環境変数、README の 2 か所の修正を入れたものである。別に動かした 2 ノードの all_reduce では NCCL のログで EFA が選ばれたことを、学習ジョブでは 5000 ステップの完走を確かめた。再現できるテストケースにするには、上流を固定し、スクリプトをカレントディレクトリに頼らせず、使われる経路をログで確かめる。
