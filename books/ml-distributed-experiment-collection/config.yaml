@@ -12,6 +12,7 @@ chapters:
   - awsome-hyperpod-eks-fixes
   - awsome-miles-grpo
   - awsome-eks-gpu-cfn
+  - awsome-eks-gpu-cfn-faq
 #  - pipeline-parallelism
 #  - review
 #  - background
