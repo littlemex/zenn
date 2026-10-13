@@ -68,7 +68,7 @@ GRPO（Group Relative Policy Optimization）は、同じ問題に対して複数
 
 ## 技術面接の準備 (FAQ)
 
-この節は、本章の内容を技術面接で聞かれたときに答えるための想定問答である。システム設計面接の流れに合わせて、全体と設計、不具合の原因の深掘り、検証と振り返りの 3 つに分けた。各問は英語の質問 (見出し)、日本語の質問、英語の回答、日本語の回答の順に書いた。不具合の問には原因の連鎖の図を付け、回答は症状、原因、突き止め方、直し方と比べた案、検証、残ったこと、の順に話す。回答は本章の本文と、PR、Issue、マージ前後のコード、関係する上流のソースで確かめた事実だけを使う。
+この節は、本章の内容を技術面接で聞かれたときに答えるための想定問答である。システム設計面接の流れに合わせて、全体と設計、不具合の原因の深掘り、検証と振り返りの 3 つに分けた。各問は英語の質問 (見出し)、日本語の質問、噛み砕き (ひとことでの表とやさしい版の図)、英語の回答、日本語の回答の順に書いた。不具合の問には原因の連鎖の図を付け、回答は症状、原因、突き止め方、直し方と比べた案、検証、残ったこと、の順に話す。回答は本章の本文と、PR、Issue、マージ前後のコード、関係する上流のソースで確かめた事実だけを使う。
 
 ### 全体と設計
 
@@ -90,6 +90,25 @@ The base image, NGC PyTorch 26.02 with CUDA 13 and SGLang 0.5.12, already suppor
 **質問 (日本語)**
 
 なぜ小さな commit を積んだ 1 本の epic の PR にし、世代ごとのディレクトリを作らなかったのか。
+
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 論点 | (1) 原因ごとの小さな修正を、どういう単位で PR にまとめるか。(2) B300 と H200 の違いを、世代ごとのフォルダで持つか、1 つのレシピの値の違いとして持つか |
+| 選んだこと | 原因ごとに説明つきの commit (履歴に残る 1 つの作業の単位) を分け、1 本の大きな PR (まとめて出す変更の提案) に積んだ。構成については、世代ごとのフォルダを作るのではなく、値の違いだけを持つ 1 つのレシピにする形を提案し、どちらが良いかをメンテナ (管理する人) に尋ねた |
+| 良い点 | 一般の修正と B300 専用の修正が混ざらず、レビューしやすい。レシピを 2 つに複製すると中身が少しずつずれていく心配も無い |
+| 悪い点・代償 | この PR には B300 に固有の値は入っておらず、そちら側は別の人 (レビューした人) が引き取る形になった |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["直し方: 原因ごとに分けた小さな修正"] --> B["1 本の PR にまとめて積む"]
+  C["別の案: GPU の世代ごとにフォルダを作る"] --> D["中身が少しずれて別々になっていく心配"]
+  E["提案: 違いは値だけにして 1 つのレシピにする<br/>どちらが良いかをメンテナに尋ねた"]
+  D -.-> E
+```
 
 **Answer (English)**
 
@@ -120,6 +139,42 @@ flowchart TD
   F --> G["train.py に引数が届かず<br/>hf_validate_args で hidden_size None"]
 ```
 
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | 学習を起動する仕組み (Ray) が、想定より 1 段多くシェル (コマンドを実行する入れ物) を挟んでいて、そのシェルがモデルの設定の変数を、まだ中身が無いうちに先に展開して空にしてしまった |
+| やったこと | 起動用の小さなスクリプトを足し、ジョブの中でそのスクリプトがモデルの設定を読み込み、同じ場所で変数を展開するようにした。変数が空ならその場でエラーで止まる |
+| 良い点 | Ray が引数をどうつなぎ直すかという内部の挙動に頼らずに済む。分かりにくい検証のエラーの代わりに、その場で止まる確認が入った |
+| 悪い点・代償 | 保守するスクリプトが 1 本増えた。外側のシェルの種類そのものは記録していない |
+
+**図 (やさしい版、直す前)**
+
+```mermaid
+flowchart TD
+  A["学習の起動の命令を 1 つの文字列にまとめる<br/>モデルの設定の変数は後で展開するつもり"] --> B["Ray にジョブとして渡す"]
+  B --> C["Ray が中でシェルを 1 段足して実行する"]
+  C --> D["足されたシェルが変数を先に展開<br/>まだ中身が無いので空になる"]
+  D --> E["学習のプログラムに設定が 1 つも届かない"]
+  E --> F["hidden_size が None で止まる"]
+```
+
+**図 (やさしい版、直した後)**
+
+```mermaid
+flowchart TD
+  A["Ray には起動用のスクリプトの名前と<br/>普通の引数だけを渡す"] --> B["ジョブの中で起動用のスクリプトが動く"]
+  B --> C["スクリプトがモデルの設定を読み込み<br/>同じ場所で変数を展開する"]
+  C --> D["空ならその場でエラーで止まる"]
+  C --> E["学習のプログラムに設定が届く"]
+```
+
+**比喩 (事実を曲げない範囲で)**
+
+途中の郵便局員 (余分に増えたシェル) が、配達の途中で封を開け、「届いた先で書き込む」という印を勝手に空白で埋めてしまう。だから届いた先では、書くはずの中身が消えている。そこで、印を入れた手紙を送るのをやめ、宛先と普通の言葉だけを送ることにした。中身は、届いた先で手紙を書く係 (起動用のスクリプト) が、その場で書く。途中で開けられても、書き換えられる印がもう入っていない。
+
+確かめ方: SLIME を使わない小さな再現で、シェル 1 段で動かすと引数は 25 個届き、同じ命令を Ray に通すと 0 個になった。
+
 **Answer (English)**
 
 The error message was far from the cause. The recipe put the `train.py` call into one string, `TRAIN_CMD`, passed it as `ray job submit ... -- bash -c "${TRAIN_CMD}"`, and escaped `${MODEL_ARGS[@]}` so the inner bash would expand it after sourcing the model script. I read Ray 2.55.1's source: the CLI joins everything after `--` into one string with `subprocess.list2cmdline`, and the job supervisor runs that string with `Popen(..., shell=True)`, which means an outer `/bin/sh -c`. So there was one more shell than the recipe assumed. `list2cmdline` wraps the `bash -c` argument in double quotes because it contains spaces, and a shell expands `$` inside double quotes, so that outer shell expanded `${MODEL_ARGS[@]}` first, when it was still undefined, so the inner bash received nothing and `train.py` failed validation with `hidden_size None`. I confirmed the mechanism without SLIME: one level of `bash -c` delivered 25 arguments, and the same command through `ray job submit -- bash -c` delivered 0. If asked which shell `/bin/sh` was: I didn't record it, but the result itself, `train.py` starting with no model arguments, shows it expanded to empty rather than erroring.
@@ -133,6 +188,25 @@ The error message was far from the cause. The recipe put the `train.py` call int
 **質問 (日本語)**
 
 なぜクォートを直さずに起動用のスクリプトにしたのか。
+
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 論点 | クォート (文字列を囲む引用符) の付け方を工夫して直すか、起動用の新しいスクリプトを足すか |
+| 選んだこと | 引用符を工夫する案は、Ray の内部の文字列のつなぎ方という外から見えない挙動に頼ることになるので避け、設定の配列がシェルの境界をそもそもまたがないようにする起動用のスクリプトを足した |
+| 良い点 | Ray の内部の挙動が変わっても影響を受けにくい。設定が空のときはその場でエラーにして止まるので、分かりにくい失敗より気づきやすい |
+| 悪い点・代償 | 保守するスクリプトが 1 本増える |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["案 1: 引用符の付け方を工夫して直す"] --> B["Ray の内部の動きに頼ることになり不確か"]
+  C["案 2: 起動用の小さなスクリプトを足す"] --> D["モデルの設定を読み込んだ場所で変数を展開する"]
+  D --> E["Ray には普通の引数だけを渡し<br/>展開はジョブの中のスクリプトが行う"]
+  E --> F["設定が空ならその場でエラーにして止める"]
+```
 
 **Answer (English)**
 
@@ -157,6 +231,26 @@ flowchart TD
   C --> D["KeyError、ソケットを開く前に死ぬ"]
   D --> E["rollout の HTTP サーバーが立たない"]
   E --> F["RolloutManager が /health_generate を待ち続ける<br/>GPU は遊ぶ"]
+```
+
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | ログ (動作の記録) をどこまで詳しく出すかの指定に大文字の WARN と書いたが、配信用のサーバーの部品 (uvicorn) が知っている一覧は warning のような小文字の書き方だけだった |
+| やったこと | 元の「警告のレベルだけ表示する」という狙いを保ったまま、正しい書き方 (warning) に直した |
+| 良い点 | 元の「警告のレベルだけ出す」という狙いを変えずに、一覧にある正しい書き方で直せる。この失敗は目に見えて落ちず、ただ止まるたちの悪い種類である |
+| 悪い点・代償 | 書き方の違いを正しく読み替える仕組み自体は、配信用のプログラムの上流 (元のプログラム) の役目であり、ここでは直していない |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["設定: ログの詳しさを WARN と書く"] --> B["配信のプログラムが設定を組み立てる"]
+  B --> C["プログラムが持つ一覧には小文字しかない"]
+  C --> D["一致しないので起動する前に止まる"]
+  D --> E["サーバーが立たないまま"]
+  E --> F["学習の側はずっと待ち続け、GPU が遊ぶ"]
 ```
 
 **Answer (English)**
@@ -185,6 +279,26 @@ flowchart TD
   G["torch_memory_saver 自身は<br/>実行中の CUDA の版で .so を選べる"] --> H["修正: 選び方をそちらに任せるパッチ"]
 ```
 
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | 学習の仕組み (SLIME) が、メモリ節約の部品 (torch_memory_saver) の補助ファイルを、動いている CUDA の版を見ずに決まった名前で選んでいた。そのファイルは古い版 (CUDA 12) 向けだった |
+| やったこと | ビルドの時に当てるパッチで、補助ファイルの選び方を、CUDA の版を自分で調べて選べる torch_memory_saver 自身に任せた。候補を実際に読み込んでみる予備の手段も持たせ、上流にも修正を出した |
+| 良い点 | H200 と CUDA 13 の環境では、CUDA 13 向けのファイルが読み込まれ、学習が Megatron の初期化まで進んだ |
+| 悪い点・代償 | ビルドの時に当てる一時的なパッチであり、本来は上流 (SLIME) で直すべきものなので、上流にも修正を出した |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["メモリ節約の仕組みが既定で有効"] --> B["補助の部品を決まった名前で読み込む"]
+  B --> C["その部品は古い CUDA の版向け"]
+  C --> D["動いている CUDA の版と食い違う"]
+  D --> E["補助ファイルが求める CUDA 12 のライブラリが無く<br/>ワーカーが死ぬ"]
+  F["torch_memory_saver 自身は CUDA の版を調べて補助ファイルを選べる"] --> G["直した後: 選び方をそちらに任せる"]
+```
+
 **Answer (English)**
 
 With offload enabled, which is the default, SLIME's `actor_group.py` sets `LD_PRELOAD` to a `torch_memory_saver` hook library chosen by a fixed filename, not by the CUDA runtime. In this image that file was a CUDA 12 build, so loading it required `libcudart.so.12`, which doesn't exist in a CUDA 13 environment, and the worker died with `cannot open shared object file`. `torch_memory_saver` itself can pick the right library for the detected CUDA major version, so the fix is a build-time patch that delegates the choice to it, with a fallback that tries actually loading candidates. I sent the fix upstream too. On H200 with CUDA 13, the preload then resolved to the CUDA 13 build and training reached Megatron initialization.
@@ -209,6 +323,26 @@ flowchart TD
   D --> E["SLIME の Megatron の初期化:<br/>assert np.__version__.startswith 1."]
   E --> F["Megatron does not support numpy 2.x"]
   G["修正: requirements.txt に numpy<2<br/>上流の SLIME の Dockerfile と同じ"]
+```
+
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | 別に入れた配信用の部品が、新しい版の数値計算の部品 (numpy) を一緒に連れてきてしまい、古い版に戻す固定が設定ファイルに無かった |
+| やったこと | 設定ファイルに、数値計算の部品の版を古い系列に固定する指定を足した |
+| 良い点 | 元のプログラム (上流) がしている対処と同じ方法で、他の読み込みも問題なく通った |
+| 悪い点・代償 | 自分で書いたコメントが後のインストールの段階を誤って説明しており、後の commit で直した。コードは正しく、コメントが正しくなかった |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["配信用の部品を入れる"] --> B["新しい numpy が一緒に入ってくる"]
+  B --> C["古い版に戻す固定が無い"]
+  C --> D["新しい numpy が残る"]
+  D --> E["学習の初期化が古い版しか対応していないと気づいて止まる"]
+  F["直した後: 設定ファイルに numpy の版を固定する"] --> G["古い numpy になり、学習の初期化が通る"]
 ```
 
 **Answer (English)**
@@ -237,6 +371,26 @@ flowchart TD
   G["4B dense はこれらの分岐に届かない"] --> H["4B では見えなかった"]
 ```
 
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | 大きいモデル (30B MoE) の構成だけが通る経路に、独立した 3 つの抜けがあった。変換に使う部品が入っていない、GPU を持たない役が GPU に無条件に問い合わせてしまう、並列数を増やしたときに必要な設定が無い、の 3 つである |
+| やったこと | 足りない部品を入れ、GPU を持たない役には問い合わせへの答えを代わりに返す仕組みを足し、必要な設定を足した |
+| 良い点 | 小さいモデルでは隠れていた抜けを、構成ごとに切り分けて見つけ、直せた |
+| 悪い点・代償 | GPU を持たない役に答えを返す仕組みは応急の対処であり、本当の直し方 (GPU が無いことをきちんと確かめる) は元のプログラムの役目として残る |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["30B MoE の構成だけが通る経路"] --> B["変換に使う部品が入っていない"]
+  A --> C["GPU を持たない役が GPU に問い合わせる"]
+  C --> D["問い合わせ先が無いと気づいて止まる"]
+  A --> E["並列数が増えたときに必要な設定が無い"]
+  F["小さいモデルの構成はこの経路に届かない"] --> G["隠れていた"]
+```
+
 **Answer (English)**
 
 Three independent gaps that only the 30B path reaches. The checkpoint conversion imports `mbridge`, but SLIME is installed with `--no-deps`, so it was missing. SLIME calls Megatron's `validate_args` on the Ray driver, which deliberately has no GPU, and with grouped GEMM and TP or CP above 1, Megatron calls `torch.cuda.get_device_capability` and `get_device_arch_version` without checking whether CUDA is available, so it crashed with "Found no NVIDIA driver". And Megatron requires `CUDA_DEVICE_MAX_CONNECTIONS=1` when tensor or context parallelism is enabled on pre-Blackwell GPUs, which wasn't set. The dense 4B recipe never reaches any of those branches, which is why it hid them. I added `mbridge`, a patch that answers those GPU queries only when no GPU is present, returning compute capability (8, 0) and a sentinel architecture value of 9999 so the driver-side validation doesn't take a pre-Blackwell branch, while the GPU workers still query real hardware, and the environment variable. I also removed `--sglang-enable-ep-moe`, which has no effect on SGLang 0.5.12; SLIME parses SGLang flags leniently, so it didn't error.
@@ -250,6 +404,28 @@ Three independent gaps that only the 30B path reaches. The checkpoint conversion
 **質問 (日本語)**
 
 一時的なパッチは、上流が直したことをどうやって知るのか。
+
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 論点 | 一時的な当て直し (パッチ) を、元のプログラム (上流) が直した後もそのまま当て続けないために、どう判断させるか |
+| 選んだこと | ビルド (組み立て) のたびに 3 段階で確かめる。すでに印が付いていれば終わり、壊れた形が無ければ何もしない、見つかれば書き換える場所がちょうど 1 か所のときだけ当てて組み立てて確かめ、それ以外はビルドをはっきり失敗させる |
+| 良い点 | 元のプログラムを複製 (フォーク) せずに済む。合わなくなったときは、中途半端に当たるのではなく、ビルドの失敗としてはっきり表に出る |
+| 悪い点・代償 | この確かめ方は決まった形を探すだけの判定であり、上流がすべて正しいことまでは保証しない |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["ビルドのたびに確認を始める"] --> B{"自分の印がある?"}
+  B -->|"ある"| B2["当て済みなので終わり"]
+  B -->|"ない"| C{"壊れた形がある?"}
+  C -->|"ない"| C2["何もしない"]
+  C -->|"ある"| D{"書き換える場所がちょうど 1 か所?"}
+  D -->|"はい"| E["当てて、書き戻す前にコンパイルして確かめる"]
+  D -->|"いいえ"| F["ビルドをはっきり失敗させる"]
+```
 
 **Answer (English)**
 

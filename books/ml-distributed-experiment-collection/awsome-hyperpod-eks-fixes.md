@@ -56,7 +56,7 @@ README など 3 つのファイルの 5 か所のリンクを、新しいドキ�
 
 ## 技術面接の準備 (FAQ)
 
-この節は、本章の内容を技術面接で聞かれたときに答えるための想定問答である。システム設計面接の流れに合わせて、全体と設計、不具合の原因の深掘り、検証と振り返りの 3 つに分けた。各問は英語の質問 (見出し)、日本語の質問、英語の回答、日本語の回答の順に書いた。不具合の問には原因の連鎖の図を付け、回答は症状、原因、突き止め方、直し方と比べた案、検証、残ったこと、の順に話す。回答は本章の本文と、PR、Issue、マージ前後のコード、AWS の公式の文書で確かめた事実だけを使う。
+この節は、本章の内容を技術面接で聞かれたときに答えるための想定問答である。システム設計面接の流れに合わせて、全体と設計、不具合の原因の深掘り、検証と振り返りの 3 つに分けた。各問は英語の質問 (見出し)、日本語の質問、噛み砕き (ひとことでの表とやさしい版の図)、英語の回答、日本語の回答の順に書いた。不具合の問には原因の連鎖の図を付け、回答は症状、原因、突き止め方、直し方と比べた案、検証、残ったこと、の順に話す。回答は本章の本文と、PR、Issue、マージ前後のコード、AWS の公式の文書で確かめた事実だけを使う。
 
 ### 全体と設計
 
@@ -96,6 +96,41 @@ flowchart TD
   I --> J["cannot import name ssl、Lambda の初期化が失敗"]
 ```
 
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | 設定ファイルが、部品を探す場所の並び順を書き換えていて、その並び順のせいで、同梱していた古い暗号化の部品 (OpenSSL) を先に見つけてしまい、必要な新しい機能の名前が無くて失敗した |
+| やったこと | 設定ファイルからその並び順を書き換える行を消し、元の並び順 (実行する場所にある新しい部品を先に見つける並び) に戻した |
+| 良い点 | 差分 (直した行の数) が 1 行で、レビューしやすい。本物の関数と部品を、公式の実行する場所の型で試して、直ることを確かめた |
+| 悪い点・代償 | その行がなぜ足されたかは履歴から分からず、なぜ今になって壊れたかも特定できていない。この直し方は回避策であって、古い部品を同梱する仕組みそのものを直すものではない |
+
+**図 (やさしい版・直す前)**
+
+```mermaid
+flowchart TD
+  A["設定で LD_LIBRARY_PATH を書き換える"] --> B["探す場所の順番が変わる"]
+  B --> C["同梱していた古い OpenSSL の部品を先に見つける"]
+  C --> D["必要な新しい機能の名前が無い"]
+  D --> E["ssl の読み込みに失敗する"]
+  E --> F["関数全体が起動の時点で止まる"]
+```
+
+**図 (やさしい版・直した後)**
+
+```mermaid
+flowchart TD
+  A["設定から LD_LIBRARY_PATH の行を消す"] --> B["探す場所は元のままになる"]
+  B --> C["実行する場所に備わっている新しい OpenSSL の部品を先に見つける"]
+  C --> D["必要な新しい機能の名前が見つかる"]
+  D --> E["ssl の読み込みが通る"]
+  E --> F["関数が無事に起動する"]
+```
+
+**比喩 (事実を曲げない範囲で)**
+
+これは、新しい工具箱 (実行する場所に備わっている新しい部品) の横に、ほかの道具を運び込んだときに古い工具箱 (同梱した古い部品) も一緒に入ってしまい、さらに「まずこっちを探せ」という張り紙 (設定ファイルの 1 行) が貼ってあったようなものである。古い工具箱には必要な新しい工具が入っていないので作業ができない。張り紙を外せば、新しい工具箱がそのまま使われる。
+
 **Answer (English)**
 
 The visible error was `cannot import name 'ssl' from 'urllib3.util.ssl_'`, but the real failure was one layer down, and the dynamic linker said so: `/opt/python/lib/libcrypto.so.3: version 'OPENSSL_3.3.0' not found`. The import chain is the function importing boto3, botocore, urllib3, then Python's `ssl`, whose C extension `_ssl` dynamically links `libcrypto`. Two things combined. The Layer's build script copies the shared-library dependencies of git, helm and kubectl into the Layer's `python/lib` using `ldd`, so an older `libcrypto.so.3` ended up there. And the template set `LD_LIBRARY_PATH=/opt/python/lib`, which replaces Lambda's default value of that variable, so the loader searches `/opt/python/lib` first; the default, per the Lambda documentation, starts with `/var/lang/lib` and doesn't include `/opt/python/lib`. So python3.12's `_ssl` loaded the Layer's old `libcrypto` instead of the runtime's, couldn't resolve the `OPENSSL_3.3.0` symbols it needs, and the whole function failed at initialization.
@@ -109,6 +144,25 @@ The visible error was `cannot import name 'ssl' from 'urllib3.util.ssl_'`, but t
 **質問 (日本語)**
 
 なぜ今になって壊れたのか。何かが変わったのか。
+
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | 「いつから」「何が原因で」壊れたかは、まだ特定できていない。設定ファイルの該当する行自体は、インストーラを最初に足した時からずっと変わっていなかった |
+| やったこと | 変更の履歴を確認し、分からないことは分からないとそのまま認めたうえで、今どういう仕組みで失敗するか、消せば直ることだけを示した |
+| 良い点 | 確かめていないことを確かめたと言わない誠実さがある |
+| 悪い点・代償 | 「いつから」「何が原因で」壊れたかは今も分からないまま残っている |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["変更の履歴を確認する"] --> B["設定の行はずっと前から変わっていない"]
+  B --> C["いつ壊れたかの記録も無い"]
+  C --> D["外側で何が変わったかは特定できない"]
+  D --> E["今の壊れる仕組みと直し方だけを示す"]
+```
 
 **Answer (English)**
 
@@ -124,6 +178,26 @@ I can't claim a cause I didn't find. In git history, the `LD_LIBRARY_PATH` line 
 
 なぜ 1 行の修正を単独の PR にしたのか。ほかにその変数を必要とするものが無いと、どうして分かったのか。
 
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 論点 | 1 行だけの小さな修正を、どこまで信じてよいか。他にその設定の値を必要とするものが無いと、どうやって確かめるか |
+| 選んだこと | 「今壊れている問題を直す」ことと「インストーラをどちらに寄せるか決める」ことを分け、設定ファイルの 1 行を消すだけの修正を単独で出した |
+| 良い点 | 差分が小さくレビューしやすい。本物の実行する場所で、必要な部品 (git や helm など) が消した後も変わらず動くこと、実際の作成も最後まで終わることを確かめた |
+| 悪い点・代償 | 試した経路についてだけ言えることで、全部の経路を確かめたわけではない。これは本当の直し方ではなく回避策だと、はっきり書いた |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["壊れている問題と寄せる先の問題を分ける"] --> B["設定の 1 行だけを消す修正にする"]
+  B --> C["本物の実行する場所で試す"]
+  C --> D["消しても必要な部品は変わらず動く"]
+  D --> E["実際の作成も最後まで終わる"]
+  E --> F["回避策であって本当の直し方ではないと明記する"]
+```
+
 **Answer (English)**
 
 `main` was broken at startup, and that could be fixed independently of where to consolidate the duplicated installer. Removing the one `LD_LIBRARY_PATH` line from `helm-chart-stack.yaml` fixed it without touching the Layer or the function zip, so the diff was one line and easy to review. Since git history didn't explain why the variable existed, the evidence is the test: in the official Lambda runtime image the import succeeded without it, the Layer's git, helm and kubectl paths still worked, and a real HyperPod on EKS creation completed. That supports removing it for the paths I tested. If asked why git still finds its libraries, the PR doesn't record where each resolves them, so I'd check that with `ldd` next. I was explicit in the Issue that this is a workaround, not the real fix.
@@ -137,6 +211,25 @@ I can't claim a cause I didn't find. In git history, the `LD_LIBRARY_PATH` line 
 **質問 (日本語)**
 
 Lambda の初期化の失敗を手元でどう再現するか。
+
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 論点 | 手元のパソコンで、本物に近い形でこの種の初期化の失敗をどう再現するか |
+| 選んだこと | 本物の関数と、同梱した部品の実物を、公式の実行する場所の型 (イメージ) に入れて、設定の値がある場合と無い場合を比べた |
+| 良い点 | 本物に近い条件で再現できた。実際の作成でも、このステップを越えることまで確かめた |
+| 悪い点・代償 | 別の種類の CPU (arm64) では試しておらず、そのことはそのまま伝える |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["本物の関数と同梱した部品を用意する"] --> B["公式の実行する場所の型に入れる"]
+  B --> C["設定の変数がある場合とない場合を比べる"]
+  C --> D["ある場合は失敗、無い場合は成功"]
+  D --> E["実際の作成でもこのステップを越えることを確かめる"]
+```
 
 **Answer (English)**
 
@@ -162,6 +255,25 @@ flowchart LR
   C --> E["/opt/python/lib に無いので<br/>ほかの場所から読む、動く"]
 ```
 
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | 設定の値 (探す場所の並び順) は同じでも、同梱している部品の中身が違っていた。こちらは古い暗号化の部品を同梱していたが、サービスチーム側は同梱していなかった |
+| やったこと | 両方の関数と部品を、同じ公式の実行する場所の型で動かして比べ、違いが設定ではなく同梱する部品にあると確かめた |
+| 良い点 | 不具合の正体が「この部品とこの設定の組み合わせ」だと切り分けられた。これが 2 つのインストーラが重複していたと気づいたきっかけでもある |
+| 悪い点・代償 | 2 つのインストーラが別々に作られてずれていたこと自体は、この比較だけでは直らない |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["同じ設定: LD_LIBRARY_PATH"] --> B["こちらの同梱した部品: 古い OpenSSL を含む"]
+  A --> C["サービス側の同梱した部品: 古い OpenSSL を含まない"]
+  B --> D["古い部品を先に見つけて失敗する"]
+  C --> E["実行する場所の新しい部品を使い成功する"]
+```
+
 **Answer (English)**
 
 Same setting, different Layer. The service team's template, at the commit I compared, sets the same `LD_LIBRARY_PATH=/opt/python/lib`, but its Layer doesn't bundle `libcrypto` and `libssl`. With nothing there to shadow the runtime's library, the loader falls through and the import works. I ran both functions and Layers in the same x86_64 python3.12 image: ours failed with the same import error, theirs passed. The two installers had been built separately and had diverged in both the Layer and `lambda_function.py`. So the bug is really "this Layer plus this variable", and it's also how I discovered the duplication.
@@ -176,6 +288,26 @@ Same setting, different Layer. The service team's template, at the commit I comp
 
 RFC で何を提案し、なぜすぐに切り替えないのか。
 
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 論点 | 公式の文書が案内するインストーラにすぐ切り替えるか、提案 (RFC) として出して待つか |
+| 選んだこと | 公式が案内するインストーラに寄せる提案を出した。実行にはメンテナの合意が要る。既存のスタックを更新するとクラスタが作り直されるおそれがあるので、既存の移行は強制しない。また、サービスチーム側の既定の設定 (従来の方式) がまだ違い、それを変える PR が開いたままなので、それが入るまで切り替えを待つよう提案した |
+| 良い点 | クラスタを壊すおそれのある変更を急がず、合意と時期をそろえてから進められる |
+| 悪い点・代償 | すべての設定を 1 つずつ照らし合わせる確認と、実際に移行してみる試験はまだしていない |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["公式が案内するインストーラに寄せたい"] --> B["更新するとクラスタが作り直されるおそれ"]
+  B --> B2["既存のスタックの移行は強制しない"]
+  A --> C["もう一方の既定の設定がまだ違う"]
+  C --> D["それを変える提案がまだ検討中"]
+  D --> E["提案として出し、合意と時期を待つ"]
+```
+
 **Answer (English)**
 
 Consolidate on the service team's installer, which the official documentation points to, and retire this repository's `cfn-templates/`. That needs maintainer agreement, and it wouldn't force existing stacks to migrate, because updating them with the service team's template could replace the EKS or HyperPod cluster, and we'd have to decide what to do with the S3 templates and Lambda zips they still reference. There was also a condition on timing: this repository enables continuous node provisioning, `NodeProvisioningMode: Continuous`, by default, while the service team's default was the older all-or-nothing mode, and the PR that changes their default was still open. So I proposed waiting until it, or an equivalent change, lands. A one-to-one comparison of all CloudFormation resources and a migration test haven't been done yet.
@@ -189,6 +321,25 @@ Consolidate on the service team's installer, which the official documentation po
 **質問 (日本語)**
 
 Layer には古い OpenSSL が残ったままである。それは誰が直すべきか。
+
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 論点 | 今も残っている古い暗号化の部品 (OpenSSL) の同梱は、誰が直すべきか |
+| 選んだこと | 今回の修正ではわざと触らず、差分を 1 行に留めた。長い目で見た答えとして、インストーラを 1 つの持ち主 (サービスチーム) が持つ 1 つにまとめることを、別の提案 (RFC) で提案している (まだ決まっていない) |
+| 良い点 | 直す範囲を 1 行に留めたことで、レビューしやすい修正にできた |
+| 悪い点・代償 | 古い部品はこの修正の後もまだ残っている |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["古い OpenSSL の部品が残る同梱の仕組み"] --> B["今回の修正ではわざと触らない"]
+  B --> C["差分を 1 行に留めてレビューしやすくする"]
+  A --> D["長い目での答え: 提案で 1 つの持ち主にする"]
+  D --> E["古い部品を同梱しない側に寄せる"]
+```
 
 **Answer (English)**
 
@@ -219,6 +370,25 @@ Two things. I changed five links in three files, but deliberately left the works
 **質問 (日本語)**
 
 この種の失敗を、利用者が当たる前にどう見つけるか。
+
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 論点 | 利用者がこの種の失敗に当たってしまう前に、どうやって見つけるか |
+| 選んだこと | 手元で使った再現の手順 (本物の関数を公式の実行する場所で動かす) を、そのまま定期的な確認として使い直す案を出した |
+| 良い点 | クラスタを実際にデプロイせずに確認できる。インストーラを 1 つに寄せれば、確認が見る場所も半分になる |
+| 悪い点・代償 | 回答の範囲では、この確認をいつ、どういう仕組みで自動的に回すかという具体的な作り込みまでは決めていない |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["手元の再現の手順を確認として使う"] --> B["本物の関数を公式の実行する場所で動かす"]
+  B --> C["定期的に、また部品を作り直すたびに走らせる"]
+  C --> D["クラスタを作らずに問題を見つけられる"]
+  D --> E["インストーラを 1 つに寄せれば見る場所も半分になる"]
+```
 
 **Answer (English)**
 

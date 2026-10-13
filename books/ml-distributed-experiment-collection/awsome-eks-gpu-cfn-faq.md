@@ -9,7 +9,7 @@ free: false
 
 ## 技術面接の準備 (FAQ)
 
-この節は、前章の内容を技術面接で聞かれたときに答えるための想定問答である。システム設計面接の流れに合わせて、全体と設計、不具合の原因の深掘り、検証と振り返りの 3 つに分けた。各問は英語の質問 (見出し)、日本語の質問、英語の回答、日本語の回答の順に書いた。不具合の問には原因の連鎖の図を付け、回答は症状、原因、突き止め方、直し方と比べた案、検証、残ったこと、の順に話す。回答は前章の本文と、PR、マージ前後のコードで確かめた事実だけを使う。
+この節は、前章の内容を技術面接で聞かれたときに答えるための想定問答である。システム設計面接の流れに合わせて、全体と設計、不具合の原因の深掘り、検証と振り返りの 3 つに分けた。各問は英語の質問 (見出し)、日本語の質問、噛み砕き (ひとことでの表とやさしい版の図)、英語の回答、日本語の回答の順に書いた。不具合の問には原因の連鎖の図を付け、回答は症状、原因、突き止め方、直し方と比べた案、検証、残ったこと、の順に話す。回答は前章の本文と、PR、マージ前後のコードで確かめた事実だけを使う。
 
 ### 全体と設計
 
@@ -32,6 +32,27 @@ The goal was a CloudFormation path for EKS GPU clusters that also works when you
 
 要件と設計の狙いは何だったか。
 
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 論点 | 既にクラスタと VPC (ネットワークの区画) を持っていて GPU だけ足したい人の経路が無かった中で、設計の目標をどう立てるか |
+| 選んだこと | 自前の AMI (機械の起動用の雛形) を持ち込む、同じスタックの作成の中で AMI を作る、既存クラスタへ GPU を足す、1 つのクラスタに複数の GPU のグループを足す、容量の選び方を選べる、GPU と EFA の資源が登録されて初めて成功とする、固定の版をできるだけ減らす、の 7 つの目標を立てた |
+| 良い点 | 既存クラスタを持つ人も使える経路ができ、分離推論 (役割を機械ごとに分ける構成) のような複数グループの構成にも対応できる |
+| 悪い点・代償 | (元の回答に代償の記述は無い) 補足: 自前の AMI の目標は、PR 開始時に EKS の AL2023 の NVIDIA の AMI のドライバ (GPU を動かすためのソフト) が g7 の GPU を認識せず、ノードが Ready なのに GPU を 1 つも出さなかった実際の隙間から来た |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["既にクラスタがある人には GPU を足す方法が無かった"] --> B["設計の目標を 7 つ決めた"]
+  B --> C["自分の AMI を持ち込める、または作れる"]
+  B --> D["GPU のグループを複数足せる"]
+  B --> E["容量の選び方を選べる"]
+  B --> F["GPU と EFA が登録されて初めて成功とする"]
+  G["GPU をドライバが認識しない問題が実際にあった"] --> C
+```
+
 **Answer (English)**
 
 Someone who already has an EKS cluster and a VPC and only wants GPUs had no path, neither in the template nor in the eksctl manifests. I set seven goals. Users can bring their own AMI, or build one within the same stack deployment. They can add GPUs to an existing cluster, and add more than one GPU node group to the same cluster, for example g7 and g7e for prefill and decode in disaggregated inference. They can choose On-Demand, a targeted ODCR, or a Capacity Block. The stack succeeds only once GPU and EFA resources are registered. And the repository should maintain as few pinned versions as possible. The custom AMI goal came from a real gap: when the PR started, the EKS AL2023 NVIDIA AMI didn't recognize g7 GPUs, and nodes went Ready while advertising none.
@@ -45,6 +66,26 @@ Someone who already has an EKS cluster and a VPC and only wants GPUs had no path
 **質問 (日本語)**
 
 なぜ 1 つのテンプレートに条件を足さず、4 つの子と root に分けたのか。
+
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 論点 | 1 つの大きな設計図にまとめるか、複数の部品に分けるか |
+| 選んだこと | ネットワーク・クラスタ・ノードグループ・AMI の 4 つの部品と、それらをまとめて作る root (まとめ役) に分けた |
+| 良い点 | 一部だけ使いたい人は部品を直接使え、全部作る人は root に 1 回出すだけで済む。AMI 作りとクラスタ作りが同時に進む |
+| 悪い点・代償 | 変更を試すときは、4 つの部品と root の計 5 つのテンプレートを先に置き場所 (S3) にアップロードしておく必要がある (手順は README に書いた) |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["1 つの大きな設計図にすると分岐が増えて読みにくい"] --> B["4 つの部品に分けた<br/>ネットワーク・クラスタ・ノードグループ・AMI"]
+  B --> C["まとめて作る root を追加"]
+  C --> D["全部作る人は root を 1 回出すだけ"]
+  B --> E["一部だけ使う人は部品を直接使える"]
+  B --> F["代償: 試すには 4 つの部品と root の 5 つのテンプレートを先に S3 に置く"]
+```
 
 **Answer (English)**
 
@@ -60,6 +101,24 @@ A single template is easy to read and publish, but supporting existing clusters,
 
 クラスタに 1 つの共有の device plugin のリリースをどう扱うか。
 
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 論点 | 1 つのクラスタにプラグインごとに 1 つしかない共有の device plugin (GPU や EFA を使えるようにする部品、NVIDIA 用と EFA 用) のリリースの版を、誰が変えてよいか |
+| 選んだこと | 無ければ入れる、同じ版なら何もしない、違う版ならスタックを失敗させる方針にした |
+| 良い点 | 2 つ目のグループを足したときに、知らないうちに共有の device plugin の版が変わって 1 つ目のグループが壊れることを防げる |
+| 悪い点・代償 | 版を上げるときは専用の手順を踏む必要があり、別の方法で入れた場合は見えない |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["直す前: 版を指定せず毎回アップグレード"] --> B["2 つ目のグループが共有の device plugin の版を知らぬ間に変える"]
+  C["直した後: 無ければ入れ、同じ版なら触らず、違えば失敗させる"] --> D["知らぬ間の変更を防げる"]
+  D --> E["代償: 版を上げるには先に共有の device plugin だけ上げる手順が要る"]
+```
+
 **Answer (English)**
 
 There's one release per plugin per cluster, one for NVIDIA and one for EFA, so the question is who may change its version. #1259 ran `helm upgrade --install` without a version every time, so a second stack could silently change the version of the shared plugin the first group was already using. A release per node group doesn't restrict where the DaemonSet lands, so two copies of the same plugin would sit on the same nodes and conflict. Install-only-if-absent silently accepts a mismatch. I chose: install if absent, leave it alone if the version matches, fail the stack if it differs. The cost is an explicit upgrade procedure: upgrade the release first with Helm `--reset-then-reuse-values`, then align each stack; my first README order couldn't work because the existing stack would fail its own check, which review caught. I tested 0.20.0 to 0.20.1 and both stacks reached `UPDATE_COMPLETE`. Limit: a plugin installed another way, such as by the GPU Operator, isn't detected.
@@ -74,6 +133,26 @@ There's one release per plugin per cluster, one for NVIDIA and one for EFA, so t
 
 ノードの AMI をどこから持ってくるかをどう決め、自前の AMI だと何が変わるか。
 
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 論点 | ノードの土台となる機械の雛形 (AMI) をどこから持ってくるかをどう決めるか |
+| 選んだこと | 「既にある AMI を使う」「標準にパッケージを足して作る」「自分のレシピから作る」の 3 つの入力のどれを埋めたかで決め、自前のときは起動の設定を自分で全部渡す |
+| 良い点 | 利用者の持っているものに合わせて 3 通りから選べる |
+| 悪い点・代償 | 自前の AMI では、EKS (クラスタの管理の仕組み) が自動で付けてくれる設定を自分で渡す必要がある。方法を選ぶ専用のパラメータにすると選択と入力が食い違う恐れがあるため、入力を埋めたかどうかで決める作りにした |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["AMI をどこから持ってくるか"] --> B["既にある AMI を使う"]
+  A --> C["標準の土台にパッケージを足して作る"]
+  A --> D["自分のレシピから作る"]
+  A --> E["何も埋めなければ EKS が自動で選ぶ"]
+  F["自前の AMI を選ぶと<br/>EKS が自動で付ける設定が付かなくなる"] --> G["ノード側の起動の設定で自分で渡す"]
+```
+
 **Answer (English)**
 
 By which input is filled: `NodeAmiId` uses an existing AMI, `NodeImagePackages` builds one with EC2 Image Builder from the standard EKS AMI plus packages, and `NodeImageRecipeArn` builds from your own recipe. More than one is rejected before any resource is created; all empty lets EKS pick from `AmiType`. A named selector would read better but lets selector and inputs disagree. With a custom AMI, EKS stops adding the bootstrap config, so user data must carry the cluster endpoint, certificate, Service CIDR, containerd's runtime and kubelet flags. EKS's chosen IPv4 Service CIDR isn't a CloudFormation attribute, so I made `ServiceIpv4Cidr` an input on the cluster template, defaulting to `172.20.0.0/16`, outside the VPC default. And I add the `eks.amazonaws.com/nodegroup` label in kubelet flags, because only EKS AMIs get it automatically, and the readiness check counts nodes by it.
@@ -87,6 +166,24 @@ By which input is filled: `NodeAmiId` uses an existing AMI, `NodeImagePackages` 
 **質問 (日本語)**
 
 なぜ成功の条件を Ready ではなく、GPU と EFA の数のちょうどの一致にしたのか。
+
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 論点 | ノードが「準備できた (Ready)」というだけで成功と言ってよいか |
+| 選んだこと | グループのノードがちょうど指定した台数で、各ノードが準備できて (Ready)、期待したちょうどの数の GPU と通信用の部品 (EFA) を出していることまで確認して初めて成功とした |
+| 良い点 | ドライバが GPU を認識しない隙間があっても、準備できただけで GPU が無いまま成功と判定する誤りを防げる |
+| 悪い点・代償 | この確認は Kubernetes (ノードを管理する仕組み) への登録を見るだけで、GPU を使った計算 (CUDA) が実際に動くことまでは確認しない |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["ノードが準備できた (Ready) だけを見る"] --> B["GPU を 1 つも出さないノードも成功と判定してしまう"]
+  C["準備できた、かつ<br/>期待したちょうどの数の GPU と通信用の部品を出す"] --> D["GPU と EFA が期待した数だけ登録されたことまで確認できる"]
+  D --> E["代償: 登録の確認であり、計算が動くことまでは見ない"]
+```
 
 **Answer (English)**
 
@@ -121,6 +218,24 @@ flowchart TD
   J["修正: nfd.worker.tolerations にも同じ toleration を渡す"]
 ```
 
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | GPU の有無を調べる仕組みが、GPU の載ったノードに入れなかったため、GPU を見つける印 (ラベル) が付かなかった |
+| やったこと | GPU を見つける仕組み (NFD のワーカー) にも、GPU のノードに入るための許可 (toleration) を同じように渡すよう直した |
+| 良い点 | 直した後、GPU を見つける印が付き、GPU を使うための部品がちゃんと載るようになった |
+| 悪い点・代償 | 元の試験では GPU を 0 台で動かしていたため、この問題に気づかずに通ってしまっていた |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["GPU の有無を調べる仕組みが<br/>GPU の載ったノードに入れなかった"] --> B["GPU を見つける印が付かない"]
+  B --> C["GPU を使うための部品が<br/>どのノードにも載らない"]
+  D["直した後: 調べる仕組みにも GPU ノードへ入る許可を渡す"] --> E["印が付き、部品が載るようになった"]
+```
+
 **Answer (English)**
 
 The NVIDIA device plugin DaemonSet only schedules onto nodes that have one of three labels. From 1.35, nodeadm adds `nvidia.com/gpu.present=true`, so 1.36 worked. On 1.34 that label doesn't exist, and the fallback label, `feature.node.kubernetes.io/pci-10de.present`, comes from the node-feature-discovery worker. The reviewer found and diagnosed this before merge. That worker couldn't schedule on GPU nodes: the template passed `tolerations` to the parent chart, but that value only reaches the parent's DaemonSet, not the bundled NFD subchart, which kept its default toleration for `nvidia.com/gpu=present`, while our taint is `nvidia.com/gpu=true`. The reviewer confirmed it by rendering with `helm template`, and saw GPUs appear within 20 seconds after adding the value by hand. The fix passes the same toleration to `nfd.worker.tolerations`. I verified on 1.34 with two g4dn.8xlarge that the NFD worker ran and the label appeared. #1259's end-to-end run used `GpuNodeCount=0`, which is why it never hit this.
@@ -145,6 +260,25 @@ flowchart TD
   E["修正: CapacityType CAPACITY_BLOCK"] --> F["EKS が終わる 40 分前に 0 台へ縮める予定を入れる<br/>p5en のブロックで確かめた"]
   G["予約と placement group の両方を指定"] --> H["推論: 予約に空きがあっても<br/>2 台目が InsufficientInstanceCapacity になりうる"]
   H --> I["予約があるときは placement group を作らない"]
+```
+
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | 予約した容量 (Capacity Block) を使う設定を起動の雛形 (launch template) にだけ書き、ノードグループ側に書き漏らしていたため、既定の「予約なし (ON_DEMAND)」の扱いになっていた |
+| やったこと | ノードグループの設定にも正しく「予約を使う」という扱いを書き、予約を使うときは専用の配置のグループを作らないようにした |
+| 良い点 | 予約の終わりが近づくと自動で台数を減らす予定が入るようになり、文書に書かれた通りの動きになった |
+| 悪い点・代償 | 推論 (再現はしていない。レビューでは両方を指定しても 2 台とも起動した): 予約した容量は専用の配置のグループの中に無いので、2 台目が容量不足で失敗しうる。それを避けるため、配置の場所を予約側に委ねる代償がある |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["予約を使う設定を 1 か所にしか書いていなかった"] --> B["既定の「予約なし」の扱いになる"]
+  B --> C["予約の終わりが近づいても<br/>台数を減らす予定が入らない"]
+  D["直した後: 正しい場所にも予約を使う設定を書く"] --> E["予約の終わりに合わせて自動で台数を減らす"]
+  F["推論: 予約と専用の配置を同時に使うと<br/>2 台目が容量不足で失敗しうる (再現はしていない)"] --> G["予約を使うときは専用の配置を作らない"]
 ```
 
 **Answer (English)**
@@ -175,6 +309,25 @@ flowchart TD
   I["修正: NodeGroupName を入力、eks.amazonaws.com/nodegroup で数をちょうど比べる<br/>prepull-名前、版の不一致で失敗"]
 ```
 
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | 1 つのクラスタに 1 つのグループしか無いことを前提にした作りが、名前・数え方・事前の準備・共有の設定の 4 か所に残っていた |
+| やったこと | 名前を選べるようにし、数え方をグループ専用の印で数え、事前の準備もグループごとの名前にした |
+| 良い点 | 2 つ目のグループを足しても、1 つ目のグループに影響を与えずに済むようになった |
+| 悪い点・代償 | 事前の準備の名前は小文字にし `_` を `-` に変えて作るので、`ng_B` と `ng-b` のように同じ名前になる場合があり、そのときは 2 つ目のスタックの事前の準備が始まらず警告が出るだけになる |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["1 つのクラスタに 1 つのグループしか無い前提の作り"] --> B["名前が固定で 2 つ目がぶつかる"]
+  A --> C["数え方が別のグループのノードまで数えてしまう"]
+  A --> D["事前の準備の仕組みが 1 つ目を上書きする"]
+  E["直した後: 名前を選べるようにし<br/>グループ専用の印で数え、名前を分ける"] --> F["2 つ目を足しても 1 つ目に影響しない"]
+```
+
 **Answer (English)**
 
 Everything that assumed one stack per cluster. The node group name was hard-coded as `gpu`, so a second one collided; `NodeGroupName` became a parameter with `gpu` as the default. The readiness check counted nodes labeled `role=gpu` with "at least", and every GPU group carries that label, so a new group could pass with zero nodes of its own using the other group's; it now selects by `eks.amazonaws.com/nodegroup` and requires exact counts. The pre-pull DaemonSet was one fixed name, `kube-system/prepull`, so a second stack overwrote it and sent the first group's nodes after the new image; the reviewer caught this, and it's now named per node group, lowercased with underscores turned into hyphens because DaemonSet names don't allow them. The trade-off there is that `ng_B` and `ng-b` map to the same name, in which case the second stack's pre-pull doesn't start and it warns. And unversioned `helm upgrade --install` could change the shared plugin's version, which Q4 covers.
@@ -199,6 +352,25 @@ flowchart TD
   C --> F["CloudFormation が応答を待ち続ける<br/>その間も GPU のノードは課金"]
   E --> F
   G["修正: すべて build へ、STAGE を記録、post_build でも失敗を送る<br/>ServiceTimeout 45 分、CodeBuild 40 分、送信が成功したときだけ印"]
+```
+
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | 失敗を知らせる仕組みを設定する場所と、実際に失敗しうる作業をする場所がずれていて、失敗しても誰も知らせない道があった |
+| やったこと | すべての作業を同じ場所にまとめ、知らせが本当に届いたときだけ「知らせた」という印を付けるようにした |
+| 良い点 | 試したすべての失敗の経路で知らせを送るようになり、届かなくても待つ時間の上限を 45 分に縮めた |
+| 悪い点・代償 | 知らせの届け先そのものが届かない状態なら、結局は上限の時間まで待つことになる |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["失敗を知らせる仕組みの設定場所と<br/>実際の作業場所がずれていた"] --> B["失敗しても誰にも知らせない"]
+  C["最初の版は、送信が失敗しても「知らせた」という印を作っていた"] --> B
+  B --> D["GPU が動いたまま答えが来ず待ち続ける"]
+  E["直した後: 作業をまとめ、本当に届いたときだけ印を付ける"] --> F["待つ時間の上限も縮めた"]
 ```
 
 **Answer (English)**
@@ -233,6 +405,25 @@ flowchart TD
   F["修正: AllowedPattern で /16 と /17 だけ"]
 ```
 
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | ネットワークの切り分け方に合う広さの確認が、形だけを見ていて広さそのものを縛っていなかった |
+| やったこと | 許される広さを、切り分け方に合う 2 つの広さだけに絞った |
+| 良い点 | 作り始める前に、合わない広さを弾けるようになった |
+| 悪い点・代償 | 切り分け方を将来変えたら、この許される広さの確認も一緒に変える必要がある |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["ネットワークを 8 つに切り分ける作り"] --> B["合う広さは 2 通りだけ"]
+  C["最初の確認は広さの形だけを見ていた"] --> D["合わない広さも通ってしまう"]
+  D --> E["作り始めた途中で<br/>サブネットを 8 つ取れず失敗する"]
+  F["直した後: 許す広さを合う 2 通りだけに絞る"] --> G["作る前に合わない広さを弾ける"]
+```
+
 **Answer (English)**
 
 Subnets are carved with `!Cidr [VpcCidr, 8, 12]`, eight /20 blocks, which only fits in a /16 or /17 VPC. #1259 accepted any string, and my first version checked only the CIDR shape. I actually asked in the PR whether that might be too strict; the reviewer created stacks and showed the opposite: a /18 passes the check, then fails mid-deployment with `invalid count (8) of subnets requested`, an error that names neither the parameter nor the CIDR. The merged pattern allows only /16 and /17. The cost is coupling: if the subnet layout changes, this pattern must change with it.
@@ -256,6 +447,24 @@ flowchart TD
   D["lint: taint のキーを部分一致で比べる"] --> E["nvidia.com/gpus に変えても通る"]
   F["修正: 各条件をすべての枚数で評価<br/>キーを抜き出して完全一致で比べる"]
   G["確かめ方: 狙った誤りを入れた写しで lint が落ちること"]
+```
+
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | 確認の仕組みが、設定の中身を実際には見ずに名前の一部や部分一致だけで判定していた |
+| やったこと | 設定の中身をすべての場合で実際に評価し、名前も完全に一致するかで確認するようにした |
+| 良い点 | 狙った誤りを混ぜた写しに対して、確認の仕組みがちゃんと失敗することを確かめられた |
+| 悪い点・代償 | (元の回答に代償の記述は無い) 補足: レビューした人がこのやり方で試し、2 つの確認が狙った誤りを見逃すことが分かった |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["確認の仕組みが名前の一部や部分一致だけで判定"] --> B["中身を書き換えても確認が通ってしまう"]
+  C["直した後: カードの条件をすべての枚数で実際に評価する"] --> E["狙って誤りを混ぜた写しで<br/>確認がちゃんと失敗することを確かめた"]
+  D["直した後: taint のキーは完全一致を求める"] --> E
 ```
 
 **Answer (English)**
@@ -283,6 +492,24 @@ flowchart TD
   F["修正: --attach=true、専用の名前空間、ノードの名前で後片付け"] --> G["PCI reports 8 accelerators ... advertises 0"]
 ```
 
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | 診断の命令に、結果を受け取るための設定が抜けていて、結果を見る前にすぐ戻ってしまっていた |
+| やったこと | 結果を受け取る設定を付け、専用の場所で動かし、後片付けも間違えないようにした |
+| 良い点 | GPU のハードウェアがあるのかどうかを、別の原因と見分けられるようになった |
+| 悪い点・代償 | クラウド側 (EC2 の API) に直接聞く方法は、すでに何かが失敗している経路に権限・通信・呼び出し制限の心配を足すので使わなかった |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["診断の命令に結果を受け取る設定が無い"] --> B["結果を見る前にすぐ戻ってしまう"]
+  B --> C["いつも「不明」としか出ない"]
+  D["直した後: 結果を受け取る設定を付ける"] --> E["ハードウェアはあるが使えない、など原因を絞れる"]
+```
+
 **Answer (English)**
 
 A node that advertises no GPUs could be missing hardware, have a driver that doesn't recognize it, or lack the device plugin, and from outside they look the same. So the diagnostic counts NVIDIA devices on the node's PCI bus with `kubectl debug`: if PCI shows GPUs but the resource is 0, the hardware is there and you look at the driver or plugin. My first version omitted `--attach`, so the command created the debug Pod and returned immediately without its output, and the count was always "unknown"; the reviewer saw that on a T4 node in the 1.34 run. It now uses `--attach=true`, runs in the stack's `nvidia-device-plugin` namespace, and cleans up by a name that includes the node, so it can't delete someone else's debug Pod in `default`. I confirmed on g4dn.8xlarge and p5en.48xlarge that it prints lines like `PCI reports 8 accelerator(s) ... the node advertises 0`. I avoided asking the EC2 API instead, because that adds IAM, network and throttling to a path where something has already failed.
@@ -306,6 +533,25 @@ flowchart TD
   C --> D["taint は次の標本で付いた"]
   D --> X["推論: その隙間に GPU を求めない Pod が載りうる"]
   E["--register-with-taints は登録の時点で効く"] --> F["自前の AMI の分岐に残す"]
+```
+
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | ノードが仲間に加わった直後から、GPU を求めない作業を近づけない目印が付くまでの間に、短いが隙間があった |
+| やったこと | ノードグループの設定で付けるのに加え、自前の AMI の分岐では、仲間に加わる瞬間から効く付け方 (`--register-with-taints`) でも付けた |
+| 良い点 | 仲間に加わった直後の短い隙間も塞げる |
+| 悪い点・代償 | 目印を 2 か所に書くことになり、2 か所をそろえ続ける手間が増える |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["仲間に加わった直後"] --> B["目印がまだ付いていない短い隙間がある"]
+  B --> C["推論: その間に GPU を求めない作業が入り込める"]
+  D["直した後: 自前の AMI の分岐では加わる瞬間から効く付け方も使う"] --> E["隙間を塞ぐ"]
+  E --> F["代償: 2 か所の設定をそろえ続ける必要がある"]
 ```
 
 **Answer (English)**
@@ -333,6 +579,25 @@ flowchart TD
   F["nvidia-fabricmanager を足す"] --> G["all_reduce_perf が完了"]
 ```
 
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | 確認の仕組みは GPU が登録されたことしか見ておらず、計算に必要な別の部品 (ドライバと組み合わせる専用のソフト) が入っていなかった |
+| やったこと | 必要な部品を足して、計算が動くことを確かめた |
+| 良い点 | 「登録された」と「本当に計算できる」が別の話だと分かり、テンプレートに組み込む別案は選ばず、手順書に書くことにした |
+| 悪い点・代償 | この部品の版は利用者ごとのドライバに合わせる必要があり、テンプレートに入れるとリポジトリがその組み合わせの責任を持つことになるので避けた |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["確認の仕組みは GPU が登録されたことしか見ない"] --> B["登録はできても計算できない場合がある"]
+  C["ある種のノードには<br/>計算用の専用の追加ソフトが要る"] --> B
+  D["足りないソフトを足す"] --> E["計算が実際に動くことを確かめた"]
+  E --> F["代償: このソフトの版は利用者ごとに合わせる必要があり<br/>テンプレートには入れず手順書に書いた"]
+```
+
 **Answer (English)**
 
 This is the exact boundary of my success check. The stack reached `CREATE_COMPLETE` and the GPUs were registered, but CUDA failed with `system not yet initialized`. p5en uses NVSwitch, which needs `nvidia-fabricmanager` at the same version as the driver, and the README's example package list didn't include it. After adding it, NCCL's `all_reduce_perf` completed. I deliberately documented it in the README instead of adding it to the template, because the Fabric Manager version has to match each user's driver, and putting it in the template would make the repository own that pairing. The general lesson: resource registration and compute readiness are different claims, so test both on the AMI and instance type you'll actually use.
@@ -347,6 +612,25 @@ This is the exact boundary of my success check. The stack reached `CREATE_COMPLE
 
 どの版を固定し、どれをパラメータにするかをどう決め、レビューで何が見つかったか。
 
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 論点 | どの版を固定し、どれを利用者が選べるようにするか |
+| 選んだこと | クラスタの作業に使う道具は試した版を既定にしつつ選べるようにし、GPU 用の部品の版は既定で固定した |
+| 良い点 | クラスタの版を変えるたびにテンプレートを直す必要が無くなり、版ごとの対応表のように誰かが行を足すまで新しい版を待つことも無い |
+| 悪い点・代償 | 選べるようにした値が実際のクラスタと食い違っても止める仕組みは無い (lint は既定の版どうしの差しか見ない)。また、レビューで root に kubectl の版を渡す入力が無い抜けが見つかり、今は root から 4 つの版を渡すように直した |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["道具の版をコードに書き込む作り"] --> B["クラスタの版が変わるたびに書き換えが必要"]
+  C["直した後: 道具の版を選べるパラメータにする"] --> D["新しい版が出てもすぐ使える"]
+  E["GPU 用の部品の版は、選べるパラメータにしつつ既定で固定する"] --> F["正しさがドライバとの組み合わせで決まるため"]
+  C --> G["途中で配線の抜けが見つかった:<br/>選んだ値がノードグループまで届いていなかった"]
+```
+
 **Answer (English)**
 
 By who knows the right value and what correctness depends on. #1259 hard-coded kubectl and Helm in the buildspec, so every cluster version change needed a template edit; a per-version Mappings table would block new EKS versions until someone added a row. kubectl and Helm became parameters with tested defaults; lint only checks that the default kubectl is within one minor version of the default Kubernetes version; nothing compares `KubectlVersion` with the real cluster at deploy time. The device plugin charts are parameters but pinned by default, because unpinned means effectively `latest`, and correctness depends on the driver. Review found the wiring gap: the docs said the root controls the kubectl version, but the root had no `KubectlVersion`, so a 1.34 cluster ran kubectl 1.36.4, two minor versions ahead. The root now passes all four, `KubectlVersion`, `HelmVersion` and the two chart versions, and the 1.34 test confirmed the value reached the node group.
@@ -360,6 +644,25 @@ By who knows the right value and what correctness depends on. #1259 hard-coded k
 **質問 (日本語)**
 
 CloudFormation には繰り返しが無い。最大 32 枚のネットワークカードをどう扱い、なぜ lint がファイルの大きさを見張るのか。
+
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 論点 | 繰り返しの仕組みが無い中で、枚数の違う通信用の部品をどう並べるか。また大きさが膨らんだときにどう気づくか |
+| 選んだこと | 枚数ごとの一覧を生成する専用の仕組みを作り、貼った内容と生成した内容が違えば確認を失敗させる。大きさについても、上限に近づいたら確認を失敗させるようにした |
+| 良い点 | 枚数の種類が少ないことを利用して、しきい値だけで必要な分を正しく並べられる。大きさの上限に近づいたことに早く気づける |
+| 悪い点・代償 | 生成の仕組みと貼った内容を手で合わせ続ける必要があり、以前は大きさを表示するだけで、実際に上限を超えて壊れたことがあった |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["繰り返しの仕組みが無いので<br/>通信用の部品を枚数分すべて書く必要がある"] --> B["専用の生成する仕組みで作り、貼り付ける"]
+  B --> C["貼った内容と生成した内容が違えば確認を失敗させる"]
+  D["ファイルの大きさに上限がある"] --> E["以前は大きさを表示するだけで上限超えに気づけなかった"]
+  E --> F["直した後: 上限に近づいたら確認自体を失敗させる"]
+```
 
 **Answer (English)**
 
@@ -391,6 +694,27 @@ After review, all 11 lint checks passed with credentials. I created the root on 
 
 既知の限界は何で、次に何を変えるか。
 
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 論点 | 名前やチェックの仕組みを「1 つのテンプレートの中だけ」で考えた設計の名残が、どこに限界として残っているか |
+| 選んだこと | 代表的な限界をそのまま認め、回避の手順を手順書に書く形で済ませ、直すのは次の課題にした |
+| 良い点 | 利用者が困ったときに、回避の手順を手順書で追えるようにしておいた |
+| 悪い点・代償 | ノードグループの名前を固定した作りのままだと AMI の種類を切り替えるだけで名前の衝突により失敗し、グループを消した後も共有の設定や後片付けされない部品が残る |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["ノードグループの名前を固定したまま"] --> B["AMI の種類を切り替えると名前がぶつかり失敗する"]
+  C["この確認は自分のテンプレートの範囲しか見ない"] --> D["他の方法で入れた部品は見えない"]
+  E["(別の限界) グループのスタックを消しても<br/>共有のプラグインのリリース、事前の準備の仕組み、access entry が残る"]
+  B --> F["名前の衝突と access entry の消し方は README に回避の手順を書いた"]
+  E --> F
+  D --> D2["次の課題: ノードに載っているものでプラグインを見つける"]
+```
+
 **Answer (English)**
 
 The root fixes the node group name to `gpu`, so switching between the EKS AMI and a custom AMI on a root-created stack changes `AmiType`, forces a replacement, and fails with `NodeGroup already exists` while the old group still holds the name; the README says to recreate the stack, or to change `NodeGroupName` in the same update on a standalone stack. The device plugin check only sees this template's release names, so a plugin installed by the GPU Operator isn't detected. After deleting a node group stack, the shared plugin releases, an orphaned pre-pull DaemonSet, and the access entry EKS created for the node role remain; the README shows how to remove the access entry. And Fabric Manager stays a README step. Next, I'd look at passing `NodeGroupName` through the root and detecting plugins by what's scheduled on the nodes rather than by release name.
@@ -404,6 +728,26 @@ root はノードグループの名前を `gpu` に固定しているので、ro
 **質問 (日本語)**
 
 新しい GPU のインスタンスタイプが出た。何を変えるか。
+
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 論点 | 新しい種類の GPU の機械が出たとき、設計のどこを変える仕組みにしておくか |
+| 選んだこと | 許可するインスタンスタイプと 2 つの対応表に新しい種類を追加し、確認の仕組みで表どうしの一致と (認証情報があれば) クラウド側の実際の情報を比べる。ネットワークカードの枚数が新しければ、その枚数のしきい値を足して一覧を生成し直して貼る。ドライバが新しい GPU を認識しない間は自前の AMI の経路を使う |
+| 良い点 | 新しい種類が出ても、決まった手順で対応表と生成の仕組みを更新するだけで対応できる |
+| 悪い点・代償 | ドライバがまだ新しい GPU を認識しない期間は自前の AMI に頼ることになり、それでも GPU が出ないノードは成功と判定しない |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["新しい種類の GPU の機械が出た"] --> B["許可する種類と 2 つの対応表に追加する"]
+  B --> C["確認の仕組みが表の一致を見る"]
+  B --> D["ネットワークカードの枚数が新しければ<br/>しきい値を足して一覧を生成し直す"]
+  A --> E["ドライバがまだ認識しない間は<br/>自前の AMI の経路を使う"]
+  E --> F["GPU が出ないノードは成功と判定しない"]
+```
 
 **Answer (English)**
 

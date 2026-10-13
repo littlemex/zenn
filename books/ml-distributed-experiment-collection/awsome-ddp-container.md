@@ -53,7 +53,7 @@ DDP（DistributedDataParallel）は、同じモデルを各プロセスに置き
 
 ## 技術面接の準備 (FAQ)
 
-この節は、本章の内容を技術面接で聞かれたときに答えるための想定問答である。システム設計面接の流れに合わせて、全体と設計、不具合の原因の深掘り、検証と振り返りの 3 つに分けた。各問は英語の質問 (見出し)、日本語の質問、英語の回答、日本語の回答の順に書いた。不具合の問には原因の連鎖の図を付け、回答は症状、原因、突き止め方、直し方と比べた案、検証、残ったこと、の順に話す。回答は本章の本文と、PR、Issue、マージ前後のコードで確かめた事実だけを使う。
+この節は、本章の内容を技術面接で聞かれたときに答えるための想定問答である。システム設計面接の流れに合わせて、全体と設計、不具合の原因の深掘り、検証と振り返りの 3 つに分けた。各問は英語の質問 (見出し)、日本語の質問、噛み砕き (ひとことでの表とやさしい版の図)、英語の回答、日本語の回答の順に書いた。不具合の問には原因の連鎖の図を付け、回答は症状、原因、突き止め方、直し方と比べた案、検証、残ったこと、の順に話す。回答は本章の本文と、PR、Issue、マージ前後のコードで確かめた事実だけを使う。
 
 ### 全体と設計
 
@@ -75,6 +75,27 @@ Both fix the containerized path of the PyTorch DDP test case, which uses GLOO so
 **質問 (日本語)**
 
 なぜ実行時にパッケージを入れるのではなく、Dockerfile からイメージを作ったのか。
+
+**噛み砕き (ひとことで)**
+
+既にある組み立て手順書に合わせて、イメージの作り方をリポジトリ全体とそろえた。
+
+| 項目 | 内容 |
+|---|---|
+| 論点 | イメージを組み立ての手順書 (Dockerfile) から作るか、動かすたびにその場でパッケージを入れるか。 |
+| 選んだこと | 依存を入れる Dockerfile は既にリポジトリにあったので、他のテストケースと同じようにそこから作る形にそろえた。 |
+| 良い点 | 環境の定義が 1 つになり、ジョブのたびに組み直す暗黙の 2 つ目の定義を持たずに済む。 |
+| 悪い点・代償 | ほかの案は PR に記録されておらず、決め手はリポジトリとそろえることだった。 |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["環境を用意する 2 つの方法"] --> B["動かすたびにその場でパッケージを入れる<br/>定義が実行ごとに暗黙にできる"]
+  A --> C["組み立ての手順書から 1 回作る<br/>定義が 1 つにまとまる"]
+  D["他のテストケースは既にこの形を使っていた"] --> C
+  C --> E["採用したのはこちら"]
+```
 
 **Answer (English)**
 
@@ -103,6 +124,28 @@ flowchart TD
   F["venv の経路は mlflow を入れる"] --> G["venv の経路だけ動く"]
 ```
 
+**噛み砕き (ひとことで)**
+
+無条件に読み込む部品が、コンテナの経路のイメージだけに入っていなかった。
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | 学習のスクリプトが使わなくても 1 つの部品 (mlflow) を無条件に読み込むのに、コンテナの経路だけが公開イメージを直接取り込んでいて、その部品を入れる手順書を通していなかった。 |
+| やったこと | 組み立て手順書から作ったイメージを使うように、取り込み方を変えた。 |
+| 良い点 | 全ての役割 (rank) が起動直後に落ちる症状の原因を、2 つの事実の組み合わせとして正しく説明できた。 |
+| 悪い点・代償 | 別の経路 (手元の仮想環境) はこの部品 (mlflow) を入れていたため、問題はコンテナの経路だけに出た。 |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["学習のスクリプトが使わなくても 1 つの部品を無条件に読み込む"] --> D["部品が無い経路だけ起動直後にエラーで落ちる"]
+  B["コンテナの経路: 公開イメージを直接取り込み部品が無い"] --> D
+  C["手元の仮想環境の経路: 部品を入れている"] --> E["こちらは動く"]
+  F["直す: 組み立て手順書から作ったイメージを使う"]
+  D --> F
+```
+
 **Answer (English)**
 
 Two facts combined. `ddp.py` imports `mlflow` unconditionally at the top of the module, lines 8 and 9, so the import runs even when MLflow isn't used. And the container script imported `docker://pytorch/pytorch` straight from Docker Hub, so the image never got the packages that `ddp/Dockerfile` adds. The venv script installs `mlflow` and `sagemaker-mlflow`, which is why only the container path failed: every rank died with `ModuleNotFoundError` right at startup. I changed the script to `docker build` from the Dockerfile and import it with `dockerd://`.
@@ -127,6 +170,28 @@ flowchart TD
   B --> X
   X --> E["unrecognized arguments: --use-mlflow"]
   F["修正: sbatch を --use_mlflow に合わせる"]
+```
+
+**噛み砕き (ひとことで)**
+
+1 つ目のエラーを直すと、引数の名前の不一致という 2 つ目の問題が現れた。
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | 部品のエラーを直した後、実行の設定が渡す引数の名前の書き方と、スクリプトが受け取る引数の名前の書き方が一致していなかった。 |
+| やったこと | 実行の設定の引数の書き方をスクリプトの定義に合わせ、複数のプロセスで最後まで動くことを確かめた。 |
+| 良い点 | 「1 つ目のエラーが消えたら終わり」にせず、最後まで動かして 2 つ目の問題を見つけられた。 |
+| 悪い点・代償 | 1 つ目のエラーが 2 つ目を隠していたので、1 回の修正だけでは不十分だったという教訓が残る。 |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["1 つ目のエラーを直す"] --> B["実行がもう 1 段先に進む"]
+  B --> C["渡す引数の名前と受け取る名前が違う"]
+  C --> D["知らない引数としてエラー"]
+  E["直す: 名前をそろえる"] --> F["複数プロセスで学習が進むことを確認"]
+  D --> E
 ```
 
 **Answer (English)**
@@ -156,6 +221,29 @@ flowchart TD
   H["メンテナの見立て: この競合は PyTorch の版とは別の問題"]
 ```
 
+**噛み砕き (ひとことで)**
+
+全員が同時に同じ場所へ書き込む競合が、2 種類の違うエラーとして現れていた。
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | 全ての役割 (rank) が、足並みをそろえる仕組み (同期) 無しで、同時に同じ共有の置き場所へ学習データをダウンロードして書き込む。レビューでこの競合が原因らしいと指摘されたが確定していない。一部が壊れたファイルを読んで落ち、残りがその相手を失って通信が切れるという説明は推論である。 |
+| やったこと | 最初に落ちた役割を探し、1 ノードあたりのプロセス数と版を変えて成功率を測った (4 プロセスで版 2.2.1 は 0 パーセント、2.10.0 は約 70 パーセント、1 プロセスなら 10 回中 10 回)。原因の切り分けはしていない。 |
+| 良い点 | 「後から出た通信切れのエラーを追わず、最初に落ちた役割を探す」という正しい調べ方の順番を実践できた。 |
+| 悪い点・代償 | 原因はレビューで指摘された推測であって確定させておらず、修正自体もこの作業では実装も検証もしていない。 |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["複数の役割が同時に動き始める"] --> B["全員が同じ共有の置き場所へ学習データを同時に書き込む"]
+  B --> C["一部: ファイルが壊れて読めない"]
+  B --> D["残り: 相手を失って通信が切れる<br/>推論"]
+  E["1 ノードのプロセス数を減らすと起きにくくなる<br/>推論"]
+  C --> E
+  D --> E
+```
+
 **Answer (English)**
 
 The symptom on two c5n.9xlarge nodes with shared FSx for Lustre and four processes per node was that some ranks failed loading MNIST with `File not found or corrupted`, and the rest reported GLOO `Connection closed by peer`. The first rule is to find the rank that failed first and not chase the connection errors. In `ddp.py`, every rank calls `datasets.MNIST(download=True)` right after `init_process_group`, with no synchronization, so all eight processes download and write into the same shared directory at once. The maintainer pointed to this race in review as a problem separate from the PyTorch version, and proposed synchronizing with `torch.distributed.barrier()`. I didn't confirm it as the cause, and the fix isn't implemented or tested in this PR. With one process per node, two ranks still share that directory, so the race isn't eliminated; my inference is that it becomes less likely with fewer concurrent writers, but I didn't isolate that. Why the other ranks show a GLOO disconnect isn't explained in the PR; my reading of the code is that once one rank dies, its peers lose their connection, but I'd label that an inference. I measured success rates, 0% on PyTorch 2.2.1, which `latest` pointed to, about 70% on 2.10.0, and 10 out of 10 with one process per node, and I didn't isolate why the version changed the rate.
@@ -169,6 +257,28 @@ The symptom on two c5n.9xlarge nodes with shared FSx for Lustre and four process
 **質問 (日本語)**
 
 なぜ競合を直さずに回避策を出したのか。
+
+**噛み砕き (ひとことで)**
+
+催しの日程を優先し、競合そのものは直さず回避策だけで安定させた。
+
+| 項目 | 内容 |
+|---|---|
+| 論点 | データの競合を直さず、回避策で済ませたのはなぜか。 |
+| 選んだこと | 近く予定されていた催し (ワークショップ) の日程を優先し、PR の範囲をイメージの版の固定とプロセス数を選べるようにする 2 つだけに絞った。 |
+| 良い点 | 期日までに安定して動く状態を用意できた。 |
+| 悪い点・代償 | 1 ノードに複数プロセスでは失敗が残ったままで、競合そのものの直し方は次の対応に持ち越した。 |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["複数の問題が見つかる"] --> B["競合そのものを直す<br/>後続の PR に回す"]
+  A --> C["回避策で安定させる<br/>版の固定とプロセス数の切り替えだけ"]
+  D["近く予定されていた催しの日程"] --> C
+  C --> E["採用したのはこちら"]
+  E --> F["ただし複数プロセスでは失敗が残る"]
+```
 
 **Answer (English)**
 
@@ -195,6 +305,28 @@ flowchart TD
   F["修正: 代入を配列の前へ移し、変数を引用符で囲む"]
 ```
 
+**噛み砕き (ひとことで)**
+
+一覧を作る行の順番がずれていて、既定値が反映されていなかった。
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | シェルの一覧 (配列) を作る行が、既定値を設定する行より先に書かれていたため、既定値が一覧に反映されず、空の値がそのまま使われていた。 |
+| やったこと | 既定値を設定する行を一覧より前に移し、変数を引用符で囲んだ。 |
+| 良い点 | レビューで見つかった小さな誤りを、代入の位置を移して変数を引用符で囲むことで直せた。 |
+| 悪い点・代償 | 気づかずにいたら、既定値に頼る人はプロセス数の指定が空のまま渡ってしまうところだった。 |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["一覧を作る行"] --> B["既定値を決める行より先に書いてある"]
+  B --> C["一覧が作られる時点で既定値がまだ無い"]
+  C --> D["空の値のまま一覧に残る"]
+  E["直す: 既定値を決める行を先に移す"] --> F["プロセス数が正しく渡る"]
+  D --> E
+```
+
 **Answer (English)**
 
 In my first commit, the bash array `TORCHRUN_ARGS` containing `--nproc_per_node=$NPROC_PER_NODE` was declared before the line that set the default `NPROC_PER_NODE=${NPROC_PER_NODE:-4}`. Bash expands array elements at declaration time, so when the variable wasn't set, the empty value was baked into the array and the default never took effect. The reviewer caught it. I moved the assignment above the array and quoted the variable. It's small, but anyone relying on the default would have passed `--nproc_per_node=` with an empty value to torchrun instead of 4.
@@ -208,6 +340,28 @@ In my first commit, the bash array `TORCHRUN_ARGS` containing `--nproc_per_node=
 **質問 (日本語)**
 
 `--break-system-packages` は危なくないか。
+
+**噛み砕き (ひとことで)**
+
+仕組みが拒む設定を、使い捨てのコンテナだと割り切って上書きした。
+
+| 項目 | 内容 |
+|---|---|
+| 論点 | 仕組みが拒むシステム全体へのインストールを、特別な指定で押し通してよいか。 |
+| 選んだこと | コンテナは使い捨てでホストと分かれており、イメージは手順書から作り直せるので、害は小さいと判断して使った。 |
+| 良い点 | 新しい版の仕組み (Python 3.12) が既定で拒むシステムへのインストールを上書きでき、学習の実行でその結果も確かめた。 |
+| 悪い点・代償 | この指定は仕組み自身が頼る部品を上書きしてしまう危険があり、長く使うホストでは使わない判断をしている。 |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["新しい版の仕組みがシステム全体への追加を既定で拒む"] --> B["特別な指定で上書きする"]
+  B --> C["使い捨てのコンテナ: 害は小さい"]
+  B --> D["長く使うホスト: 仕組み自身の部品を壊す危険"]
+  C --> E["今回はコンテナなので使う"]
+  D --> F["長く使うホストでは使わない"]
+```
 
 **Answer (English)**
 
@@ -238,6 +392,26 @@ I tested the changed container path on two c5n.9xlarge nodes with one and four p
 **質問 (日本語)**
 
 競合を本当に直すならどうし、何を確かめるか。
+
+**噛み砕き (ひとことで)**
+
+競合を本当に直すなら、同時に書き込まないことを保証し、全回成功するまで検証する。
+
+| 項目 | 内容 |
+|---|---|
+| 論点 | データの競合を本当に直すなら何をし、何を確かめるか。 |
+| 選んだこと | レビューで提案された「全員がそろうまで待つ」仕組みなどで同時に書き込まないことを保証する。合わせて、共有データの持ち方や保存場所の見直しも次に調べる。 |
+| 良い点 | どんな直し方であっても「同時に書き込まない」という保証がゴールだと明確にできる。 |
+| 悪い点・代償 | 検証には、データを消してから何度も試し、1 ノードに複数プロセスで全回成功することを求める必要があり、1 回でも失敗したら競合が隠れているとみなす厳しさが要る。 |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["直すときのゴール: 同時に書き込まないことを保証する"] --> B["提案: 全員がそろうまで待つ仕組み"]
+  A --> C["ほかに調べる案: データの持ち方や保存場所の見直し"]
+  D["検証: データを消して何度も試す"] --> E["1 回でも失敗したら競合がまだ隠れている"]
+```
 
 **Answer (English)**
 

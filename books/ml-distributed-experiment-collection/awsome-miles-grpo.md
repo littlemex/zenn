@@ -67,7 +67,7 @@ KeitaW さんは、レビューの前に p6-b300.48xlarge の 2 ノードのク�
 
 ## 技術面接の準備 (FAQ)
 
-この節は、本章の内容を技術面接で聞かれたときに答えるための想定問答である。システム設計面接の流れに合わせて、全体と設計、不具合の原因の深掘り、検証と振り返りの 3 つに分けた。各問は英語の質問 (見出し)、日本語の質問、英語の回答、日本語の回答の順に書いた。不具合の問には原因の連鎖の図を付け、回答は症状、原因、突き止め方、直し方と比べた案、検証、残ったこと、の順に話す。回答は本章の本文と、PR、Issue、マージ前後のコードで確かめた事実だけを使う。
+この節は、本章の内容を技術面接で聞かれたときに答えるための想定問答である。システム設計面接の流れに合わせて、全体と設計、不具合の原因の深掘り、検証と振り返りの 3 つに分けた。各問は英語の質問 (見出し)、日本語の質問、噛み砕き (ひとことでの表とやさしい版の図)、英語の回答、日本語の回答の順に書いた。不具合の問には原因の連鎖の図を付け、回答は症状、原因、突き止め方、直し方と比べた案、検証、残ったこと、の順に話す。回答は本章の本文と、PR、Issue、マージ前後のコードで確かめた事実だけを使う。
 
 ### 全体と設計
 
@@ -85,6 +85,25 @@ flowchart LR
   D["BuildKit の Job<br/>クラスタの中でイメージを作る"] --> B
   E["CPU の報酬サービス<br/>remote_rm の経路のための任意の部品"] -.-> B
   F["run-on-cluster.sh<br/>head の Pod の中から Ray の job を投げる"] --> A
+```
+
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 論点 | すでにある仕組み (SLIME) の横に、別の仕組み (miles) を新しく足す理由と、その作りはどうなっているか |
+| 選んだこと | 利用者が自分の GPU に合うほうを選べるように、構成と手順を SLIME と同じ形にして miles を足した。調整役の head は GPU を持たず、GPU のワーカーが生成と学習を受け持ち、共有のストレージを使う |
+| 良い点 | 2 つの仕組みを比べやすく、利用者は自分の GPU の種類に合わせて選べる |
+| 悪い点・代償 | 元の回答では代償は挙げていない。報酬サービスは任意の部品で、学習の報酬の経路としては動かしていない |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["Ray の head: 調整役、GPU なし"] --> B["GPU のワーカー: 生成と学習を担当"]
+  B --> C["共有のストレージ"]
+  D["クラスタの中でイメージを作る仕組み"] --> B
+  E["任意の報酬サービス（CPU）"] -.-> B
 ```
 
 **Answer (English)**
@@ -116,6 +135,25 @@ flowchart TD
   H["直した版: 503 を返して数える<br/>既定で 20 回続けて失敗したら /ready を 503"]
 ```
 
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | 採点をする部品がエラーになったときも、見た目は正しい値 (0.0 点) を成功 (200) として返していて、呼び出す側がエラーだと気づけない作りだった |
+| やったこと | エラーと時間切れのときはエラー (503) を返して回数を数え、既定で 20 回続けて失敗したら受付を止める仕組みに作り直した |
+| 良い点 | 壊れた採点のまま、平らな 0 点の信号で学習が最後まで進んでしまう心配を防げる |
+| 悪い点・代償 | 呼び出す側がこのエラーを受けて再試行するかどうかは確かめていない。報酬の経路として実際に動かしていないためである |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["採点器がエラーを出す"] --> B["直す前: 見た目は正しい値 0.0 を 200 で返す"]
+  B --> C["呼び出す側はエラーだと気づけない"]
+  C --> D["推論: 壊れた信号のまま学習が進みうる"]
+  E["直した後: エラーは 503 を返して回数を数える"] --> F["一定回数続いたら受付を止める"]
+```
+
 **Answer (English)**
 
 Because it hides failure inside a valid-looking value. The first version caught every exception in `/score` and returned reward 0.0 with HTTP 200, and `/health` always said ok. The reviewer pointed out from the code, not from a failed run, that a persistently broken grader would let training run to completion on a flat zero signal while the Deployment looked healthy. The merged version returns 503 for grader failures and timeouts, counts consecutive failures, and after 20 in a row by default turns readiness to 503 so the replica is taken out of service. A malformed gold label is a client error, 422, and isn't counted. The grader runs in a separate process per slot with a wall-clock limit. I tied failures to readiness, not liveness, because with liveness one bad input would crash-loop the Pod. What I didn't verify is whether miles' `remote_rm` retries on 503, because I didn't run the service as the training reward path.
@@ -141,6 +179,26 @@ flowchart TD
   E --> F["libcuda.so.1 を開けない<br/>投入から 46 秒で OSError"]
   G["案: NVIDIA_VISIBLE_DEVICES=none"] --> H["CDI が有効な環境では空のデバイス名<br/>Pod が起動しない、取り下げ"]
   I["採用: head の num-cpus を 0"] --> J["CPU を求める actor を head に置かせない"]
+```
+
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | GPU を持たない調整役 (head) にも CPU の割り当てが出ていたため、CPU を 1 つだけ求める部品がそこに置かれてしまい、その部品が GPU 用の仕組みを読み込もうとして失敗した |
+| やったこと | レビューした人が 2 つの案を出した。そのうち head にドライバを持たせる案を p5en で試したが、CDI が有効な環境では Pod が起動せず取り下げた。もう 1 つの、head の CPU の割り当てを 0 にして CPU を求める部品をそこに置かせない案を採った |
+| 良い点 | ドライバを無理に与える案より確実に動いた |
+| 悪い点・代償 | head に GPU のドライバを持たせるわけではないので限界がある。CPU を求めずに head に固定で置かれる部品には、この直し方は効かない |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["head の役は GPU もドライバも持たない"] --> B["それでも CPU の割り当てを出している"]
+  B --> C["CPU を 1 つ求める部品がそこに置かれる"]
+  C --> D["GPU 用の仕組みを読み込もうとして失敗する"]
+  E["別案: head にドライバだけ与える"] --> F["環境によっては Pod が起動せず取り下げ"]
+  G["採用: head の CPU の割り当てを 0 にする"] --> H["CPU を求める部品を置かせない"]
 ```
 
 **Answer (English)**
@@ -169,6 +227,26 @@ flowchart TD
   G["修正: 実行環境の変数に 1 行足す"]
 ```
 
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | 並列数 (計算を複数の GPU に分ける数) を増やしたときに必要な設定が実行環境に無く、小さいモデルの構成は並列数が 1 のためその検査に届かず、問題が隠れていた |
+| やったこと | 実行環境の設定に足りない 1 行を加え、並列数が 2 の構成でも検査を越えられるようにした |
+| 良い点 | 「小さいモデルで通ったから安心できるとは言えない」という一般の教訓が得られた |
+| 悪い点・代償 | 4B で通ったので気づかなかった。見つけたのは、結果の表の一部が再現できないという指摘を追い、足りなかった 9B の設定を足して動かしたときである |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["実行環境の設定に必要な 1 行が無い"] --> B["小さいモデルは並列数 1 でその検査に届かない"]
+  B --> C["小さいモデルでは問題なく通る"]
+  A --> D["別のモデルは並列数 2 で使う"]
+  D --> E["検査に引っかかりすべての役が最初の一歩の前に死ぬ"]
+  F["直した後: 設定に 1 行足す"] --> G["並列数 2 でも検査を越え、100 回のやり取りを回せた"]
+```
+
 **Answer (English)**
 
 The 4B recipe was meant to be model-independent, but its Ray runtime environment omitted `CUDA_DEVICE_MAX_CONNECTIONS`, which Megatron checks when tensor or context parallelism is enabled; the failure was on p5en.48xlarge, which is H200. The 4B runs at TP=1, so it never reached that check and passed. GLM-Z1-9B runs at TP=2, so every actor died before the first step. I found it while chasing the review finding that some rows of my results table couldn't be reproduced: I added the missing GLM-Z1-9B env file, ran it through the 4B recipe, and it failed. The fix was one line in the runtime env JSON, and it then ran 100 rollouts on two p5en.48xlarge nodes. The general lesson: a configuration that passes at TP=1 hasn't tested the code paths that only exist at TP greater than 1.
@@ -192,6 +270,26 @@ flowchart TD
   C --> D["最初の optimizer の step がさらに求める"]
   D --> E["139.80 GiB のうち 114.85 GiB 使用中に<br/>2.32 GiB を求めて OOM"]
   F["修正: optimizer の状態をホストのメモリへ<br/>--optimizer-cpu-offload など"] --> G["収まり、100 回の rollout を完走"]
+```
+
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | 普段使うメモリの量は収まっていても、生成の後に学習へ戻った直後の一瞬だけ GPU の空きが足りなくなった |
+| やったこと | optimizer (学習の重みを更新する部品) が持つ状態を、GPU のメモリから本体 (ホスト) のメモリへ移す設定を足した |
+| 良い点 | 収まるようになり、100 回のやり取り (rollout) を最後まで完走できた |
+| 悪い点・代償 | 速さがいくらか落ちる代償がある。どれくらい落ちたかは別のモデルとの比較になってしまうため、正確な大きさは言えない |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["普段使うメモリは収まる"] --> B["生成の後、学習に戻った直後が一番きつい"]
+  B --> C["その一瞬だけさらにメモリを求める"]
+  C --> D["空きが足りずそこで止まる"]
+  E["直した後: optimizer の状態を本体のメモリに移す"] --> F["収まり、100 回のやり取りを完走する"]
+  F --> G["ただし速さはいくらか落ちる"]
 ```
 
 **Answer (English)**
@@ -219,6 +317,25 @@ flowchart TD
   G["修正: 報酬と同じ採点器 grade_answer_verl を使う"]
 ```
 
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | 1 つ目は、ジョブの投げ先を選ぶ仕組みが、名前空間を設定ファイルから読まず、head を「head の役」という目印だけで選んで最初に見つかったものを取っていた。そのため、1 つの名前空間に Ray のクラスタが 2 つあると、違うほうに投げうる作りだった。ワーカーの状態も確かめていなかった。2 つ目は、採点の仕組みが答えの文字をそのまま比べていて、数式として同じ答えでも誤りと数えていた |
+| やったこと | 投げ先を設定ファイルと目印 (ラベル) から決めるように直し、採点は学習で使っているものと同じ採点器に揃えた |
+| 良い点 | どちらも実際に動かして壊れる前に、コードを読む段階で見つけられた |
+| 悪い点・代償 | 採点の最初の直し方は、イメージに入っていない部品に頼ってしまい、エラーも出さずに何もしない状態になっていた。コンテナの中で試して気づき、やり直す必要があった |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["投げ先の場所を設定ファイルから決めていない"] --> B["1 つの名前空間に Ray のクラスタが 2 つあると<br/>違うほうに投げうる"]
+  C["採点は答えの文字をそのまま比べる"] --> D["数式として同じ答えでも誤りと数える"]
+  B --> E["直した後: 設定ファイルと目印から投げ先を決める"]
+  D --> F["直した後: 学習と同じ採点器に揃える"]
+```
+
 **Answer (English)**
 
 Two correctness bugs found by reading the code. `run-on-cluster.sh` resolved the namespace from the caller's environment or `default`, never from the env file, and picked the head as the first Pod labeled `ray.io/node-type=head`, so with two Ray clusters in a namespace it could submit to the wrong one, and it never checked the workers. It now resolves the namespace from a flag, the shell, or the env file, selects the head with the `ray.io/cluster` label, and requires the workers to be running and ready. `evaluate.sh` claimed to use the math reward function but compared the `\boxed{}` content as strings, so mathematically equal answers counted as wrong. My first fix fell back to a library that wasn't installed in the image, so it silently did nothing; I caught that by testing inside the container. The final version uses the same grader as the training reward, `grade_answer_verl`, so evaluation and training agree.
@@ -242,6 +359,25 @@ flowchart TD
   C --> D["描いた Deployment の image が空になる"]
   D --> E["描く時点では誰も気づかない"]
   F["修正: 参照する変数を取り出し、空でないか確かめてから置き換える<br/>scripts/render.sh"]
+```
+
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | 設定ファイルを書き換える仕組みが、値の決まっていない変数を空の文字に置き換えて、それでも成功したことにする作りだった |
+| やったこと | マニフェスト (設定の書類) が使う変数を取り出し、空でないか先に確かめてから置き換える仕組みに直した |
+| 良い点 | レビューより前に自分で気づいて直した。その後、4 つのマニフェストすべてが作れ、実際の EKS のクラスタに対する試しの適用 (dry-run、実際には作らない確認) で受け入れられた |
+| 悪い点・代償 | 置き換えの前に確かめる仕組み (`scripts/render.sh`) を 1 本挟む必要がある。教訓は、入力が欠けても成功してしまう置き換えの工程には、前に明示的な確認が要ることである |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["設定ファイルの中の変数の値が決まっていない"] --> B["書き換えの仕組みは空の文字に置き換えて成功とする"]
+  B --> C["出来上がった設定の中身が空になる"]
+  C --> D["書き換えた時点では誰も気づかない"]
+  E["直した後: 変数が空でないか先に確かめる"] --> F["確かめてから置き換える"]
 ```
 
 **Answer (English)**
@@ -273,6 +409,26 @@ The reviewer was right: of the first nine rows, only two had complete settings t
 **質問 (日本語)**
 
 4B の実行で AIME の評価が 0.596 から 0.333 に下がった。どう解釈するか。
+
+**噛み砕き (ひとことで)**
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | 推論として、応答の長さが伸び、上限の長さに届いてしまう割合が増えたことと、評価の点数が下がったことに相関が見える。ただし、どちらが原因でどちらが結果かはまだ確かめていない |
+| やったこと | 報酬の値の変化と、応答の長さや上限に届く割合の変化を一緒に見て、相関と因果 (原因と結果の関係) を分けて考えた |
+| 良い点 | 確かめていないことを確かめたと言わず、推論であるとはっきり書いた誠実さがある |
+| 悪い点・代償 | 同じクラスタで動かした別のモデル (30B) は逆の方向に動いており、まだ結論を出せる段階ではない |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["報酬の値はほぼ横ばい"] --> B["それでも評価の点数は下がった"]
+  C["応答の長さが伸びる"] --> D["上限の長さに届く割合が増える"]
+  D --> E["推論: 切り詰めとの相関"]
+  B --> E
+  E --> F["ただし因果関係はまだ確かめていない"]
+```
 
 **Answer (English)**
 

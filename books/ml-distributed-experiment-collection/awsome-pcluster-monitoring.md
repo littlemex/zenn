@@ -58,7 +58,7 @@ PR の Test Plan は ParallelCluster 3.12.0 と c5n.9xlarge の計算ノード 2
 
 ## 技術面接の準備 (FAQ)
 
-この節は、本章の内容を技術面接で聞かれたときに答えるための想定問答である。システム設計面接の流れに合わせて、全体と設計、不具合の原因の深掘り、検証と振り返りの 3 つに分けた。各問は英語の質問 (見出し)、日本語の質問、英語の回答、日本語の回答の順に書いた。不具合の問には原因の連鎖の図を付け、回答は症状、原因、突き止め方、直し方と比べた案、検証、残ったこと、の順に話す。回答は本章の本文と、PR、Issue、マージ前後のコードで確かめた事実だけを使う。
+この節は、本章の内容を技術面接で聞かれたときに答えるための想定問答である。システム設計面接の流れに合わせて、全体と設計、不具合の原因の深掘り、検証と振り返りの 3 つに分けた。各問は英語の質問 (見出し)、日本語の質問、噛み砕き (ひとことでの表とやさしい版の図)、英語の回答、日本語の回答の順に書いた。不具合の問には原因の連鎖の図を付け、回答は症状、原因、突き止め方、直し方と比べた案、検証、残ったこと、の順に話す。回答は本章の本文と、PR、Issue、マージ前後のコードで確かめた事実だけを使う。
 
 ### 全体と設計
 
@@ -91,6 +91,30 @@ The repository's Prometheus and Grafana stack was written only for SageMaker Hyp
 
 HyperPod は node_exporter をコンテナで動かしている。なぜここではバイナリを systemd で動かしたのか。
 
+**噛み砕き (ひとことで)**
+
+最初に挙げた理由が自分の試験で成り立たないと分かり、決め手を単純さに言い直した。
+
+| 項目 | 内容 |
+|---|---|
+| 論点 | 既存の仕組みはコンテナで動かしているのに、なぜここではバイナリとサービス化の仕組み (systemd) にしたのか。 |
+| 選んだこと | クラスタの準備の最後の段階でバイナリを入れる形にし、1 本のスクリプトで済ませた。 |
+| 良い点 | コンテナの実行の仕組みに頼らず、別の場所 (S3) に部品を置く手間も無い、単純さが利点である。 |
+| 悪い点・代償 | 最初に挙げた「その段階ではコンテナの仕組みが使えない」という理由は、自分の試験のクラスタでは成り立たず、言い直す必要があった。 |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["コンテナで動かすか、バイナリをそのまま動かすか"] --> B["コンテナ: 既存の仕組みが使う形"]
+  A --> C["バイナリとサービス: 今回選んだ形"]
+  D["最初の理由: この段階ではコンテナが使えない"] --> C
+  E["自分の試験のクラスタでは、この段階で先に Docker を入れる手順が動いていた<br/>理由が一般には成り立たない"]
+  D --> E
+  E --> F["本当の決め手は単純さ"]
+  F --> C
+```
+
 **Answer (English)**
 
 ParallelCluster prepares compute nodes with custom actions such as `OnNodeConfigured`, which runs at the end of node setup, so installing a binary there fits naturally, and the script can be referenced by its GitHub raw URL without staging it in S3. I'd be careful with one point. In the Issue I wrote that a Docker-based approach was rejected because Docker isn't available during `OnNodeConfigured`. My own test cluster's `OnNodeConfigured` sequence runs `docker/postinstall.sh` before the node_exporter script, so that reason doesn't hold in general. The reasons that do hold are simplicity: one script, no container runtime dependency, and no S3 staging.
@@ -104,6 +128,30 @@ ParallelCluster は計算ノードの準備に `OnNodeConfigured` などのカ�
 **質問 (日本語)**
 
 すべてのノードで動かしても安全なように、導入のスクリプトで何をしたか。
+
+**噛み砕き (ひとことで)**
+
+検証とサービス化と繰り返し耐性で、安全に動かす工夫を積んだ。
+
+| 項目 | 内容 |
+|---|---|
+| 論点 | すべてのノードで動かしても安全なように、導入のスクリプトで何を工夫したか。 |
+| 選んだこと | 公開されたバイナリをチェックサムで検証し、専用のユーザーでサービスとして動かし、何度動いても同じ結果になるよう、既に動いていれば終わる確認を先頭に置いた。 |
+| 良い点 | ダウンロードの失敗やクラスタの更新での再実行に対して、安全に繰り返し動かせる。 |
+| 悪い点・代償 | チェックサムの検証で防げるのはダウンロードの破損だけで、配布元そのものの改ざんは防げないという限界がある。 |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["導入のスクリプトが動く"] --> B["既に動いているか確認"]
+  B -->|"動いている"| C["何もせず終わる"]
+  B -->|"動いていない"| D["公開されたバイナリを取得"]
+  D --> E["チェックサムで検証"]
+  E --> F["専用のユーザーでサービスとして動かす"]
+  G["限界: 配布元の改ざんまでは防げない"]
+  F --> G
+```
 
 **Answer (English)**
 
@@ -131,6 +179,27 @@ flowchart TD
   E["修正: scrape_timeout 30s"] --> F["interval 1m の内側"]
 ```
 
+**噛み砕き (ひとことで)**
+
+読みに行く間隔より、あきらめる時間が長いという仕様違反の設定だった。
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | 監視の仕組みは、値を読みに行く間隔より、あきらめるまでの時間 (timeout) を長くしてはいけない決まりがあるのに、設定が逆 (間隔 1 分、timeout 5 分) になっていた。 |
+| やったこと | あきらめるまでの時間を 30 秒に直し、間隔の内側に収めた。 |
+| 良い点 | 設定の読み込みの時点で拒まれる可能性がある、見た目だけではない問題を仕様から正しく指摘できた。 |
+| 悪い点・代償 | 古い設定で実際に失敗したという記録 (ログ) は無く、実際に動かして失敗を再現したわけではない。 |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["値を読みに行く間隔: 1 分"] --> C["仕組みの決まり: あきらめる時間は間隔以下"]
+  B["あきらめるまでの時間: 5 分、間隔より長い"] --> C
+  C --> D["設定の読み込みで拒まれるおそれ"]
+  D --> E["直す: あきらめる時間を 30 秒にする"]
+```
+
 **Answer (English)**
 
 The collector config set `scrape_interval: 1m` and `scrape_timeout: 5m`. Prometheus requires the timeout not to exceed the interval; its configuration docs say so, and its own source validates it while loading the config, returning "global scrape timeout greater than scrape interval". That check is present in `config/config.go` of v3.2.1, the version the agent template installs. So this wasn't cosmetic: a config like that can be rejected at load. I set it to 30 seconds. To be precise about evidence, the PR has no log of the agent actually failing with the old value; I didn't reproduce the failure, I fixed the spec violation, and I don't know whether anyone ran the agent with that config.
@@ -154,6 +223,28 @@ flowchart TD
   C --> D["Prometheus は対象の存在を知らない"]
   D --> E["CPU, Trainium, Inferentia が黙って欠ける"]
   F["修正: instance-type の絞り込みを外す<br/>dcgm_exporter の絞り込みは残す"]
+```
+
+**噛み砕き (ひとことで)**
+
+対象を見つける絞り込みのせいで、一部の種類のノードがそもそも見えていなかった。
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | 監視の対象を見つける設定が、特定の GPU の種類だけに絞り込まれていたため、CPU や別の種類のアクセラレータ (Trainium、Inferentia) のノードはそもそも見つけられていなかった。 |
+| やったこと | この絞り込みを外し、別の仕組み (GPU 専用の監視) の絞り込みはそのまま残した。 |
+| 良い点 | ハードウェアに依存しない監視の部品を、本来の対象全部に広げられた。 |
+| 悪い点・代償 | 絞り込みを外した後も、監視の仕組み (job) の名前が元の `efa_node_exporter` のままで、すべてのノードを読む実際の対象と合っていない。 |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["監視の対象を見つける設定"] --> B["特定の種類だけに絞り込んでいた"]
+  B --> C["別の種類のノードは探す対象に入らない"]
+  C --> D["監視の仕組みは欠けていることすら分からない"]
+  E["直す: 絞り込みを外す"] --> F["残った点: 仕組みの名前は元のまま"]
+  D --> E
 ```
 
 **Answer (English)**
@@ -182,6 +273,29 @@ flowchart TD
   G["修正: cd TMP_DIR してから検証する subshell"]
 ```
 
+**噛み砕き (ひとことで)**
+
+検証のコマンドが開く場所と、ファイルがある場所が食い違っていた。
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | 検証のコマンドが、ファイルの名前だけが書かれた行を「いま居る場所」で開こうとするため、ファイルが実際にある一時の置き場所と合わず、何も入れないまま見つからないエラーで終了する作りだった。 |
+| やったこと | 検証の前に一時の置き場所へ移動してから確かめる形に直した。 |
+| 良い点 | レビューで原因を正確に説明してもらい、提案された直し方をそのまま採用できた。 |
+| 悪い点・代償 | この不具合が実際に起きた記録 (ログ) は無く、試したのは直した後のコードだけである。 |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["正しい行を見つける"] --> B["その行はファイルの名前だけで置き場所が無い"]
+  B --> C["検証はいま居る場所でそのファイルを開こうとする"]
+  D["ファイルは別の一時の置き場所にある"] --> E["見つからずエラーで終了"]
+  C --> E
+  F["直す: 検証の前に一時の置き場所へ移動する"]
+  E --> F
+```
+
 **Answer (English)**
 
 My first version ran `grep "${TARBALL}" "${TMP_DIR}/sha256sums.txt" | sha256sum --check --status`. The grep finds the right line, but that line contains only the hash and a bare filename, and `sha256sum --check` opens that filename relative to the current directory, while the tarball was in the temp directory. With `set -e`, the script would exit with "No such file or directory" before installing anything. The reviewer explained exactly this and suggested `(cd "$TMP_DIR" && grep "${TARBALL}" sha256sums.txt | sha256sum --check --status)`, which I adopted. I'd also be honest that there's no execution log of the bug in the PR; I tested only with the fixed code.
@@ -203,6 +317,26 @@ flowchart LR
   A["agent EC2<br/>PrometheusAgentSecurityGroup に所属"] <-->|"自己参照の規則<br/>全プロトコル、全ポート"| B["計算ノード<br/>AdditionalSecurityGroups に<br/>同じ security group を足す"]
 ```
 
+**噛み砕き (ひとことで)**
+
+既存の仕組みに乗って届かせたが、必要以上に広い許可のままである。
+
+| 項目 | 内容 |
+|---|---|
+| 論点 | 監視する側のサーバー (agent の EC2) が各ノードの監視の窓口 (ポート 9100) にどうやって届くのか、その経路は十分に絞られているか。 |
+| 選んだこと | 同じグループに入っているもの同士なら全部の通信を許す、既存の仕組み (セキュリティグループ) にノードを加える形で届かせた。 |
+| 良い点 | 既にある仕組みに乗るだけで済み、新しい設定を増やさずに届かせられる。 |
+| 悪い点・代償 | 窓口 1 つだけでなく全部の通信を許しているので、必要な分だけに絞る最小権限にはなっておらず、この件でも議論していない。 |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart LR
+  A["監視する側のサーバー (agent の EC2)"] <-->|"同じグループなら全部の通信を許す"| B["各ノード"]
+  C["ノードを同じグループに追加した"] --> B
+  A --> D["残った課題: 窓口 1 つだけに絞る方が安全"]
+```
+
 **Answer (English)**
 
 Through a self-referencing security group that already existed in the agent stack before this PR. `PrometheusAgentSecurityGroup` has an ingress rule allowing all protocols and ports from members of the same group, the agent instance is a member, and the stack outputs the group's ID. On the ParallelCluster side, you add that group to the compute queue's `Networking.AdditionalSecurityGroups`, which makes the compute nodes members too, so the agent can reach 9100. The PR documented this; it didn't change the security group. If asked whether that's least privilege: it isn't, since it's all ports rather than 9100 only, and that wasn't discussed in the PR. I'd raise it as a follow-up rather than claim it was designed that way.
@@ -216,6 +350,27 @@ Through a self-referencing security group that already existed in the agent stac
 **質問 (日本語)**
 
 なぜレビューでスクリプトを `utils/` から移したのか。
+
+**噛み砕き (ひとことで)**
+
+置き場所の判断をレビューの指摘で見直し、使う場面に合わせて移した。
+
+| 項目 | 内容 |
+|---|---|
+| 論点 | 導入のスクリプトを置く場所を、手元から動かす道具の置き場所から、ノード上で動くフックの置き場所に移すべきか。 |
+| 選んだこと | 最初はシンプルさを理由に手元の道具の置き場所に置いたが、レビューの指摘を受けて、ノード上で動くフックの置き場所に移した。 |
+| 良い点 | 将来増える同じ種類のフックのためにも、使う場面で分けておく方が後の読み手にとって分かりやすい。 |
+| 悪い点・代償 | 最初の判断 (この種のスクリプトが 1 本だけなのでシンプルさを優先) は、将来の読み手の観点ではレビューの理屈に劣っていたので、意見の違いを受け入れて置き場所を移した。 |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["導入のスクリプトをどこに置くか"] --> B["手元から動かす道具の置き場所<br/>最初の判断"]
+  A --> C["ノード上で動くフックの置き場所<br/>移した後の場所"]
+  D["指摘: 使う場面が違う、将来似たフックも増える"] --> C
+  C --> E["採用したのはこちら"]
+```
 
 **Answer (English)**
 
@@ -246,6 +401,27 @@ PR の試験の計画は ParallelCluster 3.12.0、c5n.9xlarge の計算ノード
 **質問 (日本語)**
 
 次に何を良くするか。
+
+**噛み砕き (ひとことで)**
+
+コードから見える 4 つの課題を、次に直すべきこととして挙げた。
+
+| 項目 | 内容 |
+|---|---|
+| 論点 | 次に良くするとしたら何を直すか。 |
+| 選んだこと | 版が変わっても確認が「動いているか」しか見ないので版の比較に変える、仕組みの名前を対象に合わせる、通信の許可を窓口だけに絞ることを考える、書かれた記録 (PR の説明や Issue) をコードに合わせて直す、の 4 つ。 |
+| 良い点 | どれもコードから見える具体的な課題で、次の作業にそのまま使える。 |
+| 悪い点・代償 | この 4 つはまだ手を付けておらず、残った課題として挙げただけである。 |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["残った 4 つの課題"] --> B["確認が動いているかしか見ない<br/>版の比較に変える"]
+  A --> C["仕組みの名前が対象と合っていない"]
+  A --> D["通信の許可が全部の窓口のまま"]
+  A --> E["書かれた記録がコードと合っていない"]
+```
 
 **Answer (English)**
 

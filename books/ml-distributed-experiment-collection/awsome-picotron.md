@@ -74,7 +74,7 @@ NCCL INFO Channel 00/0 : 0[0] -> 1[0] [send] via NET/Libfabric/0
 
 ## 技術面接の準備 (FAQ)
 
-この節は、本章の内容を技術面接で聞かれたときに答えるための想定問答である。システム設計面接の流れに合わせて、全体と設計、不具合の原因の深掘り、検証と振り返りの 3 つに分けた。各問は英語の質問 (見出し)、日本語の質問、英語の回答、日本語の回答の順に書いた。不具合の問には原因の連鎖の図を付け、回答は症状、原因、突き止め方、直し方と比べた案、検証、残ったこと、の順に話す。回答は本章の本文と、PR、Issue、マージ前後のコードで確かめた事実だけを使う。
+この節は、本章の内容を技術面接で聞かれたときに答えるための想定問答である。システム設計面接の流れに合わせて、全体と設計、不具合の原因の深掘り、検証と振り返りの 3 つに分けた。各問は英語の質問 (見出し)、日本語の質問、噛み砕き (ひとことでの表とやさしい版の図)、英語の回答、日本語の回答の順に書いた。不具合の問には原因の連鎖の図を付け、回答は症状、原因、突き止め方、直し方と比べた案、検証、残ったこと、の順に話す。回答は本章の本文と、PR、Issue、マージ前後のコードで確かめた事実だけを使う。
 
 ### 全体と設計
 
@@ -97,6 +97,29 @@ picotron のテストケースは SmolLM-1.7B を 2 ノード、テンソル並�
 
 テストケースにとって「再現できる」とは何で、それが設計をどう決めたか。
 
+**噛み砕き (ひとことで)**
+
+「再現できる」を 3 つの基準に分けて、直すべき場所をはっきりさせた。
+
+| 項目 | 内容 |
+|---|---|
+| 論点 | テストケースにとって「再現できる」とはどういうことで、それが直し方をどう決めたか。 |
+| 選んだこと | 同じ材料 (入力) から同じイメージができること、スクリプトが動かす場所に頼らないこと、通信が実際に通る道筋を思い込まず確かめること、の 3 つの基準で直した。 |
+| 良い点 | 直すべき箇所をこの 3 つの基準に当てはめて選べるので、迷わず判断できる。 |
+| 悪い点・代償 | 元の回答では、この 3 つの基準について代償には触れていない。 |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["「再現できる」の 3 つの基準"] --> B["同じ材料から同じイメージができる"]
+  A --> C["スクリプトが動かす場所に頼らない"]
+  A --> D["通信が実際に通る道筋を確かめる"]
+  B --> E["commit を固定する"]
+  C --> F["テンプレートの場所をスクリプト自身から探す"]
+  D --> G["ログで速い通信が選ばれたか確かめる"]
+```
+
 **Answer (English)**
 
 Three things: the same inputs build the same image, the scripts don't depend on where you run them, and the path the traffic actually takes is checked, not assumed. Each fix maps to one of those. Pinning the commit fixes the inputs. Resolving the template from `__file__` removes the dependency on the current directory. And instead of trusting that adding EFA variables is enough, I checked the NCCL log for the selected provider on both nodes.
@@ -110,6 +133,28 @@ Three things: the same inputs build the same image, the scripts don't depend on 
 **質問 (日本語)**
 
 なぜ torch を上げず 2.1.0 のまま残したのか。
+
+**噛み砕き (ひとことで)**
+
+torch (学習の部品) を上げても後の処理で上書きされて効かないので、理由を書いて上げずに残した。
+
+| 項目 | 内容 |
+|---|---|
+| 論点 | なぜ torch (学習に使う部品) を 2.1.0 のままにし、上げなかったか。 |
+| 選んだこと | 上げても効かないと分かったので、理由を書き残して 2.1.0 のまま残した。 |
+| 良い点 | 後の人が、直す必要の無いものを「直して」しまうのを防げる (レビューでも評価された)。 |
+| 悪い点・代償 | 上げるには、固定した picotron の版も一緒に動かす必要があり、それは別の試験を要する別の変更になるので、今回は手を付けていない。 |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["組み立ての手順書で torch を新しくしようとする"] --> B["後の手順で部品の一覧が古い版を指定"]
+  B --> C["新しい版が上書きされる"]
+  C --> D["結局 torch は古い版のまま"]
+  D --> E["理由を書き残す"]
+  E --> F["後の人が直す必要の無いものを直すのを防ぐ"]
+```
 
 **Answer (English)**
 
@@ -136,6 +181,27 @@ flowchart TD
   C --> D["上流が変わるとイメージが黙って変わる"]
   D --> E["同じ手順でも結果が再現しない"]
   F["修正: git checkout 59714b1bf255"] --> G["ビルドのログに<br/>HEAD is now at 59714b1"]
+```
+
+**噛み砕き (ひとことで)**
+
+外部の部品を版の固定無しで取り込んでいたせいで、ビルドのたびに内容が変わっていた。
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | 組み立ての手順書 (Dockerfile) が外部の部品 (picotron) を取り込むときに版 (commit) を指定しておらず、外部の部品には版の目印 (タグ) も無いので、組み立てるたびにその日の最新が入っていた。 |
+| やったこと | 取り込みの後に版を 1 つに固定する行を足した。 |
+| 良い点 | 組み立ての記録 (ログ) に固定した版が出ることで、固定が効いたことを確かめられる。 |
+| 悪い点・代償 | 元の回答に代償の記述は無い。教訓として、テストケースでは、固定していない依存は何かが壊れる前から不具合である。 |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["手順書が外部の部品をいちばん新しいもので持ってくる"] --> B["外部の部品に版の目印が無い"]
+  B --> C["組み立てるたびに内容が変わる"]
+  C --> D["同じ手順でも結果が違う"]
+  E["直す: 持ってくる版を 1 つに固定する"] --> F["記録で固定した版が入ったことを確認"]
 ```
 
 **Answer (English)**
@@ -165,6 +231,28 @@ flowchart TD
   H["修正: __file__ 基準のパス<br/>テンプレートをリポジトリに置く"] --> I["中でも外でも動く"]
 ```
 
+**噛み砕き (ひとことで)**
+
+設定を作るスクリプトが「いま居る場所」頼りで、コンテナの外では壊れていた。
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | 設定を作るスクリプトが、テンプレートの場所を「いま居る場所」からの相対パスで開いていたので、コンテナの中では偶然動くだけで、ホストでは場所が無く失敗していた。 |
+| やったこと | パスをスクリプト自身の場所から組み立てるように直し、テンプレートもリポジトリに写して用意した。 |
+| 良い点 | コンテナの中でも外でも同じスクリプトが動くようになった。 |
+| 悪い点・代償 | コンテナの外で動いたことは報告したが、そのコマンドと記録 (ログ) は PR に残していない。 |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["設定を作るスクリプトが今いる場所を基準にテンプレートを探す"] --> B["コンテナの中: 居る場所がたまたまテンプレートのある picotron の中"]
+  B --> C["動く、ただし偶然"]
+  A --> D["コンテナの外: 居る場所が違う"]
+  D --> E["テンプレートが見つからずエラー"]
+  F["直す: スクリプト自身の場所を基準にし、テンプレートをリポジトリに写す"] --> G["中でも外でも動く"]
+```
+
 **Answer (English)**
 
 The script opened `template/base_config.json` with a relative path, which resolves against the current working directory, not the script's location. Inside the container it worked by accident: the working directory is `/picotron`, and the template lives in the picotron clone. On the host, both conditions fail, so you get `FileNotFoundError`. There were really two bugs: the path depended on the working directory, and the file didn't exist in this repository at all. So I fixed both: the path is now built from `os.path.abspath(__file__)`, and I copied the template from the pinned commit into the repository. I reported in the Issue that it then ran outside the container, though the PR doesn't include that command and log.
@@ -189,6 +277,27 @@ flowchart TD
   E --> F["両ノードで<br/>Selected Provider is efa"]
 ```
 
+**噛み砕き (ひとことで)**
+
+速い通信の設定が無いと、気づかれないまま遅い経路に落ちることがある。
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | 複数ノードをつなぐ速い通信路 (EFA) の設定が無いと、通信をまとめる仕組みが自動で経路を選び、遅い経路 (TCP) に落ちるおそれがあると Issue が指摘していた (実測した失敗ではない)。落ちてもエラーにならず気づきにくい。 |
+| やったこと | 速い経路 (EFA) を明示する設定、メモリ不足を防ぐ設定、待ち合わせに使う通信路を決める設定、の 3 つを足し、別に 2 ノードの通信を試して、記録 (ログ) で速い経路が選ばれたことを確かめた。 |
+| 良い点 | 「気づかれない遅さ」という症状の形を正しく理解した上で対策できた。 |
+| 悪い点・代償 | 確かめたのは別に動かした試験で、レビューで変数を直した後の設定や、学習そのものの記録では確認していない。 |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["複数ノードをつなぐ速い通信路の設定が無い"] --> B["通信の仕組みが自動で経路を選ぶ"]
+  B --> C["遅い経路に落ちるおそれ<br/>エラーにならず気づきにくい<br/>Issue の指摘で実測ではない"]
+  D["直す: EFA を明示する設定など 3 つを足す"] --> E["別に試した通信の記録で速い経路を確認"]
+  E --> F["学習そのものの記録では未確認のまま"]
+```
+
 **Answer (English)**
 
 To be precise about the symptom: the Issue said multi-node runs on p4d or p5 "may fall back to TCP or hit silent performance issues". That was a risk the Issue raised, not a failure I measured. The silent part is what matters: a TCP fallback still trains, just slower, so nothing tells you. I added `FI_PROVIDER=efa` to make the libfabric provider explicit regardless of the host's aws-ofi-nccl version, `FI_EFA_USE_HUGE_PAGE=0`, following the cheatsheet preset, so the multi-process dataloader doesn't exhaust huge pages with `Cannot allocate memory`; that one is preventive, and `NCCL_SOCKET_IFNAME` for NCCL's socket bootstrap. For proof, I ran a separate two-node all_reduce with `NCCL_DEBUG=INFO` and checked `Selected Provider is efa` on both nodes. That run used the earlier `NCCL_SOCKET_IFNAME=en` version, and the training job itself ran without `NCCL_DEBUG`, so its own logs don't name the provider. So what I can show is EFA selection in a separate run with the pre-review setting, not for the merged config or the training job itself.
@@ -202,6 +311,27 @@ To be precise about the symptom: the Issue said multi-node runs on p4d or p5 "ma
 **質問 (日本語)**
 
 なぜ `NCCL_SOCKET_IFNAME` を `en` ではなく `^docker,lo,veth` にしたのか。
+
+**噛み砕き (ひとことで)**
+
+通信路の名前の指定を、取りこぼしに強い「使わないものを並べる」書き方に変えた。
+
+| 項目 | 内容 |
+|---|---|
+| 論点 | 通信路の名前の指定を、使うものを並べる書き方 (`en`) にするか、使わないものを並べる書き方 (`^docker,lo,veth`) にするか。 |
+| 選んだこと | 最初は使うものを並べる書き方にしたが、レビューで、通信路 (インタフェース) の名前が `en` で始まらないインスタンス (例: p4d や p5) では外れうると指摘され、リポジトリのほかのテストケースと同じ、使わないものを並べる書き方に変えた。 |
+| 良い点 | 名前の付け方が違うノードでも取りこぼさない。 |
+| 悪い点・代償 | 使わないものを並べる書き方は、新しく不要な通信路が増えたら一覧を書き足す必要がある。 |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["通信路の名前を指定する 2 つの書き方"] --> B["使うものだけ並べる<br/>読みやすいが取りこぼす"]
+  A --> C["使わないものだけ並べる<br/>取りこぼさないが書き足しが要る"]
+  D["一部のインスタンスは通信路の名前が en で始まらず外れうる"] --> C
+  C --> E["採用したのはこちら"]
+```
 
 **Answer (English)**
 
@@ -229,6 +359,27 @@ flowchart TD
   G["検証の環境: export HF_TOKEN=空文字"] --> H["環境変数にキーがあれば通る<br/>公開モデルは落とせる"]
 ```
 
+**噛み砕き (ひとことで)**
+
+鍵の設定がどこにも無かったため、公開モデルでも起動が止まっていた。
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | 学習のスクリプトが、モデルを落とす前に設定ファイルにも環境変数にも鍵 (`HF_TOKEN`) が無ければ止まる仕組みで、設定のテンプレートもスクリプトの既定も実行手順も、どれも鍵を設定していなかった。 |
+| やったこと | 検証の環境では一時的に空の鍵を環境変数に入れて通したが、これは PR の対象外で、コミットした実行手順には鍵を設定する行が無い。 |
+| 良い点 | 公開モデルでも止まる原因の仕組みを、3 つの経路のどれも鍵を設定していないという事実から正しく説明できた。 |
+| 悪い点・代償 | コミットした実行手順のままでは、鍵を用意しない人は同じエラーに当たりうる。 |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["モデルを落とす前に鍵があるか確認する仕組み"] --> B["設定にもスクリプトにも実行手順にも鍵が無い"]
+  B --> C["鍵が見つからずエラーで止まる"]
+  D["検証の環境だけ: 空の鍵を一時的に設定"] --> E["キーがあるかだけ見るので通る<br/>公開モデルは鍵が空でも落とせる"]
+  F["コミットした実行手順には鍵の設定が無いまま"]
+```
+
 **Answer (English)**
 
 This was in my test environment, outside the PR's scope. The pinned picotron `train.py` raises `ValueError` if `HF_TOKEN` is missing from both the config file and the environment, before it downloads the model. The vendored template defaults `HF_TOKEN` to null, `create_config.py`'s `--hf_token` defaults to None, and `train.sbatch` doesn't export it, so all three paths leave it unset. For the environment, the check only tests whether the key exists, so adding `export HF_TOKEN=""` to my local sbatch let it through, and a public model like SmolLM still downloads. I'd be clear that the committed `train.sbatch` doesn't have that line, so someone running it without a token could hit the same error.
@@ -253,6 +404,28 @@ flowchart TD
   E["pyxis を OnNodeStart で入れる"] --> F["OnNodeStart はブートストラップの前"]
   F --> G["enroot がまだ無い"]
   G --> H["pyxis の導入が失敗<br/>OnNodeConfigured に移す"]
+```
+
+**噛み砕き (ひとことで)**
+
+クラスタの準備の段取りの順番がずれていて、2 つの問題が別々に起きていた。
+
+| 項目 | 内容 |
+|---|---|
+| 原因 | クラスタの管理の仕組みは、ジョブを動かすコマンド (srun) の場所をログインのときに読む設定でパスに足すが、sbatch のスクリプトはログインしないシェルで動くのでそれを読まないことがある。また、コンテナを動かす補助の仕組み (pyxis) を、土台のソフト (enroot) が入る前の早すぎる段階に入れていた。 |
+| やったこと | 道筋を足す行を加え、補助の仕組みを入れる段階を遅い段階に移した。 |
+| 良い点 | 「自分のクラスタでは動く」というよくある落とし穴の原因 (段取りの順番) を切り分けられた。 |
+| 悪い点・代償 | どちらも今回の PR の対象外で、検証の環境だけで踏んだ問題であり、本題の修正には含まれない。 |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  B["ジョブのコマンドの場所はログイン時の設定でパスに足す<br/>sbatch のスクリプトはそれを読まないことがある"] --> C["コマンドが見つからないエラー"]
+  A["クラスタの準備は早い段階から遅い段階へ進む"] --> D["コンテナの補助の仕組みを早い段階に入れていた"]
+  D --> E["土台のソフトがまだ無く導入が失敗"]
+  C --> F["直す: 道筋を足す、補助の仕組みは遅い段階に移す"]
+  E --> F
 ```
 
 **Answer (English)**
@@ -284,6 +457,29 @@ ParallelCluster 3.13.1、Slurm 24.05.8、g5.8xlarge の 2 ノードで、ビル�
 **質問 (日本語)**
 
 もう一度やるなら何を変えるか。
+
+**噛み砕き (ひとことで)**
+
+証拠をマージ後のコードに合わせ、鍵の扱いと記録の残し方を次回直す。
+
+| 項目 | 内容 |
+|---|---|
+| 論点 | もう一度やるなら何を変えるか。 |
+| 選んだこと | 設定を直した後に通信の確認をやり直す、鍵 (`HF_TOKEN`) の扱いを実行手順にはっきり決めて書く、コンテナの外で動かした記録を PR に付ける、の 3 つ。 |
+| 良い点 | 証拠をマージしたコードに合わせ、コメントでの報告だけでなく PR に残る形にできる。 |
+| 悪い点・代償 | この 3 つは今回はできておらず、次回への持ち越しとして残っている。 |
+
+**図 (やさしい版)**
+
+```mermaid
+flowchart TD
+  A["今回やり残したこと"] --> B["通信の確認を直した後の版でやり直していない"]
+  A --> C["鍵の扱いを実行手順にはっきり書いていない"]
+  A --> D["コンテナの外で動かした記録を残していない"]
+  B --> E["次回: 証拠をマージしたコードに合わせる"]
+  C --> E
+  D --> E
+```
 
 **Answer (English)**
 
