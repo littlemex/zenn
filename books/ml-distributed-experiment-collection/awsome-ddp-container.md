@@ -40,9 +40,9 @@ DDP（DistributedDataParallel）は、同じモデルを各プロセスに置き
 
 **なぜそうしたか**。直近のワークショップで安定して動くことを優先し、PR の範囲を版の固定と実行時の切り替えに絞った。`ddp.py` は変えていない。筆者は Issue のコメントで、共有データ向けの `--container-mounts` の設定、データセットによらない barrier での同期、ストレージの見直し、の 3 つを後続で調べる項目に挙げた。
 
-**レビュー**。KeitaW さんから、既定値を代入する行が、それを使う配列の宣言より後にあると指摘があった。bash の配列は宣言の時点で展開されるので、既定値が効かない。代入を配列の前に移し、変数を引用符で囲んだ。
+**レビュー**。メンテナから、既定値を代入する行が、それを使う配列の宣言より後にあると指摘があった。bash の配列は宣言の時点で展開されるので、既定値が効かない。代入を配列の前に移し、変数を引用符で囲んだ。
 
-**テスト**。筆者は ParallelCluster の c5n.9xlarge の 2 ノードで、既定の `nproc_per_node=4` と `NPROC_PER_NODE=1` の 2 通りを試した。どちらも毎回の前に `rm -rf ../data` で MNIST を消し、初めてのダウンロードから再現させた。イメージの中の版が `2.10.0+cu126` であることも確かめた。`nproc_per_node=4` のログには、rank の 1 つが MNIST のダウンロードで例外を出す場面が残った。KeitaW さんは別の環境の [SageMaker HyperPod の Slurm](https://github.com/awslabs/awsome-distributed-ai/pull/1048)（ml.c5.2xlarge の 2 ノード、FSx for Lustre）でも、`NPROC_PER_NODE` を使う venv の sbatch で確かめ（NVIDIA のドライバの無い CPU のインスタンスではコンテナの経路が使えないため）、`NPROC_PER_NODE=1` は 5 回中 5 回、`4` は 5 回中 4 回成功した。失敗した 1 回は、同じ MNIST の破損と GLOO の接続切れだった。KeitaW さんは、すべての rank が共有のストレージに対して `datasets.MNIST(download=True)` を呼ぶことによる競合は PyTorch の版と別の問題で、`ddp.py` に `torch.distributed.barrier()` の守りを入れれば直せるとし、後続の PR に回すとした。barrier の修正は、この PR では実装も検証もしていない。
+**テスト**。筆者は ParallelCluster の c5n.9xlarge の 2 ノードで、既定の `nproc_per_node=4` と `NPROC_PER_NODE=1` の 2 通りを試した。どちらも毎回の前に `rm -rf ../data` で MNIST を消し、初めてのダウンロードから再現させた。イメージの中の版が `2.10.0+cu126` であることも確かめた。`nproc_per_node=4` のログには、rank の 1 つが MNIST のダウンロードで例外を出す場面が残った。メンテナは別の環境の [SageMaker HyperPod の Slurm](https://github.com/awslabs/awsome-distributed-ai/pull/1048)（ml.c5.2xlarge の 2 ノード、FSx for Lustre）でも、`NPROC_PER_NODE` を使う venv の sbatch で確かめ（NVIDIA のドライバの無い CPU のインスタンスではコンテナの経路が使えないため）、`NPROC_PER_NODE=1` は 5 回中 5 回、`4` は 5 回中 4 回成功した。失敗した 1 回は、同じ MNIST の破損と GLOO の接続切れだった。メンテナは、すべての rank が共有のストレージに対して `datasets.MNIST(download=True)` を呼ぶことによる競合は PyTorch の版と別の問題で、`ddp.py` に `torch.distributed.barrier()` の守りを入れれば直せるとし、後続の PR に回すとした。barrier の修正は、この PR では実装も検証もしていない。
 
 ## 技術的な要点
 
@@ -51,16 +51,16 @@ DDP（DistributedDataParallel）は、同じモデルを各プロセスに置き
 - **配列を組み立てる前の既定値の代入**。`NPROC_PER_NODE=${NPROC_PER_NODE:-4}` のような代入は、その変数を使う配列の宣言より前に置く。配列の要素は宣言の時点で展開されるので、後から代入しても配列の中の値は変わらない。
 - **latest のタグ**。`latest` は、いつ何を指すかが変わる。テストケースは版を固定する。
 
-## 技術面接の準備 (FAQ)
+## PR の整理 (FAQ)
 
-この節は、本章の内容を技術面接で聞かれたときに答えるための想定問答である。システム設計面接の流れに合わせて、全体と設計、不具合の原因の深掘り、検証と振り返りの 3 つに分けた。各問は英語の質問 (見出し)、日本語の質問、噛み砕き (ひとことでの表とやさしい版の図)、英語の回答、日本語の回答の順に書いた。不具合の問には原因の連鎖の図を付け、回答は症状、原因、突き止め方、直し方と比べた案、検証、残ったこと、の順に話す。回答は本章の本文と、PR、Issue、マージ前後のコードで確かめた事実だけを使う。
+この節は、本章の PR を、設計の判断、不具合の原因、検証の 3 つの面から問答の形で整理したものである。問は、全体と設計、不具合の原因の深掘り、検証と振り返りの 3 つに分けた。各問は英語の質問 (見出し)、日本語の質問、噛み砕き (ひとことでの表とやさしい版の図)、英語の回答、日本語の回答の順に書いた。不具合の問には原因の連鎖の図を付け、回答は症状、原因、突き止め方、直し方と比べた案、検証、残ったこと、の順に書いた。回答は本章の本文と、PR、Issue、マージ前後のコードで確かめた事実だけを使う。
 
 ### 全体と設計
 
-:::details Q1. Give me a one-minute overview of these two PRs.
+:::details Q1. What do these two PRs change, in short?
 **質問 (日本語)**
 
-この 2 つの PR を 1 分で説明してほしい。
+この 2 つの PR は、要するに何を変えたのか。
 
 **Answer (English)**
 
@@ -203,10 +203,10 @@ Once the import succeeded, execution got one step further and hit argument parsi
 import が通ると実行が 1 段先に進み、引数の解析に当たった。sbatch は `--use-mlflow` を渡していたが、`ddp.py` の argparse は `--use_mlflow` を定義していたので、知らない引数として拒まれた。1 つ目の誤りが 2 つ目を隠していたのである。教訓は、最初の誤りが消えたところで終わりにせず、最後まで動かすことである。引数を合わせた後、PR #1039 は c5.4xlarge の 2 ノード、1 ノードに 4 プロセスの計 8 プロセスで、GLOO で学習が進み各 rank がエポックの損失を出すことを確かめた。
 :::
 
-:::details Q5. [Bug] Walk me through the intermittent MNIST and GLOO failure. What do you think the cause was?
+:::details Q5. [Bug] What was the intermittent MNIST and GLOO failure, and what is the likely cause?
 **質問 (日本語)**
 
-ときどき起きる MNIST と GLOO の失敗を順に説明してほしい。原因は何だと考えるか。
+ときどき起きる MNIST と GLOO の失敗は何で、原因は何と考えられるか。
 
 **原因の連鎖 (図)**
 

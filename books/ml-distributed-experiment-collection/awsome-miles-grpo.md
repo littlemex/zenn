@@ -43,7 +43,7 @@ free: false
 
 ## レビューで直したこと
 
-KeitaW さんは、レビューの前に p6-b300.48xlarge の 2 ノードのクラスタで、Qwen3-4B の dense、colocated の構成を GPU 8 枚で最後まで動かしたと報告した。GRPO の生成、報酬、Megatron の学習、colocated の CUDA IPC での重みの同期は Blackwell でも動き、reward は 3 回の rollout で 0.4922、0.5156、0.5313 と動き、AIME の評価は 0.6125 だった。そのうえで、4 回に分けて 18 件の指摘があり、すべて対応した。主なものは次のとおりである。
+メンテナは、レビューの前に p6-b300.48xlarge の 2 ノードのクラスタで、Qwen3-4B の dense、colocated の構成を GPU 8 枚で最後まで動かしたと報告した。GRPO の生成、報酬、Megatron の学習、colocated の CUDA IPC での重みの同期は Blackwell でも動き、reward は 3 回の rollout で 0.4922、0.5156、0.5313 と動き、AIME の評価は 0.6125 だった。そのうえで、4 回に分けて 18 件の指摘があり、すべて対応した。主なものは次のとおりである。
 
 | 指摘 | 対応 |
 | --- | --- |
@@ -53,7 +53,7 @@ KeitaW さんは、レビューの前に p6-b300.48xlarge の 2 ノードのク�
 | README が引用する miles の commit と、固定したイメージの中の commit が違う | イメージを固定しているものを正として表を直した |
 | 検証の表の行のうち、同梱した設定から再現できないものがある | 再現できない行を消し、足りなかった GLM-Z1-9B の設定と実行の環境変数を足して測り直した |
 
-**head の Pod の設定**。head のコンテナは GPU を持たず、`libcuda.so.1` も無い。一方で head は CPU を出しているので、Ray は CPU だけを求める制御用の actor（RolloutManager など）を head に置ける。RolloutManager は Megatron 経由で transformer_engine を import するので、KeitaW さんの実行では投入から 46 秒で `OSError: libcuda.so.1` で止まった。KeitaW さんは、head の `num-cpus` を `'0'` にして制御用の actor を head に置かせない回避策を示し、あわせて head にドライバを持たせる `NVIDIA_VISIBLE_DEVICES=none` を提案した。筆者が p5en.48xlarge で `none` を試すと、GPU Operator が CDI を有効にした環境では空のデバイス名に解決され、Pod が起動しなかった。そこで `num-cpus: '0'` を採り、その限界を設定の横に書いた。この設定は head にドライバを与えるものではなく、CPU を求める actor を head から外すだけである。RolloutManager を head に固定するオプションを使うと、CPU を 1 つ求める RolloutManager を CPU の無い head に置けず、進まなくなる。CPU を求めずに head に固定される actor（`MultiLoRAController`）には、この回避策は効かない。同梱のレシピはこの actor を作らないが、レシピを広げるときは、`libcuda.so.1` を使う actor の置き場所を確かめる。
+**head の Pod の設定**。head のコンテナは GPU を持たず、`libcuda.so.1` も無い。一方で head は CPU を出しているので、Ray は CPU だけを求める制御用の actor（RolloutManager など）を head に置ける。RolloutManager は Megatron 経由で transformer_engine を import するので、メンテナの実行では投入から 46 秒で `OSError: libcuda.so.1` で止まった。メンテナは、head の `num-cpus` を `'0'` にして制御用の actor を head に置かせない回避策を示し、あわせて head にドライバを持たせる `NVIDIA_VISIBLE_DEVICES=none` を提案した。筆者が p5en.48xlarge で `none` を試すと、GPU Operator が CDI を有効にした環境では空のデバイス名に解決され、Pod が起動しなかった。そこで `num-cpus: '0'` を採り、その限界を設定の横に書いた。この設定は head にドライバを与えるものではなく、CPU を求める actor を head から外すだけである。RolloutManager を head に固定するオプションを使うと、CPU を 1 つ求める RolloutManager を CPU の無い head に置けず、進まなくなる。CPU を求めずに head に固定される actor（`MultiLoRAController`）には、この回避策は効かない。同梱のレシピはこの actor を作らないが、レシピを広げるときは、`libcuda.so.1` を使う actor の置き場所を確かめる。
 
 再現できなかった GLM-Z1-9B の行は、実機で原因を探した。4B のレシピはモデルによらないはずだったが、Ray の実行環境の変数に `CUDA_DEVICE_MAX_CONNECTIONS` が無く、テンソル並列を使う 9B だけが Megatron の検査で止まっていた。4B は TP=1 なのでこの検査に届かず、気づかなかった。
 
@@ -65,9 +65,9 @@ KeitaW さんは、レビューの前に p6-b300.48xlarge の 2 ノードのク�
 - **envsubst の未定義の変数**。未定義の変数を空の文字列に置き換えて成功する。埋める前に、必要な変数がそろっているかを確かめる。
 - **検証の表の範囲**。同梱した設定だけで再現できる行に限る。TP=1 の構成で通っても、TP>1 で初めて通る検査がある。
 
-## 技術面接の準備 (FAQ)
+## PR の整理 (FAQ)
 
-この節は、本章の内容を技術面接で聞かれたときに答えるための想定問答である。システム設計面接の流れに合わせて、全体と設計、不具合の原因の深掘り、検証と振り返りの 3 つに分けた。各問は英語の質問 (見出し)、日本語の質問、噛み砕き (ひとことでの表とやさしい版の図)、英語の回答、日本語の回答の順に書いた。不具合の問には原因の連鎖の図を付け、回答は症状、原因、突き止め方、直し方と比べた案、検証、残ったこと、の順に話す。回答は本章の本文と、PR、Issue、マージ前後のコードで確かめた事実だけを使う。
+この節は、本章の PR を、設計の判断、不具合の原因、検証の 3 つの面から問答の形で整理したものである。問は、全体と設計、不具合の原因の深掘り、検証と振り返りの 3 つに分けた。各問は英語の質問 (見出し)、日本語の質問、噛み砕き (ひとことでの表とやさしい版の図)、英語の回答、日本語の回答の順に書いた。不具合の問には原因の連鎖の図を付け、回答は症状、原因、突き止め方、直し方と比べた案、検証、残ったこと、の順に書いた。回答は本章の本文と、PR、Issue、マージ前後のコードで確かめた事実だけを使う。
 
 ### 全体と設計
 

@@ -76,7 +76,7 @@ EKS は Kubernetes のコントロールプレーンを AWS が運用するサ�
 
 ## #1259 からファイルごとに何をなぜ変えたか
 
-[#1259](https://github.com/awslabs/awsome-distributed-ai/pull/1259) は KeitaW さんが書いた PR で、[eks-gpu-cluster.yaml](https://github.com/awslabs/awsome-distributed-ai/blob/6e432ce6fcf707a2a896bdb17b73945c1b3f6136/architectures/amazon-eks/assets/eks-gpu-cluster.yaml)（943 行）の 1 つのテンプレートが、VPC からクラスタ、GPU のノードグループ、device plugin の導入までを作った。#1259 はマージされず、#1269 がその内容を引き継いでマージされた。#1269 は #1259 のパラメータを同じ名前と意味のまま残し、中身を次のように分けた。
+[#1259](https://github.com/awslabs/awsome-distributed-ai/pull/1259) はメンテナが書いた PR で、[eks-gpu-cluster.yaml](https://github.com/awslabs/awsome-distributed-ai/blob/6e432ce6fcf707a2a896bdb17b73945c1b3f6136/architectures/amazon-eks/assets/eks-gpu-cluster.yaml)（943 行）の 1 つのテンプレートが、VPC からクラスタ、GPU のノードグループ、device plugin の導入までを作った。#1259 はマージされず、#1269 がその内容を引き継いでマージされた。#1269 は #1259 のパラメータを同じ名前と意味のまま残し、中身を次のように分けた。
 
 | #1259 の中の部分 | マージした版での置き場所 | 主な変更 |
 | --- | --- | --- |
@@ -87,7 +87,7 @@ EKS は Kubernetes のコントロールプレーンを AWS が運用するサ�
 | （無し） | `eks-gpu-cluster-deploy-all.yaml` | 上の 4 つを子のスタックとして作る root を足した |
 | （無し） | `tests/`、`docs/PARAMETERS.md` | lint、ネットワークカードの記述の生成器、実機の試験手順、パラメータの説明を足した |
 
-以下では、ファイルごとに #1259 のコードとマージした版のコードを並べ、比べた選択肢と選んだ理由を書く。行へのリンクは、#1259 は [6e432ce](https://github.com/awslabs/awsome-distributed-ai/commit/6e432ce6fcf707a2a896bdb17b73945c1b3f6136)、マージした版は [d432521](https://github.com/awslabs/awsome-distributed-ai/commit/d432521298a4c05afa2077ac1d12dfba69fb0050) に固定している。KeitaW さんの指摘で直した点は、そのつど「KeitaW さんの指摘」と書く。中心の論点は、同じクラスタに GPU のノードグループを何度でも足せるようにしたことで、`eks-add-gpu-nodegroup.yaml` ①で扱う。
+以下では、ファイルごとに #1259 のコードとマージした版のコードを並べ、比べた選択肢と選んだ理由を書く。行へのリンクは、#1259 は [6e432ce](https://github.com/awslabs/awsome-distributed-ai/commit/6e432ce6fcf707a2a896bdb17b73945c1b3f6136)、マージした版は [d432521](https://github.com/awslabs/awsome-distributed-ai/commit/d432521298a4c05afa2077ac1d12dfba69fb0050) に固定している。メンテナの指摘で直した点は、そのつど「メンテナの指摘」と書く。中心の論点は、同じクラスタに GPU のノードグループを何度でも足せるようにしたことで、`eks-add-gpu-nodegroup.yaml` ①で扱う。
 
 以下で使う言葉を先に決めておく。bootstrap は、CodeBuild が device plugin を入れて確かめる処理である。custom resource は、CloudFormation が作成や更新のたびに外の処理を呼び、その処理から成功か失敗の答えが届くまで待つ資源で、bootstrap はこれで起動する。Helm のリリースは、チャートをクラスタに入れた 1 つの単位である。DaemonSet は、条件に合うすべてのノードで Pod を 1 つずつ動かす仕組みである。access entry は、IAM のロールにクラスタの中の権限を与える EKS の設定である。taint はノードに付ける印で、それを許容する設定（toleration）を持つ Pod しかそのノードに載れない。
 
@@ -110,7 +110,7 @@ EKS は Kubernetes のコントロールプレーンを AWS が運用するサ�
 
 効くのはそのリージョンの private な ECR だけで、`public.ecr.aws` からの取得は今までどおり NAT gateway を通る。
 
-**`VpcCidr` に形の検査を足した**。KeitaW さんの指摘で直した点である。#1259 の `VpcCidr` は自由な文字列で、サブネットは `!Cidr [VpcCidr, 8, 12]` で切り出していた。これは VPC を /20 の 8 つの区画に分ける式なので、/16 か /17 の VPC にしか収まらない。#1269 の最初の版は CIDR の書き方の形だけを見て、/ の後の長さを縛らない検査を入れ、筆者は PR で「厳しすぎて、`Fn::Cidr` が受け付ける書き方まで弾くかもしれない」と意見を求めた。KeitaW さんは実際にスタックを作って確かめ、逆に検査が緩すぎると指摘した。/18 は検査を通ってから `invalid count (8) of subnets requested` で失敗する。マージした版は [/16 と /17 だけを通す](https://github.com/awslabs/awsome-distributed-ai/blob/d432521298a4c05afa2077ac1d12dfba69fb0050/architectures/amazon-eks/assets/eks-cluster-prerequisites.yaml#L41)。
+**`VpcCidr` に形の検査を足した**。メンテナの指摘で直した点である。#1259 の `VpcCidr` は自由な文字列で、サブネットは `!Cidr [VpcCidr, 8, 12]` で切り出していた。これは VPC を /20 の 8 つの区画に分ける式なので、/16 か /17 の VPC にしか収まらない。#1269 の最初の版は CIDR の書き方の形だけを見て、/ の後の長さを縛らない検査を入れ、筆者は PR で「厳しすぎて、`Fn::Cidr` が受け付ける書き方まで弾くかもしれない」と意見を求めた。メンテナは実際にスタックを作って確かめ、逆に検査が緩すぎると指摘した。/18 は検査を通ってから `invalid count (8) of subnets requested` で失敗する。マージした版は [/16 と /17 だけを通す](https://github.com/awslabs/awsome-distributed-ai/blob/d432521298a4c05afa2077ac1d12dfba69fb0050/architectures/amazon-eks/assets/eks-cluster-prerequisites.yaml#L41)。
 
 ```yaml:eks-cluster-prerequisites.yaml（マージした版）
   VpcCidr:
@@ -125,7 +125,7 @@ EKS は Kubernetes のコントロールプレーンを AWS が運用するサ�
 | CIDR の形だけ見る（#1269 の最初の版） | 明らかな打ち間違いは提出の時点で止まる | /18 から /32 も通り、それらはすべて失敗する |
 | /16 と /17 だけ通す（採用） | `!Cidr [VpcCidr, 8, 12]` が 8 つの /20 を切り出せる範囲と一致する | サブネットの切り方を変えたら、この検査も一緒に変える必要がある |
 
-**FSx for Lustre を選べるようにした**。#1259 には無く、筆者が #1269 で足した。`DeployFsxLustre=true` でファイルシステムを作る。最初の版は、FSx 側の security group にはノードからの 988 番と 1018〜1023 番の受信を許可していた。一方、ノード側の security group は自分のメンバーからの通信しか受けなかった。FSx の文書は、クライアント側にもファイルシステムの security group からの同じポートの受信を求めている。この受信の規則は、KeitaW さんの指摘で足した。KeitaW さんは、筆者の試験が通ったのはおそらく、クライアントから接続を始めることが多く security group が戻りの通信を通すからだとし、潜在的な抜けだと指摘した。マージした版は [2 つの受信の規則](https://github.com/awslabs/awsome-distributed-ai/blob/d432521298a4c05afa2077ac1d12dfba69fb0050/architectures/amazon-eks/assets/eks-cluster-prerequisites.yaml#L284) を足した。この抜けで実際に失敗する場面は、規則がある試験でも無い試験でも再現していない。
+**FSx for Lustre を選べるようにした**。#1259 には無く、筆者が #1269 で足した。`DeployFsxLustre=true` でファイルシステムを作る。最初の版は、FSx 側の security group にはノードからの 988 番と 1018〜1023 番の受信を許可していた。一方、ノード側の security group は自分のメンバーからの通信しか受けなかった。FSx の文書は、クライアント側にもファイルシステムの security group からの同じポートの受信を求めている。この受信の規則は、メンテナの指摘で足した。メンテナは、筆者の試験が通ったのはおそらく、クライアントから接続を始めることが多く security group が戻りの通信を通すからだとし、潜在的な抜けだと指摘した。マージした版は [2 つの受信の規則](https://github.com/awslabs/awsome-distributed-ai/blob/d432521298a4c05afa2077ac1d12dfba69fb0050/architectures/amazon-eks/assets/eks-cluster-prerequisites.yaml#L284) を足した。この抜けで実際に失敗する場面は、規則がある試験でも無い試験でも再現していない。
 :::
 
 :::details eks-cluster.yaml: クラスタから GPU を外し、自前の AMI に要る値を外に出した
@@ -206,9 +206,9 @@ else
 fi
 ```
 
-KeitaW さんは、最初の版の README に書いた「版を上げるには、既にあるスタックの版を先に上げる」という手順では上げられないと指摘した。既にあるスタックを更新しても、そのスタック自身が「入っている版と違う」と止まるからである。マージした版の README は、Helm の `--reset-then-reuse-values` でリリースを先に上げ、その後で各スタックの指定をそろえる手順にした。筆者は `0.20.0` から `0.20.1` への移行をこの手順で試し、2 つのスタックがどちらも `UPDATE_COMPLETE` になった。KeitaW さんはもう 1 つ、この確認はこのテンプレートが付けるリリース名しか見ないので、GPU Operator など別の方法で入れた device plugin は見えず、2 つ目を入れてしまうと指摘した。これは README の 10 節に書いた。
+メンテナは、最初の版の README に書いた「版を上げるには、既にあるスタックの版を先に上げる」という手順では上げられないと指摘した。既にあるスタックを更新しても、そのスタック自身が「入っている版と違う」と止まるからである。マージした版の README は、Helm の `--reset-then-reuse-values` でリリースを先に上げ、その後で各スタックの指定をそろえる手順にした。筆者は `0.20.0` から `0.20.1` への移行をこの手順で試し、2 つのスタックがどちらも `UPDATE_COMPLETE` になった。メンテナはもう 1 つ、この確認はこのテンプレートが付けるリリース名しか見ないので、GPU Operator など別の方法で入れた device plugin は見えず、2 つ目を入れてしまうと指摘した。これは README の 10 節に書いた。
 
-**4 つ目は、イメージの事前取得である**。KeitaW さんの指摘で直した点である。#1259 と #1269 の最初の版は `kube-system/prepull` という 1 つの DaemonSet を `role: gpu` のノードに置いていた。2 つ目のスタックが別のイメージを指定すると、同じ名前の DaemonSet を上書きし、1 つ目のグループのノードにも新しいイメージを取りに行かせる。マージした版は [名前にノードグループの名前を入れ](https://github.com/awslabs/awsome-distributed-ai/blob/d432521298a4c05afa2077ac1d12dfba69fb0050/architectures/amazon-eks/assets/eks-add-gpu-nodegroup.yaml#L955)、そのグループのノードだけを選ぶ。
+**4 つ目は、イメージの事前取得である**。メンテナの指摘で直した点である。#1259 と #1269 の最初の版は `kube-system/prepull` という 1 つの DaemonSet を `role: gpu` のノードに置いていた。2 つ目のスタックが別のイメージを指定すると、同じ名前の DaemonSet を上書きし、1 つ目のグループのノードにも新しいイメージを取りに行かせる。マージした版は [名前にノードグループの名前を入れ](https://github.com/awslabs/awsome-distributed-ai/blob/d432521298a4c05afa2077ac1d12dfba69fb0050/architectures/amazon-eks/assets/eks-add-gpu-nodegroup.yaml#L955)、そのグループのノードだけを選ぶ。
 
 ```bash:eks-add-gpu-nodegroup.yaml（マージした版）
 PREPULL="prepull-$(echo "$NODE_GROUP_NAME" | tr 'A-Z_' 'a-z-')"
@@ -216,7 +216,7 @@ PREPULL="prepull-$(echo "$NODE_GROUP_NAME" | tr 'A-Z_' 'a-z-')"
 nodeSelector: { eks.amazonaws.com/nodegroup: "$NODE_GROUP_NAME" }
 ```
 
-KeitaW さんの提案は `prepull-${NODE_GROUP_NAME}` だったが、`NodeGroupName` は `_` や大文字を許し、DaemonSet の名前はそれを許さない。`NodeGroupName` の検査を厳しくする方法もあったが、既存のクラスタで既に使っている名前を拒むことになる。そこで名前に入れるときだけ小文字にし、`_` を `-` に変えた。代償は、`ng_B` と `ng-b` の 2 つが同じ名前になることである。その場合、2 つ目のスタックの事前取得は始まらず、bootstrap は警告を出して完了する。
+メンテナの提案は `prepull-${NODE_GROUP_NAME}` だったが、`NodeGroupName` は `_` や大文字を許し、DaemonSet の名前はそれを許さない。`NodeGroupName` の検査を厳しくする方法もあったが、既存のクラスタで既に使っている名前を拒むことになる。そこで名前に入れるときだけ小文字にし、`_` を `-` に変えた。代償は、`ng_B` と `ng-b` の 2 つが同じ名前になることである。その場合、2 つ目のスタックの事前取得は始まらず、bootstrap は警告を出して完了する。
 
 **5 つ目は、権限である**。CodeBuild がクラスタを操作するための access entry を、[ノードグループのスタックの側](https://github.com/awslabs/awsome-distributed-ai/blob/d432521298a4c05afa2077ac1d12dfba69fb0050/architectures/amazon-eks/assets/eks-add-gpu-nodegroup.yaml#L761) に置いた。クラスタの側に置くと、既存のクラスタに足すときにその権限を持ち込めず、GPU を使わないクラスタにも管理者の権限が残る。ノードのロールも `NodeRoleArn` で既存のものを渡せるようにした。
 
@@ -238,9 +238,9 @@ KeitaW さんの提案は `prepull-${NODE_GROUP_NAME}` だったが、`NodeGroup
 
 device plugin のチャートもパラメータだが、既定値には試した版を書き、空（最新）にはしなかった。版を書かずに入れると、その時点でチャートの置き場所が公開している最新版が入る。これは実質的に `latest` と同じで、device plugin が正しく動くかはノードのドライバとの組み合わせで決まる。別の版を使いたい利用者は、パラメータで上書きすればよい。
 
-**root からも版を渡せるようにした**。KeitaW さんの指摘で直した点である。最初の版の文書は「kubectl の版は root のパラメータで決める」と書いていたのに、root は `KubectlVersion` を持っていなかった。そのため root で `KubernetesVersion=1.34` にすると、kubectl はクラスタより 2 つ新しい 1.36.4 のまま動いた。マージした版の root は [`KubectlVersion` を受け取って子に渡す](https://github.com/awslabs/awsome-distributed-ai/blob/d432521298a4c05afa2077ac1d12dfba69fb0050/architectures/amazon-eks/assets/eks-gpu-cluster-deploy-all.yaml#L404)。KeitaW さんは、kubectl は渡すこと、`HelmVersion` と 2 つのチャートの版は渡すか「root では既定のまま」と文書に書くかのどちらかを求めた。筆者は 4 つとも渡すことにした。①で書いた版の上げ方は、最後にクラスタ上のすべてのスタックが新しい版を指定する状態で終わるが、root がこれらを受け取れないと、root で作ったスタックだけがその状態にできないからである。
+**root からも版を渡せるようにした**。メンテナの指摘で直した点である。最初の版の文書は「kubectl の版は root のパラメータで決める」と書いていたのに、root は `KubectlVersion` を持っていなかった。そのため root で `KubernetesVersion=1.34` にすると、kubectl はクラスタより 2 つ新しい 1.36.4 のまま動いた。マージした版の root は [`KubectlVersion` を受け取って子に渡す](https://github.com/awslabs/awsome-distributed-ai/blob/d432521298a4c05afa2077ac1d12dfba69fb0050/architectures/amazon-eks/assets/eks-gpu-cluster-deploy-all.yaml#L404)。メンテナは、kubectl は渡すこと、`HelmVersion` と 2 つのチャートの版は渡すか「root では既定のまま」と文書に書くかのどちらかを求めた。筆者は 4 つとも渡すことにした。①で書いた版の上げ方は、最後にクラスタ上のすべてのスタックが新しい版を指定する状態で終わるが、root がこれらを受け取れないと、root で作ったスタックだけがその状態にできないからである。
 
-**Kubernetes 1.34 で device plugin がどのノードにも載らなかった**。KeitaW さんがマージの前に直すべきとした 1 件目である。NVIDIA の device plugin の DaemonSet は、次の 3 つのラベルのどれかを持つノードにだけ載る。
+**Kubernetes 1.34 で device plugin がどのノードにも載らなかった**。メンテナがマージの前に直すべきとした 1 件目である。NVIDIA の device plugin の DaemonSet は、次の 3 つのラベルのどれかを持つノードにだけ載る。
 
 - `feature.node.kubernetes.io/pci-10de.present`。チャートに同梱の node-feature-discovery（ノードのハードウェアを調べてラベルを付ける仕組み）のワーカーが付ける
 - `feature.node.kubernetes.io/cpu-model.vendor_id=NVIDIA`
@@ -254,7 +254,7 @@ helm upgrade --install nvdp nvdp/nvidia-device-plugin ... \
   --set-json 'tolerations=[{"key":"nvidia.com/gpu","operator":"Exists","effect":"NoSchedule"}]'
 ```
 
-ところがこの値はチャート自身の DaemonSet にしか届かず、同梱のサブチャートである node-feature-discovery のワーカーは、サブチャートの既定の toleration（`nvidia.com/gpu=present`）のままだった。GPU のノードの taint は `nvidia.com/gpu=true` なので合わない。KeitaW さんは `helm template` で描いてこれを確かめ、1.34 のクラスタで手で値を足すと 20 秒以内に GPU が出ることも確かめた。マージした版は [サブチャートにも同じ toleration を渡す](https://github.com/awslabs/awsome-distributed-ai/blob/d432521298a4c05afa2077ac1d12dfba69fb0050/architectures/amazon-eks/assets/eks-add-gpu-nodegroup.yaml#L884)。
+ところがこの値はチャート自身の DaemonSet にしか届かず、同梱のサブチャートである node-feature-discovery のワーカーは、サブチャートの既定の toleration（`nvidia.com/gpu=present`）のままだった。GPU のノードの taint は `nvidia.com/gpu=true` なので合わない。メンテナは `helm template` で描いてこれを確かめ、1.34 のクラスタで手で値を足すと 20 秒以内に GPU が出ることも確かめた。マージした版は [サブチャートにも同じ toleration を渡す](https://github.com/awslabs/awsome-distributed-ai/blob/d432521298a4c05afa2077ac1d12dfba69fb0050/architectures/amazon-eks/assets/eks-add-gpu-nodegroup.yaml#L884)。
 
 ```bash:eks-add-gpu-nodegroup.yaml（マージした版）
 TOL='[{"key":"nvidia.com/gpu","operator":"Exists","effect":"NoSchedule"}]'
@@ -266,14 +266,14 @@ plugin nvdp nvidia-device-plugin "$NVIDIA_DEVICE_PLUGIN_CHART_VERSION" nvdp/nvid
 :::
 
 :::details eks-add-gpu-nodegroup.yaml ③: 予約と Capacity Block の扱いを直した
-**Capacity Block のノードグループに `CapacityType` を付けた**。KeitaW さんがマージの前に直すべきとした 2 件目である。Capacity Block は、GPU を決まった期間だけ予約して使う仕組みである。#1259 と最初の版は、launch template に `MarketType: capacity-block` を入れるだけで、ノードグループには `CapacityType` を書いていなかった。そのためノードグループは既定の `ON_DEMAND` で作られていた。EKS の文書は、Capacity Block を使うノードグループに `CAPACITY_BLOCK` を求めている。これがあると、EKS はブロックが終わる 40 分前にノードグループを 0 台へ縮める予定を自分で入れる。マージした版は [予約の種類に応じて入れる](https://github.com/awslabs/awsome-distributed-ai/blob/d432521298a4c05afa2077ac1d12dfba69fb0050/architectures/amazon-eks/assets/eks-add-gpu-nodegroup.yaml#L699)。
+**Capacity Block のノードグループに `CapacityType` を付けた**。メンテナがマージの前に直すべきとした 2 件目である。Capacity Block は、GPU を決まった期間だけ予約して使う仕組みである。#1259 と最初の版は、launch template に `MarketType: capacity-block` を入れるだけで、ノードグループには `CapacityType` を書いていなかった。そのためノードグループは既定の `ON_DEMAND` で作られていた。EKS の文書は、Capacity Block を使うノードグループに `CAPACITY_BLOCK` を求めている。これがあると、EKS はブロックが終わる 40 分前にノードグループを 0 台へ縮める予定を自分で入れる。マージした版は [予約の種類に応じて入れる](https://github.com/awslabs/awsome-distributed-ai/blob/d432521298a4c05afa2077ac1d12dfba69fb0050/architectures/amazon-eks/assets/eks-add-gpu-nodegroup.yaml#L699)。
 
 ```yaml:eks-add-gpu-nodegroup.yaml（マージした版）
       AmiType: !If [HasCustomAmi, CUSTOM, !Ref AmiType]
       CapacityType: !If [IsCapacityBlock, CAPACITY_BLOCK, ON_DEMAND]
 ```
 
-筆者は `p5en.48xlarge` の Capacity Block で、ブロックの開始の前にスタックを作り、開始の後に `CREATE_COMPLETE` になること、ブロックの終わる 40 分前に EKS がノードグループを 0 台にすることを確かめた。KeitaW さんは、ブロックの開始の前に作ったスタックは確認の待ちで失敗するので、開始の後に作るよう README に書くことを提案した。実機では、開始までは起動が `Capacity Reservation ... is not yet active` で失敗して再試行され、開始の数分前に作ったスタックは完了した。そこで README には、決まりごとではなく観察した挙動として、開始の後か、開始の数分前に作ればよいと書いた。
+筆者は `p5en.48xlarge` の Capacity Block で、ブロックの開始の前にスタックを作り、開始の後に `CREATE_COMPLETE` になること、ブロックの終わる 40 分前に EKS がノードグループを 0 台にすることを確かめた。メンテナは、ブロックの開始の前に作ったスタックは確認の待ちで失敗するので、開始の後に作るよう README に書くことを提案した。実機では、開始までは起動が `Capacity Reservation ... is not yet active` で失敗して再試行され、開始の数分前に作ったスタックは完了した。そこで README には、決まりごとではなく観察した挙動として、開始の後か、開始の数分前に作ればよいと書いた。
 
 **予約を使うときは placement group を作らないことにした**。これは指摘の外で足した変更である。placement group は、ノード同士を物理的に近くに置くための指定である。#1259 は Capacity Block のときだけ placement group を外していた。
 
@@ -281,7 +281,7 @@ plugin nvdp nvidia-device-plugin "$NVIDIA_DEVICE_PLUGIN_CHART_VERSION" nvdp/nvid
   UsePlacementGroup: !Not [!Condition IsCapacityBlock]
 ```
 
-KeitaW さんは、予約したインスタンスはこのスタックが作る placement group の中に無いので、両方を指定してよいのか不安だったが、実際には 2 台とも起動したと報告した。筆者はそれでも、両方を指定すると予約に空きが残っているのに 2 台目が `InsufficientInstanceCapacity` で失敗する場合があると考え、[予約があるときは placement group を作らない](https://github.com/awslabs/awsome-distributed-ai/blob/d432521298a4c05afa2077ac1d12dfba69fb0050/architectures/amazon-eks/assets/eks-add-gpu-nodegroup.yaml#L325) ようにした。
+メンテナは、予約したインスタンスはこのスタックが作る placement group の中に無いので、両方を指定してよいのか不安だったが、実際には 2 台とも起動したと報告した。筆者はそれでも、両方を指定すると予約に空きが残っているのに 2 台目が `InsufficientInstanceCapacity` で失敗する場合があると考え、[予約があるときは placement group を作らない](https://github.com/awslabs/awsome-distributed-ai/blob/d432521298a4c05afa2077ac1d12dfba69fb0050/architectures/amazon-eks/assets/eks-add-gpu-nodegroup.yaml#L325) ようにした。
 
 ```yaml:eks-add-gpu-nodegroup.yaml（マージした版）
   UsePlacementGroup: !Not [!Condition HasReservation]
@@ -325,7 +325,7 @@ EFA は、ネットワークカード 1 枚につきネットワークインタ�
 | `AWS::LanguageExtensions` の `Fn::ForEach` で展開する | 元になる記述が 1 つで済み、差分に生成物が出ない | リストの要素として展開しようとすると `Duplicate key 'DeviceIndex' when merging keys to parent object in Fn::ForEach` で拒まれた |
 | 生成した記述を貼り、lint で一致を確かめる（採用） | 変換の仕組みが要らず、生成器は 81 行で読める | 生成器を変えたら貼り直す必要がある。lint は貼った記述と生成器の出力が違えば失敗する |
 
-**lint が条件の中身を見ていなかった**。KeitaW さんの指摘で直した点である。最初の版の lint は、条件の名前に書かれた数（`Cards4Plus` の 4）を読むだけで、条件の中身を確かめていなかった。KeitaW さんは試しに `Cards4Plus` から `"17"` を消し、`p6-b300.48xlarge` でカード番号 2 と 3（0 から数えるので 3 枚目と 4 枚目）が落ちて EFA が 16 ではなく 14 になるのに lint が通ることを示した。マージした版の lint は、[各条件の中身をすべての枚数について評価し](https://github.com/awslabs/awsome-distributed-ai/blob/d432521298a4c05afa2077ac1d12dfba69fb0050/architectures/amazon-eks/tests/lint-templates.sh#L643)、`CardsNPlus` がちょうど「N 枚以上」のときに真になることを確かめる。
+**lint が条件の中身を見ていなかった**。メンテナの指摘で直した点である。最初の版の lint は、条件の名前に書かれた数（`Cards4Plus` の 4）を読むだけで、条件の中身を確かめていなかった。メンテナは試しに `Cards4Plus` から `"17"` を消し、`p6-b300.48xlarge` でカード番号 2 と 3（0 から数えるので 3 枚目と 4 枚目）が落ちて EFA が 16 ではなく 14 になるのに lint が通ることを示した。マージした版の lint は、[各条件の中身をすべての枚数について評価し](https://github.com/awslabs/awsome-distributed-ai/blob/d432521298a4c05afa2077ac1d12dfba69fb0050/architectures/amazon-eks/tests/lint-templates.sh#L643)、`CardsNPlus` がちょうど「N 枚以上」のときに真になることを確かめる。
 
 **2 枚目以降のカードの device index をタイプごとに持つようにした**。#1259 は 2 枚目以降のカードをすべて `DeviceIndex: 1` にしていた。マージした版は `NicLayout` に `SecondaryDeviceIndex` を足し、`p6-b300.48xlarge` だけ 0 にした。生成器のコメントは、device index はカードごとに数えるのでどちらも正しい要求だとし、aws-pcs の `add-cng-p6-b300.yaml` が B300 の実機で動かした並びにそろえたと書いている。この PR では `p6-b300.48xlarge` を起動しておらず、`SecondaryDeviceIndex` は `describe-instance-types` でも答えが得られないので、lint は未検証と報告する。`NicLayout` とは別の対応表として、GPU の数を持つ `GpuCount` も足した。確認で GPU の数をちょうど比べるためである。
 :::
@@ -350,17 +350,17 @@ containerd の設定をイメージの中ではなくここに書くのは、nod
 
 **taint をノードグループの設定と kubelet のフラグの両方で付ける**。GPU のノードには `nvidia.com/gpu=true:NoSchedule` の taint を付け、GPU を求める Pod だけが載るようにしている。ノードグループの設定にも taint があるので、自前の AMI の分岐の kubelet のフラグは重複に見える。筆者はフラグを外して登録の直後から観察し、参加から 7 秒後の標本で、taint の無いノードが `nvidia.com/gpu: 1` を出しているのを見た。taint は次の標本で付いた。PR は、この観察をどちらの分岐で取ったかを書いていない。フラグは登録の時点で効くので、自前の AMI の分岐に残した。代償は、2 か所の宣言をそろえ続ける手間である。ラベルの `eks.amazonaws.com/nodegroup` もここで付けるのは、EKS が用意する AMI ではこのラベルを EKS が付けるが、自前の AMI では付かず、①の確認がノードを数えられなくなるからである。
 
-KeitaW さんの実機の観察（taint が作成の 1 秒後から付いていて、GPU はその約 60 秒後に出た）は、EKS が用意する AMI の root の作成で取ったものである。この分岐のユーザーデータには、KeitaW さんが試した [69f4f4e6 の版](https://github.com/awslabs/awsome-distributed-ai/blob/69f4f4e6e01e858f690c7775091a29b95eb59be7/architectures/amazon-eks/assets/eks-add-gpu-nodegroup.yaml#L683) でもマージした版でもフラグが無いので、この観察はフラグの効果ではなく、EKS が用意する AMI の経路で taint が間に合っていることを示す。自前の AMI の分岐でフラグを入れた状態の同じ観察は、PR には記録が無い。
+メンテナの実機の観察（taint が作成の 1 秒後から付いていて、GPU はその約 60 秒後に出た）は、EKS が用意する AMI の root の作成で取ったものである。この分岐のユーザーデータには、メンテナが試した [69f4f4e6 の版](https://github.com/awslabs/awsome-distributed-ai/blob/69f4f4e6e01e858f690c7775091a29b95eb59be7/architectures/amazon-eks/assets/eks-add-gpu-nodegroup.yaml#L683) でもマージした版でもフラグが無いので、この観察はフラグの効果ではなく、EKS が用意する AMI の経路で taint が間に合っていることを示す。自前の AMI の分岐でフラグを入れた状態の同じ観察は、PR には記録が無い。
 :::
 
 :::details eks-add-gpu-nodegroup.yaml ⑥: 確認を厳密にし、失敗したときに CloudFormation へ答え損ねにくくした
-この部分の仕組みは #1259 と同じである。Lambda は CodeBuild を起動して CloudFormation の応答先の URL を渡すだけで、CodeBuild が device plugin を入れて確認し、自分で CloudFormation に答える。Lambda の 15 分の上限に縛られないのがこの形の利点で、KeitaW さんもレビューで良い点に挙げた。#1269 が変えたのは、確認の厳しさと、失敗したときの答え方である。
+この部分の仕組みは #1259 と同じである。Lambda は CodeBuild を起動して CloudFormation の応答先の URL を渡すだけで、CodeBuild が device plugin を入れて確認し、自分で CloudFormation に答える。Lambda の 15 分の上限に縛られないのがこの形の利点で、メンテナもレビューで良い点に挙げた。#1269 が変えたのは、確認の厳しさと、失敗したときの答え方である。
 
 **確認は、ノードごと、資源ごとに、数がちょうど合うことを求める**。#1259 は、GPU と EFA の資源が 0 でないノードの数が、`GpuNodeCount` 以上なら通していた。このやり方では、8 GPU のタイプで 1 つしか出ていないノードも数えられ、ノードが Ready かどうかも見ない。`GpuNodeCount=0` のときは「0 台以上」なのですぐに通る。マージした版は、[Ready で、`GpuCount` の数の GPU と `NicLayout` の数の EFA をちょうど出すノード](https://github.com/awslabs/awsome-distributed-ai/blob/d432521298a4c05afa2077ac1d12dfba69fb0050/architectures/amazon-eks/assets/eks-add-gpu-nodegroup.yaml#L890) を数え、その数とグループのノードの総数がどちらも `GpuNodeCount` に等しいことを求める。`GpuNodeCount=0` のときは、確認をしなかったことを理由に書いて成功を返す。
 
 **ダウンロードも、失敗を拾う仕組みの内側で行う**。#1259 は kubectl と Helm のダウンロードを buildspec の `install` の段階で行い、失敗を CloudFormation に知らせる `trap` は `build` の段階で設定していた。ダウンロードが失敗すると誰も答えず、CloudFormation は custom resource の既定の 1 時間を待ち続ける。その間も GPU のノードは動いていて、料金がかかる。マージした版は [すべての処理を `build` の段階に入れ](https://github.com/awslabs/awsome-distributed-ai/blob/d432521298a4c05afa2077ac1d12dfba69fb0050/architectures/amazon-eks/assets/eks-add-gpu-nodegroup.yaml#L830)、どの段階で失敗したかを `STAGE` に入れて理由に書く。さらに 3 つの保険を足した。1 つ目に、`trap` が拾えなかった失敗も、`post_build` が失敗として答える。2 つ目に、custom resource に `ServiceTimeout: 2700`（45 分）を付け、答えが届かなくても CloudFormation が待つのは 1 時間ではなく 45 分になった。3 つ目に、CodeBuild の上限を #1259 の 60 分から 40 分に縮めた。ビルドが時間切れで止まっても、45 分の前に `post_build` が答える時間を残すためである。それでも応答先へ届かない状態が続けば答えは届かないので、2 つ目の上限が最後の止め役になる。
 
-**応答の送信に失敗したら「送った」と記録しない**。KeitaW さんの指摘で直した点である。最初の版の `send()` は、送信が成功したかどうかに関係なく「送った」という印のファイルを作っていた。`post_build` はその印を見て何もしないので、送信が失敗すると CloudFormation は 45 分を待ち切るまで結果を知らない。KeitaW さんは同じ関数を届かない URL に向けて実行し、`curl` が失敗しても印ができることを再現した。マージした版は、送信を 3 回まで再試行し、成功したときだけ印を作る。
+**応答の送信に失敗したら「送った」と記録しない**。メンテナの指摘で直した点である。最初の版の `send()` は、送信が成功したかどうかに関係なく「送った」という印のファイルを作っていた。`post_build` はその印を見て何もしないので、送信が失敗すると CloudFormation は 45 分を待ち切るまで結果を知らない。メンテナは同じ関数を届かない URL に向けて実行し、`curl` が失敗しても印ができることを再現した。マージした版は、送信を 3 回まで再試行し、成功したときだけ印を作る。
 
 ```bash:eks-add-gpu-nodegroup.yaml（マージした版）
 curl -fsS --retry 3 --retry-all-errors -X PUT -H 'Content-Type:' --data-binary @/tmp/resp.json \
@@ -369,7 +369,7 @@ curl -fsS --retry 3 --retry-all-errors -X PUT -H 'Content-Type:' --data-binary @
 
 筆者は 403 を返す URL と正しい URL の両方で試し、403 では成功の報告と失敗の報告がそれぞれ 4 回試され、正しい URL では 1 回だけ届いて `post_build` が何も送らないことを確かめた。
 
-**GPU が見えないときの診断で、実際に数を受け取る**。KeitaW さんの指摘で直した点である。GPU を出さないノードには、ハードウェアが無い場合、ドライバが認識していない場合、device plugin が載っていない場合があり、外からは同じに見える。マージした版は、ノードの PCI のデバイスとして NVIDIA の GPU がいくつ見えるかを数え、手がかりとして出す。PCI に GPU が見えて資源が 0 なら、ハードウェアは有るので、ドライバか device plugin を調べればよい。数える方法を EC2 の API に聞かなかったのは、IAM の権限、ノードからの通信、スロットリングへの対処が、もう何かが失敗している経路に増えるからである。最初の版は `kubectl debug` に `--attach` を付けていなかったので、コマンドは Pod を作るだけですぐ戻り、数はいつも「不明」になっていた。KeitaW さんの 1.34 の作成でも、T4 を持つノードが「不明」と出た。マージした版は [`--attach=true` を付け](https://github.com/awslabs/awsome-distributed-ai/blob/d432521298a4c05afa2077ac1d12dfba69fb0050/architectures/amazon-eks/assets/eks-add-gpu-nodegroup.yaml#L930)、診断の Pod を後で消す。Pod はスタックが作る `nvidia-device-plugin` の namespace で動かし、ノードの名前を含む名前で消す。`default` の namespace で消すと、同じノードで誰かが動かしている別の診断の Pod まで消し得るからである。筆者はこの診断を `g4dn.8xlarge` と `p5en.48xlarge` で動かし、`PCI reports 8 accelerator(s) ... the node advertises 0` のように数が出ることを確かめた。
+**GPU が見えないときの診断で、実際に数を受け取る**。メンテナの指摘で直した点である。GPU を出さないノードには、ハードウェアが無い場合、ドライバが認識していない場合、device plugin が載っていない場合があり、外からは同じに見える。マージした版は、ノードの PCI のデバイスとして NVIDIA の GPU がいくつ見えるかを数え、手がかりとして出す。PCI に GPU が見えて資源が 0 なら、ハードウェアは有るので、ドライバか device plugin を調べればよい。数える方法を EC2 の API に聞かなかったのは、IAM の権限、ノードからの通信、スロットリングへの対処が、もう何かが失敗している経路に増えるからである。最初の版は `kubectl debug` に `--attach` を付けていなかったので、コマンドは Pod を作るだけですぐ戻り、数はいつも「不明」になっていた。メンテナの 1.34 の作成でも、T4 を持つノードが「不明」と出た。マージした版は [`--attach=true` を付け](https://github.com/awslabs/awsome-distributed-ai/blob/d432521298a4c05afa2077ac1d12dfba69fb0050/architectures/amazon-eks/assets/eks-add-gpu-nodegroup.yaml#L930)、診断の Pod を後で消す。Pod はスタックが作る `nvidia-device-plugin` の namespace で動かし、ノードの名前を含む名前で消す。`default` の namespace で消すと、同じノードで誰かが動かしている別の診断の Pod まで消し得るからである。筆者はこの診断を `g4dn.8xlarge` と `p5en.48xlarge` で動かし、`PCI reports 8 accelerator(s) ... the node advertises 0` のように数が出ることを確かめた。
 
 **イメージの事前取得は、成功を返した後に始める**。#1259 は事前取得の DaemonSet の完了を最大 40 分待ってから成功を返していた。大きなイメージの取得が遅いと、クラスタごと巻き戻る。マージした版は [確認が通った時点で成功を返し](https://github.com/awslabs/awsome-distributed-ai/blob/d432521298a4c05afa2077ac1d12dfba69fb0050/architectures/amazon-eks/assets/eks-add-gpu-nodegroup.yaml#L948)、事前取得は始めるだけで待たない。始められなかったときも警告を出すだけにした。
 
@@ -407,7 +407,7 @@ Conditions:
 | Image Builder のインフラの設定ごと受け取る | 権限も動かす場所も、利用者がまとめて決められる | サブネットと security group も一緒に渡すことになり、ビルドをどこで動かすかをこのスタックが決められなくなる |
 | instance profile だけを受け取る（採用） | 権限だけを利用者に移し、動かす場所はこのスタックが決め続ける | 利用者が instance profile を用意し、その権限を管理する必要がある |
 
-**KeitaW さんの指摘で 2 つ直した**。1 つ目は、このテンプレートだけが `KubernetesVersion` を `1.35` と `1.36` の列挙にしていたことである。ほかの 3 つは形の検査なので、root で `1.34` を選び、AMI を作る入力も与えると、提出の検査は通り、VPC を作った後でこのスタックの作成が失敗する。マージした版は [同じ形の検査](https://github.com/awslabs/awsome-distributed-ai/blob/d432521298a4c05afa2077ac1d12dfba69fb0050/architectures/amazon-eks/assets/eks-gpu-node-ami.yaml#L62) にそろえ、lint は既定値だけでなく検査の中身も 4 つのテンプレートで比べる。2 つ目は、ライセンスのヘッダが無かったことである。
+**メンテナの指摘で 2 つ直した**。1 つ目は、このテンプレートだけが `KubernetesVersion` を `1.35` と `1.36` の列挙にしていたことである。ほかの 3 つは形の検査なので、root で `1.34` を選び、AMI を作る入力も与えると、提出の検査は通り、VPC を作った後でこのスタックの作成が失敗する。マージした版は [同じ形の検査](https://github.com/awslabs/awsome-distributed-ai/blob/d432521298a4c05afa2077ac1d12dfba69fb0050/architectures/amazon-eks/assets/eks-gpu-node-ami.yaml#L62) にそろえ、lint は既定値だけでなく検査の中身も 4 つのテンプレートで比べる。2 つ目は、ライセンスのヘッダが無かったことである。
 
 **Fabric Manager はテンプレートに足さず、README に書いた**。標準版の親から README の例のパッケージで作った AMI を `p5en.48xlarge` で使うと、スタックは `CREATE_COMPLETE` になったが、CUDA が `system not yet initialized` で失敗した。NVSwitch で GPU をつなぐタイプには、ドライバと同じ版の `nvidia-fabricmanager` が要る。テンプレートが足すと、利用者のドライバの版に合わせるべき Fabric Manager の版をこのリポジトリが持つことになるので、README に書くことにした。
 :::
@@ -436,20 +436,20 @@ root は、ネットワーク、AMI、クラスタ、GPU のノードグルー�
 :::details tests/、README.md、docs/PARAMETERS.md、.github/: 機械の検査と実機の手順を足し、公開に載せた
 **`tests/lint-templates.sh` を足した**。[11 の検査](https://github.com/awslabs/awsome-distributed-ai/blob/d432521298a4c05afa2077ac1d12dfba69fb0050/architectures/amazon-eks/tests/lint-templates.sh) が、2 つの対応表と許可するインスタンスタイプの一致、生成した記述と生成器の出力の一致、各パラメータが `docs/PARAMETERS.md` にあること、`KubernetesVersion` の既定と検査がテンプレートの間でそろうこと、FSx の security group の規則、リンク、版の固定などを確かめる。AWS の認証情報があれば、`validate-template` と、`NicLayout` のカードと EFA の数を `ec2:DescribeInstanceTypes` と比べる検査も走る。チャートの版は lint の中に書かず、テンプレートから読む。lint が自分で版の写しを持つと、テンプレートの版が変わった時点で検査が意味を失うからである。
 
-KeitaW さんは、lint の検査が狙った間違いを本当に見つけるかを試した。taint のキーを `nvidia.com/gpus` に変えても、部分一致で比べていたので検査が通った。`Cards4Plus` の中身を壊しても通った（④）。マージした版は両方を直し、筆者は今回足したり厳しくしたりした検査を、狙った間違いを入れた写しに対して走らせ、それぞれが失敗することを確かめた。
+メンテナは、lint の検査が狙った間違いを本当に見つけるかを試した。taint のキーを `nvidia.com/gpus` に変えても、部分一致で比べていたので検査が通った。`Cards4Plus` の中身を壊しても通った（④）。マージした版は両方を直し、筆者は今回足したり厳しくしたりした検査を、狙った間違いを入れた写しに対して走らせ、それぞれが失敗することを確かめた。
 
-**テンプレートの大きさに予算を設けた**。CLI の `--template-body` は 51,200 バイトまでしか受け付けない。README の 10 節は、既存のクラスタに GPU を足す人に S3 のバケットを求めないように、ノードグループのテンプレートを `--template-body` で出す。版のパラメータを足したときにファイルが 51,540 バイトになってこの手順が壊れたが、それまでの lint は大きさを読むだけで失敗にしていなかった。筆者は PR を出す前に、lint が [上限の 95%](https://github.com/awslabs/awsome-distributed-ai/blob/d432521298a4c05afa2077ac1d12dfba69fb0050/architectures/amazon-eks/tests/lint-templates.sh#L679) を超えたら失敗するように変えた。KeitaW さんはレビューで、次にファイルを大きくする人がデプロイの失敗ではなく lint で気付ける点を良い点に挙げた。マージした版のファイルは 47,807 バイトである。
+**テンプレートの大きさに予算を設けた**。CLI の `--template-body` は 51,200 バイトまでしか受け付けない。README の 10 節は、既存のクラスタに GPU を足す人に S3 のバケットを求めないように、ノードグループのテンプレートを `--template-body` で出す。版のパラメータを足したときにファイルが 51,540 バイトになってこの手順が壊れたが、それまでの lint は大きさを読むだけで失敗にしていなかった。筆者は PR を出す前に、lint が [上限の 95%](https://github.com/awslabs/awsome-distributed-ai/blob/d432521298a4c05afa2077ac1d12dfba69fb0050/architectures/amazon-eks/tests/lint-templates.sh#L679) を超えたら失敗するように変えた。メンテナはレビューで、次にファイルを大きくする人がデプロイの失敗ではなく lint で気付ける点を良い点に挙げた。マージした版のファイルは 47,807 バイトである。
 
 | 選択肢 | 良い点 | 困る点 |
 | --- | --- | --- |
 | 大きくなるに任せ、README を `--template-url` にする | S3 の URL から出せば 1 MB まで置け、大きさを気にせず説明を書ける | 既存のクラスタに GPU を足すだけの人に、先にバケットを作らせることになる |
 | コメントを縮めて上限の下に保ち、95% で lint を失敗させる（採用） | バケット無しの手順が残り、次に足す人は lint で気付く | 説明の一部をテンプレートの外（`docs/PARAMETERS.md`）に移す必要がある |
 
-**`tests/gpu-efa-test.md` を足した**。API では答えられない GPU と EFA の主張を、実機で確かめる手順である。ノードの Ready と taint、資源の数、RAID0、EFA を求めた Pod だけに `/dev/infiniband` が見えること、`fi_pingpong` で EFA の計数が動くことを順に見る。KeitaW さんは、最初の版の手順 0 が root を `--template-body` で出していて、子は公開済みの `main` の版を取りに行くので、試したい変更を試していないと指摘した。マージした版の手順 0 は、README の 8 節と同じく変更をバケットに置いてから root を出す。NCCL の試験は任意の手順にし、固定したイメージの NCCL が `sm_80` から `sm_103` の向けにだけ作られているので `g4dn`、`g7`、`g7e` では動かないことを書いた。
+**`tests/gpu-efa-test.md` を足した**。API では答えられない GPU と EFA の主張を、実機で確かめる手順である。ノードの Ready と taint、資源の数、RAID0、EFA を求めた Pod だけに `/dev/infiniband` が見えること、`fi_pingpong` で EFA の計数が動くことを順に見る。メンテナは、最初の版の手順 0 が root を `--template-body` で出していて、子は公開済みの `main` の版を取りに行くので、試したい変更を試していないと指摘した。マージした版の手順 0 は、README の 8 節と同じく変更をバケットに置いてから root を出す。NCCL の試験は任意の手順にし、固定したイメージの NCCL が `sm_80` から `sm_103` の向けにだけ作られているので `g4dn`、`g7`、`g7e` では動かないことを書いた。
 
-**README と `docs/PARAMETERS.md` も直した**。README の 3 節の表に、KeitaW さんの提案で「Launched」の列を足し、どのタイプを、どのリージョンで、いつ起動したかを書いた。最初の版の説明は「README の 3 節で verified とされたタイプだけを起動した」と書いていたのに、表にその列が無かった。ほかに KeitaW さんの指摘で、次の 3 点を直した。`EfaCards` という存在しないキー名、レシピの例の親（標準版のままでは GPU のドライバの無い AMI ができるので NVIDIA 版にした）、API の endpoint が private だけのクラスタ向けの説明である。最後の点は、提案された「回避策の説明を消す」に加えて `BootstrapVpcId` を足し、CodeBuild を VPC の中で動かせるようにした。パラメータの細かい理由は、テンプレートの大きさを抑えるために `docs/PARAMETERS.md` へ移した。
+**README と `docs/PARAMETERS.md` も直した**。README の 3 節の表に、メンテナの提案で「Launched」の列を足し、どのタイプを、どのリージョンで、いつ起動したかを書いた。最初の版の説明は「README の 3 節で verified とされたタイプだけを起動した」と書いていたのに、表にその列が無かった。ほかにメンテナの指摘で、次の 3 点を直した。`EfaCards` という存在しないキー名、レシピの例の親（標準版のままでは GPU のドライバの無い AMI ができるので NVIDIA 版にした）、API の endpoint が private だけのクラスタ向けの説明である。最後の点は、提案された「回避策の説明を消す」に加えて `BootstrapVpcId` を足し、CodeBuild を VPC の中で動かせるようにした。パラメータの細かい理由は、テンプレートの大きさを抑えるために `docs/PARAMETERS.md` へ移した。
 
-**公開の設定を足した**。`.github/template-publish-manifest.yml` に 5 つのテンプレートを載せ、`publish-architecture-templates.yml` に、EKS の変更の検出と lint の実行を足した。両方が無いと、Launch のリンクで開いた root が子を取りに行く URL に、テンプレートが置かれない。KeitaW さんの指摘で、公開の一覧（manifest）だけを変えたコミットでも lint が走るように、検出する対象に manifest とワークフロー自身を足した。lint は aws-pcs の公開と同じジョブの中で走るので、EKS の lint が失敗すると aws-pcs の公開も止まる。最初の版の PR の本文はこれを逆に説明していた。筆者は本文を書き換えず、返答のコメントで、本文のこの点はもう成り立たないと訂正した。動作は、半端に公開される状態を避けるためにこのまま残した。eksctl のマニフェストを `eksctl/` に移したのとトップの README の 1 行は、#1259 と同じである。
+**公開の設定を足した**。`.github/template-publish-manifest.yml` に 5 つのテンプレートを載せ、`publish-architecture-templates.yml` に、EKS の変更の検出と lint の実行を足した。両方が無いと、Launch のリンクで開いた root が子を取りに行く URL に、テンプレートが置かれない。メンテナの指摘で、公開の一覧（manifest）だけを変えたコミットでも lint が走るように、検出する対象に manifest とワークフロー自身を足した。lint は aws-pcs の公開と同じジョブの中で走るので、EKS の lint が失敗すると aws-pcs の公開も止まる。最初の版の PR の本文はこれを逆に説明していた。筆者は本文を書き換えず、返答のコメントで、本文のこの点はもう成り立たないと訂正した。動作は、半端に公開される状態を避けるためにこのまま残した。eksctl のマニフェストを `eksctl/` に移したのとトップの README の 1 行は、#1259 と同じである。
 :::
 
 ## テストをどうしたか
@@ -467,11 +467,11 @@ KeitaW さんは、lint の検査が狙った間違いを本当に見つける�
 | API の endpoint が private だけのクラスタ | `BootstrapVpcId` が無いと拒まれ、あると `CREATE_COMPLETE` |
 | すべてのスタックの削除 | 完了した |
 
-筆者の試験では、g7e.12xlarge（既定）と、ネットワークカードが 4 枚以上の p5en.48xlarge 以外のインスタンスタイプは、確かめたリージョンで容量が無く試していない。g7e.12xlarge は、KeitaW さんがレビューの対象の版で予約を使って 2 台を作成し、`CREATE_COMPLETE` を報告している。
+筆者の試験では、g7e.12xlarge（既定）と、ネットワークカードが 4 枚以上の p5en.48xlarge 以外のインスタンスタイプは、確かめたリージョンで容量が無く試していない。g7e.12xlarge は、メンテナがレビューの対象の版で予約を使って 2 台を作成し、`CREATE_COMPLETE` を報告している。
 
 ## レビューで直したこと
 
-KeitaW さんは、レビューの前に README の手順で g7e.12xlarge の予約と Kubernetes 1.36、g4dn.8xlarge と 1.34 で作成し、6 回に分けて指摘した。マージの前に直すべきとされたのは 2 件だった。
+メンテナは、レビューの前に README の手順で g7e.12xlarge の予約と Kubernetes 1.36、g4dn.8xlarge と 1.34 で作成し、6 回に分けて指摘した。マージの前に直すべきとされたのは 2 件だった。
 
 - **Kubernetes 1.34 の device plugin**。同梱の node-feature-discovery のワーカーが GPU のノードの taint に合う toleration を持たず、1.34 では device plugin がどのノードにも載らなかった。マージした版では `nfd.worker.tolerations` にも同じ toleration を渡す（詳しくは `eks-add-gpu-nodegroup.yaml` ②）。
 - **Capacity Block の容量の種類**。Capacity Block のノードグループに `CapacityType: CAPACITY_BLOCK` が無かった。マージした版では、予約の種類に応じて `CAPACITY_BLOCK` か `ON_DEMAND` を入れる（詳しくは `eks-add-gpu-nodegroup.yaml` ③）。

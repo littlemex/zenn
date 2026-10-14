@@ -40,11 +40,11 @@ Issue #975 は 5 つの問題を挙げていた。
 
 ## なぜそうしたか
 
-**torch の版**。`torch==2.1.0` は上げずに残した。固定した commit の `requirements.txt` が `torch==2.1.0` を指定していて、`pip install -e .` がそれで上書きするので、Dockerfile だけ上げても効かないからである。レビューの KeitaW さんは、この理由を書いたことを「直す必要の無いものを後の人が直してしまうのを防ぐ」と評価した。
+**torch の版**。`torch==2.1.0` は上げずに残した。固定した commit の `requirements.txt` が `torch==2.1.0` を指定していて、`pip install -e .` がそれで上書きするので、Dockerfile だけ上げても効かないからである。レビューのメンテナは、この理由を書いたことを「直す必要の無いものを後の人が直してしまうのを防ぐ」と評価した。
 
 **EFA の環境変数**。リポジトリの [EFA cheatsheet](https://github.com/awslabs/awsome-distributed-ai/blob/6056782ef127b7013484bc2aa5bc56e5a56bb8c4/1.architectures/efa-cheatsheet.md) に合わせた。`FI_PROVIDER=efa` は、libfabric が使うプロバイダとして EFA を明示する。PR は、スクリプトを動かすためにホストの特定の aws-ofi-nccl の版に頼らないことを理由にした。`FI_EFA_USE_HUGE_PAGE=0` は cheatsheet のプリセット 3.1（libfabric 1.18.0 以上、aws-ofi-nccl 1.7.0 以上）に従い、PyTorch の複数プロセスの dataloader が huge page を使い切って `Cannot allocate memory` になるのを防ぐ。`NCCL_DEBUG` は、cheatsheet が「NCCL を疑うとき以外は切る」と勧めているので入れていない。
 
-**NCCL のソケットのインタフェース**。`NCCL_SOCKET_IFNAME` は、NCCL がソケットでの待ち合わせに使うインタフェースを決める変数で、EFA のプロバイダの選択とは別である。比べた方向は、`en` で始まるインタフェースだけを選ぶ `en` で、使う側を明示できるので意図が読みやすい。KeitaW さんはレビューで、名前が `en` で始まらないインタフェース（例として p4d や p5 の `efa0`、`efa1`）を持つインスタンスでは外れうると指摘し、FSDP、DeepSpeed、nanoVLM の sbatch と同じ除外の形 `^docker,lo,veth` を提案した。PR はこの提案を採り、マージした `train.sbatch` は `^docker,lo,veth` になっている。除外の形の代償は、想定外の不要なインタフェースが増えたときに一覧へ足す必要があることである。
+**NCCL のソケットのインタフェース**。`NCCL_SOCKET_IFNAME` は、NCCL がソケットでの待ち合わせに使うインタフェースを決める変数で、EFA のプロバイダの選択とは別である。比べた方向は、`en` で始まるインタフェースだけを選ぶ `en` で、使う側を明示できるので意図が読みやすい。メンテナはレビューで、名前が `en` で始まらないインタフェース（例として p4d や p5 の `efa0`、`efa1`）を持つインスタンスでは外れうると指摘し、FSDP、DeepSpeed、nanoVLM の sbatch と同じ除外の形 `^docker,lo,veth` を提案した。PR はこの提案を採り、マージした `train.sbatch` は `^docker,lo,veth` になっている。除外の形の代償は、想定外の不要なインタフェースが増えたときに一覧へ足す必要があることである。
 
 ## テストをどうしたか
 
@@ -72,16 +72,16 @@ NCCL INFO Channel 00/0 : 0[0] -> 1[0] [send] via NET/Libfabric/0
 - **pyxis を入れる段階**（検証の環境で踏んだもの）。ParallelCluster のカスタムアクションで pyxis を入れるときは、`OnNodeStart` ではなく `OnNodeConfigured` に置く。`OnNodeStart` はブートストラップの前に動くので、enroot がまだ入っていない。
 - **公開モデルでも要る HF_TOKEN**（検証の環境で踏んだもの、PR の対象外）。固定した commit の picotron の `train.py` は、設定ファイルにも環境変数にも `HF_TOKEN` が無いと、公開モデルでも起動で止まる。検証では手元の sbatch に `export HF_TOKEN=""` を足した。
 
-## 技術面接の準備 (FAQ)
+## PR の整理 (FAQ)
 
-この節は、本章の内容を技術面接で聞かれたときに答えるための想定問答である。システム設計面接の流れに合わせて、全体と設計、不具合の原因の深掘り、検証と振り返りの 3 つに分けた。各問は英語の質問 (見出し)、日本語の質問、噛み砕き (ひとことでの表とやさしい版の図)、英語の回答、日本語の回答の順に書いた。不具合の問には原因の連鎖の図を付け、回答は症状、原因、突き止め方、直し方と比べた案、検証、残ったこと、の順に話す。回答は本章の本文と、PR、Issue、マージ前後のコードで確かめた事実だけを使う。
+この節は、本章の PR を、設計の判断、不具合の原因、検証の 3 つの面から問答の形で整理したものである。問は、全体と設計、不具合の原因の深掘り、検証と振り返りの 3 つに分けた。各問は英語の質問 (見出し)、日本語の質問、噛み砕き (ひとことでの表とやさしい版の図)、英語の回答、日本語の回答の順に書いた。不具合の問には原因の連鎖の図を付け、回答は症状、原因、突き止め方、直し方と比べた案、検証、残ったこと、の順に書いた。回答は本章の本文と、PR、Issue、マージ前後のコードで確かめた事実だけを使う。
 
 ### 全体と設計
 
-:::details Q1. Give me a one-minute overview of this PR.
+:::details Q1. What does this PR change, in short?
 **質問 (日本語)**
 
-この PR を 1 分で説明してほしい。
+この PR は、要するに何を変えたのか。
 
 **Answer (English)**
 

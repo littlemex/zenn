@@ -66,9 +66,9 @@ GRPO（Group Relative Policy Optimization）は、同じ問題に対して複数
 - **GPU の世代と、ライブラリと設定の条件の切り分け**。uvicorn のログの指定、Megatron と numpy 2 系の組み合わせ、CUDA 13 の offload で読み込む CUDA 12 向けの `.so` の問題は、GPU の世代によらない。B300 で問題を見つけたときも、GPU の世代だけでなく、ライブラリの版と有効な設定を確かめる。
 - **上流の修正と一時的な修正を分ける**。上流で直すべき問題は上流に出し、テストケースの側の一時的なパッチは、対象の上流の修正が入った後には変更を加えない形にする。
 
-## 技術面接の準備 (FAQ)
+## PR の整理 (FAQ)
 
-この節は、本章の内容を技術面接で聞かれたときに答えるための想定問答である。システム設計面接の流れに合わせて、全体と設計、不具合の原因の深掘り、検証と振り返りの 3 つに分けた。各問は英語の質問 (見出し)、日本語の質問、噛み砕き (ひとことでの表とやさしい版の図)、英語の回答、日本語の回答の順に書いた。不具合の問には原因の連鎖の図を付け、回答は症状、原因、突き止め方、直し方と比べた案、検証、残ったこと、の順に話す。回答は本章の本文と、PR、Issue、マージ前後のコード、関係する上流のソースで確かめた事実だけを使う。
+この節は、本章の PR を、設計の判断、不具合の原因、検証の 3 つの面から問答の形で整理したものである。問は、全体と設計、不具合の原因の深掘り、検証と振り返りの 3 つに分けた。各問は英語の質問 (見出し)、日本語の質問、噛み砕き (ひとことでの表とやさしい版の図)、英語の回答、日本語の回答の順に書いた。不具合の問には原因の連鎖の図を付け、回答は症状、原因、突き止め方、直し方と比べた案、検証、残ったこと、の順に書いた。回答は本章の本文と、PR、Issue、マージ前後のコード、関係する上流のソースで確かめた事実だけを使う。
 
 ### 全体と設計
 
@@ -177,11 +177,11 @@ flowchart TD
 
 **Answer (English)**
 
-The error message was far from the cause. The recipe put the `train.py` call into one string, `TRAIN_CMD`, passed it as `ray job submit ... -- bash -c "${TRAIN_CMD}"`, and escaped `${MODEL_ARGS[@]}` so the inner bash would expand it after sourcing the model script. I read Ray 2.55.1's source: the CLI joins everything after `--` into one string with `subprocess.list2cmdline`, and the job supervisor runs that string with `Popen(..., shell=True)`, which means an outer `/bin/sh -c`. So there was one more shell than the recipe assumed. `list2cmdline` wraps the `bash -c` argument in double quotes because it contains spaces, and a shell expands `$` inside double quotes, so that outer shell expanded `${MODEL_ARGS[@]}` first, when it was still undefined, so the inner bash received nothing and `train.py` failed validation with `hidden_size None`. I confirmed the mechanism without SLIME: one level of `bash -c` delivered 25 arguments, and the same command through `ray job submit -- bash -c` delivered 0. If asked which shell `/bin/sh` was: I didn't record it, but the result itself, `train.py` starting with no model arguments, shows it expanded to empty rather than erroring.
+The error message was far from the cause. The recipe put the `train.py` call into one string, `TRAIN_CMD`, passed it as `ray job submit ... -- bash -c "${TRAIN_CMD}"`, and escaped `${MODEL_ARGS[@]}` so the inner bash would expand it after sourcing the model script. I read Ray 2.55.1's source: the CLI joins everything after `--` into one string with `subprocess.list2cmdline`, and the job supervisor runs that string with `Popen(..., shell=True)`, which means an outer `/bin/sh -c`. So there was one more shell than the recipe assumed. `list2cmdline` wraps the `bash -c` argument in double quotes because it contains spaces, and a shell expands `$` inside double quotes, so that outer shell expanded `${MODEL_ARGS[@]}` first, when it was still undefined, so the inner bash received nothing and `train.py` failed validation with `hidden_size None`. I confirmed the mechanism without SLIME: one level of `bash -c` delivered 25 arguments, and the same command through `ray job submit -- bash -c` delivered 0. Which shell `/bin/sh` was isn't recorded, but the result itself, `train.py` starting with no model arguments, shows it expanded to empty rather than erroring.
 
 **回答 (日本語)**
 
-エラーの文面と原因は遠かった。レシピは `train.py` の呼び出しを `TRAIN_CMD` という 1 つの文字列にまとめ、`ray job submit ... -- bash -c "${TRAIN_CMD}"` で渡し、内側の bash がモデルのスクリプトを読み込んだ後に展開するよう `${MODEL_ARGS[@]}` をエスケープしていた。Ray 2.55.1 のソースを読むと、CLI は `--` より後ろを `subprocess.list2cmdline` で 1 本の文字列につなぎ、job supervisor はそれを `Popen(..., shell=True)`、つまり外側の `/bin/sh -c` で動かす。レシピが想定したより、シェルが 1 段多かったのである。`list2cmdline` は空白を含む `bash -c` の引数を二重引用符で包み、シェルは二重引用符の中の `$` を展開するので、その外側のシェルが、まだ定義されていない `${MODEL_ARGS[@]}` を先に展開したので、内側の bash には何も届かず、`train.py` が `hidden_size None` で検証に失敗した。SLIME を使わずに仕組みを確かめ、`bash -c` を 1 段で動かすと引数は 25 個届き、同じコマンドを `ray job submit -- bash -c` に通すと 0 個になった。`/bin/sh` がどのシェルだったかを聞かれたら、記録はしていないが、`train.py` がモデルの引数無しで起動したという結果そのものが、エラーではなく空に展開されたことを示す、と答える。
+エラーの文面と原因は遠かった。レシピは `train.py` の呼び出しを `TRAIN_CMD` という 1 つの文字列にまとめ、`ray job submit ... -- bash -c "${TRAIN_CMD}"` で渡し、内側の bash がモデルのスクリプトを読み込んだ後に展開するよう `${MODEL_ARGS[@]}` をエスケープしていた。Ray 2.55.1 のソースを読むと、CLI は `--` より後ろを `subprocess.list2cmdline` で 1 本の文字列につなぎ、job supervisor はそれを `Popen(..., shell=True)`、つまり外側の `/bin/sh -c` で動かす。レシピが想定したより、シェルが 1 段多かったのである。`list2cmdline` は空白を含む `bash -c` の引数を二重引用符で包み、シェルは二重引用符の中の `$` を展開するので、その外側のシェルが、まだ定義されていない `${MODEL_ARGS[@]}` を先に展開したので、内側の bash には何も届かず、`train.py` が `hidden_size None` で検証に失敗した。SLIME を使わずに仕組みを確かめ、`bash -c` を 1 段で動かすと引数は 25 個届き、同じコマンドを `ray job submit -- bash -c` に通すと 0 個になった。`/bin/sh` がどのシェルだったかは記録していないが、`train.py` がモデルの引数無しで起動したという結果そのものが、エラーではなく空に展開されたことを示す。
 :::
 
 :::details Q4. Why a launcher script instead of fixing the quoting?

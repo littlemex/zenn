@@ -36,7 +36,7 @@ ParallelCluster の側では、計算ノードのキューの `CustomActions.OnN
 
 ParallelCluster の `OnNodeConfigured` はノードの準備の最後に動くスクリプトなので、バイナリを入れる形が素直である。スクリプトは GitHub の raw の URL からそのまま参照でき、S3 に置く手間も要らない。node_exporter はハードウェアに依存しないので、インスタンスタイプで絞る理由は無い。
 
-レビューでは KeitaW さんから 3 回に分けて指摘があり、マージした版のスクリプトには次の 3 つが入っている。
+レビューではメンテナから 3 回に分けて指摘があり、マージした版のスクリプトには次の 3 つが入っている。
 
 - **スクリプトの置き場所**。最初は `utils/` に置いた。レビューで、`utils/` は手元で使う道具の置き場で、計算ノードの準備で動くスクリプトとは種類が違うと指摘され、`post-install-scripts/` に移した。
 - **チェックサムの検証**。`sha256sum --check` は、標準入力から読んだファイル名をカレントディレクトリから開く。tarball は一時ディレクトリにあるので、`(cd "$TMP_DIR" && ... | sha256sum --check --status)` の形にした。
@@ -56,9 +56,9 @@ PR の Test Plan は ParallelCluster 3.12.0 と c5n.9xlarge の計算ノード 2
 - **監視の経路**。exporter を入れるだけでは読めない。読みに行く側から届くように、セキュリティグループも足す。
 - **2 つの環境で同じ監視**。収集の側は 1 つにそろえ、ノードに入れる方法だけを環境ごとに分ける。
 
-## 技術面接の準備 (FAQ)
+## PR の整理 (FAQ)
 
-この節は、本章の内容を技術面接で聞かれたときに答えるための想定問答である。システム設計面接の流れに合わせて、全体と設計、不具合の原因の深掘り、検証と振り返りの 3 つに分けた。各問は英語の質問 (見出し)、日本語の質問、噛み砕き (ひとことでの表とやさしい版の図)、英語の回答、日本語の回答の順に書いた。不具合の問には原因の連鎖の図を付け、回答は症状、原因、突き止め方、直し方と比べた案、検証、残ったこと、の順に話す。回答は本章の本文と、PR、Issue、マージ前後のコードで確かめた事実だけを使う。
+この節は、本章の PR を、設計の判断、不具合の原因、検証の 3 つの面から問答の形で整理したものである。問は、全体と設計、不具合の原因の深掘り、検証と振り返りの 3 つに分けた。各問は英語の質問 (見出し)、日本語の質問、噛み砕き (ひとことでの表とやさしい版の図)、英語の回答、日本語の回答の順に書いた。不具合の問には原因の連鎖の図を付け、回答は症状、原因、突き止め方、直し方と比べた案、検証、残ったこと、の順に書いた。回答は本章の本文と、PR、Issue、マージ前後のコードで確かめた事実だけを使う。
 
 ### 全体と設計
 
@@ -339,11 +339,11 @@ flowchart LR
 
 **Answer (English)**
 
-Through a self-referencing security group that already existed in the agent stack before this PR. `PrometheusAgentSecurityGroup` has an ingress rule allowing all protocols and ports from members of the same group, the agent instance is a member, and the stack outputs the group's ID. On the ParallelCluster side, you add that group to the compute queue's `Networking.AdditionalSecurityGroups`, which makes the compute nodes members too, so the agent can reach 9100. The PR documented this; it didn't change the security group. If asked whether that's least privilege: it isn't, since it's all ports rather than 9100 only, and that wasn't discussed in the PR. I'd raise it as a follow-up rather than claim it was designed that way.
+Through a self-referencing security group that already existed in the agent stack before this PR. `PrometheusAgentSecurityGroup` has an ingress rule allowing all protocols and ports from members of the same group, the agent instance is a member, and the stack outputs the group's ID. On the ParallelCluster side, you add that group to the compute queue's `Networking.AdditionalSecurityGroups`, which makes the compute nodes members too, so the agent can reach 9100. The PR documented this; it didn't change the security group. This isn't least privilege, since it opens all ports rather than 9100 only, and the PR didn't discuss it. It's a follow-up item, not a deliberate design.
 
 **回答 (日本語)**
 
-この PR より前から agent のスタックにあった、自己参照のセキュリティグループを通る。`PrometheusAgentSecurityGroup` には、同じグループのメンバーからの全プロトコル、全ポートを許す受信の規則があり、agent のインスタンスはそのメンバーで、スタックはグループの ID を出力する。ParallelCluster の側では、計算ノードのキューの `Networking.AdditionalSecurityGroups` にそのグループを足す。これで計算ノードもメンバーになり、agent が 9100 番に届く。PR はこれを文書にしたもので、セキュリティグループは変えていない。最小権限かと聞かれたら、9100 番だけでなく全ポートなのでそうではなく、PR でも議論していない。そう設計したとは言わず、後続の課題として挙げる。
+この PR より前から agent のスタックにあった、自己参照のセキュリティグループを通る。`PrometheusAgentSecurityGroup` には、同じグループのメンバーからの全プロトコル、全ポートを許す受信の規則があり、agent のインスタンスはそのメンバーで、スタックはグループの ID を出力する。ParallelCluster の側では、計算ノードのキューの `Networking.AdditionalSecurityGroups` にそのグループを足す。これで計算ノードもメンバーになり、agent が 9100 番に届く。PR はこれを文書にしたもので、セキュリティグループは変えていない。これは最小権限ではない。9100 番だけでなく全ポートを許していて、PR でも議論していない。意図した設計ではなく、後続の課題である。
 :::
 
 :::details Q8. Why did the review move the script out of `utils/`?

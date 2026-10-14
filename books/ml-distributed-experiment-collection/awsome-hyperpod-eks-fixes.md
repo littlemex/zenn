@@ -45,7 +45,7 @@ RFC では、公式のドキュメントが案内しているサービスチー�
 
 ## PR #1188: リンクの移行
 
-README など 3 つのファイルの 5 か所のリンクを、新しいドキュメントのサイトに移した。S3 のオブジェクトの場所に使われているワークショップの ID は、ドキュメントのリンクではないので変えなかった。レビューで KeitaW さんから、同じ古い URL が `automate-smhp-eks/` の 2 つのスクリプトの実行時の表示にも残っていると指摘があり、[マージした差分](https://github.com/awslabs/awsome-distributed-ai/commit/fbc71843add50e7c0be506027597493447741b2a)ではその 2 つのスクリプトも変わっている。テストは、最初の 3 つのファイルで古い URL が `grep` で見つからないことと、新しい URL が 5 か所にあることを確かめ、Markdown の表示でリンクを確かめた。インフラのデプロイはしていない。
+README など 3 つのファイルの 5 か所のリンクを、新しいドキュメントのサイトに移した。S3 のオブジェクトの場所に使われているワークショップの ID は、ドキュメントのリンクではないので変えなかった。レビューでメンテナから、同じ古い URL が `automate-smhp-eks/` の 2 つのスクリプトの実行時の表示にも残っていると指摘があり、[マージした差分](https://github.com/awslabs/awsome-distributed-ai/commit/fbc71843add50e7c0be506027597493447741b2a)ではその 2 つのスクリプトも変わっている。テストは、最初の 3 つのファイルで古い URL が `grep` で見つからないことと、新しい URL が 5 か所にあることを確かめ、Markdown の表示でリンクを確かめた。インフラのデプロイはしていない。
 
 ## 技術的な要点
 
@@ -54,16 +54,16 @@ README など 3 つのファイルの 5 か所のリンクを、新しいドキ�
 - **同じ役割の実装が 2 か所にあるとき**。片方を直すだけでなく、どちらを正にするかを提案する。ただし、正にする側の既定が劣るなら、追いつくまで切り替えを待つ。
 - **リンクの移行**。ドキュメントだけでなく、スクリプトが実行時に表示する文字列も探す。
 
-## 技術面接の準備 (FAQ)
+## PR の整理 (FAQ)
 
-この節は、本章の内容を技術面接で聞かれたときに答えるための想定問答である。システム設計面接の流れに合わせて、全体と設計、不具合の原因の深掘り、検証と振り返りの 3 つに分けた。各問は英語の質問 (見出し)、日本語の質問、噛み砕き (ひとことでの表とやさしい版の図)、英語の回答、日本語の回答の順に書いた。不具合の問には原因の連鎖の図を付け、回答は症状、原因、突き止め方、直し方と比べた案、検証、残ったこと、の順に話す。回答は本章の本文と、PR、Issue、マージ前後のコード、AWS の公式の文書で確かめた事実だけを使う。
+この節は、本章の PR を、設計の判断、不具合の原因、検証の 3 つの面から問答の形で整理したものである。問は、全体と設計、不具合の原因の深掘り、検証と振り返りの 3 つに分けた。各問は英語の質問 (見出し)、日本語の質問、噛み砕き (ひとことでの表とやさしい版の図)、英語の回答、日本語の回答の順に書いた。不具合の問には原因の連鎖の図を付け、回答は症状、原因、突き止め方、直し方と比べた案、検証、残ったこと、の順に書いた。回答は本章の本文と、PR、Issue、マージ前後のコード、AWS の公式の文書で確かめた事実だけを使う。
 
 ### 全体と設計
 
-:::details Q1. Give me a one-minute overview of these three changes.
+:::details Q1. What do these three changes do, in short?
 **質問 (日本語)**
 
-この 3 つの変更を 1 分で説明してほしい。
+この 3 つの変更は、要するに何をしたのか。
 
 **Answer (English)**
 
@@ -76,10 +76,10 @@ CloudFormation の custom resource の Lambda (Helm のチャートのインス�
 
 ### 不具合の原因の深掘り
 
-:::details Q2. [Bug] The error said urllib3. Walk me through what actually failed.
+:::details Q2. [Bug] The error said urllib3. What actually failed?
 **質問 (日本語)**
 
-エラーは urllib3 を指していた。実際に何が失敗したのかを順に説明してほしい。
+エラーは urllib3 を指していた。実際には何が失敗したのか。
 
 **原因の連鎖 (図)**
 
@@ -166,11 +166,11 @@ flowchart TD
 
 **Answer (English)**
 
-I can't claim a cause I didn't find. In git history, the `LD_LIBRARY_PATH` line and `Runtime: python3.12` have both been in the template since the commit that first added the installer, and no commit explains why the variable was added. Neither the Issue nor the PR records when the failure started or was first seen. So the honest answer is: the template didn't change, and I didn't identify what outside it did. What I can show is the mechanism by which it fails today, and that removing the variable makes it work. If pressed, I'd say the dependency on whatever `libcrypto` happens to be bundled in the Layer is the fragile part. Consolidating on the installer the official documentation points to removes that copy altogether.
+I can't claim a cause I didn't find. In git history, the `LD_LIBRARY_PATH` line and `Runtime: python3.12` have both been in the template since the commit that first added the installer, and no commit explains why the variable was added. Neither the Issue nor the PR records when the failure started or was first seen. So the honest answer is: the template didn't change, and I didn't identify what outside it did. What I can show is the mechanism by which it fails today, and that removing the variable makes it work. The fragile part is the dependency on whatever `libcrypto` happens to be bundled in the Layer. Consolidating on the installer the official documentation points to removes that copy altogether.
 
 **回答 (日本語)**
 
-見つけていない原因は言えない。git の履歴では、`LD_LIBRARY_PATH` の行も `Runtime: python3.12` も、インストーラを最初に足した commit からテンプレートにあり、変数を足した理由を説明する commit は無い。Issue にも PR にも、失敗がいつ始まり、いつ最初に見つかったかの記録は無い。だから正直な答えは、テンプレートは変わっておらず、その外で何が変わったかは突き止めていない、である。示せるのは、今どういう仕組みで失敗するかと、変数を消せば動くことである。重ねて聞かれたら、Layer にたまたま同梱された `libcrypto` に頼ることが脆い部分だと答える。公式のドキュメントが案内するインストーラに寄せれば、その写し自体が無くなる。
+見つけていない原因は言えない。git の履歴では、`LD_LIBRARY_PATH` の行も `Runtime: python3.12` も、インストーラを最初に足した commit からテンプレートにあり、変数を足した理由を説明する commit は無い。Issue にも PR にも、失敗がいつ始まり、いつ最初に見つかったかの記録は無い。だから正直な答えは、テンプレートは変わっておらず、その外で何が変わったかは突き止めていない、である。示せるのは、今どういう仕組みで失敗するかと、変数を消せば動くことである。脆いのは、Layer にたまたま同梱された `libcrypto` に頼っている部分である。公式のドキュメントが案内するインストーラに寄せれば、その写し自体が無くなる。
 :::
 
 :::details Q4. Why a one-line fix in its own PR, and how did you know nothing else needed the variable?
@@ -200,11 +200,11 @@ flowchart TD
 
 **Answer (English)**
 
-`main` was broken at startup, and that could be fixed independently of where to consolidate the duplicated installer. Removing the one `LD_LIBRARY_PATH` line from `helm-chart-stack.yaml` fixed it without touching the Layer or the function zip, so the diff was one line and easy to review. Since git history didn't explain why the variable existed, the evidence is the test: in the official Lambda runtime image the import succeeded without it, the Layer's git, helm and kubectl paths still worked, and a real HyperPod on EKS creation completed. That supports removing it for the paths I tested. If asked why git still finds its libraries, the PR doesn't record where each resolves them, so I'd check that with `ldd` next. I was explicit in the Issue that this is a workaround, not the real fix.
+`main` was broken at startup, and that could be fixed independently of where to consolidate the duplicated installer. Removing the one `LD_LIBRARY_PATH` line from `helm-chart-stack.yaml` fixed it without touching the Layer or the function zip, so the diff was one line and easy to review. Since git history didn't explain why the variable existed, the evidence is the test: in the official Lambda runtime image the import succeeded without it, the Layer's git, helm and kubectl paths still worked, and a real HyperPod on EKS creation completed. That supports removing it for the paths I tested. Why git still finds its libraries isn't recorded in the PR, because it doesn't show where each one resolves them. The next step is to check that with `ldd`. I was explicit in the Issue that this is a workaround, not the real fix.
 
 **回答 (日本語)**
 
-`main` が起動の時点で壊れていて、重複したインストーラをどこに寄せるかとは別に直せたからである。`helm-chart-stack.yaml` から `LD_LIBRARY_PATH` の 1 行を消せば、Layer と関数の zip に触れずに直り、差分は 1 行でレビューしやすい。git の履歴は変数がある理由を説明しなかったので、根拠は試験である。Lambda の公式のランタイムのイメージで変数が無くても import が通り、Layer の git、helm、kubectl の経路も動き、実際の HyperPod on EKS の作成も完了した。試した経路については変数を消しても動くと示せた。なぜ git がライブラリを見つけられるのかを聞かれたら、それぞれがどこから解決するかは PR に記録が無いので、次に `ldd` で確かめると答える。Issue では、これは本当の修正ではなく回避策だとはっきり書いた。
+`main` が起動の時点で壊れていて、重複したインストーラをどこに寄せるかとは別に直せたからである。`helm-chart-stack.yaml` から `LD_LIBRARY_PATH` の 1 行を消せば、Layer と関数の zip に触れずに直り、差分は 1 行でレビューしやすい。git の履歴は変数がある理由を説明しなかったので、根拠は試験である。Lambda の公式のランタイムのイメージで変数が無くても import が通り、Layer の git、helm、kubectl の経路も動き、実際の HyperPod on EKS の作成も完了した。試した経路については変数を消しても動くと示せた。なぜ git がライブラリを見つけられるのかは、それぞれがどこから解決するかの記録が PR に無いので分からない。次に `ldd` で確かめる。Issue では、これは本当の修正ではなく回避策だとはっきり書いた。
 :::
 
 :::details Q5. How do you reproduce a Lambda initialization failure locally?
