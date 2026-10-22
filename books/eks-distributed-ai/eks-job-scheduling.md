@@ -3,12 +3,12 @@ title: "Advanced03 - ジョブスケジューリングを Kueue で体験する"
 free: true
 ---
 
-本章が前提にするインフラの変更は、まだリリースタグにも `main` にも入っておらず、`feat/kueue-job-scheduling` ブランチにあります。対象は `infra/eks/kueue.tf`、`infra/eks/manifests/kueue-reference/`、`charts/experiments` の `trainjobTrain.name` と `trainjobTrain.queueName` です。v0.2.1 との違いのうち Terraform の設定ファイルは `kueue.tf` の追加だけなので、手順 2 の `terraform apply` で増えるのは Kueue だけです。本章はこのブランチのコミット `bc22f78` で検証しました。ワークショップ手順の最初で、このコミットに切り替える手順を示します。
+本章が前提にするインフラの変更は、まだリリースタグにも `main` にも入っておらず、`feat/kueue-job-scheduling` ブランチにあります。対象は `infra/eks/kueue.tf`、`infra/eks/manifests/kueue-reference/`、`charts/experiments` の `trainjobTrain.name` と `trainjobTrain.queueName` です。このリポジトリのリリース v0.2.1 との違いのうち、Terraform の設定ファイルは `kueue.tf` の追加だけです。v0.2.1 のまま同じ変数で apply してきたクラスタなら、手順 2 の `terraform apply` で増えるのは Kueue だけです。本章はこのブランチのコミット `bc22f78` で検証しました。ワークショップ手順の最初で、このコミットに切り替える手順を示します。
 
 本章は Basic04 で立てた `gpu-ddp` プールに、Kueue という admission(いつ Pod を作らせるか)の層を1枚足します。試すのは、同じプールに 3 つの TrainJob を一度に投げたとき何が起きるかです。Kueue を入れる前は、空きがなければ Pod が `Pending` のまま詰まり、Karpenter が在庫のある型を探し続けるだけでした。Kueue を入れると、容量に収まる分だけが先に通り、残りはキューで順番を待ち、空いた分だけ順に通っていきます。
 
 :::message
-Kueue は kube-scheduler を置き換えません。ノードも作りません。決めるのは「いつ Pod を作らせるか」だけで、できた Pod をどのノードに置くかは今まで通り既定のスケジューラと Karpenter の仕事です。
+Kueue は kube-scheduler を置き換えません。ノードも作りません。決めるのは「いつ Pod を作らせるか」だけで、できた Pod をどのノードに置くかは今まで通り kube-scheduler が決め、置けるノードが足りなければ Karpenter がノードを足します。
 :::
 
 # 解説
@@ -21,7 +21,7 @@ Kueue は kube-scheduler を置き換えません。ノードも作りません�
 
 ![Kueue によるジョブスケジューリングの構造](/images/books/eks-distributed-ai/job-scheduling-kueue.png)
 
-容量内(①→②→③→④)なら今まで通り即座に Pod ができて Karpenter が動きますが、容量を超えた分は③の手前で止まり、Pod を作らないまま待ちます(③')。先行ジョブが完了して quota が空くと、保留していたジョブが②に戻って再判定されます。queue-name label の付いていない TrainJob/RayJob はこの図の①を素通りして今まで通り直接 Pod を作ります。Kueue は明示的に名乗ったワークロードだけを見る層で、何もしなければ何も変わりません。
+容量内(①→②→③→④)なら今まで通り即座に Pod ができて Karpenter が動きますが、容量を超えた分は③の手前で止まり、Pod を作らないまま待ちます(③')。先行ジョブが完了して quota が空くと、保留していたジョブが②に戻って再判定されます。queue-name label の付いていない TrainJob/RayJob はこの図の①を素通りして今まで通り直接 Pod を作ります。本章の設定では、Kueue は明示的に名乗ったワークロードだけを見るので、何もしなければ何も変わりません。
 
 ## Kueue の内部構成
 
@@ -54,7 +54,7 @@ Kueue が手を入れるのは 2 から 5 までで、6 から 8 の Trainer・k
 
 ## なぜ Kueue が要るか
 
-Basic04 で作った `gpu-ddp` プールに、4 種のインスタンスタイプを混在させる設計がありました(g6/g5 の世代混在、spot 優先)。これは「1 つのジョブが確保に失敗しないようにする」ための工夫で、「複数のジョブが同時に来たときどちらを先に通すか」は決めていません。3 つの TrainJob を同時に `kubectl apply` したら、Karpenter は 3 つ分の Pod を一斉に見て、取れる型から手当たり次第にノードを起動しようとします。小さなプールでは想定より多くのノードが一瞬で立ち、意図しない課金が走ります。
+Basic04 で作った `gpu-ddp` プールに、4 種のインスタンスタイプを混在させる設計がありました(g6/g5 の世代混在、spot 優先)。これは「1 つのジョブが確保に失敗しないようにする」ための工夫で、「複数のジョブが同時に来たときどちらを先に通すか」は決めていません。3 つの TrainJob を同時に `kubectl apply` したら、Karpenter は 3 つ分の Pod を一斉に見て、全部を置けるだけのノードを起動しようとします。小さなプールでは想定より多くのノードが一瞬で立ち、意図しない課金が走ります。
 
 Kueue はここに容量の概念を持ち込みます。ClusterQueue に「このプールは nvidia.com/gpu が同時に N までしか使わせない」と宣言すると、N を超える分の TrainJob は Pod を作る前に止まります。Pod が存在しないので Karpenter から見れば何も起きておらず、ノードは起動しません。先に通ったジョブが終わって容量が空くと、待っていた次のジョブの Pod が作られ、そこで初めて Karpenter が動きます。
 
@@ -95,7 +95,7 @@ Kueue には ClusterQueue を一時停止する `kueuectl stop clusterqueue` が
 
 ### 3. `waitForPodsReady` を入れないと複数ノードジョブがデッドロックしうる
 
-Kueue の admission は「ジョブ全体を1単位として通す/止める」までしか見ません。quota が本当にあれば問題は起きませんが、quota は Kueue が admit を許す量であって、Karpenter が実際に確保できる保証ではありません。たとえば quota 上は 2 ノード分の TrainJob を 2 つとも admit できても、spot 在庫が足りず実際には 1 ノードしか確保できない場面では、片方のジョブが確保できた 1 ノードを握り、もう片方はもう 1 ノード待ち、どちらも完成しないまま待ち続ける状況が起こりえます。`waitForPodsReady`(`blockAdmission: true`)を有効にすると、先に admit したジョブの Pod が全部 Ready になるまで次を admit しないので、この取り合いが起きません。`kueue.tf` では既定で有効にしています。
+Kueue の admission は「ジョブ全体を1単位として通す/止める」までしか見ません。quota が本当にあれば問題は起きませんが、quota は Kueue が admit を許す量であって、Karpenter が実際に確保できる保証ではありません。たとえば 2 ノードずつ要る TrainJob を quota 上は 2 つとも admit できても、spot 在庫が足りず実際には 2 ノードしか確保できない場面では、2 つのジョブが 1 ノードずつを握り、どちらももう 1 ノードを待ったまま完成しない状況が起こりえます。`waitForPodsReady` を有効にして `blockAdmission: true` を設定すると、先に admit したジョブの Pod が全部 Ready になるまで次を admit しないので、この取り合いは起きません。ただし、先のジョブ自身に要るノードが確保できなければ、そのジョブは決めた時間が過ぎるまでノードを握り続け、時間が過ぎると取り下げられて待ち行列に戻ります。また、この設定は ClusterQueue ごとではなく Kueue 全体に効きます。`kueue.tf` では既定で有効にしています。
 
 # ワークショップ実施
 
@@ -139,11 +139,12 @@ k get pvc shared-claim -o jsonpath='{.status.phase}' 2>/dev/null | grep -qx Boun
 
 ## 2. Kueue を入れる
 
-`infra/eks` で `terraform apply` すると `kueue.tf` が Kueue 本体(コントローラと CRD)を `kueue-system` namespace に入れます。これは常時インストールのコンポーネントなので、既に入っていれば何も変わりません。
+`infra/eks` で `terraform apply` すると `kueue.tf` が Kueue 本体(コントローラと CRD)を `kueue-system` namespace に入れます。これは常時インストールのコンポーネントなので、既に入っていれば何も変わりません。`yes` と答える前に、表示された計画に Kueue 以外の追加・変更・削除が無いことを確かめてください。他の章で `-var` や `-var-file` を付けて apply してきた場合は、同じ引数を付けます。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
 terraform apply
+k -n kueue-system rollout status deploy/kueue-controller-manager --timeout=5m
 k get pods -n kueue-system
 ```
 
@@ -218,7 +219,7 @@ ddp-trainjob-b   Suspended   12s
 ddp-trainjob-c   Suspended   6s
 ```
 
-3 つとも `Suspended` と出ています。これは TrainJob の `STATE` が付けた瞬間の履歴を表示しているだけで、どれが実際に Pod を作らせてよいかはこの列だけでは分かりません。どれが先に通るかは `Workload` オブジェクトの `ADMITTED` 列で見えます。
+3 つとも `Suspended` と出ています。TrainJob の `STATE` 列は、最後に付いた condition の種類を出すだけで、その condition が True か False かは見ていません。そのため、どれが実際に Pod を作らせてよいかはこの列だけでは分かりません。どれが先に通るかは `Workload` オブジェクトの `ADMITTED` 列で見えます。
 
 ```bash
 k get workloads -n distai
@@ -233,7 +234,7 @@ trainjob-ddp-trainjob-b-4df28   gpu-ddp                 False                 39
 trainjob-ddp-trainjob-c-515dd   gpu-ddp                                       33s
 ```
 
-`a` だけが `ADMITTED: True` で GPU 枠 2 を使い切っています(`k get clusterqueue gpu-ddp-cq -o jsonpath='{.status.flavorsUsage}'` で `nvidia.com/gpu` の使用量が確認できます)。`b` は `ADMITTED: False`(容量待ちで保留)、`c` はまだ予約段階にも入っていません。この時点で Karpenter が実際に起動するのは `a` の分の 2 ノードだけです。
+`a` だけが `ADMITTED: True` で GPU 枠 2 を使い切っています(`k get clusterqueue gpu-ddp-cq -o jsonpath='{.status.flavorsUsage}'` で `nvidia.com/gpu` の使用量が確認できます)。`b` と `c` はどちらも `RESERVED IN` が空で、まだ枠を割り当てられずに待っています。`ADMITTED` 列が `False` か空かは、Admitted の condition がもう付いたかどうかの違いで、順番の前後を表すものではありません。この時点で Karpenter が実際に起動するのは `a` の分の 2 ノードだけです。
 
 ```bash
 k get nodeclaims -l karpenter.sh/nodepool=gpu-ddp
@@ -247,7 +248,7 @@ gpu-ddp-5qcqh   g6.2xlarge   spot       us-east-2a   ip-10-0-14-104.us-east-2.co
 gpu-ddp-gm2c8   g6.2xlarge   spot       us-east-2a   ip-10-0-24-166.us-east-2.compute.internal   True    95s
 ```
 
-Kueue を入れていなければ、ここで `b`・`c` の分も合わせて最大 6 ノード分の確保が同時に走っていたはずです。
+`gpu-ddp` プールの型はどれも GPU を 1 枚だけ積むので、Kueue を入れていなければ、ここで `b`・`c` の分も合わせて最大 6 ノード分の確保が同時に走ります。
 
 ## 5. 順番に通っていく様子を見る
 
@@ -266,9 +267,10 @@ ddp-trainjob-b   Complete    4m5s
 ddp-trainjob-c   Suspended   3m59s
 ```
 
-最終的に `c` も admit されて完走し、3 つとも `Complete` になります。
+最終的に `c` も admit されて完走し、3 つとも `Complete` になります。最初の `k wait` は、3 つが完走するまで待ちます。
 
 ```bash
+k -n distai wait --for=condition=Complete trainjob/ddp-trainjob-a trainjob/ddp-trainjob-b trainjob/ddp-trainjob-c --timeout=30m
 k -n distai get trainjob ddp-trainjob-a ddp-trainjob-b ddp-trainjob-c
 k get clusterqueue gpu-ddp-cq
 ```
@@ -335,20 +337,23 @@ k label namespace distai managed-by-kueue-
 k get nodeclaims -l karpenter.sh/nodepool=gpu-ddp -w
 ```
 
+TrainJob を消しても、共有 PVC 上の `/shared/output/trainjob-gpu-ddp-a/` などのスナップショットは残ります。本章をもう一度実行すると、ddp.py がそれを拾って学習を再開するので、やり直すときは手順 4 の `outputSubdir` を別の名前に変えてください。
+
 最後の `-w` は終了しません。`NodeClaim` が消えたら Ctrl-C で抜けます。Pod が無くなると Karpenter が consolidation でノードを回収します。Basic04 と同じく非同期で数分かかります。`k label namespace distai managed-by-kueue-` は手順 3 で付けたオプトインラベルを外す操作で、これを忘れると `distai` は ClusterQueue/LocalQueue を消した後も Kueue の管理対象のままになり、他の章でこの namespace を使うときにも Kueue の webhook を経由し続けます。
 
 :::message alert
 Kueue 本体(`kueue.tf`)は Basic03 の Karpenter と同じ「常にあるコンポーネント」として残して構いませんが、`terraform apply -var kueue_enabled=false` や `helm uninstall` での丸ごと削除は、**このクラスタ上の全 namespace の** ClusterQueue/LocalQueue/ResourceFlavor/Workload を CRD もろとも削除します。Kueue の CRD はこの chart の `templates/` に入っているため(Karpenter の `karpenter-crd` のような別 chart ではない)、コントローラの削除とクラスタ全体のキュー状態の削除が 1 回の操作になります。本章の後片付け(上のコマンド)だけで十分なら、コントローラ自体は消さないでください。他の章・他チームが Kueue を使い始めている可能性がある限り、丸ごと削除は避けます。
 :::
 
-作業ディレクトリを元のコミットに戻すには、次を実行します。
+Kueue を残すなら、作業ディレクトリは本章のコミットのまま使い続けます。元のコミットに戻した状態で `infra/eks` の `terraform apply` を実行すると、`kueue.tf` が無いので Kueue が削除され、上の alert と同じことが起きるからです。Kueue を含むリリースタグが出るまでは、他の章の `terraform apply` も本章のコミットで実行してください。
+
+Kueue を外すと決めて元のコミットに戻す場合は、リポジトリの最上位に移ってから戻します。
 
 ```bash
+cd "$(git rev-parse --show-toplevel)"
 git -c advice.detachedHead=false checkout --detach "$ORIG_COMMIT"
 source infra/scripts/distai-env.sh
 ```
-
-ただし、戻した状態で `infra/eks` の `terraform apply` を実行すると、`kueue.tf` が無いので Kueue が削除され、上の alert と同じことが起きます。Kueue を残すなら、Kueue を含むリリースタグが出るまでは、`terraform apply` を本章のコミットのまま実行してください。
 
 # まとめ
 
@@ -360,7 +365,7 @@ Kueue のコントローラは `kueue.tf` で常時インストールしてお�
 |---|---|---|
 | 本章は1つの ClusterQueue が1つの NodePool を見る最小構成。複数チームが複数プールを奪い合う状況は試していない | マルチテナントの公平性 | Kueue の [cohort](https://kueue.sigs.k8s.io/docs/concepts/cohort/) で複数 ClusterQueue 間の quota を共有する/fair sharing を試す |
 | Kueue は admission だけで、ノード単位のタイトなビンパッキングや GPU の分割共有は見ない | 密な多テナント共有が要る場合の次の一手 | [Volcano](https://github.com/volcano-sh/volcano)(CNCF Incubating、pod-group の gang scheduling、Kubeflow Trainer v2/KubeRay 統合あり)か [NVIDIA KAI-Scheduler](https://github.com/kai-scheduler/KAI-Scheduler)(CNCF Sandbox、階層キュー、GPU の分割共有。Volcano と同じく、Pod の `schedulerName` で指定して kube-scheduler の代わりに配置まで判断する)への移行を検討する。どちらも本章の調査時点ではこのリポジトリに未導入 |
-| KAI-Scheduler は gang scheduling・階層キュー・GPU の分け合いを配置する本人が判断するので、GPU の分散学習では Kueue より向いている点が多いが、Karpenter と組めるかを確かめていない | KAI-Scheduler と Karpenter の組み合わせ | KAI-Scheduler を Karpenter と組む構成を Advanced の章として追加し、実機で確かめる。Karpenter は `PodScheduled=False` で Unschedulable の印が付いた Pod を見てノードを足すので、KAI が置けなかった Pod にこの印を付けるか、TrainJob を PodGroup に束ねられるかを見る |
+| KAI-Scheduler は配置を決めるスケジューラ自身が gang scheduling・階層キュー・GPU の分割共有を判断するので、GPU の分散学習で候補になるが、Karpenter と組めるかを確かめていない | KAI-Scheduler と Karpenter の組み合わせ | KAI-Scheduler を Karpenter と組む構成を Advanced の章として追加し、実機で確かめる。Karpenter は `PodScheduled=False` で Unschedulable の印が付いた Pod を見てノードを足すので、KAI が置けなかった Pod にこの印を付けるか、TrainJob を PodGroup に束ねられるかを見る |
 | GPU 枠を人手で `__GPU_QUOTA__` に書いているが、Capacity Block のように期限付きでまとまった容量を間欠的に使う運用(買う→ある時間だけ使う→畳む)には足りない | 時間窓付きの容量運用 | Kueue v0.20.0 で alpha として入った [DynamicQuotaOrchestration](https://github.com/kubernetes-sigs/kueue/releases/tag/v0.20.0) の feature gate で quota を実際の容量に追従させられるかを試す。足りなければ、quota を実際に使える容量へ同期する reconciler、ジョブの推定実行時間と残り時間を比較して admit を止めるカスタム AdmissionCheck、ノード撤去後もログと終了理由を追えるようにする外部台帳(S3/DynamoDB)を追加する |
 
 # 参考資料
