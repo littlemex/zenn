@@ -218,6 +218,10 @@ DRA が GA になったからといって、本書の構成にそのまま持ち
 
 したがって、Karpenter でノードプロビジョニングを行うこの構成では、DRA ドライバは現時点で選択肢になりません。device plugin 方式（NVIDIA GPU Operator、aws-efa-k8s-device-plugin、Neuron device plugin）を使うことが、legacy な妥協ではなく現状で唯一実用的な選択です。
 
+:::message alert
+2026 年 10 月 23 日の追記です。Karpenter が DRA にアルファ版として対応しました。AWS 向けの [karpenter-provider-aws v1.15.0](https://github.com/aws/karpenter-provider-aws/releases/tag/v1.15.0) で、NVIDIA GPU を DRA で扱う `DRANVIDIAGPU` と、EFA を DRA で扱う `DRAEFA` の feature gate が alpha として入っています。どちらも既定では無効で、Karpenter は既定のままだと DRA の要求を無視します。使うには、feature gate を有効にしたうえで `--ignore-dra-requests=false` も設定する必要があります。設定の一覧は [Karpenter の Settings](https://karpenter.sh/docs/reference/settings/) にあります。本書の構成は引き続き device plugin 方式を使いますが、DRA を試す章を Advanced として追加する予定です。
+:::
+
 # ワークショップ実施
 
 はじめにシェルを対象クラスタへ向けます。Basic01 手順 3 と同じ 5 行で、`AWS_PROFILE` と `CLUSTER_NAME` と `AWS_REGION`、それに 1 行目のチェックアウトのパスは自分のものに読み替えます。プロファイルを使わず環境変数やインスタンスロールで認証している場合は、`AWS_PROFILE` の行を削ります。
@@ -301,6 +305,7 @@ Basic02 の CPU DDP がノードを得られていたのは、`cpu` NodePool が
 | なぜ改善すべきか | 改善対象 | 改善案 |
 |---|---|---|
 | Karpenter が DRA に対応していないため device plugin 方式に固定されており、GPU の世代やメモリ容量を属性で選ぶことができない | GPU の要求方法 | Karpenter から `ResourceClaim` が扱えるようになった時点で、DRA へ移すかを再検討する |
+| Karpenter v1.15 で DRA が alpha として入ったが、本書ではまだ試していない | DRA を試す章 | `DRANVIDIAGPU` と `DRAEFA` を有効にした構成を Advanced の章として追加し、device plugin 方式と比べて DRA へ移すかを判断する |
 
 # 参考資料
 
