@@ -16,8 +16,8 @@ chapters:
   - eks-shared-storage
   - eks-teardown-and-options
   - eks-profiling-mcp
+  - eks-job-scheduling
     #  - eks-image-cache
     #  - eks-gdrcopy
     #  - eks-gpu-fault-injection
     #  - eks-tenant-pools
-    #  - Kueue のセクションを追加したい
