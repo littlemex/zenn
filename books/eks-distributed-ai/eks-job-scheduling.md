@@ -256,6 +256,19 @@ gpu-ddp-gm2c8   g6.2xlarge   spot       us-east-2a   ip-10-0-24-166.us-east-2.co
 
 `gpu-ddp` プールの型はどれも GPU を 1 枚だけ積むので、Kueue を入れていなければ、ここで `b`・`c` の分も合わせて最大 6 ノード分の確保が同時に走ります。
 
+::::details NodeClaim が出てこないとき
+
+`a` が `ADMITTED: True` なのに `k get nodeclaims` が `No resources found` のままなら、Karpenter がノードを起動しようとして、EC2 の在庫が無く失敗しています。次のコマンドで確かめられます。
+
+```bash
+k -n distai describe pod -l jobset.sigs.k8s.io/jobset-name=ddp-trainjob-a | grep -A3 -E 'FailedScheduling|Nominated'
+k -n karpenter logs deploy/karpenter --since=15m | grep -E 'UnfulfillableCapacity|InsufficientInstanceCapacity' | tail -3
+```
+
+`UnfulfillableCapacity` や `InsufficientInstanceCapacity` が出ていれば、指定したゾーンにその型の在庫がありません。本章の TrainJob の Pod はメモリを 16 GiB 要求するので、`gpu-ddp` プールの型のうち実際に使えるのは `g6.2xlarge` と `g5.2xlarge` だけです。メモリが 16 GiB の `g6.xlarge` と `g5.xlarge` には、ノード側の取り分があるため載りません。Karpenter は在庫の無かった型をしばらく候補から外し、数分おきに起動をやり直すので、在庫が戻れば NodeClaim が現れます。Kueue から見るとジョブは通したままなので、`b`・`c` は待ち続けます。`waitForPodsReady` の 30 分が過ぎても `a` の Pod が Ready にならなければ、Kueue は `a` を取り下げて待ち行列に戻します。
+
+::::
+
 ## 5. 順番に通っていく様子を見る
 
 `a` が完走すると GPU 枠が空き、`b` が自動的に admit されます。ノードは消えずに再利用されます(Karpenter の consolidation が働く前に次のジョブが来たため)。各ジョブが短時間(3 epoch)で終わるため、確認のタイミングによっては `b` も既に完走していることがあります。
