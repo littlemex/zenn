@@ -386,12 +386,12 @@ Kueue 本体は `kueue.tf` で常に入れておき、namespace のラベルで�
 
 # 今後の改善
 
-| 未検証の点 | 次に試すこと |
-|---|---|
-| 本章は 1 つの ClusterQueue が 1 つの NodePool を見る最小構成で、複数チームが同じプールを分け合う場面は試していない | Kueue の [cohort](https://kueue.sigs.k8s.io/docs/concepts/cohort/) で複数の ClusterQueue の枠を共有し、fair sharing で公平に配分できるか確かめる |
-| 配置まで受け持つスケジューラとの組み合わせを試していない。KAI-Scheduler は枠で待たせたジョブでも Pod を作るので、Karpenter がそのためのノードを立てることがあると、KAI-Scheduler の[設計提案](https://github.com/kai-scheduler/KAI-Scheduler/blob/96eb3764caad/docs/developer/designs/queue-admission-gating/README.md)に書かれている | KAI-Scheduler を Karpenter と組む Advanced の章を足し、Kueue を前に置いて Pod の作成前に止める構成で、余計なノードを防げるか確かめる。製品ごとの違いは[ブログ](https://zenn.dev/tosshi/articles/e47ba6e81153c2)で整理している |
-| キューの定義は `queue.yaml.tmpl` の `__NAMESPACE__` などを sed で置き換える形で、他の章の主流である `charts/experiments` に `--set` で値を渡す形とそろっていない | キューの定義を `charts/experiments` の新しい部分にし、手順 3 も `helm template \| k apply` で namespace・プール・GPU の枠を渡す形にする。値の書き間違いを chart の検証で止められる |
-| GPU の枠を人が `__GPU_QUOTA__` に書いており、Capacity Block のように時間を区切って使う容量には追従しない | Kueue v0.20.0 で alpha として入った [DynamicQuotaOrchestration](https://github.com/kubernetes-sigs/kueue/releases/tag/v0.20.0) で、枠を実際の容量に追従させられるか確かめる |
+| なぜ改善すべきか | 改善対象 | 改善案 |
+|---|---|---|
+| 本章は 1 つの ClusterQueue が 1 つの NodePool を見る最小構成で、複数チームが同じプールを分け合う場面は試していない | マルチテナントの公平性 | Kueue の [cohort](https://kueue.sigs.k8s.io/docs/concepts/cohort/) で複数の ClusterQueue の枠を共有し、fair sharing で公平に配分できるか確かめる |
+| KAI-Scheduler は枠で待たせたジョブでも Pod を作るので、Karpenter がそのためのノードを立てることがあると、KAI-Scheduler の[設計提案](https://github.com/kai-scheduler/KAI-Scheduler/blob/96eb3764caad/docs/developer/designs/queue-admission-gating/README.md)に書かれている。配置まで受け持つスケジューラとの組み合わせは、本書ではまだ試していない | KAI-Scheduler と Karpenter の組み合わせ | KAI-Scheduler を Karpenter と組む構成を Advanced の章として追加し、Kueue を前に置いて Pod の作成前に止める構成で、余計なノードを防げるか確かめる。製品ごとの違いは[ブログ](https://zenn.dev/tosshi/articles/e47ba6e81153c2)で整理している |
+| キューの定義は `queue.yaml.tmpl` の `__NAMESPACE__` などを sed で置き換える形で、他の章の主流である `charts/experiments` に `--set` で値を渡す形とそろっていない | キューの定義の渡し方 | キューの定義を `charts/experiments` の新しい部分にし、手順 3 も `helm template \| k apply` で namespace・プール・GPU の枠を渡す形にする。値の書き間違いを chart の検証で止められる |
+| GPU の枠を人が `__GPU_QUOTA__` に書いており、Capacity Block のように時間を区切って使う容量には追従しない | 時間を区切った容量への追従 | Kueue v0.20.0 で alpha として入った [DynamicQuotaOrchestration](https://github.com/kubernetes-sigs/kueue/releases/tag/v0.20.0) で、枠を実際の容量に追従させられるかを試す |
 
 # 参考資料
 
