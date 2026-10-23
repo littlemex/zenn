@@ -139,11 +139,14 @@ k get pvc shared-claim -o jsonpath='{.status.phase}' 2>/dev/null | grep -qx Boun
 
 ## 2. Kueue を入れる
 
-`infra/eks` で `terraform apply` すると `kueue.tf` が Kueue 本体(コントローラと CRD)を `kueue-system` namespace に入れます。これは常時インストールのコンポーネントなので、既に入っていれば何も変わりません。`yes` と答える前に、表示された計画に Kueue 以外の追加・変更・削除が無いことを確かめてください。他の章で `-var` や `-var-file` を付けて apply してきた場合は、同じ引数を付けます。
+`infra/eks` で `terraform apply` すると `kueue.tf` が Kueue 本体(コントローラと CRD)を `kueue-system` namespace に入れます。これは常時インストールのコンポーネントなので、既に入っていれば何も変わりません。`terraform plan` の結果を保存し、変わるリソースの名前がすべて `kueue` を含むときだけ、その計画を apply します。Kueue 以外のリソースが 1 つでも変わる計画なら、`NG` を表示して apply しません。そのときは、表示されたリソースが他の章で変えたものかを確かめてください。他の章で `-var` や `-var-file` を付けて apply してきた場合は、`terraform plan` にも同じ引数を付けます。何も変わらない計画なら、apply しても何も起きません。
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"/infra/eks
-terraform apply
+terraform plan -no-color -out=kueue.tfplan | tail -1
+terraform show -no-color kueue.tfplan | grep -E '^  # .* (will be (created|updated|destroyed|replaced)|must be replaced)' | tee kueue.tfplan.txt
+if grep -qv 'kueue' kueue.tfplan.txt; then echo "NG Kueue 以外の変更があるので apply しません"; else terraform apply kueue.tfplan; fi
+rm -f kueue.tfplan kueue.tfplan.txt
 k -n kueue-system rollout status deploy/kueue-controller-manager --timeout=5m
 k get pods -n kueue-system
 ```
@@ -187,7 +190,10 @@ localqueue.kueue.x-k8s.io/gpu-ddp created
 
 Basic04 と同じ `ddp-sample` イメージ、同じ `torch-distributed-eks` ランタイムを使い、`trainjobTrain.name` で別々の TrainJob 名を付け、`trainjobTrain.queueName` でキューに乗せます。`outputSubdir` も別々にします(同じフォルダだと ddp.py が互いのスナップショットを拾って再開してしまうため)。
 
+最初の `helm dependency build` は、chart が使う部品の chart を `charts/` に取り込みます。Basic02 で一度実行していれば、何も変わりません。
+
 ```bash
+helm dependency build "$(git rev-parse --show-toplevel)"/infra/eks/charts/experiments
 export NAMESPACE=distai
 IMAGE=$(terraform -chdir="$(git rev-parse --show-toplevel)/infra/eks" output -raw ddp_sample_ecr_url):v1
 
