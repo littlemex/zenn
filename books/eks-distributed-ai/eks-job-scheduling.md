@@ -319,17 +319,21 @@ done
 
 ```text
 === ddp-trainjob-a ===
+[W1023 07:56:04.547230108 socket.cpp:752] [c10d] The IPv6 network addresses of (ddp-trainjob-a-node-0-0.ddp-trainjob-a, 29500) cannot be retrieved (gai error: -2 - Name or service not known).
 [rank 0/2] backend=nccl cuda_available=True device_count=1
 [rank 0/2] downloading MNIST to /shared/mnist-data
 [rank 0/2] starting training: 3 epochs, batch_size 32
-[rank 0/2] epoch 0 | steps 938 | loss 0.2001
+[rank 0/2] mlflow disabled
+[rank 0/2] epoch 0 | steps 938 | loss 0.1979
 [rank 0/2] epoch 0 | snapshot saved to /shared/output/trainjob-gpu-ddp-a/snapshot.pt
-[rank 0/2] epoch 1 | steps 938 | loss 0.0874
+[rank 0/2] epoch 1 | steps 938 | loss 0.0867
 [rank 0/2] epoch 1 | snapshot saved to /shared/output/trainjob-gpu-ddp-a/snapshot.pt
-[rank 0/2] epoch 2 | steps 938 | loss 0.0581
+[rank 0/2] epoch 2 | steps 938 | loss 0.0631
 [rank 0/2] epoch 2 | snapshot saved to /shared/output/trainjob-gpu-ddp-a/snapshot.pt
 [rank 0/2] done
 ```
+
+先頭の `[W ...] socket.cpp` の行は、PyTorch が rank 0 の名前から IPv6 のアドレスを引こうとして見つからなかったという警告です。このクラスタは IPv4 だけで動いているので IPv6 のアドレスは無く、PyTorch は IPv4 でつなぎます。学習は最後の `done` まで進んでいるので、この行は無視して構いません。出ないこともあります。
 
 3 本ともそれぞれ `trainjob-gpu-ddp-$n/` に書いており、互いのスナップショットを拾っていないことが確認できます。
 
