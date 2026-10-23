@@ -3,7 +3,7 @@ title: "Basic03 - Karpenter を導入する"
 free: true
 ---
 
-GitHub Tag: [release/eks-distributed-ai/v0.2.1](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.1)
+GitHub Tag: [release/eks-distributed-ai/v0.3.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.3.0)
 
 本章では、Pod のリソース要求に応じてアクセラレータノードを動的に起動する Karpenter を扱います。Karpenter 本体は Basic01 の `terraform apply` で導入済みなので、本章はその構成（CRD 管理・認証方式の Pod Identity・Spot 中断通知の SQS）を読み解き、動作を確認します。アクセラレータ用の NodePool は次章以降で定義します。
 
@@ -227,7 +227,7 @@ DRA が GA になったからといって、本書の構成にそのまま持ち
 はじめにシェルを対象クラスタへ向けます。Basic01 手順 3 と同じ 5 行で、`AWS_PROFILE` と `CLUSTER_NAME` と `AWS_REGION`、それに 1 行目のチェックアウトのパスは自分のものに読み替えます。プロファイルを使わず環境変数やインスタンスロールで認証している場合は、`AWS_PROFILE` の行を削ります。
 
 ```bash
-cd ~/distributed-ai-v0.2.1
+cd ~/distributed-ai-v0.3.0
 export AWS_PROFILE=default
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2

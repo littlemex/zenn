@@ -3,7 +3,7 @@ title: "Basic04 - GPU で分散学習を体験する"
 free: true
 ---
 
-GitHub Tag: [release/eks-distributed-ai/v0.2.1](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.1)
+GitHub Tag: [release/eks-distributed-ai/v0.3.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.3.0)
 
 本章では、Basic02 で CPU だけだった分散学習(DDP)を GPU に載せ替えます。ここでは Karpenter の混在させた確保の実験も兼ねて、g5 と g6 を混ぜた Spot とオンデマンドを組み合わせた構成で 2 ノード GPU DDP を実行してみます。なお Spot を混ぜた DDP は本来、バッチ推論やデータ前処理に向くもので、大規模な分散学習では中断のたびに全 rank が最後のスナップショットからやり直しになるため実用的ではありません。本章はあくまで「すでに動かした DDP を GPU に載せ、Karpenter の混在させた確保を確かめる」実験としての位置づけです。
 
@@ -74,7 +74,7 @@ accelerator_pools = {
 はじめにシェルを対象クラスタへ向けます。Basic01 手順 3 と同じ 5 行で、`AWS_PROFILE` と `CLUSTER_NAME` と `AWS_REGION`、それに 1 行目のチェックアウトのパスは自分のものに読み替えます。プロファイルを使わず環境変数やインスタンスロールで認証している場合は、`AWS_PROFILE` の行を削ります。
 
 ```bash
-cd ~/distributed-ai-v0.2.1
+cd ~/distributed-ai-v0.3.0
 export AWS_PROFILE=default
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2

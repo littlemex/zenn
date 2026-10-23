@@ -3,7 +3,7 @@ title: "Experiment01 - karpenter-tenant-pools でプールをセルフサービ�
 free: true
 ---
 
-GitHub Tag: [release/eks-distributed-ai/v0.2.1](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.1)
+GitHub Tag: [release/eks-distributed-ai/v0.3.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.3.0)
 
 本章では、Basic04 と Basic05 で Terraform の `accelerator_pools` 変数として定義していた GPU プール（g5 の On-Demand と p5 の Capacity Block）を、`karpenter-tenant-pools` という OSS の operator を使って namespace 単位の CRD から立ち上げます。プールの定義を Terraform の共有変数から切り離し、チームが自分の namespace のなかだけで自己完結してプールを作れるようにするのが狙いです。
 
@@ -58,7 +58,7 @@ operator は Karpenter 本体・device plugin・Capacity Block の購入には�
 はじめにシェルを対象クラスタへ向けます。Basic01 手順 3 と同じ 5 行で、`AWS_PROFILE` と `CLUSTER_NAME` と `AWS_REGION`、それに 1 行目のチェックアウトのパスは自分のものに読み替えます。プロファイルを使わず環境変数やインスタンスロールで認証している場合は、`AWS_PROFILE` の行を削ります。
 
 ```bash
-cd ~/distributed-ai-v0.2.1
+cd ~/distributed-ai-v0.3.0
 export AWS_PROFILE=default
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2

@@ -3,7 +3,7 @@ title: "Advanced03 - GPU 障害を注入して検知を確かめる"
 free: true
 ---
 
-GitHub Tag: [release/eks-distributed-ai/v0.2.1](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.1)
+GitHub Tag: [release/eks-distributed-ai/v0.3.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.3.0)
 
 本章では、[Basic08 - Observability を導入する](eks-observability) で有効化した Node Monitoring Agent（NMA）が、GPU の障害を本当に検知できるのかを、DCGM の 障害注入 機能で擬似的な障害を注入して確かめます。実際の GPU を壊さずに XID エラーを注入し、NMA が `AcceleratedHardwareReady` を `False` に反転させ、Prometheus のアラートが発火するところまでを実機で追います。あわせて、NMA が GPU ノードで健全性を読むために内部でどう動いているか、この基盤の GPU taint との相性で何が起きるかも解説します。
 
@@ -76,7 +76,7 @@ NMA が出す NodeCondition は、Karpenter のノード自動修復（auto-repa
 はじめにシェルを対象クラスタへ向けます。Basic01 手順 3 と同じ 5 行で、`AWS_PROFILE` と `CLUSTER_NAME` と `AWS_REGION`、それに 1 行目のチェックアウトのパスは自分のものに読み替えます。プロファイルを使わず環境変数やインスタンスロールで認証している場合は、`AWS_PROFILE` の行を削ります。
 
 ```bash
-cd ~/distributed-ai-v0.2.1
+cd ~/distributed-ai-v0.3.0
 export AWS_PROFILE=default
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2

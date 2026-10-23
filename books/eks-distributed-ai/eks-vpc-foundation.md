@@ -3,7 +3,7 @@ title: "Basic01 - Amazon EKS 基盤を立てる"
 free: true
 ---
 
-GitHub Tag: [release/eks-distributed-ai/v0.2.1](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.1)
+GitHub Tag: [release/eks-distributed-ai/v0.3.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.3.0)
 
 本章のゴールは、GPU や Trainium のノードを「必要になったときだけ起動する」土台をひととおり立て、`kubectl` でノードが見える状態にすることです。
 
@@ -244,7 +244,7 @@ for c in aws terraform kubectl helm git curl jq; do command -v "$c" >/dev/null &
 名前付きプロファイル (AWS SSO や assume-role) を使う場合は、**このコマンドの前に `export AWS_PROFILE=<自分のプロファイル名>` を置きます**。以降の手順もスクリプトも、プロファイルの指定はこの環境変数だけを見ます。手順 3 の 5 行にもこの行が入っているのは、シェルを開き直すたびに設定し直す必要があるからです。必要なら `aws sso login --profile <名前>` も先に済ませます。存在しない名前を設定すると `no usable AWS credentials. Sign in, or set AWS_PROFILE, before running this.` で停止します。この停止では AWS CLI 側の詳細メッセージが出ないので、原因は `aws sts get-caller-identity` を単独で実行して確かめます。
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/littlemex/distributed-ai/refs/tags/release/eks-distributed-ai/v0.2.1/infra/scripts/distai-install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/littlemex/distributed-ai/refs/tags/release/eks-distributed-ai/v0.3.0/infra/scripts/distai-install.sh | bash
 ```
 
 後半に渡すのはクラスタ名とリージョンだけです。この 2 つが対象クラスタを決めるので、自分の値に読み替えてください。
@@ -263,14 +263,14 @@ export AWS_REGION=us-east-2
 共有ストレージも含めて作る場合は、次を実行します。
 
 ```bash
-cd ~/distributed-ai-v0.2.1
+cd ~/distributed-ai-v0.3.0
 ./infra/scripts/distai-up.sh
 ```
 
 共有ストレージを作らない場合は、代わりに次を実行します。`DISTAI_SHARED_STORAGE` が効くのは変数ファイルを初めて生成するときだけで、後から付けても既存のファイルは書き換わりません。
 
 ```bash
-cd ~/distributed-ai-v0.2.1
+cd ~/distributed-ai-v0.3.0
 DISTAI_SHARED_STORAGE=off ./infra/scripts/distai-up.sh
 ```
 
@@ -307,7 +307,7 @@ plan の確認で中止した場合も、state のバケットとロックテー
 以降の章はすべて、クラスタを名前とリージョンで指すだけで始まります。バケット名も state のキーも章に書きません。それを可能にしているのが、apply の途中でレジストリ (AWS Systems Manager のパラメータストア) に書いた記録です。
 
 ```bash
-cd ~/distributed-ai-v0.2.1
+cd ~/distributed-ai-v0.3.0
 export AWS_PROFILE=default
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2
@@ -341,7 +341,7 @@ apply が途中で失敗した場合、レジストリには state の場所ま�
 ここで確かめるのは、System ノードグループが立ち上がっていることと、`kubectl` が正しいクラスタを向いていることです。向き先の設定は step 3 で済んでいて、`source` したときに表示された次の 2 行がその結果です。
 
 ```text
-distai-env: distai-eks in us-east-2 (account <アカウント ID>, release release/eks-distributed-ai/v0.2.1, data layer none)
+distai-env: distai-eks in us-east-2 (account <アカウント ID>, release release/eks-distributed-ai/v0.3.0, data layer none)
 distai-env: kubectl: context distai-eks, namespace distai at https://XXXXXXXX.gr7.us-east-2.eks.amazonaws.com (the namespace does not exist yet)
 distai-env: k is kubectl --context distai-eks; KUBECONFIG is /home/ubuntu/.kube/distai/distai-eks.distai.yaml
 ```

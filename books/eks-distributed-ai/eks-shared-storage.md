@@ -3,7 +3,7 @@ title: "Basic10 - Amazon FSx for Lustre を導入する"
 free: true
 ---
 
-GitHub Tag: [release/eks-distributed-ai/v0.2.1](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.1)
+GitHub Tag: [release/eks-distributed-ai/v0.3.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.3.0)
 
 本章では、Basic01 から Basic04 で構築した Amazon VPC・Amazon EKS コントロールプレーン・アクセラレータノードを前提に、Karpenter がノードを入れ替えても失われないデータ層として Amazon FSx for Lustre を構成します。Amazon FSx for Lustre は単一 AZ の高スループットなスクラッチおよびチェックポイント領域で、Terraform で 1 度作成すれば以降の Karpenter によるノード入れ替えの影響を受けません。
 
@@ -104,7 +104,7 @@ GPU 分散学習では NCCL の集合通信も EFA を使います。Amazon FSx 
 はじめにシェルを対象クラスタへ向けます。Basic01 手順 3 と同じ 5 行で、`AWS_PROFILE` と `CLUSTER_NAME` と `AWS_REGION`、それに 1 行目のチェックアウトのパスは自分のものに読み替えます。プロファイルを使わず環境変数やインスタンスロールで認証している場合は、`AWS_PROFILE` の行を削ります。
 
 ```bash
-cd ~/distributed-ai-v0.2.1
+cd ~/distributed-ai-v0.3.0
 export AWS_PROFILE=default
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2

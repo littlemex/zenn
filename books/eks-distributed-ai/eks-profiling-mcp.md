@@ -3,7 +3,7 @@ title: "Advanced02 - GPU プロファイルを MCP で分析する"
 free: true
 ---
 
-GitHub Tag: [release/eks-distributed-ai/v0.2.1](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.1)
+GitHub Tag: [release/eks-distributed-ai/v0.3.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.3.0)
 
 本章では、Basic04 で作った GPU プールの上でワークロードのプロファイルを取得し、その結果を Claude から分析します。手順では合成の行列積を題材にしますが、`--image` を差し替えれば自分の学習ジョブでもそのまま動きます。自分の学習コマンドの前に 1 コマンド足すだけでプロファイルが記録され、その結果は Model Context Protocol (MCP) 経由で読めます。「どのカーネルが遅いのか」から「次に何を変えるか」までを 1 本のコマンドで受け取れます。
 
@@ -82,7 +82,7 @@ alias 単位の削除は自動では起きません。終わったキャンペ�
 はじめにシェルを対象クラスタへ向けます。Basic01 手順 3 の 5 行に `DISTAI_NAMESPACE` を足したもので、本章の作業 namespace は `distai` ではなく `team-a` です。こうすると `k` と後述のプラグインの既定がこの namespace になり、以降のコマンドに `-n` を書かずに済みます。端末を開き直したりこの 6 行を飛ばすと `k` は `distai` を向くので、本章のコマンドは `accelprof-config` が見つからないという形で止まります。`DISTAI_NAMESPACE` だけを書き換えても向き先は変わりません。この変数は `distai-env.sh` が `KUBECONFIG` を選ぶために読むものなので、変えたあとに 6 行目をもう一度実行してください。プラグインも `k` と同じく `KUBECONFIG` の namespace で動くため、`-n` で片方だけを逃がすと、失敗する場所が 1 行後ろにずれるだけになります。`CLUSTER_NAME` と `AWS_REGION`、それに 1 行目のチェックアウトのパスは自分のものに読み替えます。
 
 ```bash
-cd ~/distributed-ai-v0.2.1
+cd ~/distributed-ai-v0.3.0
 export AWS_PROFILE=default
 export CLUSTER_NAME=distai-eks
 export AWS_REGION=us-east-2
@@ -93,7 +93,7 @@ source infra/scripts/distai-env.sh
 実機出力:
 
 ```text
-distai-env: distai-eks in us-east-2 (account 123456789012, release release/eks-distributed-ai/v0.2.1, data layer none)
+distai-env: distai-eks in us-east-2 (account 123456789012, release release/eks-distributed-ai/v0.3.0, data layer none)
 distai-env: kubectl: context distai-eks, namespace team-a at https://XXXXXXXX.gr7.us-east-2.eks.amazonaws.com
 distai-env: k is kubectl --context distai-eks; KUBECONFIG is /home/you/.kube/distai/distai-eks.team-a.yaml
 ```
@@ -211,15 +211,15 @@ kubectl plugin list | grep -E "accelprof|distai"
 
 ```text
 plugin ok
-/home/you/distributed-ai-v0.2.1/infra/eks/bin/kubectl-accelprof
-/home/you/distributed-ai-v0.2.1/infra/eks/bin/kubectl-distai_mcp
+/home/you/distributed-ai-v0.3.0/infra/eks/bin/kubectl-accelprof
+/home/you/distributed-ai-v0.3.0/infra/eks/bin/kubectl-distai_mcp
 ```
 
 `get-profiling.sh` で基盤を入れた場合は、同じプラグインの写しが `~/.local/bin` にも置かれています。この状態では `kubectl plugin list` が overshadow の警告を出し、警告が 1 つでもあると `error: one plugin warning was found` を出して終了コード 1 を返します。`plugin ok` が表示されていればプラグイン自体は動いているので、この行だけが失敗したように見えます。
 
 ```text
 /Users/you/.local/bin/kubectl-accelprof
-  - warning: /Users/you/.local/bin/kubectl-accelprof is overshadowed by a similarly named plugin: /Users/you/distributed-ai-v0.2.1/infra/eks/bin/kubectl-accelprof
+  - warning: /Users/you/.local/bin/kubectl-accelprof is overshadowed by a similarly named plugin: /Users/you/distributed-ai-v0.3.0/infra/eks/bin/kubectl-accelprof
 error: one plugin warning was found
 ```
 
@@ -653,7 +653,7 @@ B を完走しても、`DEV_BUILD=1` で焼いた基盤イメージの ECR リ�
 
 - [プロファイリングを楽にしたい](https://zenn.dev/littlemex/articles/8ab01bc40f627a) - 本基盤の設計思想を解説したブログ
 - [littlemex/distributed-ai](https://github.com/littlemex/distributed-ai) - `infra/scripts/install-profiling.sh` と `infra/eks/bin/kubectl-accelprof`、`infra/data-layer` と `infra/eks`、`mcp-host` チャートの実装
-- [release/eks-distributed-ai/v0.2.1](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.2.1) - 本章が前提にしているリリース
+- [release/eks-distributed-ai/v0.3.0](https://github.com/littlemex/distributed-ai/tree/release/eks-distributed-ai/v0.3.0) - 本章が前提にしているリリース
 - [accelprof](https://pypi.org/project/accelprof/) / [accelprof-knowledge](https://pypi.org/project/accelprof-knowledge/) - 分析 MCP と知識 MCP の pip パッケージ
 - [Nsight Systems ユーザーガイド](https://docs.nvidia.com/nsight-systems/UserGuide/index.html) - `nsys profile` のオプションと収集対象の公式ドキュメント
 - [Amazon S3 Files (EFS ユーザーガイド)](https://docs.aws.amazon.com/efs/latest/ug/s3-file-systems.html) - S3 Files の公式ドキュメント
