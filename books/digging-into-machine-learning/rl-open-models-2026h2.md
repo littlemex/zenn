@@ -65,7 +65,7 @@ $$
 
 この式は、2 つの向きの KL がどちらも閾値 $\phi$ 以下の token だけを残すことを言っている。IcePop の帯は下限と上限の 2 つの値を決めるが、KPop の閾値は $\phi$ の 1 つだけである。報告は $\phi$ の値を本文に書いていない。
 
-prime-rl の v0.10.0 は、既定の損失を IPO（INTELLECT Policy Optimization）に替えた。IPO は確率そのものの差 $|a - b|$ が閾値を超えた token を外し、advantage の符号は見ない。リリースノートは、比で判断すると、推論側の確率 0.01 に対して訓練側が 0.06 の珍しい token は 6 倍として外され、推論側の確率 0.90 に対して訓練側が 0.20 の確率の高い token は 0.22 倍として残る場合があると、比が両端で判断を誤る例を挙げている。後者が残るのは帯の下限が 0.22 より小さい場合で、帯を $[0.5, 5]$ にすれば外れる。GLM-4.5-Air のソフトウェア工学の agent の RL（router replay なし、最大 64 step 遅れたデータ）では、IcePop は 1,200 step のあたりで訓練と推論の KL が 20 倍を超えて膨らんで崩れ、IPO は閾値が 0.2 でも 0.3 でもそこを越えて学習が続いたと報告している。閾値 0.3 で外れる token は約 0.25% だった。
+prime-rl の v0.10.0 は、既定の損失を IPO（INTELLECT Policy Optimization）に替えた。IPO は確率そのものの差 $|a - b|$ が閾値を超えた token を外し、advantage の符号は見ない。リリースノートは、比で判断すると、推論側の確率 0.01 に対して訓練側が 0.06 の珍しい token は 6 倍として外され、推論側の確率 0.90 に対して訓練側が 0.20 の確率の高い token は 0.22 倍として残る場合があると、比が両端で判断を誤る例を挙げている。後者が残るのは帯の下限が 0.22 より小さい場合で、帯を $[0.5, 5]$ にすれば外れる。GLM-4.5-Air のソフトウェア工学の agent の RL（router replay なし、最大 64 step 遅れたデータ）では、IcePop は 1,200 step のあたりで訓練と推論の KL が 20 倍を超えて膨らんで崩れ、IPO は閾値が 0.2 でも 0.3 でもそこを越えて学習が続いたと報告している。閾値 0.3 で外れる token は約 0.25% だった。数理統計から見ると、KPop と IPO の量は、語彙を生成した token とそれ以外に分けた 2 つのベルヌーイ分布の距離で、KPop の $D^{B}_{\text{KL}}$ はその KL、IPO の $|a - b|$ はその全変動距離にあたる。Pinsker の不等式 $|a - b| \le \sqrt{D^{B}_{\text{KL}}/2}$ から、KPop が閾値 $\phi$ で残す token は、IPO の閾値を $\sqrt{\phi/2}$ にしても残る。
 
 ![推論側と訓練側の確率を両軸の対数目盛りに取り、比の帯、確率の差、2 択の KL のそれぞれで学習に残る範囲を塗った計算図。閾値は帯が 0.5 から 5、差が 0.3、KL が仮に 0.05。比の帯は対角線に沿った一定の幅で、確率の差は両方が小さい領域をまとめて残し、2 択の KL は確率が小さいほど比の幅を広く許す](https://raw.githubusercontent.com/littlemex/figures/refs/heads/zenn/books/digging-into-machine-learning/zenn/books/digging-into-machine-learning/rl-open-models-2026h2/mask-shapes.png)
 
@@ -94,7 +94,7 @@ IcePop の形を使う報告も続いている。[Tencent Hy3 の RL の手順�
 | [MiMo-V2.6](https://arxiv.org/abs/2610.11959) | 混ぜた RL で作った教師と、検証しにくい課題向けに SFT で作った教師 | token ごと | 教師の回答や SFT のデータの途中までを prefix にして、そこから生徒に書かせる |
 | [KAT-Coder-V2.5](https://arxiv.org/abs/2607.05471) | ソフトウェア工学、ツール利用など | 記載の範囲では不明 | off-policy の蒸留から始め、長い文脈でずれた回答を途中で切る |
 
-Nemotron 3.5 Super の 2 段目の工夫は、式で見ると分かりやすい。報告の OPD の advantage は、教師の確率 $\pi_T$ と、更新の前に固定した生徒の確率 $\bar{\pi}_S$ を使った $\log \pi_T - \log \bar{\pi}_S$ で、教師がほとんど出さない token では、いくらでも大きな負の値になる。2 段目では教師を $\alpha \pi_T + (1-\alpha) \bar{\pi}_S$（$\alpha = 0.2$）に替えるので、advantage は $\log\big((\alpha \pi_T + (1-\alpha) \bar{\pi}_S) / \bar{\pi}_S\big) \ge \log(1-\alpha) \approx -0.22$ となり、この値より下がらない。報告は、生徒が 1 回目の教師の能力を取り込んだあとの学習がこれで安定したと書いている。1 段目は $\alpha = 1$、つまり教師そのものである。
+Nemotron 3.5 Super の 2 段目の工夫は、式で見ると分かりやすい。報告の OPD の advantage は、教師の確率 $\pi_T$ と、更新の前に固定した生徒の確率 $\bar{\pi}_S$ を使った $\log \pi_T - \log \bar{\pi}_S$ で、教師がほとんど出さない token では、いくらでも大きな負の値になる。2 段目では教師を $\alpha \pi_T + (1-\alpha) \bar{\pi}_S$（$\alpha = 0.2$）に替えるので、advantage は $\log\big((\alpha \pi_T + (1-\alpha) \bar{\pi}_S) / \bar{\pi}_S\big) \ge \log(1-\alpha) \approx -0.22$ となり、この値より下がらない。報告は、生徒が 1 回目の教師の能力を取り込んだあとの学習がこれで安定したと書いている。1 段目は $\alpha = 1$、つまり教師そのものである。固定した生徒 $\bar{\pi}_S$ と、教師と $\bar{\pi}_S$ の混合の間の KL は Lee（1999）の skew divergence と同じ形で、比 $\bar{\pi}_S / (\alpha \pi_T + (1-\alpha) \bar{\pi}_S) \le 1/(1-\alpha)$ から、この下限はどの token でも成り立つ。詳しくは[数理統計の章](https://zenn.dev/tosshi/books/digging-into-machine-learning/viewer/rl-mathematical-statistics)で扱う。
 
 Meta の [Muse Glimmer 30B](https://arxiv.org/abs/2610.24628) も、生徒が自分で回答を生成し、教師が 1 step ごとに生徒の分布を評価する OPD の段を持つ。報告は、この形が訓練と推論の分布のずれを解消し、生成がずれたときに立て直すことを教えると書いている。ここでの訓練と推論のずれは、2 章の前半の数値の食い違いではなく、2 章の後半で見た、教師が書いた prefix と生徒が実際に書く prefix の違いを指している。
 
@@ -112,7 +112,7 @@ RL の費用を金額で書いた資料は、この章で読んだ中では MiMo
 
 ## 回答の数をどう配るか: 研究と実務の隙間
 
-GRPO は、問題ごとに同じ数 $G$ の回答を生成し、問題の中で報酬を比べる。統計の言葉で見ると、問題を層とする層化抽出で、どの層にも同じ数を配る形に似ている。層化抽出で全体の平均を推定するときは、層の大きさと標準偏差の積に比例して標本を配るネイマン配分のほうが分散が小さい。正誤の報酬で問題 $q$ の正解率を $p_q$ とすると報酬の標準偏差は $\sigma_q = \sqrt{p_q(1-p_q)}$ なので、各問題の重みと 1 回の生成の費用が同じという単純化した設定では、ネイマン配分は $G_q \propto \sigma_q$ になる。ただし GRPO が推定したいのは平均の報酬ではなく方策の勾配なので、この類推がそのまま最適な配分を与えるわけではない。
+GRPO は、問題ごとに同じ数 $G$ の回答を生成し、問題の中で報酬を比べる。統計の言葉で見ると、問題を層とする層化抽出で、どの層にも同じ数を配る形に似ている。層化抽出で全体の平均を推定するときは、層の大きさと標準偏差の積に比例して標本を配るネイマン配分のほうが分散が小さい。正誤の報酬で問題 $q$ の正解率を $p_q$ とすると報酬の標準偏差は $\sigma_q = \sqrt{p_q(1-p_q)}$ なので、各問題の重みと 1 回の生成の費用が同じという単純化した設定では、ネイマン配分は $G_q \propto \sigma_q$ になる。ただし GRPO が推定したいのは平均の報酬ではなく方策の勾配なので、この類推がそのまま最適な配分を与えるわけではない。勾配の推定に合わせて計算し直すと、回答の数の多い極限での問題ごとの重みは目的関数の微分 $f'(p_q)$ になる。スコア関数の大きさが問題と正誤によらないと仮定し、勾配の平均の 2 乗の項を無視すると、配分の目安は $G_q \propto |f'(p_q)|\, \sigma_q$ になる。標準偏差で割る GRPO がこの極限で上げる量は $2\arcsin\sqrt{p}$ で $f'(p)\, \sigma = 1$ なので、この目安は、どの問題にも同じ数を配る形になる。$G_q \propto \sigma_q$ になるのは、正解率そのものを上げる Dr. GRPO の場合である。どちらも近似の上の目安で、公開モデルが決まった数を使う理由をこの計算から決めることはできない。導出は[数理統計の章](https://zenn.dev/tosshi/books/digging-into-machine-learning/viewer/rl-mathematical-statistics)にある。
 
 ![正解率ごとに 1 問あたりの回答の数を比べた計算図。平均を 16 にそろえて、全問題に同じ数、標準偏差に比例するネイマン配分、正解率の平方根に反比例する配分（Reinforce-Ada の目安、上限と下限と定数 c は省略）を並べた。DAPO の Dynamic Sampling は数を変えず、全員が同じ結果の問題を外すので、残る回答の期待値を示した](https://raw.githubusercontent.com/littlemex/figures/refs/heads/zenn/books/digging-into-machine-learning/zenn/books/digging-into-machine-learning/rl-open-models-2026h2/allocation-rules.png)
 

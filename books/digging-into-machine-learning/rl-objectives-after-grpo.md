@@ -18,7 +18,7 @@ free: false
 | 確率の比を token ごとに取るか、回答ごとに取るか | [GSPO](https://arxiv.org/abs/2507.18071) は、回答ごとに幾何平均で 1 つの比を取ると、調べた MoE の学習が Routing Replay なしで安定したと報告した。[GMPO](https://arxiv.org/abs/2507.20673) は自分の目的関数では token ごとのクリップのほうが安定したと報告している。この章で扱った資料には、比の単位だけをそろえた比較は見当たらない |
 | KL はどう扱われているか | この章で扱う公開モデルでは、Magistral、GLM-4.5、Olmo 3 が KL の項を外した。[DeepSeek-V3.2](https://arxiv.org/abs/2512.02556) は KL を残して推定量を補正し、数学のような分野では弱めるか外すほうが良かったと書いている |
 
-読者には、方策勾配法と PPO のクリップの考え方の知識を想定する。扱う資料は 2024 年 2 月の [DeepSeekMath](https://arxiv.org/abs/2402.03300) から 2026 年 10 月までに arXiv などに出た論文と技術報告である。数値はすべて各論文の abstract か本文の報告値で、筆者はどれも再現していない。この章と次の章では、reasoning を「思考」とは訳さずにそのまま書き、学習済みのモデルで回答を生成することを「推論」と書く。訓練と推論で確率が食い違う問題と、On-Policy Distillation は次の章で扱う。
+読者には、方策勾配法と PPO のクリップの考え方の知識を想定する。扱う資料は 2024 年 2 月の [DeepSeekMath](https://arxiv.org/abs/2402.03300) から 2026 年 10 月までに arXiv などに出た論文と技術報告である。数値はすべて各論文の abstract か本文の報告値で、筆者はどれも再現していない。この章と次の章では、reasoning を「思考」とは訳さずにそのまま書き、学習済みのモデルで回答を生成することを「推論」と書く。訓練と推論で確率が食い違う問題と、On-Policy Distillation は次の章で扱う。この章の部品を、方策勾配の推定量の偏りと分散として読み直す話は、この本の 4 つ後の章「[数理統計から読む RL の事後学習](https://zenn.dev/tosshi/books/digging-into-machine-learning/viewer/rl-mathematical-statistics)」で扱う。
 
 ![GRPO の目的関数を 5 つの部品に分け、それぞれの部品を変えた手法を並べた。平均の取り方は DAPO と Dr. GRPO、報酬の基準は Dr. GRPO、RLOO、REINFORCE++ と、全員が同じ結果のグループを除く方法、クリップは Clip-Higher、CISPO、SAPO、比の単位は GSPO と GMPO、KL は除去と DeepSeek-V3.2 の推定量の補正](https://raw.githubusercontent.com/littlemex/figures/refs/heads/zenn/books/digging-into-machine-learning/zenn/books/digging-into-machine-learning/rl-objectives-after-grpo/grpo-anatomy.png)
 
@@ -70,6 +70,8 @@ $$
 
 長さに関わる変更には、生成の上限で打ち切られた回答の扱いもある。DAPO は Overlong Reward Shaping として、打ち切られた回答に不適切な報酬を与えると報酬のノイズになり学習が乱れると指摘し、長すぎる回答の扱いを報酬の側で整えた。これは token の重みではなく報酬の設計の変更である。
 
+標本調査の言葉では、回答ごとに長さで割ってから平均する GRPO の形は比の平均、グループの token の総数で割る DAPO の形は比推定量、分母を定数にする Dr. GRPO の形は線形な推定量にあたる。GRPO と DAPO の形は、どちらも勾配に長さに依存する重みを掛け、DAPO の比推定量はグループを大きくした極限で正解率の勾配を長さの平均で割った量に近づく。
+
 ## 報酬の基準: 何と比べ、何で割るか
 
 GRPO は、グループの報酬の標準偏差で advantage を割る。Dr. GRPO は、この割り算が問題の難しさによる偏りを生むと指摘した。ほとんど全員が正解する問題や、ほとんど全員が不正解の問題では標準偏差が小さく、割った後の advantage が大きくなるので、易しすぎる問題と難しすぎる問題の重みが増える。Olmo 3 はこの指摘に従い、標準偏差で割らない形を採用している。DeepSeek-V3.2 の論文も、advantage をグループの平均を引くだけの $R_i - \operatorname{mean}(R_1, \dots, R_G)$ と書いている。
@@ -77,6 +79,8 @@ GRPO は、グループの報酬の標準偏差で advantage を割る。Dr. GRP
 基準の取り方を変える手法もある。[RLOO](https://arxiv.org/abs/2402.14740)（REINFORCE Leave-One-Out）は、同じ問題への $G$ 個の回答のうち、自分を除いた $G-1$ 個の平均報酬を基準にする。論文では回答の数を $k$ と書いている。[REINFORCE++](https://arxiv.org/abs/2501.03262) は、advantage を batch 全体の平均と標準偏差で正規化する。1 つの問題に複数の回答を生成する変種では、グループの平均を引いたあと、batch 全体の標準偏差で割る。Magistral は、グループの平均を引いた advantage を、さらに minibatch の中の平均と標準偏差で正規化している。
 
 報酬の基準と合わせて、学習に使う問題の選び方も変わった。正誤だけを報酬にすると、グループの全員が正解、または全員が不正解の問題では、報酬から作る方策の勾配が生まれない。DAPO は Dynamic Sampling として、多めに生成して正解率が 0 と 1 の問題を除き、batch の問題の数を保つ。Magistral は全員が同じ結果のグループを batch から外し、Olmo 3 も advantage が 0 のグループを除いて、足りない分を追加の生成で埋めている。
+
+数理統計から見ると、基準の報酬は平均 0 のスコア関数を使う制御変量で、標準偏差や長さの扱いをそろえれば、自分を含むグループの平均を引く形は、標本ごとに RLOO のちょうど $(G-1)/G$ 倍になる。偏るのは勾配の大きさだけで、既知の定数倍である。[GRPO の勾配の恒等式の論文](https://arxiv.org/abs/2607.00152) の式から、標準偏差で割る形は、正誤の報酬で正解率 $p$ を固定して回答の数を増やす極限では、$p$ の代わりに 2 項分布の分散安定化変換 $2\arcsin\sqrt{p}$ を上げる勾配になる。Dr. GRPO が指摘した難しさの偏りは、推定量の偏りではなく、どの量を上げるかという目的関数の選び方の違いと読める。導出は[数理統計の章](https://zenn.dev/tosshi/books/digging-into-machine-learning/viewer/rl-mathematical-statistics)にある。
 
 ## クリップ: 何を止め、何を通すか
 
@@ -124,7 +128,7 @@ $$
 \hat{d}^{\text{KL,IS}}_{i,t} = \frac{\pi_\theta(o_{i,t} \mid q, o_{i,<t})}{\pi_{\text{old}}(o_{i,t} \mid q, o_{i,<t})} \left( \frac{\pi_{\text{ref}}(o_{i,t} \mid q, o_{i,<t})}{\pi_\theta(o_{i,t} \mid q, o_{i,<t})} - \log \frac{\pi_{\text{ref}}(o_{i,t} \mid q, o_{i,<t})}{\pi_\theta(o_{i,t} \mid q, o_{i,<t})} - 1 \right)
 $$
 
-DeepSeek-V3.2 の論文は、この $\pi_{\text{old}}$ を推論のフレームワークが返した確率と定義している。この章では推論と訓練の違いを無視して $\pi_{\theta_{\text{old}}}$ と同じものとして扱い、区別は次の章で行う。この補正が直すのは、固定した prefix での次の token の分布の違いで、prefix の分布の違いまでは直さない。論文によれば、元の推定量は、更新中の方策での確率が参照モデルよりずっと低い token に、上限の無い大きな重みを与え、勾配を荒らしていた。論文は、この補正でその系統的な誤差が消えると書いている。DeepSeek-V3.2 は KL の強さを分野ごとに変え、数学のような分野では KL を弱くするか外すほうが性能が上がったとも書いている。
+DeepSeek-V3.2 の論文は、この $\pi_{\text{old}}$ を推論のフレームワークが返した確率と定義している。この章では推論と訓練の違いを無視して $\pi_{\theta_{\text{old}}}$ と同じものとして扱い、区別は次の章で行う。この補正が直すのは、固定した prefix での次の token の分布の違いで、prefix の分布の違いまでは直さない。論文によれば、元の推定量は、更新中の方策での確率が参照モデルよりずっと低い token に、上限の無い大きな重みを与え、勾配を荒らしていた。論文は、この補正でその系統的な誤差が消えると書いている。数理統計から見ると、DeepSeekMath の推定値は、更新中の方策から生成した token では KL の値の不偏推定量だが、prefix を固定した 1 つの位置で、生成した token を固定して損失として微分すると、勾配の期待値は逆向きの KL $\mathrm{KL}(\pi_{\text{ref}} \,\|\, \pi_\theta)$ の勾配になる。比 $\frac{\pi_\theta}{\pi_{\text{old}}}$ を掛けて比も含めて微分すると、足りなかったスコア関数の項が加わり、$\mathrm{KL}(\pi_\theta \,\|\, \pi_{\text{ref}})$ の勾配の不偏推定量になる。計算は[数理統計の章](https://zenn.dev/tosshi/books/digging-into-machine-learning/viewer/rl-mathematical-statistics)にある。DeepSeek-V3.2 は KL の強さを分野ごとに変え、数学のような分野では KL を弱くするか外すほうが性能が上がったとも書いている。
 
 KL を参照モデルではなく直前の方策に向ける設計もある。[Kimi k1.5](https://arxiv.org/abs/2501.12599) は、online policy mirror descent の一種として、反復ごとに、直前の反復の方策 $\pi_{\theta_{\text{prev}}}$ から離れすぎない範囲で報酬の期待値を上げる目的関数を解く。目的関数は、報酬の期待値から $\pi_{\theta_{\text{prev}}}$ への KL に係数を掛けて引いた形である。この KL は、参照モデルにとどめる罰則ではなく、1 回の反復で方策を動かす幅を決める役割を持つ。
 
