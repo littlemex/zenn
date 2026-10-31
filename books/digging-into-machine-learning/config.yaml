@@ -18,8 +18,6 @@ chapters:
   - global-workspace-jlens-apply
   - looped-latent-thought-state
   - moe-routing-why-it-works
-  - rl-objectives-after-grpo
-  - rl-mismatch-and-on-policy-distillation
-  - rl-open-models-2026h2
-  - rl-open-problems-2026
-  - rl-mathematical-statistics
+  - rl-objectives-and-estimators
+  - rl-mismatch-async-and-opd
+  - rl-open-models-and-open-problems
