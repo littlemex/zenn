@@ -95,7 +95,7 @@ NCCL 2.32.3 のままでは、表を登録する段階で `Window registration o
 | 確かめたこと | 結果 |
 |---|---|
 | DeepEP の [test_engram.py](https://github.com/amazon-contributing/DeepEP/blob/2a00bd88fcc69e6f9b669f5a338348e49217bf86/tests/elastic/test_engram.py) を、BF16 では 1 ランクあたり 4,096 行と 65,536 行の表で、FP8 では 65,536 行の表で動かしました | 2 台とも通りました。get で読んだ行と FP8 のスケール係数が、全ランクから集めた正解と一致しました |
-| 「[Engram を自分で作って学習させる](https://zenn.dev/tosshi/articles/35ef2467d84b63)」で学習したモデルの 1,049,422 行の表を 2 台に半分ずつ持たせ、表引きを DeepEP の engram_fetch に置き換えました | 同じ比較を 3 回実行し、表を丸ごと持って引いた場合と、読んだ行、出力の確率、続けて生成した 40 トークンが、3 回ともビット単位で一致しました。読んだ行のおよそ半分は、相手の機械の表から来ています |
+| 「[DeepSeek の Engram を小さな GPT に組み込み、N-gram の表引きの中身を見る](https://zenn.dev/tosshi/articles/35ef2467d84b63)」で学習したモデルの 1,049,422 行の表を 2 台に半分ずつ持たせ、表引きを DeepEP の engram_fetch に置き換えました | 同じ比較を 3 回実行し、表を丸ごと持って引いた場合と、読んだ行、出力の確率、続けて生成した 40 トークンが、3 回ともビット単位で一致しました。読んだ行のおよそ半分は、相手の機械の表から来ています |
 | 対照として、学習したモデルの比較で、読む行の番号をすべて 1 ずつずらしました | 一致しなくなりました。比べ方が 1 行のずれを検出できることを確かめました |
 | 対照として、直す前の NCCL 2.32.3 で動かしました | 表の登録で断られました |
 | ホストの区画を持たない window を使う DeepEP の dispatch と combine（[test_ep.py](https://github.com/amazon-contributing/DeepEP/blob/2a00bd88fcc69e6f9b669f5a338348e49217bf86/tests/elastic/test_ep.py)）を動かしました | 直した NCCL でも、直す前と同じく通りました |
@@ -115,4 +115,4 @@ DeepEP の Engram は、読み手が行の番号から持ち主と位置を出�
 - [DeepEP README](https://github.com/deepseek-ai/DeepEP/blob/a56d6156febcd9976e55adc85b5155bfac9f28f8/README.md)、[engram_fetch.cuh](https://github.com/deepseek-ai/DeepEP/blob/a56d6156febcd9976e55adc85b5155bfac9f28f8/deep_ep/include/deep_ep/impls/engram_fetch.cuh)、[engram_fetch_wait.cuh](https://github.com/deepseek-ai/DeepEP/blob/a56d6156febcd9976e55adc85b5155bfac9f28f8/deep_ep/include/deep_ep/impls/engram_fetch_wait.cuh)
 - [NCCL Device API の GIN のドキュメント](https://github.com/NVIDIA/nccl/blob/12df1a11afad322be5a204a2db890161cbf8131d/docs/userguide/source/api/device_gin.rst)
 - [Engram は何を覚えて、どう引くのか](https://zenn.dev/tosshi/articles/5853108f53bd7f)
-- [Engram を自分で作って学習させる](https://zenn.dev/tosshi/articles/35ef2467d84b63)（2 台に分けて引いた表の学習元）
+- [DeepSeek の Engram を小さな GPT に組み込み、N-gram の表引きの中身を見る](https://zenn.dev/tosshi/articles/35ef2467d84b63)（2 台に分けて引いた表の学習元）
