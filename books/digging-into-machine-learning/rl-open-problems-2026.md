@@ -69,6 +69,26 @@ MoE の router も、RL の中で不安定になる。MiMo-V2.6 は、router を
 
 agent の環境そのものも問題になる。3 章で見たように、Apertus 1.5 はツールのサーバーの処理能力が足りずにツールを使う問題を RL から外し、KAT-Coder-V2.5 は token の分け直しのずれを報告した。報酬の抜け穴は後の節で見る。
 
+## 公開の学習基盤の例: SkyRL
+
+ここまでの課題が、公開の学習基盤でどう実装されているかを、[SkyRL](https://github.com/NovaSky-AI/SkyRL) の例で見る。SkyRL は Berkeley Sky Computing Lab が Anyscale と共同で開発する RL の事後学習のライブラリで、学習には Megatron と FSDP、回答の生成には vLLM を使う。2025 年 5 月に SWE-Bench のような長い agent の課題の RL から始まり、[SkyRL-Agent の論文](https://arxiv.org/abs/2511.16108) では、Qwen3-32B を RL だけで学習した SA-SWE-32B が SWE-Bench Verified の Pass@1 を 24.4% から 39.4% に上げたと報告している。以下の数値は、どれも SkyRL のチームと共同の組織が自分たちの構成で報告した値である。
+
+2026 年 10 月の [v0.4.0](https://blog.skyrl.ai/blog/skyrl-v0-4-0) には、この章と 2 章、3 章で見た部品が設定として並んでいる。
+
+| 課題 | v0.4.0 の機能 | 報告された結果 |
+|---|---|---|
+| MoE の expert の食い違い | 2 章の R3（推論で選んだ expert を記録して学習で再現する方法、SkyRL では Megatron の学習側だけ）の経路のデータを、vLLM から学習側まで詰めた配列のまま渡し、複数ターンでは新しいターンの分だけ送る | Nemotron 3 Super で、R3 を使う学習の処理量が GPU あたり毎秒 111 token から 483 token になった。経路のデータは token そのもののデータの約 900 倍の大きさで、以前の実装では学習の step が 6 倍以上遅くなっていた |
+| サンプリングの打ち切りによるずれ | DeepSeek-V3.2 の Keep Sampling Mask と同じ考え方で、vLLM が top-p と top-k で残した候補の集合を返し、学習側はその集合の上で確率を正規化し直す | Nemotron 3 Super の Lila Sciences の課題で、R3 とこの機能の両方を使うと訓練と推論の log 確率の差は 0.1 未満にとどまり、160 step でも報酬が伸びていた。両方を使わない場合は差が 0.8 を超えて報酬が崩れた。2 つの機能を分けた比較ではない |
+| 重みの送り込み | 変わった部分だけを XOR の差分として圧縮して送る方式と、NIXL を使い学習側の全 rank から必要な分割だけを送る方式 | 1 step で値が変わる重みは約 1〜3% と書いている。後の節で見る、RL 全体を通して更新されるパラメータの割合とは測るものが違う。分割して送る方式で、BF16 の Kimi K2 の重みを、8 枚の H100 のノード 48 台（学習 32 台、推論 16 台）の構成で 7.53 秒で送った |
+| 低い精度 | Blockwise FP8 と MXFP8 での学習と生成、on-policy の重みの同期 | 報告の長い学習の実験で、BF16 の収束に近いまま、1 step の時間を最大 23% 短くした |
+| 1 兆パラメータの学習の費用 | 試験的な対応として、Kimi K2.6/2.7 を LoRA で学習し、生成は INT4、学習側は同じ量子化を模擬（fake quantization）してずれを抑える | B300 のノード 2 台で 1 兆パラメータのモデルを学習できるとしているが、学習の結果の数値は書かれていない |
+
+重みの送り込みの数字は、この章の前の節で見た Mooncake の 7.2 秒や verl の差分の同期と、送り方も構成も違うので、そのまま比べることはできない。
+
+2026 年 10 月の 2 つの報告は、新しいモデルへの公開の当日からの対応と、長い文脈の学習のメモリの例である。Reflection の 501B-A23B の MoE である Beam に公開の当日から対応した [報告](https://blog.skyrl.ai/blog/day-0-beam) では、DAPO の設定で LoRA は B200 のノード 4 台、全パラメータの学習は 8 台を使い、50 step で AIME25 の avg@8（各問題に 8 回答えた正答率の平均）が 61% から 79% に上がった。訓練と推論の log 確率の差の絶対値の平均は、R3 なしで約 0.02、R3 ありで約 0.008、MXFP8 では R3 ありで約 0.03 だった。MXFP8 は回答の生成の処理量を 44% 上げたが、学習の forward と backward の時間はほぼ変わらなかった。約 5 時間の短い実行で、対応の確認のための結果である。[100 万 token の文脈の報告](https://blog.skyrl.ai/blog/1m-context-glm-5-3-flash) は、GLM-5.3-Flash の DeepSeek Sparse Attention が疎なカーネルを使わずに密な計算に戻っていた問題を直し、indexer の分割、活性の再計算と CPU への退避、文脈の並列化を加えて、1 本 100 万 token の学習を、乱数の token での測定で B200 の GPU あたり 144.5 GiB の peak のメモリに収めた。実際の文章のデータでは MoE の expert への偏りで peak が上がり、MoE の層を系列の方向に分けて計算する修正を加えて、100 万 token を文脈の並列化 4 の構成で 109 GiB に収めている。報告は、実際の重みでの RL の実行で、128k から 100 万 token の範囲の訓練側と vLLM の log 確率の差の絶対値の平均が 0.04〜0.07 だったと書いている。
+
+agent の RL の実務の知見もまとまってきた。Mercor と SkyRL の [397B の学習の手引き](https://www.mercor.com/blog/training-frontier-knowledge-work-agents-a-397b-rl-training-guide-with-skyrl/) は、Mercor 自身の知的業務の評価 APEX-Agents と同じ形の、専門家が作った 1,928 個の課題で Qwen3.5-397B-A17B を学習し、学習に使っていない 480 個の評価の課題で Pass@1 が 16.11% から 27.29% に上がったと報告した。評価の作り手による報告である。手引きは、RL の前に環境と harness と token の数え方を正すことを最初の段に置いている。たとえば、生成した token の列を文字列に戻して渡すと、学習側で別の token の列に分け直されることがあり、そうなると学習は気づかないうちに off-policy になる。Qwen3.6-35B-A3B での比較では、回答が 2k から 128k token に散らばる設定で、batch 全体の token の総数で割る平均から、問題ごとのグループで平均する形に替えると 3.9 ポイント上がった。訓練と推論のずれの扱いでは、全変動距離の 2 値の近似で token を外す [DPPO](https://arxiv.org/abs/2602.04879) と、重要度の比を切る GLM-5 の損失が、1 epoch の時点で誤差の範囲で同じ点だった。DPPO はターンの数を 21 から 32 に増やし、ターンあたりの出力を 834 token から 588 token に短くした。完全な非同期の学習で同時に生成できる回答の数には、許す古さの step の数に 1 を足した数と minibatch の大きさと 1 問あたりの回答の数の積という、アルゴリズムの側の上限があり、この設定では $(3+1) \times 16 \times 16 = 1024$ 本だった。実際の同時の数は KV cache の容量で決まり、35B で 550、397B で 300 にしたと書いている。
+
 ## RL は新しい能力を作るのか
 
 2 章では、RLVR（正誤を判定できる報酬での RL）で学習したモデルが、試行の回数が多いと base model の pass@k（k 回のうち 1 回でも解ける割合）を下回ることがあり、蒸留は教師から新しいパターンを持ち込めるという論文を見た。2026 年には、この問いに別の角度からの結果が出ている。
@@ -82,6 +102,8 @@ agent の環境そのものも問題になる。3 章で見たように、Apertu
 数理統計から見ると、pass@1 と pass@k は、問題ごとの正解率 $p_q$ の分布の別の関数である。pass@1 は平均 $\mathbb{E}_q[p_q]$、pass@k は $\mathbb{E}_q[1 - (1 - p_q)^k]$ で、$k$ が大きいと正解率が 0 より大きい問題の割合に近づくので、平均を上げながら一部の問題の小さい正解率を下げると、有限の $k$ で 2 つが逆に動く場合がある。また、$n$ 回の試行で正解が 0 回でも、正解率の 95% の信頼上限はおよそ $3/n$ で、0 とは言えない。評価の誤差の 2 つの成分と、pass@k の推定量が UMVUE であることは、[数理統計の章](https://zenn.dev/tosshi/books/digging-into-machine-learning/viewer/rl-mathematical-statistics)で扱う。
 
 自分で自分を伸ばすという主張にも、測り方の問題がある。[Phantom Gains](https://arxiv.org/abs/2608.20290) は、Qwen3-8B の 3 回の自己学習を、同じ手順を通した凍結したモデルと比べ、測り方の誤りを 7 つ挙げた。どれも、対照が無いと報告された結論を逆にする。論文は、外部の教師からの蒸留は base model がめったに解けない問題を改善したが、3 つの形の自己学習は改善しなかったと書いている。
+
+探索そのものを、学習する方策から切り離す提案もある。[Decoupling Exploration from Optimization in RLVR](https://arxiv.org/abs/2610.10536) は、新しさの報酬（回答の隠れ状態を入力にした固定のランダムなネットワークの出力を、学習する小さなネットワークで予測したときの誤差、RND）を DAPO の報酬に直接足すと、数学の正答率も一般の能力の評価もかえって下がったと報告した。そこで、新しさの報酬で学習した探索用の方策の回答から正しいものを選んで別の生徒に蒸留し、生徒は新しさの報酬なしで RL する手順を、何回か繰り返す ExpDis を提案している。論文は RL の更新の回数を 300 回にそろえて比べ、DAPO だけは 4 倍の 1,200 回の場合も示している。Qwen3-1.7B の 5 つの主なベンチマークの平均の pass@1 は、DAPO の 45.63、4 倍の更新の DAPO の 47.28 に対して ExpDis が 51.81 で、pass@64 は DAPO の 74.64 に対して 83.04 だった。Qwen3-4B では pass@1 が 62.58 に対して 66.50 で、改善の幅はモデルで違う。新しさの報酬を DAPO に直接足すと、Qwen3-1.7B の pass@1 は 45.08 に下がった。生徒の SFT（1 回あたり最大 500 本の回答で 2 epoch）は、そろえた RL の更新の回数の外にある。4B までのモデルと数学の課題での 1 本の論文の結果である。
 
 ## 報酬は信用できるか
 
@@ -100,6 +122,8 @@ RL が重みのどこを動かすかについては、測る量の違う論文�
 ## 規模と理論
 
 RL の計算量を増やすと性能がどう伸びるかを、事前学習の scaling 則のように予測しようとする研究がある。[ScaleRL](https://arxiv.org/abs/2510.13786) は、性能を計算量のシグモイドの曲線で当てはめ、漸近の性能を動かす設計と効率だけを動かす設計を分けた。8B の dense のモデルで 1 回の RL を 100,000 GPU 時間まで伸ばし、50,000 GPU 時間までの検証の結果から当てはめた曲線が、その先まで当たることを示した。これは 1 つの組織の実験で、他の研究者による追試は、この章で調べた範囲では見つからなかった。
+
+データの側の scaling 則もある。[How Data Scales in Agentic Reinforcement Learning](https://arxiv.org/abs/2610.23946) は、agent の RL のデータを課題、環境、軌跡の 3 つの軸に分け、軸ごとのべき乗則の指数を当てはめた。Qwen3 の 4B から 14B、GRPO と PPO、数学とコード、SWE、web、UI とツールの課題で、指数は環境、課題、軌跡の順に大きく、たとえば Qwen3-8B の GRPO の SWE では 0.39、0.24、0.10 だった。論文は、環境の優位は主に、別のアプリやリポジトリのような世界の多様性から来ていて、同じ世界の中の構造の違いは課題の多様性と同程度だと書いている。合成したデータが本物のデータの何倍になると性能が落ち始めるかの比は、環境で約 9.4、課題で約 3.4、軌跡で約 1.4 だった。論文は、この則から導いた配分が、軌跡を増やす通常のやり方に比べて最大 1.7 倍の計算効率になると報告し、回答の token の総数と FLOPs が同じ Qwen3-8B の 2 つの実行で、3 つの軸への配分と報酬の制御を変えて成功率が 14 ポイント違った例も挙げている。これも 1 本の論文の、主に Qwen3 の 14B までのモデルでの実験である。表 2 は指数の順序が 18 の設定のすべてで成り立つと書くが、表に並ぶのは 10 の設定である。回答の生成に使ったと書く vLLM 0.6.3 は 2024 年秋の版で、2025 年 4 月に公開された Qwen3 より前のものである。記述の整合性を含めて、追試での確認が要る。
 
 GRPO がなぜ働くのかを説明する理論も 2026 年に複数出た。[Why GRPO Needs Normalization](https://arxiv.org/abs/2601.23135) は、標準偏差での正規化が適応的な勾配として働き、正規化しない REINFORCE より収束が速くなる条件を示した。[A Relative-Budget Theory](https://arxiv.org/abs/2602.01523) は、生成の長さの上限と、base model が最初の正解に至るまでの token の数の比で、RL のサンプル効率が決まると論じた。[Anatomy of Off-Policy Policy Gradient](https://arxiv.org/abs/2610.25725) は、状態の遷移が決定的だという仮定のもとで、off-policy で使う方策勾配が最適な方策を停留点に保つには、回答単位の重要度の重みか、group の平均を基準にした KL の正則化が要ることを示し、後者を group で比べる方法として位置づけた。どれも 1 つの面からの説明で、互いの関係はまだ整理されていない。
 
@@ -122,6 +146,8 @@ GRPO がなぜ働くのかを説明する理論も 2026 年に複数出た。[Wh
 | 1 本の論文 | pass@1 を上げると pass@k の逆転は避けられない | [There Is No Free Lunch in RLVR](https://arxiv.org/abs/2610.39295) の模型の仮定のもと |
 | 1 本の論文 | どの問題が直るかの共有される成分は、実行より base model に依る | [What Will Post-Training Fix?](https://arxiv.org/abs/2610.04978) の 2 つの base model と数学の問題 |
 | 1 本の論文 | RL が忘れにくいことは、base model からの KL の小ささとよく対応する | [RL's Razor](https://arxiv.org/abs/2509.04259)。LLM の実験の当てはまりは決定係数 0.71 |
+| 1 本の論文 | 探索用の方策を分けて蒸留すると、同じ RL の更新の回数の DAPO より pass@1 と pass@k の両方が上がる | [Decoupling Exploration from Optimization in RLVR](https://arxiv.org/abs/2610.10536) の 4B までのモデルと数学の課題 |
+| 1 本の論文 | agent の RL のデータは、環境、課題、軌跡の順に scaling の指数が大きい | [How Data Scales in Agentic Reinforcement Learning](https://arxiv.org/abs/2610.23946) の 14B までのモデル |
 | 主張が対立 | RL は新しい能力を作るか | [There Is No Free Lunch in RLVR](https://arxiv.org/abs/2610.39295) と [What Will Post-Training Fix?](https://arxiv.org/abs/2610.04978) に対し、[ProRL](https://arxiv.org/abs/2505.24864) と [統計の検定の論文](https://arxiv.org/abs/2609.22547) |
 | 扱う範囲が違う | 報酬の抜け穴は防げるか | [hacktrace](https://arxiv.org/abs/2610.03055) の特定の不正の削減と、[構造的な均衡の理論](https://arxiv.org/abs/2603.28063) |
 
@@ -140,8 +166,10 @@ GRPO がなぜ働くのかを説明する理論も 2026 年に複数出た。[Wh
 | [RL's Razor](https://arxiv.org/abs/2509.04259) | 2025 年 9 月 | RL が忘れにくい理由 |
 | [Defeating Nondeterminism in LLM Inference](https://thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference/) | 2025 年 9 月 | 決定的な推論の費用 |
 | [ScaleRL](https://arxiv.org/abs/2510.13786) | 2025 年 10 月 | RL の計算量の scaling 則 |
+| [SkyRL-Agent](https://arxiv.org/abs/2511.16108) | 2025 年 11 月 | SkyRL の agent の層と SWE の学習 |
 | [Bitwise-consistent train and inference](https://vllm.ai/blog/2025-11-10-bitwise-consistent-train-inference) | 2025 年 11 月 | ビット単位で一致させた RL の費用 |
 | [Why GRPO Needs Normalization](https://arxiv.org/abs/2601.23135) | 2026 年 1 月 | 正規化と収束 |
+| [DPPO](https://arxiv.org/abs/2602.04879) | 2026 年 2 月 | 2 値の全変動距離で token を外す方法 |
 | [A Relative-Budget Theory](https://arxiv.org/abs/2602.01523) | 2026 年 2 月 | 生成の長さとサンプル効率 |
 | [RLTT](https://arxiv.org/abs/2602.10520) | 2026 年 2 月 | loop のモデルの RL |
 | [CoVerRL](https://arxiv.org/abs/2603.17775) | 2026 年 3 月 | consensus trap |
@@ -152,16 +180,22 @@ GRPO がなぜ働くのかを説明する理論も 2026 年に複数出た。[Wh
 | [HiFloat4](https://arxiv.org/abs/2607.26515) | 2026 年 7 月 | FP4 の RL と生成側の活性 |
 | [Phantom Gains](https://arxiv.org/abs/2608.20290) | 2026 年 8 月 | 自己改善の測り方 |
 | [医療の QA での TTRL](https://arxiv.org/abs/2609.16660) | 2026 年 9 月 | 選択肢の問題での誤った合意 |
+| [Mercor と SkyRL の 397B の学習の手引き](https://www.mercor.com/blog/training-frontier-knowledge-work-agents-a-397b-rl-training-guide-with-skyrl/) | 2026 年 9 月 | agent の RL の実務の知見 |
 | [RLVR is a Kernel, Not a Function](https://arxiv.org/abs/2609.22547) | 2026 年 9 月 | pass@k の逆転の統計 |
 | [Train Where the Quantized Model Goes](https://arxiv.org/abs/2609.26708) | 2026 年 9 月 | 量子化の回復と OPD |
+| [SkyRL v0.4.0](https://blog.skyrl.ai/blog/skyrl-v0-4-0) | 2026 年 10 月 | 学習基盤の R3、sampler の再生、重みの送り込み、FP8 |
 | [hacktrace](https://arxiv.org/abs/2610.03055) | 2026 年 10 月 | 抜け穴の検出 |
 | [What Will Post-Training Fix?](https://arxiv.org/abs/2610.04978) | 2026 年 10 月 | 直る問題の一致 |
 | [TRACE](https://arxiv.org/abs/2610.07767) | 2026 年 10 月 | FP4 の生成と KV cache |
 | [OnlineQAT](https://arxiv.org/abs/2610.09346) | 2026 年 10 月 | 低 bit の回復と OPD |
+| [Decoupling Exploration from Optimization in RLVR](https://arxiv.org/abs/2610.10536) | 2026 年 10 月 | 探索と最適化の分離 |
+| [SkyRL の Beam への対応](https://blog.skyrl.ai/blog/day-0-beam) | 2026 年 10 月 | 501B の MoE の RL と MXFP8 |
 | [MiMo-V2.6](https://arxiv.org/abs/2610.11959) | 2026 年 10 月 | 費用、router の不安定さ、MXFP4 |
 | [Reward Hacking as a Transmissible Strategy](https://arxiv.org/abs/2610.12822) | 2026 年 10 月 | agent の間の抜け穴の広がり |
 | [KV4-RL](https://arxiv.org/abs/2610.14448) | 2026 年 10 月 | INT4 の KV cache |
 | [Step-5-Preview のブログ](https://platform.stepfun.ai/blog/inside-step-5-preview) | 2026 年 10 月 | ビット単位の一致の費用 |
+| [SkyRL の 100 万 token の文脈の学習](https://blog.skyrl.ai/blog/1m-context-glm-5-3-flash) | 2026 年 10 月 | 長い文脈の学習のメモリ |
+| [How Data Scales in Agentic Reinforcement Learning](https://arxiv.org/abs/2610.23946) | 2026 年 10 月 | agent の RL のデータの scaling 則 |
 | [Anatomy of Off-Policy Policy Gradient](https://arxiv.org/abs/2610.25725) | 2026 年 10 月 | off-policy の方策勾配の一貫性 |
 | [Right On Q](https://arxiv.org/abs/2610.29378) | 2026 年 10 月 | 量子化の回復と生成の prefix |
 | [Collective Dynamics of Self-Reinforcement](https://arxiv.org/abs/2610.37553) | 2026 年 10 月 | ラベル無しの RL の崩壊の条件 |

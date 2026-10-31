@@ -109,7 +109,7 @@ $$
 \underbrace{\frac{1}{G} \sum_{i} \frac{\hat{A}_i\, s(o_i)}{L_i}}_{\text{GRPO}}, \qquad \underbrace{\frac{\sum_i \hat{A}_i\, s(o_i)}{\sum_i L_i}}_{\text{DAPO}}, \qquad \underbrace{\frac{1}{G \cdot L_{\max}} \sum_i \hat{A}_i\, s(o_i)}_{\text{Dr. GRPO}}
 $$
 
-GRPO の形は、回答ごとの比 $\hat{A}_i s(o_i) / L_i$ の平均（比の平均）である。分母の $L_i$ が回答ごとに違い、正解かどうかとも相関しうるので、期待値は $\nabla p$ の定数倍にならず、長さに依存する重みが勾配に入る。DAPO の形は、分子の和と分母の和の比を取る比推定量である。長さが正で必要な moment が有限なら、$p$ を固定して $G \to \infty$ とすると $\nabla p / \mathbb{E}[L]$ に収束する。有限の $G$ では、同じグループから作る基準と、確率的な分母の両方が期待値をずらす。Dr. GRPO は分母を設計で決めた定数 $L_{\max}$ にするので線形な推定量になり、期待値は $\frac{G-1}{G L_{\max}} \nabla p$ と、$\nabla p$ の既知の定数倍になる。
+GRPO の形は、回答ごとの比 $\hat{A}_i s(o_i) / L_i$ の平均（比の平均）である。分母の $L_i$ が回答ごとに違い、正解かどうかとも相関しうるので、期待値は $\nabla p$ の定数倍にならず、長さに依存する重みが勾配に入る。DAPO の形は、分子の和と分母の和の比を取る比推定量である。長さが正で必要な moment が有限なら、$p$ を固定して $G \to \infty$ とすると $\nabla p / \mathbb{E}[L]$ に収束する。有限の $G$ では、同じグループから作る基準と、確率的な分母の両方が期待値をずらす。Dr. GRPO は分母を設計で決めた定数 $L_{\max}$ にするので線形な推定量になり、期待値は $\frac{G-1}{G L_{\max}} \nabla p$ と、$\nabla p$ の既知の定数倍になる。上の DAPO の形は、1 問のグループの中で損失の和を token の総数で割るものである。多くの実装の既定のように、複数の問題をまとめた batch 全体で token の平均を取ると、各問題のグループの中の平均に、その問題で生成した token の総数に比例する重みが付く。グループの中の平均を、さらに問題ごとに等しい重みで平均すれば、この長さによる問題の間の重みを除ける。この違いに対応する実装の比較として、4 章で見た [Mercor と SkyRL の報告](https://www.mercor.com/blog/training-frontier-knowledge-work-agents-a-397b-rl-training-guide-with-skyrl/) は、回答が 2k から 128k token に散らばる agent の課題で、batch 全体の token の平均から問題ごとに等しく重みを付ける形に替えて、3.9 ポイント上がったと書いている。
 
 1 章で見た [2026 年 7 月の論文](https://arxiv.org/abs/2607.23364) の不可能性の定理は、回答の長さで決まる重みの範囲では、勾配の推定に偏りが無いこと（Dr. GRPO の側）と、各回答の寄与が長さによらないこと（GRPO がおおよそ満たす側）を同時には満たせないと示した。3 つの形の間の選択が釣り合いの問題であることを、定理として述べたものと読める。
 
@@ -262,6 +262,7 @@ GRPO とその後の手法の部品は、方策勾配の推定量の偏りと分
 | [DeepSeek-V4](https://arxiv.org/abs/2606.19348) | 2026 年 4 月（arXiv の v1 の表示） | 語彙全体の蒸留の選択 |
 | [GRPO, Dr. GRPO, and DAPO Are Three Operations on One Number](https://arxiv.org/abs/2607.00152) | 2026 年 6 月 | 有限の $G$ での GRPO の勾配の恒等式 |
 | [長さの重みの不可能性の論文](https://arxiv.org/abs/2607.23364) | 2026 年 7 月 | 不偏性と長さへの非依存の両立の不可能性 |
+| [Mercor と SkyRL の 397B の学習の手引き](https://www.mercor.com/blog/training-frontier-knowledge-work-agents-a-397b-rl-training-guide-with-skyrl/) | 2026 年 9 月 | batch 全体と問題ごとの平均の比較 |
 | [Phantom Gains](https://arxiv.org/abs/2608.20290) | 2026 年 8 月 | 問題ごとの正確検定と FDR |
 | [医療の QA での TTRL](https://arxiv.org/abs/2609.16660) | 2026 年 9 月 | 選択肢の問題での誤った合意 |
 | [RLVR is a Kernel, Not a Function](https://arxiv.org/abs/2609.22547) | 2026 年 9 月 | pass@k の差の同時信頼帯 |
