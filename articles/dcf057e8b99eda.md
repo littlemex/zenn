@@ -1,6 +1,6 @@
 ---
 title: "100B 級 MoE の学習で、チェックポイントの設定をどう決めるか"
-emoji: "🧮"
+emoji: "💽"
 type: "tech"
 topics: ["LLM", "MoE", "チェックポイント", "AWS", "分散学習"]
 published: false
@@ -23,13 +23,21 @@ published: false
 
 ## 先に結論: 3 つの数字で決まる
 
+![3 つの数字で設定が決まる](https://raw.githubusercontent.com/littlemex/figures/refs/heads/zenn/articles/dcf057e8b99eda/zenn/articles/dcf057e8b99eda/fig3-three-numbers.png)
+
 チェックポイントの設定は、次の 3 つの数字でほぼ決まります。
 
 1. 1 回のチェックポイントの大きさ S
 2. 1 回の保存で学習が止まる時間 C(非同期なら、止まる時間に加えて書き終えるまでの時間も別に見ます)
 3. 保存の間隔 T
 
-FSx のようなストレージに必要な書き込みの速さは、S を「書き終えたい時間」で割ったものです。止まる時間を短くしたいほど、速さが要り、費用が増えます。間隔 T は、後で見る Young/Daly の式で「無駄になる割合」を最小にする値が目安になります。ただし、この式は前提が多く、初期値として使い、実測で置き換えるものです。
+FSx のようなストレージに必要な書き込みの速さは、S を「書き終えたい時間」t で割ったものです。
+
+$$
+W = \frac{S}{t} \times f
+$$
+
+f は余裕を見込む係数です。止まる時間を短くしたいほど、速さが要り、費用が増えます。間隔 T は、後で見る Young/Daly の式で「無駄になる割合」を最小にする値が目安になります。ただし、この式は前提が多く、初期値として使い、実測で置き換えるものです。
 
 ## チェックポイントの大きさ
 
@@ -79,9 +87,20 @@ MoE の技術報告(DeepSeek-V3、Qwen3-235B-A22B、GLM-4.5、gpt-oss、OLMoE �
 
 保存の間隔 T、1 回の保存で学習が止まる時間 C、クラスター全体の平均故障間隔 M、復旧時間 R とすると、無駄になる割合は次のように書けます。
 
-無駄の割合 = C / T + (T / 2 + R) / M
+$$
+\text{無駄の割合} \approx \frac{C}{T} + \frac{T/2 + R}{M}
+$$
 
-これを最小にする T の一次近似が、Young(1974)の T ≒ √(2 C M) です。Daly はこれを改良しました。【試算】M を 32 ノードで 200 時間と置くと、C が 5 秒なら約 44 分、60 秒なら約 2.6 時間、300 秒なら約 5.7 時間です。無駄の割合は 0.4%、1.3%、2.9% ほどになります。
+これを最小にする T の一次近似が、Young(1974)の次の式です。
+
+$$
+T^{*} \approx \sqrt{2\,C\,M}
+$$
+
+Daly はこれを改良しました。【試算】M を 32 ノードで 200 時間と置くと、C が 5 秒なら約 44 分、60 秒なら約 2.6 時間、300 秒なら約 5.7 時間です。復旧時間 R を含めた無駄の割合は 0.5%、1.4%、3.0% ほどになります。
+
+![間隔 T と無駄の割合](https://raw.githubusercontent.com/littlemex/figures/refs/heads/zenn/articles/dcf057e8b99eda/zenn/articles/dcf057e8b99eda/g1-waste-vs-interval.png)
+
 
 ### 前提と限界
 
@@ -125,11 +144,15 @@ NeMo 2 だけが既定で有効なのは、Megatron-LM 本体と逆になって�
 
 ### 非同期が隠すのは「待ち」だけ
 
+![同期と非同期の違い](https://raw.githubusercontent.com/littlemex/figures/refs/heads/zenn/articles/dcf057e8b99eda/zenn/articles/dcf057e8b99eda/fig1-sync-vs-async.png)
+
 非同期にすると、学習は止まりません。ただし、書き出しが終わるまでの間、そのチェックポイントはまだ使えない状態です。この間にノードやジョブが落ちると、未完了の保存は無効になり、直前に完了した 1 つ前まで戻ります。NVIDIA Resiliency Extension の文書にも、そう書かれています。
 
 失う学習の時間の最悪値は、「間隔 + 書き終えるまでの時間」です。たとえば間隔が 30 分で、書き終えるのに 5 分かかるなら、最悪で約 35 分を失います。非同期でも、前の保存が次の保存までに終わらないと、保存が重なって待ちが戻ります。
 
 ## ローカル NVMe と複製
+
+![チェックポイントの置き場所と耐えられる故障](https://raw.githubusercontent.com/littlemex/figures/refs/heads/zenn/articles/dcf057e8b99eda/zenn/articles/dcf057e8b99eda/fig2-tiers.png)
 
 B300 のインスタンスには、NVMe の SSD が 8 本ついています(EC2 のインスタンス仕様で確認)。ここに先に書いてから、あとで共有ストレージへ移すと、学習の待ちが短くなり、共有ストレージに必要な速さも下がります。ただし、ローカルの NVMe は、そのノードが止まると消えます。
 
@@ -151,6 +174,8 @@ NVRx のローカルチェックポイントは、AWS の例のリポジトリ�
 :::
 
 ## ストレージの速さと費用
+
+![必要な書き込み速度と FSx の費用](https://raw.githubusercontent.com/littlemex/figures/refs/heads/zenn/articles/dcf057e8b99eda/zenn/articles/dcf057e8b99eda/g3-fsx-cost-vs-speed.png)
 
 FSx for Lustre の SSD(Persistent 2)は、スループット容量が「確保した容量 × スループット階層」で決まります。階層は 125、250、500、1000 MB/s/TiB の 4 種類です。【引用】課金は確保した容量に対して行われ、使っていなくても止まらず、容量は増やすだけで減らせません。EFA を有効にした場合は、容量の増やし方が階層ごとに 4.8〜38.4 TiB の倍数になり、階層も後から変えられません。
 
