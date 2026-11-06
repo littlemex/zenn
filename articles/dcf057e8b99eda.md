@@ -215,7 +215,7 @@ NVIDIA Resiliency Extension が扱える状態であれば、各ノードのロ�
 
 ![GPU メモリ、ローカル NVMe、ほかのノードの複製、FSx for Lustre と S3 のそれぞれについて、プロセスの再起動、1 ノードの喪失、クラスター全体の停止のあとでデータが残るかを示す表](https://raw.githubusercontent.com/littlemex/figures/refs/heads/zenn/articles/dcf057e8b99eda/zenn/articles/dcf057e8b99eda/fig4-tiers.png)
 
-NVIDIA B300 を 8 枚積んだ [p6-b300.48xlarge](https://aws.amazon.com/ec2/instance-types/p6/) には、3,800 GB の NVMe SSD が 8 本、合計 30,400 GB のインスタンスストアがあることを、2026 年 11 月に EC2 の DescribeInstanceTypes で確かめました。先にローカルの NVMe に書き、あとで共有ストレージへ転送すると、学習が止まる時間を短くでき、共有ストレージの書き込みスループットも小さくできます。ただし、転送が終わるまでは、そのノードが使えなくなるとシャードを失います。
+NVIDIA B300 を 8 枚積んだ [p6-b300.48xlarge](https://aws.amazon.com/ec2/instance-types/p6/) には、3,800 GB の NVMe SSD が 8 本、合計 30,400 GB のインスタンスストアがあります。先にローカルの NVMe に書き、あとで共有ストレージへ転送すると、学習が止まる時間を短くでき、共有ストレージの書き込みスループットも小さくできます。ただし、転送が終わるまでは、そのノードが使えなくなるとシャードを失います。
 
 [NVIDIA Resiliency Extension](https://github.com/NVIDIA/nvidia-resiliency-ext) のローカルチェックポイントは、各ノードの SSD か RAM ディスクに保存し、ほかのノードにも複製を持つことで、1 ノードを失っても複製からシャードを復元します。複製の組み方は設定で決め、保存と再開で同じ設定にする必要があります。NVIDIA Resiliency Extension は、Megatron-LM などの学習ループに組み込んで、ローカルへの保存と複製を受け持つライブラリです。
 
@@ -244,7 +244,7 @@ NVIDIA B300 を 8 枚積んだ [p6-b300.48xlarge](https://aws.amazon.com/ec2/ins
 
 ローカル NVMe は PCIe でつながったノード内のディスクなので、ネットワークの帯域は効かず、ディスクの性能で決まります。S3、S3 Files、EFA を使わない FSx for Lustre は、ENA というネットワークインターフェースで TCP を使って通信します。EFA は、OS を通らずに SRD というプロトコルで通信するネットワークインターフェースで、EFA を有効にした FSx for Lustre との通信や、ノード間の集団通信に使います。
 
-ネットワークインターフェースの帯域は、インスタンスの種類で大きく違います。次の値は、2026 年 11 月に EC2 の DescribeInstanceTypes で確かめたものです。
+ネットワークインターフェースの帯域は、インスタンスの種類で大きく違います。
 
 | インスタンス | ネットワークインターフェースの帯域 |
 |---|---|
