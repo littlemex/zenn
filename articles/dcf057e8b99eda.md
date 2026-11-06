@@ -8,7 +8,7 @@ published: false
 
 ## はじめに
 
-チェックポイントは、学習を中断した地点から再開するために、モデルとオプティマイザの状態をストレージに書き出したものです。1 回に書く量、保存の間隔、書き込みにかけてよい時間が、ストレージに必要な容量と書き込みスループットを決めます。この記事では、これらを決めるための数字を公開資料から調べて整理し、[NVIDIA Nemotron 3.5 Super 120B-A12B](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16) を 32 ノードで学習する場合を例に試算します。
+チェックポイントは、学習を中断した地点から再開するために、モデルとオプティマイザの状態をストレージに書き出したものです。1 回に書く量、保存の間隔、書き込みにかけてよい時間が、ストレージに必要な容量と書き込みスループットを決めます。この記事では、これらを決めるための数字を公開資料から調べて整理し、[NVIDIA Nemotron 3.5 Super 120B-A12B](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16)（以下 Nemotron 3.5 Super）を 32 ノードで学習する場合を例に試算します。
 
 :::message
 実際に大規模な学習を運用していて、チェックポイントの設定やストレージの選び方について現場の知見をお持ちの方がいたら、ぜひコメントで教えてください。とても喜びます。
@@ -63,7 +63,7 @@ $$
 
 ### 重みのバイト数
 
-2026 年 11 月に Hugging Face の API で取得した、公開モデルの重みのファイルサイズの合計を、総パラメータ数で割りました。試算に使う [Nemotron 3.5 Super 120B-A12B の BF16 版](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16)は、約 248.9 GB を約 124.5B で割って 1 パラメータあたり 2.0 バイトでした。ほかに bf16 で公開されている [Qwen3-235B-A22B](https://huggingface.co/Qwen/Qwen3-235B-A22B)、[Llama 4 Scout](https://huggingface.co/meta-llama/Llama-4-Scout-17B-16E)、[GLM-4.5-Air](https://huggingface.co/zai-org/GLM-4.5-Air)、[Mixtral-8x7B](https://huggingface.co/mistralai/Mixtral-8x7B-v0.1)、[OLMoE](https://huggingface.co/allenai/OLMoE-1B-7B-0924) は、いずれも 1 パラメータあたり 2.0 バイトでした。FP8 で公開されている [DeepSeek-V3](https://huggingface.co/deepseek-ai/DeepSeek-V3) は 1.01 バイト、[Kimi K2](https://huggingface.co/moonshotai/Kimi-K2-Instruct) は 1.00 バイトです。
+2026 年 11 月に Hugging Face の API で取得した、公開モデルの重みのファイルサイズの合計を、総パラメータ数で割りました。試算に使う [Nemotron 3.5 Super の BF16 版](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16)は、約 248.9 GB を約 124.5B で割って 1 パラメータあたり 2.0 バイトでした。ほかに bf16 で公開されている [Qwen3-235B-A22B](https://huggingface.co/Qwen/Qwen3-235B-A22B)、[Llama 4 Scout](https://huggingface.co/meta-llama/Llama-4-Scout-17B-16E)、[GLM-4.5-Air](https://huggingface.co/zai-org/GLM-4.5-Air)、[Mixtral-8x7B](https://huggingface.co/mistralai/Mixtral-8x7B-v0.1)、[OLMoE](https://huggingface.co/allenai/OLMoE-1B-7B-0924) は、いずれも 1 パラメータあたり 2.0 バイトでした。FP8 で公開されている [DeepSeek-V3](https://huggingface.co/deepseek-ai/DeepSeek-V3) は 1.01 バイト、[Kimi K2](https://huggingface.co/moonshotai/Kimi-K2-Instruct) は 1.00 バイトです。
 
 MoE（Mixture of Experts）は、expert と呼ぶ複数の部分ネットワークのうち、トークンごとに一部だけを使うモデルです。1 トークンの計算に使うパラメータを活性パラメータと呼び、モデル名の 120B-A12B は総パラメータ約 120B、活性パラメータ約 12B を表します。保存では使われなかった expert の重みも書き出すので、チェックポイントの大きさは活性パラメータ数ではなく総パラメータ数に比例します。
 
@@ -80,9 +80,9 @@ MoE（Mixture of Experts）は、expert と呼ぶ複数の部分ネットワー�
 
 [ZeRO の論文](https://arxiv.org/abs/1910.02054)も同じ内訳を示していて、勾配の 2 バイトを含めると 16 バイトです。モーメントを bf16 で持つ構成では 2 + 4 + 4 = 10 バイトになります。[DeepSeek-V3 の技術報告](https://arxiv.org/abs/2412.19437)は、AdamW の 1 次と 2 次のモーメントを bf16 で持ち、master weight を fp32 で持つと書いています。master weight を持たない構成では 6 バイトです。乱数生成器やデータローダの状態はこれらに比べて小さいので、ここでは数えていません。
 
-### Nemotron 3.5 Super 120B-A12B の大きさ
+### Nemotron 3.5 Super の大きさ
 
-試算に使う Nemotron 3.5 Super 120B-A12B の総パラメータ数は約 124.5B で、この値には画像エンコーダーのパラメータも含まれます。1 パラメータあたりのバイト数ごとに、チェックポイントの大きさ $S$ と、32 ノードに均等に分けたときの 1 ノードあたりの大きさは次のとおりです。
+試算に使う Nemotron 3.5 Super の総パラメータ数は約 124.5B で、この値には画像エンコーダーのパラメータも含まれます。1 パラメータあたりのバイト数ごとに、チェックポイントの大きさ $S$ と、32 ノードに均等に分けたときの 1 ノードあたりの大きさは次のとおりです。
 
 | 保存する状態 | 1 パラメータあたり | $S$ | 1 ノードあたり |
 |---|---|---|---|
@@ -313,7 +313,7 @@ PyTorch の Distributed Checkpoint で 16 GiB の CPU テンソルを 1 プロ�
 
 ## Nemotron 3.5 Super での試算
 
-ここまでの式に $C = 5$ 秒、$M = 200$ 時間、$R = 15$ 分を入れて、Nemotron 3.5 Super 120B-A12B を p6-b300.48xlarge 32 台、B300 256 枚で学習する場合の初期値を求めます。
+ここまでの式に $C = 5$ 秒、$M = 200$ 時間、$R = 15$ 分を入れて、Nemotron 3.5 Super を p6-b300.48xlarge 32 台、B300 256 枚で学習する場合の初期値を求めます。
 
 1. チェックポイントの大きさ $S$ は、14 バイト/パラメータで約 1.74 TB、6 バイトなら約 0.75 TB です。シャードが均等に分かれるとすると、1 ノードあたり約 54 GB です。
 2. 非同期で保存し、ホストのメモリへのコピーで学習が止まる時間 $C$ を 5 秒とします。1 ノードあたり約 54 GB を 5 秒でコピーするには、GPU からホストへの転送が 1 ノードあたり約 11 GB/s 必要です。[p6 の仕様](https://aws.amazon.com/ec2/instance-types/p6/)によると p6-b300.48xlarge のホストメモリは 4 TiB なので、コピーを置く容量には余裕があります。
@@ -342,7 +342,7 @@ $t_w$ を 20 分に延ばすと、$W$ は約 1.45 GB/s です。容量は世代�
 
 ## まとめ
 
-チェックポイントの大きさ $S$ は、総パラメータ数に、保存する状態の 1 パラメータあたりのバイト数を掛けて求めます。混合精度と Adam では 14 バイトで、Nemotron 3.5 Super 120B-A12B では約 1.74 TB です。保存間隔 $T$ は、保存で学習が止まる時間 $C$ とジョブの平均中断間隔 $M$ から、Young の式で初期値を出します。ストレージに必要な書き込みスループットは $S / t_w$ で、FSx for Lustre で確保する容量は、残す世代を置く容量 $kS$ と、書き込みスループットをストレージ単位あたりのスループットで割った容量 $W/\tau$ のうち大きいほうを、容量の単位に切り上げた値です。
+チェックポイントの大きさ $S$ は、総パラメータ数に、保存する状態の 1 パラメータあたりのバイト数を掛けて求めます。混合精度と Adam では 14 バイトで、Nemotron 3.5 Super では約 1.74 TB です。保存間隔 $T$ は、保存で学習が止まる時間 $C$ とジョブの平均中断間隔 $M$ から、Young の式で初期値を出します。ストレージに必要な書き込みスループットは $S / t_w$ で、FSx for Lustre で確保する容量は、残す世代を置く容量 $kS$ と、書き込みスループットをストレージ単位あたりのスループットで割った容量 $W/\tau$ のうち大きいほうを、容量の単位に切り上げた値です。
 
 非同期の保存で短くなるのは学習が止まる時間で、書き込みが完了するまでの間に中断すると、直近の書き込みが完了したチェックポイントから再開します。非同期では書き込みにかける時間 $t_w$ を長くとれるので、FSx for Lustre に必要な書き込みスループットと料金を下げられます。その分、中断で失う学習の時間と再開時の読み込みの時間が延び、Nemotron 3.5 Super の試算では、$t_w$ を 5 分から 20 分にすると、料金は約 4,100 ドル/月から約 1,500 ドル/月に下がり、$\eta$ は約 0.54% から約 0.76% に増えます。NVIDIA Resiliency Extension が扱える構成では、ローカル NVMe と複製は 1 ノードの喪失に対しては有効ですが、クラスター全体が止まる場合には効かないので、共有ストレージにもコピーを置きます。
 
