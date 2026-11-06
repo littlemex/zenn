@@ -131,11 +131,15 @@ $$
 
 第 1 項は保存で学習が止まる分、第 2 項は中断で失う分です。中断が 1 周期の中で一様に起きるとすると、保存の開始から $t$ の間に起きた中断では前回のチェックポイントまで戻るので、失う時間の平均は $T/2 + t$ になり、そこに再開までの時間 $R$ が加わります。
 
+![η の 2 つの項の成り立ち。第 1 項は間隔 T ごとに C だけ学習が止まる分で C/T、第 2 項は中断 1 回あたり平均 T/2 + t の学習のやり直しと再開の R を失い、それが平均 M ごとに起きる分](https://raw.githubusercontent.com/littlemex/figures/refs/heads/zenn/articles/dcf057e8b99eda/zenn/articles/dcf057e8b99eda/fig6-eta-terms.png)
+
 $t$ と $R$ が $T$ によらないとすると、右辺を $T$ で微分して 0 と置いた $-C/T^2 + 1/(2M) = 0$ から、最適な間隔は次のようになります。
 
 $$
 T^{*} \approx \sqrt{2\,C\,M}
 $$
+
+![保存を増やすと止まる割合 C/T が増え、減らすと失う割合が増える。2 つが釣り合う間隔が T* = √(2CM)](https://raw.githubusercontent.com/littlemex/figures/refs/heads/zenn/articles/dcf057e8b99eda/zenn/articles/dcf057e8b99eda/fig7-young-balance.png)
 
 この式は [Young が 1974 年に示した](https://dl.acm.org/doi/10.1145/361147.361115)もので、$C \ll T \ll M$ のときに成り立ちます。$C$ が $M$ に比べて無視できない場合の補正は、[Daly が 2006 年に](https://doi.org/10.1016/j.future.2004.11.016)加えています。
 
