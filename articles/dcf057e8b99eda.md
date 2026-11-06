@@ -91,18 +91,7 @@ MoE（Mixture of Experts）は、expert と呼ぶ複数の部分ネットワー�
 | モーメントを bf16 にした場合 | 10 バイト | 約 1.24 TB | 約 39 GB |
 | master weight を持たない場合 | 6 バイト | 約 0.75 TB | 約 23 GB |
 
-画像エンコーダーを凍結して学習するなら、そのパラメータはオプティマイザの状態を持たないので、bf16 の重みの 2 バイトだけを保存すれば足ります。以降の試算では 14 バイトの約 1.74 TB を使い、最後に 6 バイトの場合の結果も示します。
-
-### 公開されている実例
-
-| 出典 | 内容 |
-|---|---|
-| [BLOOM](https://arxiv.org/abs/2211.05100) | 全パラメータを毎トークン使う 176B の dense モデルで 2.3 TB |
-| [OPT-175B](https://arxiv.org/abs/2205.01068) | 992 ファイルで 1.6 TB |
-| [Axolotl の gpt-oss-120b の例](https://github.com/axolotl-ai-cloud/axolotl/blob/fc406cc61ca4bd330aba356c97479ca6e00627ef/examples/gpt-oss/README.md#L37) | H100 8 枚でフルファインチューニングすると、1 つのチェックポイントが約 720 GB |
-| [awsome-distributed-ai の verl の例](https://github.com/awslabs/awsome-distributed-ai/blob/874143168d83f678954a98776c7861ae309134a2/examples/training/verl/hyperpod-eks/rlvr/README.md#L147) | 20B のモデルを GPU 12 枚で学習すると、1 つのチェックポイントが約 117 GB |
-
-BLOOM の 2.3 TB は 1 パラメータあたり約 13 バイト、gpt-oss-120b の 720 GB は総パラメータ約 116.8B で割って約 6.2 バイトです。実例でも、保存する状態の構成によって 6〜14 バイトの幅があります。
+画像エンコーダーを凍結して学習するなら、そのパラメータはオプティマイザの状態を持たないので、bf16 の重みの 2 バイトだけを保存すれば足ります。公開されている例では、[awsome-distributed-ai の verl の例](https://github.com/awslabs/awsome-distributed-ai/blob/874143168d83f678954a98776c7861ae309134a2/examples/training/verl/hyperpod-eks/rlvr/README.md#L147)が、20B のモデルを GPU 12 枚で学習すると 1 つのチェックポイントが約 117 GB になると書いています。以降の試算では 14 バイトの約 1.74 TB を使い、最後に 6 バイトの場合の結果も示します。
 
 ### 参考: ほかのモデルでの大きさ
 
