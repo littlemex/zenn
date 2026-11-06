@@ -299,6 +299,8 @@ Nemotron 3.5 Super の $S$ を 1.74 TB とすると、ストレージへの書�
 同期で保存するなら $t_w$ がそのまま学習の止まる時間 $C$ になるので、$C$ を短くするほど確保する容量と料金が増えます。非同期なら $C$ と $t_w$ を別々に決められます。前回の書き込みが次の保存の開始までに終わっていない場合の動きは、フレームワークで違います。[TorchTitan](https://github.com/pytorch/torchtitan/blob/5f5fc93e5d225d9056b1a41fc917d5e9c6e15801/torchtitan/components/checkpointer/base.py#L405-L413) は前回の書き込みが終わるまで待つので、その分だけ学習が止まります。[Megatron-LM](https://github.com/NVIDIA/Megatron-LM/blob/a11c84aecfc4cd3018bcb29a6f0888626ae2da1c/megatron/training/checkpointing.py#L696-L699) と [Megatron Bridge](https://github.com/NVIDIA-NeMo/Megatron-Bridge/blob/8121958150c5d86d5256b8b1bd647fd9ac2c49a4/src/megatron/bridge/training/checkpointing.py#L1321-L1325) は警告を出して次の保存を始めるので、学習は止まりませんが、書き終わっていない書き込みが積み重なります。どちらでも重なりを避けるには $W \ge S/(T - C)$ が必要で、$T$ が約 45 分なら約 0.65 GB/s が下限です。$t_w$ を長くすると $W$ は小さくなりますが、$t$ が延びるので中断で失う学習の時間 $T + t$ と $\eta$ は大きくなります。ローカルの NVMe を経由して共有ストレージへ転送する場合も、次の保存までに転送を終える必要があるので、平均で $S/T$ 以上の書き込みスループットが要ります。
 
 :::message
+**コラム: 保存で止まる GPU 時間と FSx for Lustre の料金のトレードオフ**
+
 同期で保存する場合、$C$ を短くすると FSx for Lustre の料金は増えますが、保存で止まる GPU の時間は減ります。1 年間の学習で両者を比べると次のとおりです。前提は、$S$ が 1.74 TB、p6-b300.48xlarge 32 台、$M$ が 200 時間、$T$ を Young の式で $\sqrt{2CM}$ に置くことです。GPU の時間は、1 年の 8,760 時間に止まる割合 $C/T$ を掛け、2026 年 11 月時点の p6-b300.48xlarge のオレゴンのオンデマンド料金、1 時間 142.416 ドルで金額にしました。FSx for Lustre は、各 $C$ で最も安い構成の月額の 12 か月分です。
 
 | $C$ | 止まる GPU 時間/年 | その金額/年 | FSx for Lustre/年 | 合計/年 |
