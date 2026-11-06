@@ -237,10 +237,6 @@ NVIDIA B300 を 8 枚積んだ [p6-b300.48xlarge](https://aws.amazon.com/ec2/ins
 
 3 台の組の行は、32 ノードのうち 30 ノードを 3 台ずつ 10 組に分け、残りの 2 ノードは計算に入れていない値です。この概算は故障が独立だという前提に立っているので、ラックや電源の障害で複数のノードがまとめて止まる場合や、クラスター全体が止まる場合には当てはまりません。その場合に備えて、FSx for Lustre か S3 にもコピーを置きます。
 
-:::message alert
-[awsome-distributed-ai の NVIDIA Resiliency Extension の例](https://github.com/awslabs/awsome-distributed-ai/blob/874143168d83f678954a98776c7861ae309134a2/examples/training/nvrx/README.md#L18)は、ローカルチェックポイントを g5 インスタンス上の GPT-2 でだけ試したと書いています。同じ箇所には、大きなモデルで FSDP が分割した状態は、NVIDIA Resiliency Extension の状態の扱いとまだ互換性がないとも書かれています。いずれも 2026 年 11 月に確かめた記述です。
-:::
-
 ## データが通る経路
 
 チェックポイントのデータは、GPU のメモリからホストのメモリを経て、ローカル NVMe か、ネットワークインターフェースを通って共有ストレージへ書かれます。経路の途中にはそれぞれ上限があり、いちばん低い上限が書き込みスループットを決めます。
