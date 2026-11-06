@@ -93,18 +93,6 @@ MoE（Mixture of Experts）は、expert と呼ぶ複数の部分ネットワー�
 
 画像エンコーダーを凍結して学習するなら、そのパラメータはオプティマイザの状態を持たないので、bf16 の重みの 2 バイトだけを保存すれば足ります。公開されている例では、[awsome-distributed-ai の verl の例](https://github.com/awslabs/awsome-distributed-ai/blob/874143168d83f678954a98776c7861ae309134a2/examples/training/verl/hyperpod-eks/rlvr/README.md#L147)が、20B のモデルを GPU 12 枚で学習すると 1 つのチェックポイントが約 117 GB になると書いています。以降の試算では 14 バイトの約 1.74 TB を使い、最後に 6 バイトの場合の結果も示します。
 
-### 参考: ほかのモデルでの大きさ
-
-参考として、100B 前後のほかの公開モデルについて、2026 年 11 月に Hugging Face の API で取得した総パラメータ数と、それに 14 バイトと 6 バイトを掛けた $S$ を示します。
-
-| モデル | 総パラメータ | 14 バイトでの $S$ | 6 バイトでの $S$ |
-|---|---|---|---|
-| [gpt-oss-120b](https://huggingface.co/openai/gpt-oss-120b) | 約 116.8B | 約 1.64 TB | 約 0.70 TB |
-| [GLM-4.5-Air](https://huggingface.co/zai-org/GLM-4.5-Air) | 約 110.5B | 約 1.55 TB | 約 0.66 TB |
-| [Llama 4 Scout](https://huggingface.co/meta-llama/Llama-4-Scout-17B-16E) | 約 108.6B | 約 1.52 TB | 約 0.65 TB |
-| [Qwen3.5-122B-A10B](https://huggingface.co/Qwen/Qwen3.5-122B-A10B) | 約 125.1B | 約 1.75 TB | 約 0.75 TB |
-| [Solar-Open-100B](https://huggingface.co/upstage/Solar-Open-100B) | 約 102.7B | 約 1.44 TB | 約 0.62 TB |
-
 ## 公開事例の保存間隔
 
 保存の間隔を数字で公開している資料は多くありません。
