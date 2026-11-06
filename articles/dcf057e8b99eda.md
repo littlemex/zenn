@@ -63,7 +63,7 @@ $$
 
 ### 重みのバイト数
 
-2026 年 11 月に Hugging Face の API で取得した、公開モデルの重みのファイルサイズの合計を、総パラメータ数で割りました。試算に使う [Nemotron 3.5 Super の BF16 版](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16)は、約 248.9 GB を約 124.5B で割って 1 パラメータあたり 2.0 バイトでした。ほかに bf16 で公開されている [Qwen3-235B-A22B](https://huggingface.co/Qwen/Qwen3-235B-A22B)、[Llama 4 Scout](https://huggingface.co/meta-llama/Llama-4-Scout-17B-16E)、[GLM-4.5-Air](https://huggingface.co/zai-org/GLM-4.5-Air)、[Mixtral-8x7B](https://huggingface.co/mistralai/Mixtral-8x7B-v0.1)、[OLMoE](https://huggingface.co/allenai/OLMoE-1B-7B-0924) は、いずれも 1 パラメータあたり 2.0 バイトでした。FP8 で公開されている [DeepSeek-V3](https://huggingface.co/deepseek-ai/DeepSeek-V3) は 1.01 バイト、[Kimi K2](https://huggingface.co/moonshotai/Kimi-K2-Instruct) は 1.00 バイトです。
+2026 年 11 月に Hugging Face の API で取得した [Nemotron 3.5 Super の BF16 版](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16)の重みのファイルサイズの合計は約 248.9 GB で、総パラメータ数の約 124.5B で割ると 1 パラメータあたり 2.0 バイトです。
 
 MoE（Mixture of Experts）は、expert と呼ぶ複数の部分ネットワークのうち、トークンごとに一部だけを使うモデルです。1 トークンの計算に使うパラメータを活性パラメータと呼び、モデル名の 120B-A12B は総パラメータ約 120B、活性パラメータ約 12B を表します。保存では使われなかった expert の重みも書き出すので、チェックポイントの大きさは活性パラメータ数ではなく総パラメータ数に比例します。
 
@@ -87,7 +87,7 @@ MoE（Mixture of Experts）は、expert と呼ぶ複数の部分ネットワー�
 | 保存する状態 | 1 パラメータあたり | $S$ | 1 ノードあたり |
 |---|---|---|---|
 | bf16 の重みだけ | 2 バイト | 約 0.25 TB | 約 7.8 GB |
-| 重み、fp32 の master weight、fp32 のモーメント | 14 バイト | 約 1.74 TB | 約 54 GB |
+| 重みとオプティマイザの状態 | 14 バイト | 約 1.74 TB | 約 54 GB |
 | モーメントを bf16 にした場合 | 10 バイト | 約 1.24 TB | 約 39 GB |
 | master weight を持たない場合 | 6 バイト | 約 0.75 TB | 約 23 GB |
 
