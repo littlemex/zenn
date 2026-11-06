@@ -203,11 +203,9 @@ Megatron-LM、それを継承する Megatron Bridge、TorchTitan では、非同
 | フレームワーク | 保存間隔の既定 | 非同期保存の既定 |
 |---|---|---|
 | Megatron-LM | [既定値はなし](https://github.com/NVIDIA/Megatron-LM/blob/a11c84aecfc4cd3018bcb29a6f0888626ae2da1c/megatron/training/config/training_config.py#L506)で、保存先を指定すると[間隔の指定が必須](https://github.com/NVIDIA/Megatron-LM/blob/a11c84aecfc4cd3018bcb29a6f0888626ae2da1c/megatron/training/arguments.py#L1211) | [無効](https://github.com/NVIDIA/Megatron-LM/blob/a11c84aecfc4cd3018bcb29a6f0888626ae2da1c/megatron/training/config/training_config.py#L624)。分散チェックポイント形式で `--use-persistent-ckpt-worker` を指定しないと、[有効にしても無効に戻される](https://github.com/NVIDIA/Megatron-LM/blob/a11c84aecfc4cd3018bcb29a6f0888626ae2da1c/megatron/training/arguments.py#L1757) |
-| Megatron Bridge | Megatron-LM の設定を[継承](https://github.com/NVIDIA-NeMo/Megatron-Bridge/blob/8121958150c5d86d5256b8b1bd647fd9ac2c49a4/src/megatron/bridge/training/config.py#L533) | Megatron-LM の設定を継承するので無効 |
+| Megatron Bridge | Megatron-LM の設定を[継承](https://github.com/NVIDIA-NeMo/Megatron-Bridge/blob/8121958150c5d86d5256b8b1bd647fd9ac2c49a4/src/megatron/bridge/training/config.py#L533) | Megatron-LM の設定を継承するので無効。`async_save` で有効にする |
 | TorchTitan | [500 ステップ](https://github.com/pytorch/torchtitan/blob/5f5fc93e5d225d9056b1a41fc917d5e9c6e15801/torchtitan/components/checkpointer/base.py#L614) | [無効](https://github.com/pytorch/torchtitan/blob/5f5fc93e5d225d9056b1a41fc917d5e9c6e15801/torchtitan/components/checkpointer/dcp.py#L138) |
 | Hugging Face Trainer | [500 ステップ](https://github.com/huggingface/transformers/blob/7d5d6d667fb7b91580aebc3cf1bedab976fb61f5/src/transformers/training_args.py#L1183) | 非同期保存の機能はなく、`save_steps` ごとに同期で保存 |
-
-Megatron Bridge は NeMo 2 の後継で、[移行ガイド](https://github.com/NVIDIA-NeMo/Megatron-Bridge/blob/8121958150c5d86d5256b8b1bd647fd9ac2c49a4/docs/nemo2-migration-guide.md#L877)によると、NeMo 2 の `strategy.ckpt_async_save` は Megatron Bridge の `async_save` に対応します。
 
 ## ローカル NVMe と複製
 
