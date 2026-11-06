@@ -219,7 +219,7 @@ NVIDIA B300 を 8 枚積んだ [p6-b300.48xlarge](https://aws.amazon.com/ec2/ins
 
 NVIDIA Resiliency Extension のローカルチェックポイントは、Megatron-LM などの学習ループに組み込んで使い、各ノードの SSD か RAM ディスクに保存し、ほかのノードにも複製を持つことで、1 ノードを失っても複製からシャードを復元します。複製の組み方は設定で決め、保存と再開で同じ設定にする必要があります。
 
-NVIDIA Resiliency Extension は、GPU 1 枚を受け持つプロセスであるランクを組にして、組の中で複製を持ち合います。[組の作り方](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/3e712dd847e4be53fb76ed9d3728229010d837d8/src/nvidia_resiliency_ext/checkpointing/local/replication/strategies.py#L191)は、組の大きさ $F$ と、組の中のランクの間隔 $J$ の 2 つの設定で決まり、それぞれ `replication_factor` と `replication_jump` です。$J$ の既定値は 1 ノードの GPU 数なので、組のランクは別々のノードに置かれ、組の中の $F$ ノードが互いの分の複製をすべて持ちます。$F$ の既定値は NVIDIA Resiliency Extension でも [Megatron-LM でも 2](https://github.com/NVIDIA/Megatron-LM/blob/a11c84aecfc4cd3018bcb29a6f0888626ae2da1c/megatron/training/config/training_config.py#L753) です。ランクの総数が $J \times F$ で割り切れないと、[組を作る処理が止まります](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/3e712dd847e4be53fb76ed9d3728229010d837d8/src/nvidia_resiliency_ext/checkpointing/local/replication/group_utils.py#L135)。p6-b300.48xlarge 32 台ではランクの総数が 256、$J$ が 8 なので、$F$ に使えるのは 1、2、4、8、16、32 で、3 は使えません。
+NVIDIA Resiliency Extension は、GPU 1 枚を受け持つプロセスであるランクを組にして、組の中で複製を持ち合います。[組の作り方](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/3e712dd847e4be53fb76ed9d3728229010d837d8/src/nvidia_resiliency_ext/checkpointing/local/replication/strategies.py#L191)は、組の大きさ $F$ と、組の中のランクの間隔 $J$ の 2 つの設定で決まり、それぞれ `replication_factor` と `replication_jump` です。$J$ の既定値は 1 ノードの GPU 数なので、組のランクは別々のノードに置かれ、組の中の $F$ ノードが互いの分の複製をすべて持ちます。$F$ の既定値は NVIDIA Resiliency Extension でも [Megatron-LM でも 2](https://github.com/NVIDIA/Megatron-LM/blob/a11c84aecfc4cd3018bcb29a6f0888626ae2da1c/megatron/training/config/training_config.py#L753) です。ランクの総数が $J \times F$ で割り切れないと、[組を作る処理が止まります](https://github.com/NVIDIA/nvidia-resiliency-ext/blob/3e712dd847e4be53fb76ed9d3728229010d837d8/src/nvidia_resiliency_ext/checkpointing/local/replication/group_utils.py#L135)。p6-b300.48xlarge 32 台ではランクの総数が 256、$J$ が 8 なので、$F$ に使えるのは 1、2、4、8、16、32 です。
 
 組を持っていても、故障したノードの分の複製を作り直す前に、同じ組のほかのノードもすべて失われると、そのシャードは失われます。この確率を、組に固定する NVIDIA Resiliency Extension の置き方と、比較のために複製先をランダムに選ぶ置き方で比べます。前提は次のとおりです。
 
@@ -244,7 +244,7 @@ $$
 
 #### 複製先をランダムに選ぶ場合
 
-A の各シャードの複製を、ほかの 31 ノードからランダムに選んだ 1 台に置くとします。シャードが十分に多いと、31 ノードのどれにも A のどれかのシャードの複製があります。そのため、31 ノードのどれか 1 台が $\Delta$ の間に失われれば、A のシャードのどれかを失います。確率は次のとおりで、$p$ が小さければ $31p$ で近似できます。
+A の各シャードの複製を、ほかの 31 ノードからランダムに選んだ 1 台に置くとします。シャードが十分に多いと、31 ノードのどれにも A のどれかのシャードの複製があります。そのため、31 ノードのどれか 1 台が $\Delta$ の間に失われれば、A のシャードのどれかを失います。31 台のどれも失われない確率は、各ノードが独立に確率 $1 - p$ で残るので $(1 - p)^{31}$ です。A のシャードを失う確率はその余事象なので、次のようになり、$p$ が小さければ $31p$ で近似できます。
 
 $$
 P_{\text{ランダム}} = 1 - (1 - p)^{31} \approx 31\, p
