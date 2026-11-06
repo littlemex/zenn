@@ -63,9 +63,9 @@ $$
 
 ### 重みのバイト数
 
-2026 年 11 月に Hugging Face の API で取得した、公開モデルの重みのファイルサイズの合計を、総パラメータ数で割りました。bf16 で公開されている [Qwen3-235B-A22B](https://huggingface.co/Qwen/Qwen3-235B-A22B)、[Llama 4 Scout](https://huggingface.co/meta-llama/Llama-4-Scout-17B-16E)、[GLM-4.5-Air](https://huggingface.co/zai-org/GLM-4.5-Air)、[Mixtral-8x7B](https://huggingface.co/mistralai/Mixtral-8x7B-v0.1)、[OLMoE](https://huggingface.co/allenai/OLMoE-1B-7B-0924) は、いずれも 1 パラメータあたり 2.0 バイトでした。FP8 で公開されている [DeepSeek-V3](https://huggingface.co/deepseek-ai/DeepSeek-V3) は 1.01 バイト、[Kimi K2](https://huggingface.co/moonshotai/Kimi-K2-Instruct) は 1.00 バイトです。
+2026 年 11 月に Hugging Face の API で取得した、公開モデルの重みのファイルサイズの合計を、総パラメータ数で割りました。試算に使う [Nemotron 3.5 Super 120B-A12B の BF16 版](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16)は、約 248.9 GB を約 124.5B で割って 1 パラメータあたり 2.0 バイトでした。ほかに bf16 で公開されている [Qwen3-235B-A22B](https://huggingface.co/Qwen/Qwen3-235B-A22B)、[Llama 4 Scout](https://huggingface.co/meta-llama/Llama-4-Scout-17B-16E)、[GLM-4.5-Air](https://huggingface.co/zai-org/GLM-4.5-Air)、[Mixtral-8x7B](https://huggingface.co/mistralai/Mixtral-8x7B-v0.1)、[OLMoE](https://huggingface.co/allenai/OLMoE-1B-7B-0924) は、いずれも 1 パラメータあたり 2.0 バイトでした。FP8 で公開されている [DeepSeek-V3](https://huggingface.co/deepseek-ai/DeepSeek-V3) は 1.01 バイト、[Kimi K2](https://huggingface.co/moonshotai/Kimi-K2-Instruct) は 1.00 バイトです。
 
-MoE（Mixture of Experts）は、expert と呼ぶ複数の部分ネットワークのうち、トークンごとに一部だけを使うモデルです。1 トークンの計算に使うパラメータを活性パラメータと呼び、モデル名の 120B-A12B は総パラメータ約 120B、活性パラメータ約 12B を表します。保存では使われなかった expert の重みも書き出すので、チェックポイントの大きさは活性パラメータ数ではなく総パラメータ数に比例します。Nemotron 3.5 Super 120B-A12B の総パラメータ数は約 124.5B で、bf16 の重みは約 249 GB です。約 124.5B には画像エンコーダーのパラメータも含まれます。
+MoE（Mixture of Experts）は、expert と呼ぶ複数の部分ネットワークのうち、トークンごとに一部だけを使うモデルです。1 トークンの計算に使うパラメータを活性パラメータと呼び、モデル名の 120B-A12B は総パラメータ約 120B、活性パラメータ約 12B を表します。保存では使われなかった expert の重みも書き出すので、チェックポイントの大きさは活性パラメータ数ではなく総パラメータ数に比例します。
 
 ### 再開に必要な状態
 
@@ -78,7 +78,20 @@ MoE（Mixture of Experts）は、expert と呼ぶ複数の部分ネットワー�
 | fp32 の Adam の 1 次と 2 次のモーメント | 8 |
 | 合計 | 14 |
 
-[ZeRO の論文](https://arxiv.org/abs/1910.02054)も同じ内訳を示していて、勾配の 2 バイトを含めると 16 バイトです。モーメントを bf16 で持つ構成では 2 + 4 + 4 = 10 バイトになります。[DeepSeek-V3 の技術報告](https://arxiv.org/abs/2412.19437)は、AdamW の 1 次と 2 次のモーメントを bf16 で持ち、master weight を fp32 で持つと書いています。master weight を持たない構成では 6 バイトです。乱数生成器やデータローダの状態はこれらに比べて小さいので、ここでは数えていません。画像エンコーダーを凍結して学習するなら、そのパラメータはオプティマイザの状態を持たないので、bf16 の重みの 2 バイトだけを保存すれば足ります。Nemotron 3.5 Super では、14 バイトで約 1.74 TB、10 バイトで約 1.24 TB、6 バイトで約 0.75 TB です。
+[ZeRO の論文](https://arxiv.org/abs/1910.02054)も同じ内訳を示していて、勾配の 2 バイトを含めると 16 バイトです。モーメントを bf16 で持つ構成では 2 + 4 + 4 = 10 バイトになります。[DeepSeek-V3 の技術報告](https://arxiv.org/abs/2412.19437)は、AdamW の 1 次と 2 次のモーメントを bf16 で持ち、master weight を fp32 で持つと書いています。master weight を持たない構成では 6 バイトです。乱数生成器やデータローダの状態はこれらに比べて小さいので、ここでは数えていません。
+
+### Nemotron 3.5 Super 120B-A12B の大きさ
+
+試算に使う Nemotron 3.5 Super 120B-A12B の総パラメータ数は約 124.5B で、この値には画像エンコーダーのパラメータも含まれます。1 パラメータあたりのバイト数ごとに、チェックポイントの大きさ $S$ と、32 ノードに均等に分けたときの 1 ノードあたりの大きさは次のとおりです。
+
+| 保存する状態 | 1 パラメータあたり | $S$ | 1 ノードあたり |
+|---|---|---|---|
+| bf16 の重みだけ | 2 バイト | 約 0.25 TB | 約 7.8 GB |
+| 重み、fp32 の master weight、fp32 のモーメント | 14 バイト | 約 1.74 TB | 約 54 GB |
+| モーメントを bf16 にした場合 | 10 バイト | 約 1.24 TB | 約 39 GB |
+| master weight を持たない場合 | 6 バイト | 約 0.75 TB | 約 23 GB |
+
+画像エンコーダーを凍結して学習するなら、そのパラメータはオプティマイザの状態を持たないので、bf16 の重みの 2 バイトだけを保存すれば足ります。以降の試算では 14 バイトの約 1.74 TB を使い、最後に 6 バイトの場合の結果も示します。
 
 ### 公開されている実例
 
@@ -89,11 +102,11 @@ MoE（Mixture of Experts）は、expert と呼ぶ複数の部分ネットワー�
 | [Axolotl の gpt-oss-120b の例](https://github.com/axolotl-ai-cloud/axolotl/blob/fc406cc61ca4bd330aba356c97479ca6e00627ef/examples/gpt-oss/README.md#L37) | H100 8 枚でフルファインチューニングすると、1 つのチェックポイントが約 720 GB |
 | [awsome-distributed-ai の verl の例](https://github.com/awslabs/awsome-distributed-ai/blob/874143168d83f678954a98776c7861ae309134a2/examples/training/verl/hyperpod-eks/rlvr/README.md#L147) | 20B のモデルを GPU 12 枚で学習すると、1 つのチェックポイントが約 117 GB |
 
-BLOOM の 2.3 TB は 1 パラメータあたり約 13 バイト、gpt-oss-120b の 720 GB は総パラメータ約 116.8B で割って約 6.2 バイトです。保存する状態の構成によって 6〜14 バイトの幅があるので、以降の試算では 14 バイトを使い、最後に 6 バイトの場合の結果も示します。
+BLOOM の 2.3 TB は 1 パラメータあたり約 13 バイト、gpt-oss-120b の 720 GB は総パラメータ約 116.8B で割って約 6.2 バイトです。実例でも、保存する状態の構成によって 6〜14 バイトの幅があります。
 
-### ほかのモデルでの大きさ
+### 参考: ほかのモデルでの大きさ
 
-次の表は、100B 前後の公開モデルについて、2026 年 11 月に Hugging Face の API で取得した総パラメータ数と、それに 14 バイトと 6 バイトを掛けた $S$ です。
+参考として、100B 前後のほかの公開モデルについて、2026 年 11 月に Hugging Face の API で取得した総パラメータ数と、それに 14 バイトと 6 バイトを掛けた $S$ を示します。
 
 | モデル | 総パラメータ | 14 バイトでの $S$ | 6 バイトでの $S$ |
 |---|---|---|---|
@@ -102,7 +115,6 @@ BLOOM の 2.3 TB は 1 パラメータあたり約 13 バイト、gpt-oss-120b �
 | [Llama 4 Scout](https://huggingface.co/meta-llama/Llama-4-Scout-17B-16E) | 約 108.6B | 約 1.52 TB | 約 0.65 TB |
 | [Qwen3.5-122B-A10B](https://huggingface.co/Qwen/Qwen3.5-122B-A10B) | 約 125.1B | 約 1.75 TB | 約 0.75 TB |
 | [Solar-Open-100B](https://huggingface.co/upstage/Solar-Open-100B) | 約 102.7B | 約 1.44 TB | 約 0.62 TB |
-| [Nemotron 3.5 Super 120B-A12B](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16) | 約 124.5B | 約 1.74 TB | 約 0.75 TB |
 
 ## 公開事例の保存間隔
 
