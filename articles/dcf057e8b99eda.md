@@ -15,7 +15,7 @@ published: true
 :::
 
 :::message
-この記事が扱うのは、チェックポイントの書き込みです。Physical AI のように動画を大量に読む学習では、ストレージへの要求は読み込みが中心になり、話が変わります。たとえば [Turing の記事](https://zenn.dev/turing_motors/articles/c06193d7988fee)は、7 台の車載カメラの動画を PB 級の規模で S3 から直接読むために、Range GET で必要な部分だけを取り、先読みで S3 のレイテンシーを隠しています。デコードの置き場所も設計の対象で、[NVIDIA DALI の動画リーダー](https://docs.nvidia.com/deeplearning/dali/user-guide/docs/operations/nvidia.dali.fn.readers.video.html)は GPU のハードウェアデコーダーで動画をデコードします。読み込みの設計は、この記事とは別に検討が必要です。
+この記事が扱うのは、チェックポイントの書き込みです。Physical AI のように動画を大量に読む学習では、ストレージへの要求は読み込みが中心になり、話が変わります。たとえば [Turing の記事](https://zenn.dev/turing_motors/articles/c06193d7988fee)は、7 台の車載カメラの動画を PB 級の規模で S3 から直接読むために、Range GET で必要な部分だけを取り、先読みで S3 のレイテンシーを隠しています。デコードの置き場所も設計の対象で、[NVIDIA DALI の動画リーダー](https://docs.nvidia.com/deeplearning/dali/user-guide/docs/operations/nvidia.dali.fn.readers.video.html)は GPU のハードウェアデコーダーで動画をデコードします。読み込みに必要なスループットは、1 GPU が 1 秒に読むデータの量と GPU の数の積で決まり、データの種類で桁が変わります。事前にトークン化したテキストは 1 トークン 2〜4 バイトで、[DeepSeek-V3](https://arxiv.org/abs/2412.19437) の学習は 1 GPU あたり約 1,500 トークン/秒なので、1 GPU あたり数 KB/s です。画像は、[OpenCLIP](https://arxiv.org/abs/2212.07143) の ViT-L/14 の学習が 1 GPU あたり毎秒数十枚で、1 枚 100 KB とすると 1 GPU あたり数 MB/s、256 GPU で GB/s 級になります。動画は 1 GPU が 1 秒に読む動画の長さとビットレートで決まり、チェックポイントの書き込みに並ぶ大きさの読み込みが学習中ずっと続くことがあります。読み込みの設計は、この記事とは別に検討が必要です。
 :::
 
 ## 保存時の書き込み
