@@ -68,6 +68,7 @@ RL の 1 step は、回答の生成、採点、勾配の計算、重みの送り
 |---|---|
 | 生成の時間 | [verl の非同期の文書](https://raw.githubusercontent.com/volcengine/verl/main/docs/advance/one_step_off.md) は、DAPO の 32B の学習で回答の生成が時間の約 70% を占め、資源を増やしても生成の時間は縮まないと書いている。最も長い回答を待つ間に他の GPU が止まるためである |
 | 費用の内訳 | [MiMo-V2.6](https://arxiv.org/abs/2610.11959) は、RL に Pro で 260 万ドル、Flash で 90 万ドルを使い、Pro の費用は生成 43.8%、学習 43.5%、採点 12.7% だった |
+| token ごとの料金 | [Amazon SageMaker AI の複数ターンの RL の手引き](https://aws.amazon.com/jp/blogs/machine-learning/multi-turn-reinforcement-learning-on-amazon-sagemaker-ai-a-hands-on-guide/) は、gpt-oss-20b の 100 step の学習（105,486 回の Wordle、12 時間 40 分）で、モデルが読んだ token、書いた token、学習で処理した token の合計約 12.9 億 token が、us-east-1 の定価で 338.50 ドルにあたり、そのうち学習の分が 231.59 ドル（約 68%）だった。読み込む token は毎ターン過去のやり取りを読み直す分だけ積み上がり、最も大きい学習の分は trajectory の長さに比例するので、ゲームが短く、考える文が短いほど安くなる。agent を動かす基盤の費用は別に約 79 ドル |
 | 重みの送り込み | 1 兆パラメータの Kimi-K2 で、[Mooncake](https://raw.githubusercontent.com/kvcache-ai/Mooncake/main/README.md) を使う RDMA の送り方は 53 秒から 7.2 秒になった。[verl の差分の同期](https://raw.githubusercontent.com/volcengine/verl/main/docs/advance/delta_weight_sync.md) は Qwen3-235B-A22B の構成で 246〜266 秒を 11.4〜14.9 秒にした |
 | 投機的デコード | [verl の MTP の文書](https://raw.githubusercontent.com/volcengine/verl/main/docs/advance/mtp.md) は、H20 で mimo-7B を SGLang で生成した例で、MTP（モデルに組み込んだ draft の層）を有効にすると生成の処理量が約 50% 下がったと書き、演算の性能が低い GPU では draft の検証の費用が節約を上回ると説明している |
 
@@ -75,13 +76,15 @@ MoE の router も RL の中で不安定になり、MiMo-V2.6 は router を学�
 
 ### 生成を低い精度にすると何が起きるか
 
-生成を FP8 や FP4 に下げて速くする研究がある。速さと精度への効果は方式と環境で変わり、生成側の誤差は訓練と推論の比 $\rho$（前の章）を 1 から離しうる。[HiFloat4 の論文](https://arxiv.org/abs/2607.26515) は、回答の生成と学習の両方を 4 bit で行う RL を調べ、劣化の主な原因は学習側の量子化ではなく、生成での活性の量子化だと報告した。活性の外れ値が値の範囲を広げるので、FP4 では多くの活性が 0 に潰れる。
+生成を FP8 や FP4 に下げて速くする研究がある。速さと精度への効果は方式と環境で変わり、重みの変換と送り込みが増えて全体では速くならない例もある（後の miniTE の段落で扱う）。生成側の誤差は訓練と推論の比 $\rho$（前の章）を 1 から離しうる。[HiFloat4 の論文](https://arxiv.org/abs/2607.26515) は、回答の生成と学習の両方を 4 bit で行う RL を調べ、劣化の主な原因は学習側の量子化ではなく、生成での活性の量子化だと報告した。活性の外れ値が値の範囲を広げるので、FP4 では多くの活性が 0 に潰れる。
 
 ![Qwen2.5-3B の GRPO の GSM8K の正答率を、学習側と生成側の精度の組み合わせごとに並べた。生成側の精度を上げると正答率は上がるが、生成を FP4 のまま学習側だけを BF16 に戻すと、HiF4 で 82.03% から 78.01% に、MXFP4 で 73.31% から 50.57% に下がる](https://raw.githubusercontent.com/littlemex/figures/refs/heads/zenn/books/digging-into-machine-learning/zenn/books/digging-into-machine-learning/rl-open-models-and-open-problems/fp4-consistency.png)
 
 Qwen2.5-3B の GRPO の GSM8K では、生成を FP4 のまま学習側だけを BF16 に戻すと、両方を FP4 にしたときより正答率が下がった。論文は、生成と学習の間のずれが大きくなるためだと説明し、生成の行列積にだけ疎な残差の補正を足す Rollout-ResQ で、BF16 との正答率の差を HiF4 で 4.9 ポイントから 1.1 ポイントに、MXFP4 で 13.6 ポイントから 5.3 ポイントに縮めた。対策も出ていて、[QUADS](https://arxiv.org/abs/2607.15810) は MoE の GRPO を NVFP4 で学習したときに 73.15%（BF16）から 51.37% に落ちた平均の pass@1 を、学習側の重みだけを量子化する QAT（量子化を意識した学習）と生成側の活性の補正で 72.86% に戻し、生成は FP8 より 16% 速くなった。[TRACE](https://arxiv.org/abs/2610.07767) は重み、活性、KV cache（attention が過去の token の情報を持っておく領域）を FP4 にして回答を生成しても、BF16 で生成したときと同程度の RL の性能を保ち、生成を BF16 の場合の最大 5.4 倍速くした。[KV4-RL](https://arxiv.org/abs/2610.14448) は KV cache を INT4 にして attention の sink と直近の位置だけを INT8 に残した。公開モデルでは、Kimi K3 が SFT の段から MXFP4 の QAT を続け、DeepSeek-V4 が事後学習の間に MoE の expert の重みを FP4 にする QAT を行い、Nemotron 3.5 は RL のあとで NVFP4 に量子化し、36 のベンチマークで BF16 に対する正確さの保持率の中央値が 99.62% だったと書いている。
 
 量子化で落ちた reasoning の能力を取り戻すのにも OPD が使われている。[Train Where the Quantized Model Goes](https://arxiv.org/abs/2609.26708) は、量子化した生徒が自分の回答の上で全精度の教師から学び、検証器の報酬も組み合わせる方法で、実効 2.79 bit と 1.88 bit の 4 つのモデルの平均で MATH-500 での BF16 の性能の保持率を 35% から 70% に上げ、固定した回答で学ぶ蒸留（QAD）を同じ予算で続けるより改善が大きかったと報告した。[Right On Q](https://arxiv.org/abs/2610.29378) は、固定した回答で学ぶと量子化した生徒が実際に書く prefix と学習の prefix がずれ、回答が長いほど大きくなると書いている。前の章の off-policy の蒸留と OPD の違いが、量子化の回復でも現れている。
+
+生成と学習の両方を低い精度にしたときの系全体の費用は、[miniTE の技術報告](https://www.lmsys.org/blog/2026-10-25-minite/) が測っている。8 枚の B300 で Qwen3-30B-A3B を動かし、forward を NVFP4、backward を BF16 にした学習側の更新（forward、backward、通信、optimizer を含む）は BF16 の約 1.33〜1.37 倍速く、回答の長さを固定した生成は約 1.64 倍の処理量だった。報告は、学習の結果と系の速さは別の構成で測ったと断っている。実際の RL では、log 確率の再計算と学習の時間は 47.04 秒から 42.56 秒に減ったが、重みを変換して生成側に送る時間が 9.94 秒から 55.26 秒に増え、この 2 つの合計（生成の時間は含まない）は 56.98 秒から 97.82 秒に伸びた。報告は、生成の速さの改善がこの重みの送り込みの増加を埋めなかったと書いている。ずれの原因の切り分けでは、重みを NVFP4 に固定して活性だけを 16 bit にするとずれが BF16 の水準近くまで下がり、KV cache を FP8 から BF16 に戻すとずれは 0.0721 から 0.0583 に下がった。この構成では活性の量子化が大きな要因で、HiFloat4 の論文と向きが合う（miniTE は生成側と学習側の活性を分けてはいない）。報告は、実用の設定で学習した miniTE のチェックポイントが、5 つの課題の平均で BF16 に届いていないとも書いている。
 
 ### 学習基盤の例: SkyRL
 
@@ -102,7 +105,7 @@ agent の RL の規模は、回答の数だけでは表せない。どれだけ�
 
 ### 環境の規模と、データの何を増やすか
 
-Kimi K3 は学習と評価の間に 1,505,678 個の image から累計 51,219,741 個の sandbox を作り、DeepSeek-V4.1-Flash は同時に動かす sandbox の需要が数百万に増え、KAT-Coder-V2.5 は 12 の言語で 100,000 を超える検証できる環境を作った。3 つの数は、累計、同時の需要、環境の種類と、数えているものが違う。学習基盤の細部も効き、KAT-Coder-V2.5 は推論のサーバーが会話の template を当て直すことで約 200 ターンの課題の約 40% の回答に token のずれが生じたと報告した。[Mercor と SkyRL の 397B の学習の手引き](https://www.mercor.com/blog/training-frontier-knowledge-work-agents-a-397b-rl-training-guide-with-skyrl/) も、RL の前に環境、harness、token の数え方を正すことを最初の段に置いている。同じ手引きは、完全な非同期の学習で同時に生成できる回答の数に、許す古さの step の数に 1 を足した数と minibatch の大きさと 1 問あたりの回答の数の積という上限があり（この設定では $(3+1) \times 16 \times 16 = 1024$ 本）、実際の同時の数は KV cache の容量で決まったと書いている。全変動距離の 2 値の近似で token を外す [DPPO](https://arxiv.org/abs/2602.04879) と GLM-5 の損失は、1 epoch の時点で誤差の範囲で同じ点だった。この手引きは、Mercor 自身の評価 APEX-Agents と同じ形の 1,928 個の課題で Qwen3.5-397B-A17B を学習し、学習に使っていない 480 個の評価の課題で Pass@1 が 16.11% から 27.29% に上がったと報告した。評価の作り手による報告である。
+Kimi K3 は学習と評価の間に 1,505,678 個の image から累計 51,219,741 個の sandbox を作り、DeepSeek-V4.1-Flash は同時に動かす sandbox の需要が数百万に増え、KAT-Coder-V2.5 は 12 の言語で 100,000 を超える検証できる環境を作った。3 つの数は、累計、同時の需要、環境の種類と、数えているものが違う。小さな構成でも工学の細部が効き、[SageMaker AI の手引き](https://aws.amazon.com/jp/blogs/machine-learning/multi-turn-reinforcement-learning-on-amazon-sagemaker-ai-a-hands-on-guide/) は、生成の token の上限が 4,096 だと gpt-oss-20b が考えている途中で上限に達して最初の 1 手を打つ前に止まることが多く、上限をサービスの最大の 8,192 に上げたと書いている。認証の失敗などで、あるゲームのモデルへの生成の要求が一度も成り立たないと、学習全体が失敗した。学習中に agent を置き直すと学習全体が失敗するとも注意している。学習基盤の細部も効き、KAT-Coder-V2.5 は推論のサーバーが会話の template を当て直すことで約 200 ターンの課題の約 40% の回答に token のずれが生じたと報告した。[Mercor と SkyRL の 397B の学習の手引き](https://www.mercor.com/blog/training-frontier-knowledge-work-agents-a-397b-rl-training-guide-with-skyrl/) も、RL の前に環境、harness、token の数え方を正すことを最初の段に置いている。同じ手引きは、完全な非同期の学習で同時に生成できる回答の数に、許す古さの step の数に 1 を足した数と minibatch の大きさと 1 問あたりの回答の数の積という上限があり（この設定では $(3+1) \times 16 \times 16 = 1024$ 本）、実際の同時の数は KV cache の容量で決まったと書いている。全変動距離の 2 値の近似で token を外す [DPPO](https://arxiv.org/abs/2602.04879) と GLM-5 の損失は、1 epoch の時点で誤差の範囲で同じ点だった。この手引きは、Mercor 自身の評価 APEX-Agents と同じ形の 1,928 個の課題で Qwen3.5-397B-A17B を学習し、学習に使っていない 480 個の評価の課題で Pass@1 が 16.11% から 27.29% に上がったと報告した。評価の作り手による報告である。
 
 何を増やすべきかについては、データの側の scaling 則が出た。[How Data Scales in Agentic Reinforcement Learning](https://arxiv.org/abs/2610.23946) は、agent の RL のデータを課題、環境、trajectory の 3 つの軸に分け、軸ごとのべき乗則の指数を当てはめた。Qwen3 の 4B から 14B、GRPO と PPO、数学とコード、SWE、web、UI とツールの課題で、指数は環境、課題、trajectory の順に大きく（Qwen3-8B の GRPO の SWE で 0.39、0.24、0.10）、環境の優位は主に別のアプリやリポジトリのような世界の多様性から来ていた。論文は、この則から導いた配分が trajectory を増やす通常のやり方より最大 1.7 倍の計算効率になると報告している。RL の計算量の側では、[ScaleRL](https://arxiv.org/abs/2510.13786) が調べた設定で、 8B の dense のモデルで 1 回の RL を 100,000 GPU 時間まで伸ばし、50,000 GPU 時間までの結果から当てはめたシグモイドの曲線がその先まで当たることを示した。どちらも 1 本の論文の結果である。
 
@@ -128,6 +131,8 @@ $$
 
 筆者の計算では、正解率 0.9 と 0.1 の問題が半数ずつの母集団から 30 問を選ぶ模型で、$n = 16$ の標準誤差は第 2 項だけなら 1.4 ポイント、両方の項で 7.4 ポイントで、$n = 64$ でも 7.3 ポイントまでしか下がらない。2 つのモデルを同じ問題で比べると、問題ごとの正解率の相関が高いほど第 1 項が打ち消される。[RLVR is a Kernel, Not a Function](https://arxiv.org/abs/2609.22547) はこの対応のある比較に、すべての $k$ で同時に成り立つ同時信頼帯を付け、公開されている 5 組の RLVR のモデルの初めの評価では逆転は統計的に確かめられず、新しい問題を 32k token で評価し直すと 11 回から 61 回の試行の間で逆転が見つかったと報告した。逆転を見つけられないことは、逆転が無いことを意味しないとも書いている。
 
+評価の数字は、問題の数や試行の回数だけでなく、生成の設定でも大きく変わる。[SageMaker AI の手引き](https://aws.amazon.com/jp/blogs/machine-learning/multi-turn-reinforcement-learning-on-amazon-sagemaker-ai-a-hands-on-guide/) では、同じ学習済みの gpt-oss-20b が、学習中の確認（温度 0、考える量を低く設定）では学習に使っていない 128 語の 37% を解いたのに、実際に使う設定（温度 1.0、考える量を中くらい）では 2 回の評価の平均で 84%（80% と 88%）を解いた。学習前のモデルは同じ使う設定で 61% だった。考える量を低くしたまま温度を 1.0 にすると、学習前の 15% から学習後の 69% に上がった。どの設定でも学習による上がり幅は 14〜54 ポイントで、学習前と学習後の順序は変わらなかった。学習中の確認の値が 35〜48% の間で上下するのは、128 語では大半が偶然だと筆者自身が書いていて、比べた結果は 1 回の学習によるものである。
+
 ### 対照のある比較: 自己改善、どの問題が直るか、忘れにくさ
 
 [Phantom Gains](https://arxiv.org/abs/2608.20290) は、Qwen3-8B の 3 回の自己学習を、同じ手順を通した凍結したモデルと比べて測り方の誤りを 7 つ挙げ、未学習のモデルの評価をまとめた基準に対する問題ごとの正確検定と偽発見率（FDR）の制御に替えると、外部の教師からの蒸留はめったに解けない問題を改善したが、3 つの形の自己学習は改善しなかったと報告した。[What Will Post-Training Fix?](https://arxiv.org/abs/2610.04978) は、2 つの base model からの 18 回の事後学習で、同じ base model からの独立な実行は直る問題で強く一致し（測定の雑音のもとで到達できる一致の上限が約 0.9）、2 つの base model の間の一致は相関 0.25 にとどまったと報告した。[RL's Razor](https://arxiv.org/abs/2509.04259) は、RL が SFT より以前の能力を忘れにくいことを、新しい課題で測った base model からの KL の小ささで説明し、LLM の実験での当てはめの決定係数は 0.71 だった。
@@ -151,9 +156,28 @@ RL は方策が生成した回答しか強められないので、新しい解�
 | 1 本の論文 | agent の RL のデータは、環境、課題、trajectory の順に scaling の指数が大きい（14B まで） |
 | 1 本の論文 | 探索用の方策を分けて蒸留すると、同じ更新の回数の DAPO より pass@1 と pass@k の両方が上がる（4B まで、数学） |
 | 主張が対立 | RL は新しい能力を作るか（No Free Lunch、What Will Post-Training Fix? と、ProRL、同時信頼帯の論文） |
+| 1 本の資料 | forward を NVFP4、backward を BF16 にした学習と NVFP4 の生成は速くなったが、重みの変換と送り込みが増え、測った 2 つの段の合計の時間は BF16 より長かった（miniTE、Qwen3-30B-A3B、8 枚の B300） |
+| 1 本の資料 | 同じ学習済みのモデルでも、温度 0 で考える量が低い設定では 37%、温度 1.0 で中くらいの設定では 84%（2 回の平均）と、評価の値が大きく違った（SageMaker AI の手引き、Wordle の 128 語） |
 
 | 今後検証すること | 理由 |
 |---|---|
 | 量子化の誤差と RL の安定性の関係 | 生成と学習の精度の組み合わせを系統的に測った研究がまだ少ない |
 | agent の RL のデータの scaling 則の追試 | 2610.23946 は表 2 で指数の順序が 18 の設定で成り立つと書くが、表に並ぶのは 10 の設定で、回答の生成に使ったと書く vLLM 0.6.3 は 2025 年 4 月に公開された Qwen3 より前の版である |
 | ExpDis の、SFT を含めた計算量での比較と大きいモデルでの結果 | 比較は RL の更新の回数でそろえていて、4B までのモデルと数学に限られる |
+| 低い精度の重みを、変換せずに差分や低い精度のまま生成側に送る方式で、RL の 1 step が速くなるか | miniTE の報告では、重みの変換と送り込みの増加が、生成の速さの改善を打ち消した |
+| 学習中の確認を実際に使う生成の設定で行うか、複数の考える量で同時に学ぶと、学習の止めどきや結果の選び方が変わるか | SageMaker AI の手引きでは、温度と考える量の両方が違う 2 つの設定で 37% と 84% と大きく違ったが、学習前と学習後の順序は変わらず、使う設定で学習の長さを変えた効果は試していない |
+
+## 付録: 読者から寄せられた資料
+
+この本の RL の 3 章を書く間に、読者から寄せられた資料と、使った章を次に並べる。URL は寄せられたときの形のまま残す。
+
+| 資料 | 使った章 |
+|---|---|
+| [GRPO の数理（スクラップ）](https://zenn.dev/tosshi/scraps/d5a231cdb60381) | 目的関数の章の数理統計の見方（スコア関数、制御変量、層化抽出とネイマン配分、重点抽出、winsorize） |
+| [Decoupling Exploration from Optimization in RLVR](https://www.alphaxiv.org/pdf/2610.10536) | この章の「探索を学習する方策から切り離す」 |
+| [How Data Scales in Agentic Reinforcement Learning](https://arxiv.org/html/2610.23946v2) | この章の「環境の規模と、データの何を増やすか」 |
+| [DOPD: Dual On-policy Distillation](https://www.alphaxiv.org/abs/2606.30626) | 訓練と推論のずれと OPD の章の「OPD の限界」 |
+| [Where Rounding Happens Matters](https://arxiv.org/abs/2610.32951) | 訓練と推論のずれと OPD の章の「ずれそのものを小さくする」 |
+| [Multi-Turn Reinforcement Learning on Amazon SageMaker AI](https://aws.amazon.com/jp/blogs/machine-learning/multi-turn-reinforcement-learning-on-amazon-sagemaker-ai-a-hands-on-guide/) | 目的関数の章の「全員が同じ結果のグループ」の節、この章の費用、agent の RL、評価 |
+| [miniTE Technical Report](https://www.lmsys.org/blog/2026-10-25-minite/) | 訓練と推論のずれと OPD の章の判定と「ずれそのものを小さくする」、この章の低い精度 |
+| [SkyRL](https://github.com/NovaSky-AI/SkyRL)（名前で寄せられ、筆者がリポジトリを調べた） | この章の「学習基盤の例: SkyRL」 |
