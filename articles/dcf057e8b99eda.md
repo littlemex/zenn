@@ -1,7 +1,7 @@
 ---
 title: "LLM 学習チェックポイントの設定をどう決めるか"
 emoji: "💽"
-type: "tech"
+type: "idea"
 topics: ["LLM", "MoE", "チェックポイント", "AWS", "分散学習"]
 published: true
 ---
