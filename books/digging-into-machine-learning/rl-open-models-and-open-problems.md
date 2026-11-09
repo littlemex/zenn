@@ -86,7 +86,7 @@ Qwen2.5-3B の GRPO の GSM8K では、生成を FP4 のまま学習側だけを
 
 生成と学習の両方を低い精度にしたときの系全体の費用は、[miniTE の技術報告](https://www.lmsys.org/blog/2026-10-25-minite/) が測っている。8 枚の B300 で Qwen3-30B-A3B を動かし、forward を NVFP4、backward を BF16 にした学習側の更新（forward、backward、通信、optimizer を含む）は BF16 の約 1.33〜1.37 倍速く、回答の長さを固定した生成は約 1.64 倍の処理量だった。報告は、学習の結果と系の速さは別の構成で測ったと断っている。実際の RL では、log 確率の再計算と学習の時間は 47.04 秒から 42.56 秒に減ったが、重みを変換して生成側に送る時間が 9.94 秒から 55.26 秒に増え、この 2 つの合計（生成の時間は含まない）は 56.98 秒から 97.82 秒に伸びた。報告は、生成の速さの改善がこの重みの送り込みの増加を埋めなかったと書いている。ずれの原因の切り分けでは、重みを NVFP4 に固定して活性だけを 16 bit にするとずれが BF16 の水準近くまで下がり、KV cache を FP8 から BF16 に戻すとずれは 0.0721 から 0.0583 に下がった。この構成では活性の量子化が大きな要因で、HiFloat4 の論文と向きが合う（miniTE は生成側と学習側の活性を分けてはいない）。報告は、実用の設定で学習した miniTE のチェックポイントが、5 つの課題の平均で BF16 に届いていないとも書いている。
 
-### 学習基盤の例: SkyRL
+### 学習基盤の例: SkyRL と RLinf
 
 ここまでの部品を 1 つの学習基盤がどう実装しているかを、Berkeley Sky Computing Lab が Anyscale と開発する [SkyRL](https://github.com/NovaSky-AI/SkyRL) で見る。SkyRL は学習に Megatron と FSDP、回答の生成に vLLM を使い、[v0.4.0](https://blog.skyrl.ai/blog/skyrl-v0-4-0) には前の章の部品が設定として並んでいる。
 
@@ -98,6 +98,8 @@ Qwen2.5-3B の GRPO の GSM8K では、生成を FP4 のまま学習側だけを
 | 低い精度 | Blockwise FP8 と MXFP8 での学習と生成で、報告の長い学習の実験では BF16 の収束に近いまま 1 step を最大 23% 短くした |
 
 公開の当日から 501B-A23B の MoE である Beam に対応した [報告](https://blog.skyrl.ai/blog/day-0-beam) では、MXFP8 で生成の処理量が 44% 上がり、[100 万 token の文脈の報告](https://blog.skyrl.ai/blog/1m-context-glm-5-3-flash) は、GLM-5.3-Flash の疎な attention が密な計算に戻っていた問題などを直し、実際の文章で生じる expert の負荷の偏りにも対処して、1 本 100 万 token の学習を文脈の並列化 4 の構成で B200 のメモリに収めた。どちらも SkyRL のチームと共同の組織による報告である。
+
+もう 1 つの公開の学習基盤の [RLinf](https://github.com/RLinf/RLinf) は、言語モデルの reasoning と agent に加えて、ロボットを動かす VLA（画像と言葉から動作を出すモデル）の RL を主な対象にしている。[RLinf の論文](https://arxiv.org/abs/2509.15965) は、RL の学習が遅い主な原因を系の柔軟さの不足に見て、生成、学習、環境といった部品の流れを、時間と空間の両方で自動的に分解して組み直す設計（M2Flow）を提案した。部品の入れ替え（context switching）と伸び縮みする流れ作業（elastic pipelining）を使い、測定にもとづいて実行の計画を作る。reasoning と embodied の RL で、比べた系より学習全体の処理量が 1.07〜2.43 倍になったと報告している。リポジトリには、GRPO、PPO、SAC といった方法のほか、VLA の OPD、実機のロボットを GPU と同じ資源として扱う系（USER）、部品の間で計算とメモリと通信を動的に配り直す系（DynaRL）が並び、関連の論文のうち RLinf と DynaRL は OSDI 2026 に、RLinf-VLA と USER は RSS 2026 に採択されたと README は書いている。数値はどれも開発者自身の報告である。
 
 ## agent の RL は環境と課題と報酬の信頼性で決まる
 
@@ -172,6 +174,7 @@ RL は方策が生成した回答しか強められないので、新しい解�
 | 学習中の確認を実際に使う生成の設定で行うか、複数の考える量で同時に学ぶと、学習の止めどきや結果の選び方が変わるか | SageMaker AI の手引きでは、温度と考える量の両方が違う 2 つの設定で 37% と 84% と大きく違ったが、学習前と学習後の順序は変わらず、使う設定で学習の長さを変えた効果は試していない |
 | 判定モデルの良さを、固定した組での正答率ではなく、方策の学習に使ったときの結果で測る指標と、その安い近似 | 2610.30765 では静的な正答率の順序が学習の結果で 8 つ中 7 つ逆になった（区間で支持されるのは 5 つ）。判定モデルの大きさや学習の長さは調べられたが、変化する方策の出力に対して何が良い学習信号を生むかの機構と、それを安く予測する指標は特定されていない |
 | 言語モデルの RL の scaling 則を、正答率ではなく、方策どうしを比べる Elo の形の指標で当てはめると、外挿の精度が上がるか | ゲームの RL では Elo の形の指標が報酬の平均より外挿しやすかったが、ScaleRL などの言語モデルの scaling 則は正答率で当てはめている。2610.30765 は方策の Elo に当てはめているが、標本内の記述にとどまり、外挿も正答率との比較もしていない |
+| RLinf の USER のように環境（ロボットや sandbox）を GPU と同じ資源として管理する考え方を、止まった環境を避けて生成を続ける形に広げると、言語モデルの agent の RL の失敗と待ち時間が減るか | USER は実機のロボットを GPU と並ぶ資源として扱うと書くが、止まった環境を避ける仕組みや、言語モデルの agent の環境での効果は示されていない。SageMaker AI の手引きでは、モデルへの生成の要求が一度も成り立たないゲームがあるだけで学習全体が失敗した |
 
 ## 付録: 読者から寄せられた資料
 
@@ -186,6 +189,7 @@ RL は方策が生成した回答しか強められないので、新しい解�
 | [Where Rounding Happens Matters](https://arxiv.org/abs/2610.32951) | 訓練と推論のずれと OPD の章の「ずれそのものを小さくする」 |
 | [Multi-Turn Reinforcement Learning on Amazon SageMaker AI](https://aws.amazon.com/jp/blogs/machine-learning/multi-turn-reinforcement-learning-on-amazon-sagemaker-ai-a-hands-on-guide/) | 目的関数の章の「全員が同じ結果のグループ」の節、この章の費用、agent の RL、評価 |
 | [miniTE Technical Report](https://www.lmsys.org/blog/2026-10-25-minite/) | 訓練と推論のずれと OPD の章の判定と「ずれそのものを小さくする」、この章の低い精度 |
-| [SkyRL](https://github.com/NovaSky-AI/SkyRL)（名前で寄せられ、筆者がリポジトリを調べた） | この章の「学習基盤の例: SkyRL」 |
+| [SkyRL](https://github.com/NovaSky-AI/SkyRL)（名前で寄せられ、筆者がリポジトリを調べた） | この章の「学習基盤の例: SkyRL と RLinf」 |
 | [Scaling Laws for Generative Reward Models](https://arxiv.org/html/2610.30765) | この章の「報酬の抜け穴と、ラベル無しの RL」 |
 | [An Empirical Study of Reinforcement Learning Scaling Laws](https://arxiv.org/html/2610.33420) | この章の「環境の規模と、データの何を増やすか」 |
+| [RLinf](https://github.com/RLinf/RLinf) | この章の「学習基盤の例: SkyRL と RLinf」 |
