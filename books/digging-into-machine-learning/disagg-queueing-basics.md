@@ -6,7 +6,7 @@ free: false
 ## はじめに
 
 :::message
-本稿は「[大規模 LLM 推論の分離技術: 3つの直交軸と横断する Expert Parallelism](https://zenn.dev/littlemex/books/digging-into-machine-learning/viewer/serving-disaggregation)」の軸 1 (Prefill/Decode 分離、以下 P/D 分離) を前提とする。その章は P/D 分離が何であるかを実装まで掘り下げた。本稿から始まる全 4 回は、P/D 分離がいつ勝ち、いつ負けるかを、待ち行列の式と実機測定で扱う。第 1 回は損得を決める式を揃える。第 2 回は約束を分位点で書いたときに何が見えるかを扱う。第 3 回は実機で何が確かめられ、何が崩れたかを扱う。第 4 回で、分離するかどうかを決める順番にまとめる。ルーフラインモデルの基礎は「[ハード制約から読む設計収束](https://zenn.dev/littlemex/books/digging-into-machine-learning/viewer/llm2026-overview)」に譲る。
+本稿は Prefill/Decode 分離 (以下 P/D 分離) を扱う。P/D 分離とは、入力をまとめて読む prefill と 1 トークンずつ書く decode を別々の GPU 群に受け持たせ、prefill 側で作った KV-Cache を decode 側へ転送して生成を続ける構成である。本稿から始まる全 4 回は、P/D 分離がいつ勝ち、いつ負けるかを、待ち行列の式と実機測定で扱う。第 1 回は損得を決める式を揃える。第 2 回は約束を分位点で書いたときに何が見えるかを扱う。第 3 回は実機で何が確かめられ、何が崩れたかを扱う。第 4 回で、分離するかどうかを決める順番にまとめる。ルーフラインモデルの基礎は「[Attention の潮流 (1): 帯域の壁と、KV を軽く持ち、選んで読む流れ](https://zenn.dev/tosshi/books/digging-into-machine-learning/viewer/llm2026-overview)」に譲る。
 :::
 
 :::message
@@ -142,7 +142,6 @@ $$
 
 ## 参考文献
 
-- シリーズの前提: [大規模 LLM 推論の分離技術: 3つの直交軸と横断する Expert Parallelism](https://zenn.dev/littlemex/books/digging-into-machine-learning/viewer/serving-disaggregation)
-- ルーフラインモデルの基礎: [ハード制約から読む設計収束](https://zenn.dev/littlemex/books/digging-into-machine-learning/viewer/llm2026-overview)
+- ルーフラインモデルの基礎: [Attention の潮流 (1): 帯域の壁と、KV を軽く持ち、選んで読む流れ](https://zenn.dev/tosshi/books/digging-into-machine-learning/viewer/llm2026-overview)
 - 筆者の公開解説: [分離推論が効く条件を、机の上で先に決める](https://littlemex.github.io/explainers/disagg-theory.html)
 - TaiChi: [arXiv:2508.01989](https://arxiv.org/abs/2508.01989)

@@ -101,5 +101,4 @@ TPOT 10 ms のような厳しい約束では事情が変わる。比較に使っ
 ## 参考文献
 
 - 前回: [分離サービングの理論 (3): 実機で測る、道具が嘘をつく場所と分離が勝った条件](https://zenn.dev/littlemex/books/digging-into-machine-learning/viewer/disagg-real-validation)
-- シリーズの前提: [大規模 LLM 推論の分離技術: 3つの直交軸と横断する Expert Parallelism](https://zenn.dev/littlemex/books/digging-into-machine-learning/viewer/serving-disaggregation)
 - 筆者の公開解説: [分離推論が効く条件を、机の上で先に決める](https://littlemex.github.io/explainers/disagg-theory.html)

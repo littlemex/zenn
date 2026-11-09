@@ -8,7 +8,6 @@ chapters:
   - turboquant-polarquant
   - llm2026-overview
   - llm2026-elements
-  - serving-disaggregation
   - disagg-queueing-basics
   - disagg-tail-promisemap
   - disagg-real-validation
