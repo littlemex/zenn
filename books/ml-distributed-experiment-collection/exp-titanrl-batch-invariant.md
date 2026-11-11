@@ -1,14 +1,14 @@
 ---
-title: "学習と推論の確率は本当に一致するか: TitanRL の batch-invariant モード"
+title: "[~26/10/29 #3] 学習と推論の確率は本当に一致するか: TitanRL の batch-invariant モード"
 ---
 
 # はじめに
 
 大規模言語モデルの強化学習では、2 つのプログラムが同じモデルを動かす。1 つは推論エンジン（今回は vLLM）で、モデルに答えを書かせ、書いた各トークンの確率を報告する。もう 1 つは学習側のトレーナーで、同じ答えについて同じ確率を計算し直し、それをもとにモデルを更新する。この 2 つの確率は、同じ重みと同じ入力なら、本来は一致するはずである。
 
-ところが実際には、少しずつずれる。行列の掛け算や合計を GPU で計算するとき、どの順番で足し合わせるかが、一度に処理する入力の数（バッチの大きさ）によって変わり、浮動小数点の丸め方が変わるからである。推論側と学習側ではバッチの組み方が違うので、同じ入力でも答えがわずかに違う。このずれがあると、学習がおかしくなったときに、プログラムの誤りなのか、計算の誤差なのかを見分けにくい。
+ところが実際には、少しずつずれる。行列の掛け算や合計を GPU で計算するとき、どの順番で足し合わせるかが、一度に処理する入力の数（バッチの大きさ）によって変わり、浮動小数点の丸め方が変わることが、主な原因の 1 つである。推論側と学習側ではバッチの組み方が違うので、同じ入力でも答えがわずかに違う。このずれがあると、学習がおかしくなったときに、プログラムの誤りなのか、計算の誤差なのかを見分けにくい。
 
-[ML infra weekly](https://zenn.dev/tosshi/articles/95edc2cb88f57b) の 3 番目の項目は、[TorchTitan の更新を紹介した PyTorch のブログ](https://pytorch.org/blog/torchtitan-update-new-sota-models-performance-at-scale-titanrl/) が紹介した TitanRL（torchtitan の強化学習の部品）の batch-invariant モードで、このずれが本当になくなるかを確かめることだった。
+[ML infra weekly ~26/10/29](https://zenn.dev/tosshi/articles/95edc2cb88f57b) の「次に確かめること」の 3 番目の項目は、[TorchTitan の更新を紹介した PyTorch のブログ](https://pytorch.org/blog/torchtitan-update-new-sota-models-performance-at-scale-titanrl/) が紹介した TitanRL（torchtitan の強化学習の部品）の batch-invariant モードで、このずれが本当になくなるかを確かめることだった。
 
 # この章で使う言葉
 
@@ -41,7 +41,7 @@ batch-invariant モードは、学習側と推論側の両方で、足し合わ�
 
 2026 年 11 月 10 日に、p5e.48xlarge（H200 が 8 枚）1 台で測った。torchtitan v0.4.0 に入っている `rl_grpo_qwen3_0_6b_varlen_batch_invariant` をそのまま使った。Qwen3-0.6B に、文字列を並べ替える課題（alphabet sort）を GRPO という強化学習の方法で解かせる。8 枚の GPU のうち 2 枚を学習側（テンソル並列 2）、残り 6 枚を推論側の 3 台（それぞれテンソル並列 2）に割り当て、推論した答えをすぐに学習に使う、完全なオンポリシーの設定（`target_offpolicy_steps=0`）である。
 
-この設定をそのまま使う回（`bi_on`）と、学習側と推論側の `DebugConfig` だけを既定に戻した回（`bi_off`）を、それぞれ 30 ステップ流した。モデル、データ、構成、乱数の初期値の設定は同じである。比べたのは、トレーナーが毎ステップ記録する次の値である。
+この設定をそのまま使う回（`bi_on`）と、学習側と推論側の `DebugConfig` だけを既定に戻した回（`bi_off`）を、それぞれ 30 ステップ流した。2 回の違いは `DebugConfig` だけで、モデル、データ、構成は同じである。比べたのは、トレーナーが毎ステップ記録する次の値である。
 
 | 記録される値 | 意味 |
 |---|---|
@@ -53,25 +53,35 @@ torchtitan v0.4.0 の強化学習の環境を入れるスクリプト（`scripts
 
 # 結果
 
-| 実行 | 差の最大（30 ステップの最大） | 差の平均（30 ステップの平均） | 一致しなかったトークン | 1 ステップの時間（中央値） |
+| 実行 | 差の最大（30 ステップの最大） | 差の平均（30 ステップの平均） | 差が 0.000001 を超えたトークン | 1 ステップの時間（中央値、比較には使えない） |
 |---|---|---|---|---|
 | `bi_on` | 0.0 | 0.0 | 0.0 % | 3.4 秒 |
 | `bi_off` | 0.89 | -0.0003 | 42.6 % | 4.4 秒 |
 
-batch-invariant モードを入れると、30 ステップのすべてで差の最大が 0 だった。つまり、損失の計算に使われた全トークンで、推論側と学習側の対数確率がビット単位まで一致した。モードを切ると、42.6 % のトークンで値が違い、1 つのトークンで最大 0.89 の差があった。差の平均は、学習側から推論側を引いた値を符号付きのまま平均したものなので（最大は絶対値をとる）、正と負のずれが打ち消し合い、ほぼ 0 になった。**平均だけを見ると一致しているように見えてしまうので、一致を確かめるときは最大と割合を見る。**
+batch-invariant モードを入れると、30 ステップのすべてで差の最大が 0 だった。つまり、記録された 30 ステップで損失の計算に使われたトークンについて、推論側と学習側の対数確率がビット単位まで一致した。モードを切ると、42.6 % のトークンで差が 0.000001 を超え、1 つのトークンで最大 0.89 の差があった。差の平均は、学習側から推論側を引いた値を符号付きのまま平均したものなので（最大は絶対値をとる）、正と負のずれが打ち消し合って、ほぼ 0 になったと考えられる。**平均だけを見ると一致しているように見えてしまうので、一致を確かめるときは最大と割合を見る**。
 
 # 分かったこと、分からなかったこと
 
-分かったことは、torchtitan v0.4.0 の batch-invariant モードは、少なくともこの設定では、うたわれているとおり推論と学習の確率をビット単位で一致させることである。強化学習で学習が崩れたとき、このモードで流し直して差が 0 になるかを見れば、推論と学習の計算のずれという原因の 1 つを外せる。報酬の設計や学習の手法そのものの問題は、別に調べる必要がある。
+分かったことは、torchtitan v0.4.0 の batch-invariant モードは、少なくともこの設定では、うたわれているとおり推論と学習の確率をビット単位で一致させることである。強化学習で学習が崩れたとき、このモードで流し直して差が 0 になっても同じように崩れるなら、推論と学習の計算のずれは原因ではないと分かる。報酬の設計や学習の手法そのものの問題は、別に調べる必要がある。
 
 分からなかったことは速さへの影響である。torchtitan の文書は、Qwen3-8B を 8 枚の H100 で動かした測定で、決まった順番のカーネルにすると推論の 1 トークンと学習の計算がそれぞれ 2.4 倍と 2.9 倍遅くなった一方、1 ステップ全体の時間はほぼ変わらなかったと書いている。計算以外の待ち時間が大きい課題では、遅くなった分が表に出にくいということである。今回はむしろ `bi_on` のほうが 1 ステップ短かった。Qwen3-0.6B の小さな課題では、1 ステップの時間の大半が計算ではなく、推論と学習のやり取りの待ち時間である可能性があるが、内訳は測っていない。2 つの実行の順番（`bi_on` を先に流した）も違うので、この差を速さの比較として読んではいけない。
 
+# distributed-ai に取り込むもの
+
+今回の実験のうち、[distributed-ai](https://github.com/littlemex/distributed-ai/tree/main) の main（EKS の基盤と、その上で動かす例）に取り込むべきものを次にまとめる。
+
+| なぜ取り込むか | 取り込み先 | 取り込む内容 |
+|---|---|---|
+| batch-invariant モードで差が 0 になることを確かめれば、推論と学習の計算のずれという原因を 1 つ外せる | 学習の例（[`charts/experiments`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/charts/experiments)） | vLLM と torchtitan を同じノードプールで動かす強化学習の例を足し、最初の動作確認として `bi_on` と `bi_off` の 2 回を流して差を比べるジョブを入れる |
+| TitanRL の環境は PyTorch と vLLM の開発版を同じ日付でそろえて入れる作りで、リリース版に固定できない | イメージのビルド（[`images`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/images)） | 強化学習用のイメージは、入った版を `pip freeze` で記録し、同じイメージのダイジェストを使い回す手順にする |
+| 一致の確かめは、差の平均ではなく最大と一致しない割合で見る必要があった | 監視（[`dashboards`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/dashboards)） | `bit_wise/logprob_diff/max` と `bit_wise/ratio_tokens_different/mean` を、強化学習のダッシュボードに出す |
+
 # 参考資料
 
-- [ML infra weekly](https://zenn.dev/tosshi/articles/95edc2cb88f57b)
+- [ML infra weekly ~26/10/29](https://zenn.dev/tosshi/articles/95edc2cb88f57b)
 - [TorchTitan Update: New SOTA Models, Performance at Scale, TitanRL](https://pytorch.org/blog/torchtitan-update-new-sota-models-performance-at-scale-titanrl/)
 - [torchtitan v0.4.0 の BITWISE_PARITY.md](https://github.com/pytorch/torchtitan/blob/v0.4.0/torchtitan/rl/BITWISE_PARITY.md)
-- [実験のコードと結果](https://github.com/littlemex/distributed-ai/tree/b8c40f067d9a15db05d605f7393d3653e72c6e6c/investigations/2026-11-10-torchtitan-rl-batch-invariant)
+- [実験のコードと結果](https://github.com/littlemex/distributed-ai/tree/e092c3f54e2ebcee665389cbdfc17348f612c2d3/investigations/2026-11-10-torchtitan-rl-batch-invariant)
 
 # まとめ
 

@@ -1,12 +1,12 @@
 ---
-title: "チェックポイントの保存で学習はどれだけ止まるか"
+title: "[~26/10/29 #4] チェックポイントの保存で学習はどれだけ止まるか"
 ---
 
 # はじめに
 
 大きなモデルの学習では、途中の状態をファイルに保存するチェックポイントが欠かせない。GPU が 1 枚でも壊れると学習が止まるので、数十分から数時間おきに保存しておき、止まったらそこから再開する。問題は、保存している間に学習が止まることである。Llama 3 8B を FP32 の重みと AdamW で学習するときの状態は、今回の設定で約 96 GB あり、これを書き終えるまで GPU を待たせると、そのぶん学習が遅れる。
 
-[ML infra weekly](https://zenn.dev/tosshi/articles/95edc2cb88f57b) の 4 番目の項目は、[TorchTitan の更新を紹介した PyTorch のブログ](https://pytorch.org/blog/torchtitan-update-new-sota-models-performance-at-scale-titanrl/) をもとに、この保存にかかる時間を AWS の共有ストレージで測ることだった。本章では、torchtitan v0.4.0 が持つ 4 種類の保存方法で、学習が止まる時間と、保存が本当に終わるまでの時間を、Amazon FSx for Lustre とインスタンスストアの 2 か所で測った。
+[ML infra weekly ~26/10/29](https://zenn.dev/tosshi/articles/95edc2cb88f57b) の「次に確かめること」の 4 番目の項目は、[TorchTitan の更新を紹介した PyTorch のブログ](https://pytorch.org/blog/torchtitan-update-new-sota-models-performance-at-scale-titanrl/) をもとに、この保存にかかる時間を AWS の共有ストレージで測ることだった。本章では、torchtitan v0.4.0 が持つ 4 種類の保存方法で、学習が止まる時間と、保存が本当に終わるまでの時間を、Amazon FSx for Lustre とインスタンスストアの 2 か所で測った。
 
 # この章で使う言葉
 
@@ -25,7 +25,7 @@ title: "チェックポイントの保存で学習はどれだけ止まるか"
 
 ![同期の保存は、書き終わるまで学習を止める。非同期の保存は、保存の呼び出しをすぐに返し、ストレージへの書き込みを学習と並行して進めるが、次の保存はこの書き込みが終わるまで待つ](https://raw.githubusercontent.com/littlemex/figures/refs/heads/zenn/books/ml-distributed-experiment-collection/zenn/books/ml-distributed-experiment-collection/ckpt-timeline.png)
 
-同期の保存では、2 つの時間は同じになる。非同期の保存では、保存の呼び出しはすぐに返り、ストレージへの書き込みは裏で進む。学習が止まる時間は短くなるが、書き込みが学習と並行して進むので、書き終わるまでの時間はかえって長くなることがある。
+同期の保存では、2 つの時間は同じになる。非同期の保存では、保存の呼び出しは短い時間で返り（ピン留めメモリを使う方法で 0.37 秒、スレッドで書く方法で 5.5 秒）、ストレージへの書き込みは裏で進む。学習が止まる時間は短くなるが、書き込みが学習と並行して進むので、書き終わるまでの時間はかえって長くなることがある。
 
 torchtitan v0.4.0 は、次の保存方法を持つ。
 
@@ -46,7 +46,7 @@ torchtitan v0.4.0 は、次の保存方法を持つ。
 
 # 結果
 
-5、10、15、20 ステップ目の 4 回の保存の中央値である。保存のないステップは、どの実行でも 1 ステップ 0.88 秒から 0.90 秒だった。
+5、10、15、20 ステップ目の 4 回の保存の中央値である（torch_checkpointing は、最後の 21 ステップ目の保存も含む 5 回）。保存のないステップは、どの実行でも 1 ステップ 0.88 秒から 0.90 秒だった。
 
 | 保存方法 | 保存先 | 保存の呼び出しにかかった時間 | 保存が終わるまでの時間 |
 |---|---|---|---|
@@ -59,7 +59,7 @@ torchtitan v0.4.0 は、次の保存方法を持つ。
 | DCP、ピン留めメモリ、非同期 | インスタンスストア | 0.18 秒 | 15.3 秒 |
 | torch_checkpointing（下の注意を参照） | インスタンスストア | 3.9 秒 | 22.2 秒 |
 
-ピン留めメモリを使う非同期の保存は、FSx for Lustre で保存の呼び出しにかかる時間を 24.1 秒から 0.37 秒に縮めた。ところが、学習にかかる時間は縮まらなかった。次の表は、6 ステップ目から 20 ステップ目までの区間にかかった時間で、この区間に 10、15、20 ステップ目の 3 回の保存が始まる。最後の保存の書き込みが終わるまでの時間は含まない。
+ピン留めメモリを使う非同期の保存は、FSx for Lustre で保存の呼び出しにかかる時間を 24.1 秒から 0.37 秒に縮めた。ところが、学習にかかる時間は縮まらなかった。次の表は、6 ステップ目から 20 ステップ目までの区間にかかった時間で、この区間には 10 ステップ目と 15 ステップ目の 2 回の保存が入る（20 ステップ目の保存は、20 ステップ目の記録のあとに始まるので含まない）。
 
 | 保存方法 | FSx for Lustre | インスタンスストア |
 |---|---|---|
@@ -68,7 +68,7 @@ torchtitan v0.4.0 は、次の保存方法を持つ。
 | DCP、ピン留めメモリ、非同期 | 64.9 秒 | 36.2 秒 |
 | torch_checkpointing（下の注意を参照） | 55.6 秒 | 25.8 秒 |
 
-**非同期の保存は、次の保存までに前の書き込みが終わらないと、結局そこで学習を待たせる。** torchtitan は、新しい保存を始める前に、前の保存が書き終わるのを待つ（[`maybe_wait_for_saving`](https://github.com/pytorch/torchtitan/blob/v0.4.0/torchtitan/components/checkpointer/dcp.py)）。今回は 5 ステップ（約 4.4 秒の計算）ごとに保存したので、30 秒近くかかる書き込みを隠しきれず、10、15、20 ステップ目の保存を始めるときに前の書き込みを待った。保存のないステップは 0.88 秒なのに、保存をはさむステップの間隔は 25 秒から 34 秒になった。非同期の保存で学習の時間を縮めるには、保存の間隔の計算時間を、書き込みの時間より長くとる必要がある。実際の学習では保存の間隔を数十分以上にすることが多く、その場合はこの条件を満たしやすい。
+**DCP の非同期の保存は、次の保存までに前の書き込みが終わらないと、結局そこで学習を待たせる**。torchtitan の DCP の保存は、新しい保存を始める前に、前の保存が書き終わるのを待つ（[`maybe_wait_for_saving`](https://github.com/pytorch/torchtitan/blob/v0.4.0/torchtitan/components/checkpointer/dcp.py)）。今回は 5 ステップ（約 4.4 秒の計算）ごとに保存したので、30 秒近くかかる書き込みを隠しきれず、10 ステップ目と 15 ステップ目の保存を始めるときに、前の書き込みが終わるのを待った。保存のないステップは 0.88 秒なのに、FSx for Lustre では保存をはさむステップの間隔が 25 秒から 34 秒になった（インスタンスストアでは 11 秒から 15 秒）。非同期の保存で学習の時間を縮めるには、保存の間隔の計算時間を、書き込みの時間より長くとる必要がある。実際の学習では保存の間隔を数十分以上にすることが多く、その場合はこの条件を満たしやすい。
 
 単なる非同期（スレッドで書く方法）は、保存の呼び出しに 5.5 秒かかった。ピン留めメモリを使う方法は、GPU のメモリから CPU のメモリへの写しそのものも学習の計算と並行して進める作りなので（[dcp.py の `_maybe_wait_for_staging`](https://github.com/pytorch/torchtitan/blob/v0.4.0/torchtitan/components/checkpointer/dcp.py)）、呼び出しが短い。2 つの方法の差の内訳までは、今回は測っていない。
 
@@ -76,16 +76,27 @@ torch_checkpointing は、標準の設定のままでは、どちらの保存先
 
 # 分かったこと、分からなかったこと
 
-分かったことは 3 つある。1 つ目に、ピン留めメモリへ写してから非同期に書く方法は、保存の呼び出しを一番短くするが、学習の時間を縮めるには、保存の間隔の計算時間を書き込みの時間より長くとる必要がある。今回のように間隔が短いと、前の書き込みを待つ時間が出て、6 ステップ目から 20 ステップ目の区間は同期の保存より長くかかった。2 つ目に、非同期にすると、保存が本当に終わるまでの時間はむしろ延びる。障害が起きたとき、最後に保存を始めたチェックポイントはまだ書き終わっていないことがあり、それは再開に使えない、と考えておく必要がある。3 つ目に、torch_checkpointing 0.1.1 は、標準の設定のままでは ext4 にも Lustre にも書けなかった。O_DIRECT を使わない設定にすると、6 ステップ目から 20 ステップ目の区間は 4 つの中で一番短かった。
+分かったことは 3 つある。1 つ目に、ピン留めメモリへ写してから非同期に書く方法は、保存の呼び出しを一番短くするが、学習の時間を縮めるには、保存の間隔の計算時間を書き込みの時間より長くとる必要がある。今回のように間隔が短いと、前の書き込みを待つ時間が出て、6 ステップ目から 20 ステップ目の区間は同期の保存より長くかかった。torch_checkpointing はこの区間が一番短かったが、前の保存をどう待つかは DCP と作りが違い、今回はその仕組みまでは調べていない。2 つ目に、非同期にすると、保存が本当に終わるまでの時間はむしろ延びる。障害が起きたとき、最後に保存を始めたチェックポイントはまだ書き終わっていないことがあり、それは再開に使えない、と考えておく必要がある。3 つ目に、torch_checkpointing 0.1.1 は、標準の設定のままでは ext4 にも Lustre にも書けなかった。O_DIRECT を使わない設定にすると、6 ステップ目から 20 ステップ目の区間は 4 つの中で一番短かった。
 
 分からなかったことも書いておく。PyTorch のブログは、512 枚の H100 で DeepSeek-V3 671B を学習したとき、書き込みの時間が DCP の平均 384.4 秒から torch_checkpointing の 13.1 秒に、学習が止まる時間が 841.2 ms から 34.1 ms に縮んだと報告している。1 台 8 GPU の今回の測定は、これと比べられるものではない。台数が増えると、ストレージの合計の帯域と、全員がそろうのを待つ時間が効いてくる。また、使った FSx for Lustre は、EFA を有効にできる最小の 4.8 TiB で、合計の帯域はおよそ 4.8 GB/s が上限である。容量の大きなファイルシステムでは帯域も大きくなるので、同期の保存の時間は変わりうるが、今回は測っていない。
 
+# distributed-ai に取り込むもの
+
+今回の実験のうち、[distributed-ai](https://github.com/littlemex/distributed-ai/tree/main) の main（EKS の基盤と、その上で動かす例）に取り込むべきものを次にまとめる。
+
+| なぜ取り込むか | 取り込み先 | 取り込む内容 |
+|---|---|---|
+| 非同期の保存は、保存の間隔が書き込みの時間より短いと前の書き込みを待ち、学習が速くならなかった | 学習の例（[`charts/experiments`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/charts/experiments) の TrainJob） | torchtitan のチェックポイントの設定（`async_mode='async_with_pinned_mem'`）を設定の例として入れ、保存の間隔は書き込みの時間より長くとるという目安を README に書く。間隔を長くとったときの効果は、取り込む前に確かめる |
+| 96 GB の保存は FSx for Lustre で約 24 秒、インスタンスストアで約 10 秒かかり、保存先で倍以上違った | 共有ストレージ（[`fsx.tf`](https://github.com/littlemex/distributed-ai/blob/main/infra/eks/fsx.tf)、[`manifests/fsx-lustre-shared-pv`](https://github.com/littlemex/distributed-ai/tree/main/infra/eks/manifests/fsx-lustre-shared-pv)） | チェックポイント用のディレクトリを全 OST に分散する `lfs setstripe -c -1` を PV の初期化に入れ、ファイルシステムの容量と帯域の関係を README に書く |
+| torch_checkpointing 0.1.1 は標準の O_DIRECT の書き込みで失敗した | 学習の例 | torch_checkpointing を使う場合は `use_direct_io=False` にする設定を、失敗の症状（`EINVAL`、`unexpected pos 64 vs 0`）と一緒に入れる。書き込みは別のプロセスで動くので、設定はプロセスの起動時に効かせる |
+| 保存の呼び出しの時間、保存が本当に終わる時間、学習の区間の時間を分けて測らないと、保存方法の良し悪しを見誤る | 計測の道具 | [保存先を見張って完了時刻を記録するスクリプト](https://github.com/littlemex/distributed-ai/tree/e092c3f54e2ebcee665389cbdfc17348f612c2d3/investigations/2026-11-10-torchtitan-checkpoint-fsx-lustre/scripts) を、チェックポイントの計測ジョブとして取り込む |
+
 # 参考資料
 
-- [ML infra weekly](https://zenn.dev/tosshi/articles/95edc2cb88f57b)
+- [ML infra weekly ~26/10/29](https://zenn.dev/tosshi/articles/95edc2cb88f57b)
 - [TorchTitan Update: New SOTA Models, Performance at Scale, TitanRL](https://pytorch.org/blog/torchtitan-update-new-sota-models-performance-at-scale-titanrl/)
 - [torchtitan v0.4.0 の DCP の保存処理](https://github.com/pytorch/torchtitan/blob/v0.4.0/torchtitan/components/checkpointer/dcp.py)
-- [実験のコードと結果](https://github.com/littlemex/distributed-ai/tree/b8c40f067d9a15db05d605f7393d3653e72c6e6c/investigations/2026-11-10-torchtitan-checkpoint-fsx-lustre)
+- [実験のコードと結果](https://github.com/littlemex/distributed-ai/tree/e092c3f54e2ebcee665389cbdfc17348f612c2d3/investigations/2026-11-10-torchtitan-checkpoint-fsx-lustre)
 
 # まとめ
 

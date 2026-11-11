@@ -1,5 +1,5 @@
 title: "Distributed AI - Experiments"
-summary: "分散学習と分散推論の新しい手法を、実機で動かして確かめた実験の記録です。初学者でも追えるように、仕組み、測り方、結果、分かったことの順に整理しています。"
+summary: "毎週の ML infra weekly で「次に確かめる」と書いた項目を、実機で実際に確かめた記録です。号ごとに章を足していきます。初学者でも追えるように、仕組み、測り方、結果、分かったことの順に整理しています。"
 topics: ["DistributedTraining", "PyTorch", "GPU", "AWS", "MLOps"]
 published: true
 price: 500
