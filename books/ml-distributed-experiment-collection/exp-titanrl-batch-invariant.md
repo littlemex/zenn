@@ -1,5 +1,5 @@
 ---
-title: "[~26/10/29 #3] 学習と推論の確率は本当に一致するか: TitanRL の batch-invariant モード"
+title: "[26/10/29:#3] 学習と推論の確率は本当に一致するか: TitanRL の batch-invariant モード"
 ---
 
 # はじめに
