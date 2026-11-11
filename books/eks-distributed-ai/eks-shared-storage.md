@@ -362,11 +362,15 @@ Amazon FSx for Lustre は有効な間、プロビジョニングした容量分�
 
 本章では、Karpenter によるノード入れ替えから独立したデータ層として Amazon FSx for Lustre を構成しました。既存ファイルシステムには静的プロビジョニングを用いる点、`volumeAttributes` のキーが小文字でないと読まれない点、`reclaimPolicy` は `Retain` が正しい点を理解しておけば、以降の章で GPU/Neuron ワークロードがこの共有ストレージを安心して利用できます。さらに高いスループットが必要な場合は EFA 有効化という選択肢があり、この実装では `fsx_efa_enabled` で切り替えられます。EFA 有効時は USER_PROVISIONED メタデータ 6000 IOPS 以上・容量 4800 GiB 以上・単一 AZ・ノード側の EFA 設定という制約を伴い、GPU 学習では NCCL 通信との EFA デバイス分離も検討することになります。
 
+実験で分かったことのうち、今後 distributed-ai に取り込む項目を次の「今後の改善」に挙げます。
+
 # 今後の改善
 
 | なぜ改善すべきか | 改善対象 | 改善案 |
 |---|---|---|
 | `fsx_efa_enabled = true` はファイルシステム側だけを設定するので、有効にしてもクライアントは EFA データパスを使えない | ノード側の EFA 設定 | EFA ドライバと Lustre クライアントの LNET 設定、ノードをファイルシステムのセキュリティグループに入れる構成までを含める |
+| p5e.48xlarge と EFA を有効にした FSx for Lustre で、GPUDirect Storage がファイルサーバーから GPU のメモリへ直接読むことを確かめた。ただし DLAMI には nvidia-fs が入っておらず、KvikIO の pip パッケージに付いてくる cuFile 1.20 はこのファイルシステムを直接読めないと判断して断った（[ML infra weekly](https://zenn.dev/tosshi/articles/95edc2cb88f57b) の 6 番目の項目、[実験の記録](https://github.com/littlemex/distributed-ai/tree/b8c40f067d9a15db05d605f7393d3653e72c6e6c/investigations/2026-11-10-gds-kvikio-fsx-lustre-efa)） | GPU ノードの GDS の構成 | nvidia-fs v2.31.5 のビルド、`configure-efa-fsx-lustre-client` の `--optimized-for-gds`、ホストの cuFile 1.17 を優先する設定をノードの初期化に入れ、直接の経路を通ったかを nvidia-fs の読み込み回数で確かめるスモークテストを足す |
+| torchtitan の非同期のチェックポイントは、1 回の保存で学習を止める時間を FSx for Lustre で 24.1 秒から 0.37 秒にしたが、保存の間隔が書き込みの時間より短いと前の書き込みを待ち、全体は速くならなかった。torch_checkpointing 0.1.1 は標準の O_DIRECT の書き込みで失敗した（[ML infra weekly](https://zenn.dev/tosshi/articles/95edc2cb88f57b) の 4 番目の項目、[解説](https://zenn.dev/tosshi/books/ml-distributed-experiment-collection/viewer/exp-torchtitan-checkpoint)） | 共有ストレージを使う学習ジョブの例 | チェックポイントの保存方法と間隔を書き込みの時間から決める指針と、torch_checkpointing を使う場合の `use_direct_io=False` を、学習ジョブの例に入れる |
 
 # 参考資料
 

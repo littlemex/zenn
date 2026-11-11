@@ -509,6 +509,14 @@ cd "$(git rev-parse --show-toplevel)"/infra/eks/scripts
 
 帯域は p4d.24xlarge 2 台で busbw 57.8 GB/s（対照の単一ノード NVLink は 227.1 GB/s）でした。NCCL のログが `Selected provider is efa (found 3 nics)` を示し、この `3` が手順 2 で見た schedulable EFA 数と一致することが、EFA が意図どおり配線されている証拠になります。
 
+実験で分かったことのうち、今後 distributed-ai に取り込む項目を次の「今後の改善」に挙げます。
+
+# 今後の改善
+
+| なぜ改善すべきか | 改善対象 | 改善案 |
+|---|---|---|
+| GPU 8 枚の 1 台を NCCL_HOSTID で複数の「ノード」に見せると、NVLink の組（LSA）とノード間の経路の両方を 1 台で試せた。DeepEP の EFA 向けの通信をエミュレーターで確かめる実験で、2 × 4、4 × 2、8 × 1 の構成がどれも通り、ノード間の NCCL の通信は EFA の GDRDMA で流れた | EFA ノードの検証 | 複数ノードを確保する前に、1 台の中で偽のノードを作って通信の組み方を確かめる手順を、EFA の検証の前段に入れる |
+
 # 参考資料
 
 - [Amazon EKS ユーザーガイド](https://docs.aws.amazon.com/eks/latest/userguide/what-is-eks.html)

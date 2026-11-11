@@ -299,6 +299,15 @@ NodePool 自体は残しておいてかまいません。Karpenter は要求が�
 
 本章では、Capacity Block を使わずに spot 優先（on-demand フォールバックあり）の GPU ノード（g5 / g6 系）へ vLLM の OpenAI 互換サーバーをデプロイし、軽量モデルで推論が動くことを確認しました。単一 GPU で完結するため EFA は不要で、Basic04 で定義した GPU プールに Pod を投入するだけで Karpenter がノードを起動します。spot/on-demand どちらも容量が取れないときは AZ と instance type を複数許可する、メモリなどのリクエストをノードサイズに合わせる、動作確認が終わったら忘れずに Deployment を削除して GPU ノードを回収させる、という 3 点が実運用で押さえるべき点です。この上で大規模モデルやマルチノードの推論・学習に進む場合は、Basic05 の Capacity Block で GPU を確保します。
 
+実験で分かったことのうち、今後 distributed-ai に取り込む項目を次の「今後の改善」に挙げます。
+
+# 今後の改善
+
+| なぜ改善すべきか | 改善対象 | 改善案 |
+|---|---|---|
+| TitanRL の batch-invariant モードで、推論側（vLLM）と学習側の対数確率がビット単位まで一致することを確かめた。切ると 42.6 % のトークンがずれた（[ML infra weekly](https://zenn.dev/tosshi/articles/95edc2cb88f57b) の 3 番目の項目、[解説](https://zenn.dev/tosshi/books/ml-distributed-experiment-collection/viewer/exp-titanrl-batch-invariant)） | 強化学習のワークロード | vLLM と学習を同じノードプールで動かす強化学習の例を足し、batch-invariant モードで差が 0 になることを最初の動作確認にする |
+| FlexShard の DistMuon は、行列を全部集める Muon より 1 回の更新が約 4.7 倍速く、GPU 1 枚あたりのメモリは 85.0 GiB から 10.7 GiB に減った（[ML infra weekly](https://zenn.dev/tosshi/articles/95edc2cb88f57b) の 2 番目の項目、[解説](https://zenn.dev/tosshi/books/ml-distributed-experiment-collection/viewer/exp-flexshard-muon)） | 学習ワークロードの最適化手法 | torchtitan の学習の例に、Muon を使う場合は DistMuon を選ぶ設定と、最適化の時間を測る手順を入れる |
+
 # 参考資料
 
 - [vLLM](https://github.com/vllm-project/vllm)

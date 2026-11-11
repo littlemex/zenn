@@ -295,6 +295,14 @@ cb_alert_email_addresses = ["you@example.com"]
 
 CB は前払いで取り消しができないため、On-Demand で動作確認を済ませたジョブを最後に載せる、という段階的な使い方が安全です。価格は `00-check-cb-offerings.sh` が「ブロック全体の総額」と「1 台 1 時間あたり」の両方で示すので、購入前に On-Demand 単価と比較できます。`capacity_type` の指定漏れによる二重課金など、Terraform の `validation` で弾いている落とし穴も合わせて理解しておけば、期限管理まで含めた CB 運用を問題なく運用できます。
 
+実験で分かったことのうち、今後 distributed-ai に取り込む項目を次の「今後の改善」に挙げます。
+
+# 今後の改善
+
+| なぜ改善すべきか | 改善対象 | 改善案 |
+|---|---|---|
+| 24 時間の Capacity Block 1 つで、5 つの実験と DeepEP の検証を流した。GPU を使う作業は順番待ちの鍵で 1 つずつ流し、FSx for Lustre はインスタンスの起動時に作って測り終えたら消し、ブロックの終了後にも自動で消すようにした（[実験の記録](https://github.com/littlemex/distributed-ai/tree/b8c40f067d9a15db05d605f7393d3653e72c6e6c/investigations/2026-11-10-p5e-single-node-campaign)） | Capacity Block の使い方 | 1 つのブロックを複数の実験で分け合うための排他（[ジョブスケジューリングの章](https://zenn.dev/tosshi/books/eks-distributed-ai/viewer/eks-job-scheduling)との組み合わせ）と、ブロックに合わせて共有ストレージを作って消す仕組みを足す |
+
 # 参考資料
 
 - [Amazon EC2 Capacity Blocks for ML](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/capacity-blocks-using.html)

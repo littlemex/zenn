@@ -1,36 +1,10 @@
 title: "Distributed AI - Experiments"
-summary: "分散学習・推論関連の実験集で動かした結果や Contribute した内容を自分向けに整理しています。購入非推奨。"
-topics: ["Training", "Hyperpod", "Distributed", "Inference", "AWS"]
+summary: "分散学習と分散推論の新しい手法を、実機で動かして確かめた実験の記録です。初学者でも追えるように、仕組み、測り方、結果、分かったことの順に整理しています。"
+topics: ["DistributedTraining", "PyTorch", "GPU", "AWS", "MLOps"]
 published: true
-price: 500 # 有料の場合200〜5000
-# 本に含めるチャプターを順番に並べましょう
+price: 500
 chapters:
-  - awsome-picotron
-  - awsome-ddp-container
-  - awsome-pcluster-monitoring
-  - awsome-slime-b300
-  - awsome-hyperpod-eks-fixes
-  - awsome-miles-grpo
-  - awsome-eks-gpu-cfn
-  - awsome-eks-gpu-cfn-faq
-#  - pipeline-parallelism
-#  - review
-#  - background
-#  - infrastructures
-#  - orchestration
-#  - aws-parallelcluster-tutorial
-#  - resiliency
-#  - amazon-sagemaker-hyperpod-resiliency
-#  - amazon-sagemaker-hyperpod-slurm-tutorial
-#  - amazon-sagemaker-hyperpod-slurm-ddp-on-cpu
-#  - amazon-sagemaker-hyperpod-slurm-observability
-#  - amazon-sagemaker-hyperpod-slurm-resiliency
-#  - multi-gpu-processing-approaches
-#  - appendix-optimizer
-#  - appendix-vast-data-checkpoint-analysis
-#  - appendix-network-topologies
-#  - appendix-model-architectures
-#  - appendix-ai-infrastructures
-#  - llm-viewer
-#  - deepseek
-
+  - experiments-intro
+  - exp-torchtitan-checkpoint
+  - exp-titanrl-batch-invariant
+  - exp-flexshard-muon
