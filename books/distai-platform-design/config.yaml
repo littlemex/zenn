@@ -1,0 +1,20 @@
+title: "GPU と Trainium を同じ形で扱う EKS 分散 AI 基盤の設計"
+summary: "Amazon EKS の上に分散学習と推論の基盤を作るときに、容量の混ぜ方、device plugin と DRA、マルチテナント、Terraform の土台、実機検証の運用を、どう決めたのか、なぜそうしたのかを、実測と比べた選択肢とともにまとめる上級者向けの本"
+topics: ["EKS", "Karpenter", "Kueue", "Trainium", "DRA"]
+published: false
+price: 0
+chapters:
+  - 00-introduction
+  - 01-principles
+  - 02-four-decisions
+  - 03-capacity-pools
+  - 03b-multi-tenancy
+  - 04-capacity-map
+  - 05-device-plugin-and-dra
+  - 06-dra-experiments-nvidia
+  - 07-dra-experiments-trainium
+  - 08-foundation
+  - 09-verification-operations
+  - 10-development-process
+  - 11-upstream
+  - 99-summary
