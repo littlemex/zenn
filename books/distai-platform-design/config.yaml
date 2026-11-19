@@ -10,6 +10,7 @@ chapters:
   - 03-capacity-pools
   - 03b-multi-tenancy
   - 04-capacity-map
+  - 05b-delivery-layer
   - 05-device-plugin-and-dra
   - 06-dra-experiments-nvidia
   - 07-dra-experiments-trainium

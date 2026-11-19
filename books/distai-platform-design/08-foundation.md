@@ -4,7 +4,7 @@ title: "セルの Terraform 基盤層を作る"
 
 ## はじめに
 
-[littlemex/distai-platform](https://github.com/littlemex/distai-platform) は、GPU と Trainium を同じ形で扱う EKS 基盤を、Issue から PR までの手順で育てているリポジトリである。この章で扱うのは、そのリポジトリに最初に入った実装である [`infra/foundation/`](https://github.com/littlemex/distai-platform/blob/7884eaf3af1095c57ffc2b9e0181bcc6bb8edee8/infra/foundation)(Issue [#20](https://github.com/littlemex/distai-platform/issues/20)、PR [#21](https://github.com/littlemex/distai-platform/pull/21))である。この層は、1 つのセル(クラスタ 1 個分の環境)の入れ物だけを Terraform で作る。何を作り、何を作らないかの線引き、10 個の変数と 11 個の出力からなるインターフェース、削除の順番を守るための仕掛け、複数チームが 1 つのセルを共有する運用に向けてこの層が足した下ごしらえ、そして実機で 7 回流した e2e テストの結果までを、この章で順に見ていく。
+[littlemex/distai-platform](https://github.com/littlemex/distai-platform) は、GPU と Trainium を同じ形で扱う EKS 基盤を、Issue から PR までの手順で育てているリポジトリである。この章で扱うのは、そのリポジトリに最初に入った実装である [`infra/foundation/`](https://github.com/littlemex/distai-platform/blob/db7812c1ae9eb53b7474c160e3c69c7444ea97c3/infra/foundation)(Issue [#20](https://github.com/littlemex/distai-platform/issues/20)、PR [#21](https://github.com/littlemex/distai-platform/pull/21)、本章執筆時点の head は `db7812c`)である。この層は、1 つのセル(クラスタ 1 個分の環境)の入れ物だけを Terraform で作る。何を作り、何を作らないかの線引き、10 個の変数と 11 個の出力からなるインターフェース、削除の順番を守るための仕掛け、複数チームが 1 つのセルを共有する運用に向けてこの層が足した下ごしらえ、そして実機で重ねた e2e テストの結果までを、この章で順に見ていく。
 
 この章を読むと、次の問いに答えられるようになる。1 つのセルのうち、どこまでを Terraform の state に入れ、どこから Argo CD に渡すのか。公開エンドポイントや管理者をどう絞るのか。Karpenter 本体を Terraform で入れないのに、Karpenter が起動した EC2 インスタンスをどうやって安全に壊すのか。複数チームが 1 つのセルを共有するとき、この層がすでに保証していることと、まだテナンシー層([Issue #22](https://github.com/littlemex/distai-platform/issues/22))に残っていることは何か。
 
@@ -143,7 +143,7 @@ Karpenter が起動した EC2 インスタンスは、Karpenter 自身が Argo C
 <!-- FIG name="08-teardown" kind="flow" shows="先にNATを壊すと起きる失敗(左)と、teardown guardが強制する正しい順番(右)" labels="NAT gateway, Karpenter instance, ENI, teardown-guard.sh, terraform_data, destroy" -->
 ![teardown guard が強制する削除順序を示す図](https://raw.githubusercontent.com/littlemex/figures/refs/heads/zenn/books/distai-platform-design/zenn/books/distai-platform-design/08-teardown.png)
 
-これを避けるため、[`teardown.tf`](https://github.com/littlemex/distai-platform/blob/7884eaf3af1095c57ffc2b9e0181bcc6bb8edee8/infra/foundation/teardown.tf) の `terraform_data` が、destroy 専用の `local-exec` プロビジョナーで [`teardown-guard.sh`](https://github.com/littlemex/distai-platform/blob/7884eaf3af1095c57ffc2b9e0181bcc6bb8edee8/infra/foundation/scripts/teardown-guard.sh) を呼ぶ。destroy の順番は次のようになる。
+これを避けるため、[`teardown.tf`](https://github.com/littlemex/distai-platform/blob/db7812c1ae9eb53b7474c160e3c69c7444ea97c3/infra/foundation/teardown.tf) の `terraform_data` が、destroy 専用の `local-exec` プロビジョナーで [`teardown-guard.sh`](https://github.com/littlemex/distai-platform/blob/db7812c1ae9eb53b7474c160e3c69c7444ea97c3/infra/foundation/scripts/teardown-guard.sh) を呼ぶ。destroy の順番は次のようになる。
 
 1. Karpenter コントローラロールのポリシーの attach は、この `terraform_data` に `depends_on` しているため先に destroy され、Karpenter は新しいインスタンスを起動できなくなる。
 2. `teardown-guard.sh` が走る。
@@ -162,11 +162,22 @@ Karpenter が起動した EC2 インスタンスは、Karpenter 自身が Argo C
 
 削除ガードが消すのは、Karpenter が AWS に残すものだけである。`Service` や `Ingress` から作られるロードバランサー、`PersistentVolumeClaim` から作られる EBS ボリュームのような、Kubernetes オブジェクトから作られるリソースは、それらを作った層が、この基盤を壊す前に削除する責任を持つ。
 
+この削除ガードには、まだ直っていない欠陥が 1 つ残っている([Issue #26](https://github.com/littlemex/distai-platform/issues/26))。削除ガードは `terraform_data.teardown_guard` という 1 つのリソースで、クラスタ、ノードグループ、ネットワークのリソース全部に自分から `depends_on` しているため、作成の順番としては最後に作られる。`terraform apply` がクラスタまで作った後、途中で一時的な AWS API のエラー(この Issue が報告された実際の run では EventBridge のルールを読む呼び出し)が起きて失敗すると、state には VPC やクラスタは残っているのに削除ガード自身は一度も作られていない。この状態で `terraform destroy` を実行しても、削除ガードが走らないので、EKS や VPC CNI が裏で作ったリソース(検出済みの出来事ではプライベートサブネットの ENI 2 個と、EKS が自動で作るクラスタのセキュリティグループ)が手つかずで残り、サブネットと VPC の削除が止まる。これは[Issue #25](https://github.com/littlemex/distai-platform/issues/25)(配送層、[5b 章](./05b-delivery-layer))の最初の PR の e2e で、基盤層の `terraform apply` が途中で失敗したときに見つかった欠陥であり、どの AWS API の一時的なエラーで途中失敗が起きても同じ形で現れる([5b 章](./05b-delivery-layer) 9 節で見る、同じ PR の検証の中のアップグレード e2e での、別の API 呼び出しの失敗も、同じガードの欠陥に当たっている)。直す案は 2 つ比べられている。
+
+| 選択肢 | 何か | なぜ | 決定 |
+| --- | --- | --- | --- |
+| (a) 削除ガードの依存関係を逆にして、VPC の直後(クラスタより前)に作られるようにし、クラスタやノードグループの側を削除ガードに依存させる | 作られる順番が早くなり、途中失敗でもすでに存在している可能性が上がる | 正常な完全作成からの削除で「Karpenter の権限を先に消し、その後で削除ガードが動く」という既存の保証を、保ったまま直す必要がある | 未決定 |
+| (b) 削除ガードの場所は変えずに、ネットワークのリソースの手前にもう 1 つ早期の destroy 専用ガード(このセルの ENI とクラスタセキュリティグループだけを消す小さなもの)を足す | 既存のガードの保証はそのまま残る | 2 つのガードを持つことになり、どちらが何を消すかの説明が増える | 未決定 |
+
+この章を書いている時点では、どちらを採るかはまだ決まっていない。
+
 ## 7. Argo CD capability
 
 Argo CD capability は、#17 の「セルの中身は全部 Argo CD から配る」という設計をこの層で実装する部分である。`argocd` 変数を設定すると、EKS のマネージドな Argo CD capability(`type = "ARGOCD"`)を作る。サインインは IAM Identity Center を通じ、`role_mappings` に列挙したエントリごとに、そのグループ群を Argo CD の `ADMIN`・`EDITOR`・`VIEWER` のいずれか 1 つのロールにマッピングする(1 つのロールは 1 エントリまでで、同じロールを 2 回使うことはできない)。もともとはグループが `admin_group_ids` としてまとめて `ADMIN` ロールにしかマッピングできなかったが、4 節で見たマルチテナンシーの追記で `role_mappings` に広げ、閲覧だけ、編集だけの権限も渡せるようにした。これはクラスタ全体に対するロールのままで、チームごとに 1 つのネームスペースへ絞った `AppProject` は作らない。そちらはテナンシー層([Issue #22](https://github.com/littlemex/distai-platform/issues/22))の仕事である。capability のロールには権限ポリシーを一切付けない。EKS が、capability 自身のクラスタへのアクセスをアクセスエントリで用意するためである。EKS のマネージドな機能を使うことで、Argo CD を自分で動かし、アップグレードする手間を無くしている。
 
-この分岐だけは、実機では確認できていない。IAM Identity Center のインスタンスが要るため、9 節で見る e2e の実行でも `argocd` は未設定のままで、`terraform fmt`・`validate`・`tflint` までしか通していない(`terraform plan` 自体は今回は実行しない約束で止めている)。Issue #20 の受け入れ基準は「`argocd` を設定すれば capability が `ACTIVE` になることを 1 回確認する」だったが、この基準はまだ満たしていない。`argocd` は hub セル(複数のチームのセルを束ねる管理用のセル)専用の機能で、すべてのセルに必要なものではない。
+当初、この分岐は実機で確認できていなかった。IAM Identity Center のインスタンスが要るため、9 節で見る run 1 から 7 までの e2e では `argocd` を未設定のままにし、`terraform fmt`・`validate`・`tflint` までしか通していなかった。Issue #20 の受け入れ基準は「`argocd` を設定すれば capability が `ACTIVE` になることを 1 回確認する」だったが、この基準はしばらく満たされないままだった。
+
+これは、セル自体を `us-east-1`(IAM Identity Center のインスタンスが既に存在するリージョン)に構築し、専用の EC2 テストランナー上からその構築を実行することで解消した。`argocd` 変数に `ADMIN`・`EDITOR`・`VIEWER` の 3 ロールを渡すため、実行ごとに `aws identitystore create-group` で一時的なグループを 3 つ作り、`role_mappings` に渡して `terraform apply` し、確認が終わったら `aws identitystore delete-group` で消す、という手順を踏んでいる。この手順で実行した e2e は、Argo CD capability が `ACTIVE` になること、そして `role_mappings` に渡した `ADMIN`・`EDITOR`・`VIEWER` 各ロールのグループ ID が capability 自身の設定に反映されていることを、3 つとも実機で確認した。`argocd` は hub セル(複数のチームのセルを束ねる管理用のセル)専用の機能で、すべてのセルに必要なものではないが、capability が `ACTIVE` になることと `role_mappings` の設定への反映は、これで実機の裏付けを持つようになった。各ロールで実際にサインインできるかどうか、そのロールの権限が意図どおりに効くかどうかまでは、この run では確かめていない。この capability を「hub セル専用」と呼ぶ位置づけと、各セルが自分自身の capability を持って自分を登録する形という、[5b 章](./05b-delivery-layer) 1 節が指摘する食い違いも、まだ解消していない。
 
 ## 8. マルチテナンシーの下ごしらえ(Issue #22 に渡すもの)
 
@@ -184,9 +195,9 @@ Argo CD capability は、#17 の「セルの中身は全部 Argo CD から配る
 
 Namespace、ResourceQuota、LocalQueue、Kueue の `Cohort`/`ClusterQueue` の配置、GPU と Neuron それぞれのデバイス共有のルール、ストレージとコストの配分の規約は、いずれもこの層には無く、#22 の範囲である。この層が増やしたのはあくまで、テナンシー層が後から積む仕掛けのための土台であり、土台だけでは複数チームを安全に分離できない。
 
-9 節で見る e2e では、この層が足した 4 点(IMDSv2 の強制、CNI 権限の分離、`NetworkPolicy` の施行の有効化、Argo CD の `role_mappings`)のうち、実機で確かめられるものを確かめている。ホストネットワークを使わない Pod がシステムノード上で IMDSv2 のトークンを取得できないこと、システムノードの EC2 インスタンスが `HttpTokens = required` かつ `HttpPutResponseHopLimit = 1` であること、Karpenter のノードロールもシステムノードロールも `AmazonEKS_CNI_Policy` を持たないこと、`kube-system/aws-node` に EKS Pod Identity の関連付けがあること、それでもホストネットワークを使わない Pod が CNI からポッド IP を受け取れること、そして deny-all の ingress `NetworkPolicy` を適用する前は通っていた Pod 間の通信が、適用後には止まることである。これらはいずれも、e2e のこの時点ではまだ Karpenter を入れておらず、クラスタにシステムノードしか無い状態での確認であり、Karpenter が起動するノード(チームのワークロードが実際に乗るノード)の上で同じ振る舞いになるかは、この e2e では確かめていない。Argo CD の `role_mappings` は、IAM Identity Center のインスタンスが無い環境で実行したため、今回も実機では確かめていない。
+9 節で見る e2e では、この層が足した 4 点(IMDSv2 の強制、CNI 権限の分離、`NetworkPolicy` の施行の有効化、Argo CD の `role_mappings`)のうち、実機で確かめられるものを確かめている。ホストネットワークを使わない Pod がシステムノード上で IMDSv2 のトークンを取得できないこと、システムノードの EC2 インスタンスが `HttpTokens = required` かつ `HttpPutResponseHopLimit = 1` であること、Karpenter のノードロールもシステムノードロールも `AmazonEKS_CNI_Policy` を持たないこと、`kube-system/aws-node` に EKS Pod Identity の関連付けがあること、それでもホストネットワークを使わない Pod が CNI からポッド IP を受け取れること、そして deny-all の ingress `NetworkPolicy` を適用する前は通っていた Pod 間の通信が、適用後には止まることである。これらはいずれも、e2e のこの時点ではまだ Karpenter を入れておらず、クラスタにシステムノードしか無い状態での確認であり、Karpenter が起動するノード(チームのワークロードが実際に乗るノード)の上で同じ振る舞いになるかは、この e2e では確かめていない。Argo CD の `role_mappings` は、run 1 から 7 までは IAM Identity Center のインスタンスが無い環境で実行したため確かめていなかったが、run 8(7 節)で、そのインスタンスがある `us-east-1` の専用 EC2 テストランナー上から確認している。
 
-## 9. レビューと実機での 7 回の e2e
+## 9. レビューと実機での 8 回の e2e
 
 `infra/foundation` の本体は 22 ファイル、+2,408/-5 行で、このうち `karpenter.tf` が 561 行で全体の約 23% を占める。テナンシーの 4 点の追記はこれとは別に 5 ファイル、+181/-25 行で、最大は `eks.tf` の +133 行である。
 
@@ -214,7 +225,11 @@ Namespace、ResourceQuota、LocalQueue、Kueue の `Cohort`/`ClusterQueue` の�
 
 マルチテナンシーの 4 点(IMDSv2 の強制、CNI 権限の分離、`NetworkPolicy` の施行の有効化、Argo CD の `role_mappings`)を足した後、もう一度レビューを受けている。この回は、テストの確認範囲そのものが指摘の対象になった。IMDSv2 のトークンが取れないことを確認する Pod がホストネットワークを使わないものだけだったため、トークンが空なのが hop limit の効果なのか確認そのものが壊れているのか区別できなかった。これに対し、同じシステムノード上にホストネットワークを使う Pod も立て、そちらは必ずトークンを取れることを確認するよう変えた。`kube-system/aws-node` の Pod Identity の確認も、関連付けが存在することだけでなく、それが唯一の関連付けであり、かつ付与された先のロールが `AmazonEKS_CNI_Policy` だけを持つことまで確かめるようにした。`argocd` や CIDR の入力検証は e2e では一度も踏まないパスなので、モックしたプロバイダに対する `terraform test` を足して別に確認するようにした。README の記述も直し、ノードロールの認証情報には CNI の権限が無くなった一方で、ノード上で root 権限を持つプロセスは `aws-node` のトークンを読めるので、その経路までは塞いでいないと明記した。あわせて、Karpenter が起動するノードのメタデータ設定(IMDSv2 の強制など)は `EC2NodeClass` 側で明示する必要があることも書き添えた。
 
-実機の e2e は、東京リージョン(`ap-northeast-1`)で `infra/foundation/tests/1.e2e.sh` を 7 回走らせた。
+この `terraform test` は後から 8 件まで増えた。`argocd` の `role_mappings` が 3 ロールとも受け付けられること、未知のロール名を拒否すること、`group_ids` が空だと拒否すること、同じロールを 2 回使うと拒否すること、`role_mappings` が 0 件だと拒否すること、公開エンドポイントの CIDR が広すぎると拒否すること、CIDR のリストが空だと拒否すること、そして `system_node_group.instance_types` に Graviton(Arm64)系のインスタンスタイプを渡すと拒否することの 8 件で、いずれも実際の AWS 呼び出しを一切せずに通る。最後の 1 件は 1 節で触れた「システムノードグループは x86_64 専用」という制約を、README の記述だけでなくコードの `validation` ブロックでも強制していることの確認である。
+
+`tests/1.e2e.sh` 自身にも 2 つの安全策が後から入った。1 つは、apply の前に state を確認し、キー `distai-platform/<region>/<name>/foundation` に既にリソースが残っていたら、空の state だと確かめられるまで先へ進まない。これにより、前回の run が片付けに失敗した state の上に次の run が重ねて apply することがなくなる。もう 1 つは、destroy 後の残存チェック(`report_leftovers`)で、AWS 呼び出しそのものが失敗した場合と、呼び出しが成功して「0 件」が返った場合を区別するようにしたことである。前者はチェックを失敗させ、後者だけを PASS とする。この区別が無いと、一時的な認証エラーや権限不足で AWS 呼び出し自体が失敗したときに、結果が「0 件」と誤認され、本当は残っているリソースを見落としたまま PASS してしまう。
+
+実機の e2e は、東京リージョン(`ap-northeast-1`)で `infra/foundation/tests/1.e2e.sh` を 7 回走らせ、加えて `us-east-1` の専用 EC2 テストランナー上で 1 回(下の run 8)走らせている。
 
 | run | コード | 結果 |
 | --- | --- | --- |
@@ -225,6 +240,7 @@ Namespace、ResourceQuota、LocalQueue、Kueue の `Cohort`/`ClusterQueue` の�
 | 5 | テスト側の修正(IMDS 確認用の Pod と同じ `nodeSelector`・toleration を `netpol-server`/`netpol-client` にも付けた)を反映 | PASS。apply 673 秒、destroy 900 秒。全体で約 31 分 |
 | 6 | マルチテナンシーのレビュー後(`fc1afc0`)を反映 | スクリプトは PASS(apply 618 秒、destroy 856 秒)。だが削除ガードのログに起動テンプレートを消す行が無く、残存チェックもインスタンス・ENI・NAT ゲートウェイ・ボリュームの 4 種類しか見ていなかった。Verifier(実機で確かめるセッション、10 章)がスクリプトの外でタグを洗い直し、Karpenter が作った起動テンプレートが 1 つ残っていることを見つけ、手動で削除した |
 | 7 | 削除ガードの修正(`7884eaf`)を反映 | PASS。apply 676 秒、destroy 859 秒。全体で約 32 分。削除ガードのログに「起動テンプレートを削除」の行が出力され、残存チェックにも起動テンプレートの種類が加わった |
+| 8 | head `db7812c`(テストした実装は `a78ae5d`、head は README の文言のみの差)。セル自体を `us-east-1` に構築(Argo CD capability の IAM Identity Center へのサインインがこのリージョンのインスタンスを必要とするため。Terraform の state バケットは `ap-northeast-1` のまま)、専用 EC2 テストランナー上で、一時的な Identity Center グループ 3 つを使って実行 | PASS。apply 1041 秒、destroy 925 秒。全体で約 37 分。Argo CD capability が `ACTIVE` になり、`ADMIN`・`EDITOR`・`VIEWER` 各ロールのグループ ID が capability の設定に反映されていることを確認。あわせて、4 節・5 節で見たマルチテナンシーの IMDSv2・CNI 権限分離・`NetworkPolicy` 施行の 3 点も同じ run の中で再確認 |
 
 1 回目の失敗は、基盤のコードではなくテストスクリプトの思い込みが原因だった。README の契約(`argocd` を設定しなければ `argocd_capability_arn` は `null`)は正しく実装されていたが、Terraform はルート出力の値がちょうど `null` のとき、その出力を state から完全に省いてしまう。そのため名前で `terraform output` を呼ぶと、`null` ではなく「出力が見つからない」エラーになる。これは Terraform のバージョン(確かめたのは 1.17.2)の挙動であり、独立した最小構成の Terraform で再現を確認した。原因が確定してから、テストスクリプト側が、その特定の失敗を `null` と同値に扱うように直した。この挙動は、テストスクリプトだけの問題ではない。2 節で見た「後の層はこの層の出力だけを読む」という契約を字面どおりに実装し、名前を指定して `argocd_capability_arn` を読む側(後で作る層や、手元で `terraform output` を叩く運用者)も、`argocd` を設定していないセルに対しては同じ「出力が見つからない」エラーを踏む。`null` を返す出力として契約している以上、読む側は `try(..., null)` のような形で呼ぶ必要がある。
 
@@ -240,6 +256,8 @@ Namespace、ResourceQuota、LocalQueue、Kueue の `Cohort`/`ClusterQueue` の�
 
 この一件が示すのは、e2e が PASS したという結果は、スタックが作るすべての種類のリソースについて残存チェックが書かれていない限り、後片付けが完了した証拠にならないという点である。残存チェックに載っていない種類のリソースは、作られても消されても、PASS の文字列には何も現れない。もう一つ、これは新規構築の e2e では塞ぎきれない種類の欠陥でもある。state のアドレス移動、`ForceNew` を伴う変更、権限を付ける順番の変更といった、アップグレード経路でしか踏まれない分岐は、ゼロから作って壊す e2e では一度も通らない。
 
+8 回目は、7 節で述べた、それまで実機では確認できていなかった Argo CD capability の `role_mappings` の分岐を、初めて実機で確かめた run である。IAM Identity Center のインスタンスが既にある `us-east-1` で、専用の EC2 テストランナー上から実行し、`ADMIN`・`EDITOR`・`VIEWER` の 3 ロールに割り当てる一時的なグループを `aws identitystore create-group` で作り、確認後に `delete-group` で消している。テストした実装のコミットは `a78ae5d` で、head の `db7812c` はそこから README の文言を直しただけである。この run では、capability が `ACTIVE` になることと、`role_mappings` に渡した 3 つのグループ ID が capability 自身の設定に反映されていることの両方を確認した。1 回の apply が 1041 秒、destroy が 925 秒で、全体では約 37 分だった。run 後の独立した確認でも、EKS クラスタ、capability、Pod Identity の関連付けを含め、このセルに属するリソースは何も残っていなかった。
+
 <!-- FIG name="08-e2e" kind="flow" shows="3回のe2e実行の流れと、1回目の失敗がテストスクリプトのnull扱いバグだったこと" labels="run1 FAIL, run2 PASS, run3 PASS, argocd_capability_arn, null output, commit 00afa70" -->
 ![3回のe2e実行の流れを示す図](https://raw.githubusercontent.com/littlemex/figures/refs/heads/zenn/books/distai-platform-design/zenn/books/distai-platform-design/08-e2e.png)
 
@@ -249,4 +267,4 @@ Namespace、ResourceQuota、LocalQueue、Kueue の `Cohort`/`ClusterQueue` の�
 
 ## まとめ
 
-`infra/foundation` は、Terraform に「1 セル分の入れ物だけ」を作らせるという Issue #17 と #19 の決定を、VPC、EKS、システムノード、Karpenter の前提、削除ガードの 5 つの要素で実装したものである。レビューの指摘 17 件のうち 12 件を直し、残り 5 件(文書化 2、保留 2、制約緩和 1)は理由とともに本文に残した。その後、1 つのセルを複数チームで共有する運用([Issue #22](https://github.com/littlemex/distai-platform/issues/22) のテナンシー層)に向けて、システムノードの IMDSv2・hop limit 1、ノードロールからの CNI 権限の分離、`NetworkPolicy` 施行の有効化、Argo CD の `role_mappings` の 4 点を足した。実機では 7 回中 5 回が PASS し、1 回目の失敗は Terraform の `null` 出力の扱いに対するテストスクリプト側の思い込み、4 回目の失敗は `NetworkPolicy` 確認用の Pod に taint への toleration が無かったという、どちらもテストスクリプト側の誤りだったことを原因調査で確定させている。6 回目は PASS 判定が出たにもかかわらず、削除ガードの残存チェックが見ていなかった起動テンプレートが 1 つ残っており、PASS という結果そのものが後片付けの証明にならないことを示した。7 回目はこの欠陥を直したうえでの再実行である。マルチテナンシーの 4 点のうち、Argo CD の `role_mappings` だけは IAM Identity Center のインスタンスが要るため実機では確認できておらず、テナント Pod をシステムノードから締め出す admission policy や、実際の `NetworkPolicy` オブジェクト、チームごとの `AppProject` は、この層の範囲外として #22 に残されている。
+`infra/foundation` は、Terraform に「1 セル分の入れ物だけ」を作らせるという Issue #17 と #19 の決定を、VPC、EKS、システムノード、Karpenter の前提、削除ガードの 5 つの要素で実装したものである。レビューの指摘 17 件のうち 12 件を直し、残り 5 件(文書化 2、保留 2、制約緩和 1)は理由とともに本文に残した。その後、1 つのセルを複数チームで共有する運用([Issue #22](https://github.com/littlemex/distai-platform/issues/22) のテナンシー層)に向けて、システムノードの IMDSv2・hop limit 1、ノードロールからの CNI 権限の分離、`NetworkPolicy` 施行の有効化、Argo CD の `role_mappings` の 4 点を足した。実機の e2e を重ねるなかで、1 回目の失敗は Terraform の `null` 出力の扱いに対するテストスクリプト側の思い込み、4 回目の失敗は `NetworkPolicy` 確認用の Pod に taint への toleration が無かったという、どちらもテストスクリプト側の誤りだったことを原因調査で確定させている。6 回目は PASS 判定が出たにもかかわらず、削除ガードの残存チェックが見ていなかった起動テンプレートが 1 つ残っており、PASS という結果そのものが後片付けの証明にならないことを示した。7 回目はこの欠陥を直したうえでの再実行であり、8 回目はセル自体を IAM Identity Center のインスタンスがある `us-east-1` に構築し、専用 EC2 テストランナー上から、一時的なグループを使って、capability が `ACTIVE` になることと `role_mappings` が設定に反映されることを初めて実機で確認した run である(各ロールでのサインインや権限の効き方そのものは未確認のまま残る)。`terraform test` も、`argocd` の `role_mappings` の受理・拒否 5 件、CIDR の拒否 2 件、Graviton(Arm64)系インスタンスタイプの拒否 1 件の計 8 件に増え、e2e 自身にも、既存リソースの上に apply しないための空 state チェックと、AWS 呼び出しの失敗を「0 件」と誤認しない残存チェックが入った。テナント Pod をシステムノードから締め出す admission policy、実際の `NetworkPolicy` オブジェクト、チームごとの `AppProject` は、この層の範囲外として #22 に残されている。削除ガード自身にも、`terraform apply` が途中で失敗した後の `terraform destroy` ではガードが一度も作られておらず後片付けが効かないという欠陥が [Issue #26](https://github.com/littlemex/distai-platform/issues/26) として残っている。
