@@ -1,7 +1,7 @@
 title: "ML infra weekly"
 summary: "最近読んだ分散学習と分散推論の基盤まわりのブログや arXiv のプレプリントを、号ごとに 1 章にまとめた本です。新しい号ほど前の章に置きます。各章は、その号の一覧の表、記事ごとのサマリーと私のコメント、元記事の図、参照元からの抜粋と要約、今後の調査の表、の順です。"
 topics: ["GPU", "LLM", "DistributedTraining", "Inference", "MLOps"]
-published: false
+published: true
 price: 0
 chapters:
   - about
